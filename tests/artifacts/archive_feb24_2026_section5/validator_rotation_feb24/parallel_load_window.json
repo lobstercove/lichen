@@ -1,0 +1,566 @@
+{
+  "label": "parallel_load",
+  "rpc": "http://127.0.0.1:8899",
+  "target_slots": 90,
+  "captured_slots": 90,
+  "start_slot": 1264,
+  "end_slot": 1414,
+  "duration_seconds": 93.0,
+  "counts_all": {
+    "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 27,
+    "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 35,
+    "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 28
+  },
+  "counts_tx_blocks": {
+    "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 18,
+    "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 8,
+    "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 10
+  },
+  "counts_heartbeat_blocks": {
+    "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 19,
+    "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 18,
+    "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 17
+  },
+  "blocks": [
+    {
+      "slot": 1266,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940205
+    },
+    {
+      "slot": 1267,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940206
+    },
+    {
+      "slot": 1268,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940206
+    },
+    {
+      "slot": 1269,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940206
+    },
+    {
+      "slot": 1272,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 2,
+      "timestamp": 1771940207
+    },
+    {
+      "slot": 1274,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940207
+    },
+    {
+      "slot": 1276,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940208
+    },
+    {
+      "slot": 1277,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 2,
+      "timestamp": 1771940208
+    },
+    {
+      "slot": 1278,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 2,
+      "timestamp": 1771940209
+    },
+    {
+      "slot": 1280,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940209
+    },
+    {
+      "slot": 1282,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 1,
+      "timestamp": 1771940209
+    },
+    {
+      "slot": 1285,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940210
+    },
+    {
+      "slot": 1286,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940210
+    },
+    {
+      "slot": 1287,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 2,
+      "timestamp": 1771940211
+    },
+    {
+      "slot": 1289,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940211
+    },
+    {
+      "slot": 1290,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940211
+    },
+    {
+      "slot": 1292,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940212
+    },
+    {
+      "slot": 1294,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940212
+    },
+    {
+      "slot": 1297,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940213
+    },
+    {
+      "slot": 1299,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940213
+    },
+    {
+      "slot": 1301,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940213
+    },
+    {
+      "slot": 1302,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 2,
+      "timestamp": 1771940214
+    },
+    {
+      "slot": 1304,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940214
+    },
+    {
+      "slot": 1307,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940215
+    },
+    {
+      "slot": 1308,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 1,
+      "timestamp": 1771940215
+    },
+    {
+      "slot": 1310,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940216
+    },
+    {
+      "slot": 1313,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940216
+    },
+    {
+      "slot": 1315,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940216
+    },
+    {
+      "slot": 1317,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940217
+    },
+    {
+      "slot": 1318,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 1,
+      "timestamp": 1771940217
+    },
+    {
+      "slot": 1320,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940218
+    },
+    {
+      "slot": 1323,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940218
+    },
+    {
+      "slot": 1325,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940218
+    },
+    {
+      "slot": 1326,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 2,
+      "timestamp": 1771940219
+    },
+    {
+      "slot": 1327,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 1,
+      "timestamp": 1771940219
+    },
+    {
+      "slot": 1329,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940220
+    },
+    {
+      "slot": 1330,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940220
+    },
+    {
+      "slot": 1331,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 2,
+      "timestamp": 1771940220
+    },
+    {
+      "slot": 1333,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940220
+    },
+    {
+      "slot": 1334,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 2,
+      "timestamp": 1771940221
+    },
+    {
+      "slot": 1336,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940221
+    },
+    {
+      "slot": 1337,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940221
+    },
+    {
+      "slot": 1338,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940221
+    },
+    {
+      "slot": 1339,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940222
+    },
+    {
+      "slot": 1340,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940222
+    },
+    {
+      "slot": 1341,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940223
+    },
+    {
+      "slot": 1342,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940223
+    },
+    {
+      "slot": 1344,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940223
+    },
+    {
+      "slot": 1346,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 1,
+      "timestamp": 1771940223
+    },
+    {
+      "slot": 1348,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940224
+    },
+    {
+      "slot": 1349,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940224
+    },
+    {
+      "slot": 1352,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940225
+    },
+    {
+      "slot": 1353,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 2,
+      "timestamp": 1771940225
+    },
+    {
+      "slot": 1354,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 2,
+      "timestamp": 1771940226
+    },
+    {
+      "slot": 1356,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940226
+    },
+    {
+      "slot": 1359,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940227
+    },
+    {
+      "slot": 1360,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 1,
+      "timestamp": 1771940227
+    },
+    {
+      "slot": 1362,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940228
+    },
+    {
+      "slot": 1365,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940228
+    },
+    {
+      "slot": 1367,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940228
+    },
+    {
+      "slot": 1370,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940229
+    },
+    {
+      "slot": 1371,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940229
+    },
+    {
+      "slot": 1374,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940230
+    },
+    {
+      "slot": 1375,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 2,
+      "timestamp": 1771940230
+    },
+    {
+      "slot": 1377,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940230
+    },
+    {
+      "slot": 1378,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940231
+    },
+    {
+      "slot": 1379,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940231
+    },
+    {
+      "slot": 1381,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940232
+    },
+    {
+      "slot": 1382,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 1,
+      "timestamp": 1771940232
+    },
+    {
+      "slot": 1385,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940233
+    },
+    {
+      "slot": 1387,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940233
+    },
+    {
+      "slot": 1389,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940234
+    },
+    {
+      "slot": 1390,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 1,
+      "timestamp": 1771940234
+    },
+    {
+      "slot": 1392,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940235
+    },
+    {
+      "slot": 1395,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940235
+    },
+    {
+      "slot": 1398,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940236
+    },
+    {
+      "slot": 1401,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 1,
+      "timestamp": 1771940237
+    },
+    {
+      "slot": 1402,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940239
+    },
+    {
+      "slot": 1403,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940243
+    },
+    {
+      "slot": 1404,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940248
+    },
+    {
+      "slot": 1405,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940253
+    },
+    {
+      "slot": 1406,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940258
+    },
+    {
+      "slot": 1407,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940263
+    },
+    {
+      "slot": 1408,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940268
+    },
+    {
+      "slot": 1409,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940273
+    },
+    {
+      "slot": 1410,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940278
+    },
+    {
+      "slot": 1411,
+      "validator": "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe",
+      "transaction_count": 0,
+      "timestamp": 1771940283
+    },
+    {
+      "slot": 1412,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940288
+    },
+    {
+      "slot": 1413,
+      "validator": "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U",
+      "transaction_count": 0,
+      "timestamp": 1771940293
+    },
+    {
+      "slot": 1414,
+      "validator": "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu",
+      "transaction_count": 0,
+      "timestamp": 1771940298
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "traders": 300,
+  "txs_per_trader": 3,
+  "total_txs": 900,
+  "successful": 900,
+  "failed": 0,
+  "success_rate_pct": 100.0,
+  "duration_s": 2.03,
+  "throughput_tps": 443.7,
+  "latency_ms": {
+    "min": 41.3,
+    "avg": 92.5,
+    "median": 52.8,
+    "p95": 258.9,
+    "p99": 305.3,
+    "max": 330.7
+  },
+  "funded_traders": 300,
+  "timestamp": "2026-02-24T13:05:28"
+}

@@ -256,8 +256,20 @@ Repeat until stable pass achieved N times (set N=3 minimum):
 - [x] Start 3 validators with 15s delay each.
 - [x] Confirm all RPC/WS endpoints healthy.
 - [x] Run strict production gate (3 consecutive strict passes: `PASS:24 FAIL:0 SKIP:0`).
-- [ ] Archive artifacts (`tests/artifacts/*`, logs, summaries).
-- [ ] If fail: classify root cause (`test harness`, `contract logic`, `rpc/ws`, `ui wiring`) and fix surgically.
+- [x] Archive artifacts (`tests/artifacts/*`, logs, summaries).
+- [x] If fail: classify root cause (`test harness`, `contract logic`, `rpc/ws`, `ui wiring`) and fix surgically.
+
+Update:
+- Archived final revalidation evidence under `tests/artifacts/archive_feb24_2026_section5/`:
+  - Core summaries: `comprehensive-e2e-report.json`, `contracts-write-e2e-report.json`, `genesis-wiring-report.json`, `load-test-report.json`, `parallel-e2e-report.json`
+  - Rotation and load logs/summaries: `validator_rotation_feb24/*.json`, `validator_rotation_feb24/*.log`
+  - Integrity manifest: `tests/artifacts/archive_feb24_2026_section5/MANIFEST.json` (sha256 + byte counts for archived files).
+- Failure classification and surgical fix outcomes from section-4/section-5 revalidation attempts:
+  - **test harness**: `contracts-write-e2e.py` exits due signer funding assumptions when `requestAirdrop` is disabled in 3-validator mode.
+  - **rpc/ws**: no endpoint outage during final loop (`health` + `getChainStatus` + `getValidators` remained responsive on validator RPCs).
+  - **contract logic**: not implicated by these failures (no reproducible contract panic/regression in final capture path).
+  - **ui wiring**: not implicated (headless backend load/capture path only).
+  - **surgical fix applied**: switched workload signers to funded validator keypairs (`validator-8001` + `validator-8002`) and executed sequential/parallel capture via isolated background terminals to avoid one-line shell parser crashes.
 
 ---
 

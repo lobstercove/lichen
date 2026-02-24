@@ -1,0 +1,255 @@
+{
+  "summary": {
+    "pass": 49,
+    "fail": 0,
+    "skip": 0
+  },
+  "elapsed_s": 0.1,
+  "results": [
+    {
+      "status": "PASS",
+      "msg": "RPC node is reachable (slot=1383)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract MOLT deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract MUSD deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract WSOL deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract WETH deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract YID deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEX deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEXAMM deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEXROUTER deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEXGOV deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEXMARGIN deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DEXREWARDS deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract ANALYTICS deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract DAO deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract ORACLE deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract LEND deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract BRIDGE deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract MOLTSWAP deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract MARKET deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract PUNKS deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract AUCTION deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract CLAWPAY deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract CLAWPUMP deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract CLAWVAULT deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract REEF deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract COMPUTE deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract BOUNTY deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Contract PREDICT deployed and registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Core has 8 trading pairs (expected >= 5)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX AMM has 8 pools (expected >= 5)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Router has 15 routes registered (expected >= 10)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Router admin configured (key: rtr_admin)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Router route_count=15 confirmed via RPC stats",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltBridge has 1 validator(s) registered",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltBridge storage has 8 entries (wiring likely present)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltDAO has 9 storage entries (initialization confirmed)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltDAO stats accessible: proposals=2",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltSwap has MoltyID address configured",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltSwap stats accessible: swaps=0",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Reef Storage has 4 storage entries (initialization confirmed)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "Reef Storage stats accessible: data_count=0",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "LobsterLend has 6 storage entries (initialization confirmed)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "LobsterLend stats accessible: deposits=0",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Margin has 7 mark prices set (expected >= 5)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Margin has 7 margin-enabled pairs (expected >= 5)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Margin has 7 index prices set (expected >= 5)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "DEX Margin stats accessible: positions=5",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltyID has 87 total skills (expected >= 9 for 3 identities \u00d7 3 skills)",
+      "detail": ""
+    },
+    {
+      "status": "PASS",
+      "msg": "MoltyID has 30 cross-attestations (expected >= 9)",
+      "detail": ""
+    }
+  ]
+}

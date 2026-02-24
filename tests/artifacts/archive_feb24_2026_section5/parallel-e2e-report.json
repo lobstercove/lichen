@@ -1,0 +1,6787 @@
+{
+  "summary": {
+    "pass": 30,
+    "fail": 541,
+    "skip": 0
+  },
+  "parallel_seconds": 0.7,
+  "total_seconds": 46.2,
+  "throughput_tps": 0.0,
+  "contract_times": {
+    "moltyid": 0.68,
+    "prediction_market": 0.64,
+    "dex_core": 0.62,
+    "moltswap": 0.62,
+    "dex_margin": 0.6,
+    "wsol_token": 0.58,
+    "clawpump": 0.57,
+    "moltbridge": 0.57,
+    "moltoracle": 0.56,
+    "moltdao": 0.56,
+    "musd_token": 0.54,
+    "lobsterlend": 0.54,
+    "weth_token": 0.54,
+    "dex_governance": 0.54,
+    "dex_rewards": 0.54,
+    "moltauction": 0.53,
+    "dex_amm": 0.53,
+    "reef_storage": 0.5,
+    "clawvault": 0.5,
+    "moltpunks": 0.49,
+    "moltmarket": 0.48,
+    "clawpay": 0.46,
+    "dex_router": 0.43,
+    "bountyboard": 0.39,
+    "compute_market": 0.39,
+    "dex_analytics": 0.33,
+    "moltcoin": 0.23
+  },
+  "slowest_20": [
+    {
+      "test": "moltmarket.initialize",
+      "elapsed": 0.119,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltauction.initialize",
+      "elapsed": 0.119,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltoracle.initialize",
+      "elapsed": 0.11,
+      "status": "FAIL"
+    },
+    {
+      "test": "dex_margin.initialize",
+      "elapsed": 0.092,
+      "status": "FAIL"
+    },
+    {
+      "test": "wsol_token.mint",
+      "elapsed": 0.09,
+      "status": "FAIL"
+    },
+    {
+      "test": "clawpump.create_token",
+      "elapsed": 0.09,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltyid.initialize",
+      "elapsed": 0.088,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltswap.initialize",
+      "elapsed": 0.088,
+      "status": "FAIL"
+    },
+    {
+      "test": "dex_router.initialize",
+      "elapsed": 0.081,
+      "status": "FAIL"
+    },
+    {
+      "test": "dex_rewards.initialize",
+      "elapsed": 0.08,
+      "status": "FAIL"
+    },
+    {
+      "test": "prediction_market.initialize",
+      "elapsed": 0.077,
+      "status": "FAIL"
+    },
+    {
+      "test": "reef_storage.get_provider_stake",
+      "elapsed": 0.075,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltdao.initialize",
+      "elapsed": 0.074,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltpunks.initialize",
+      "elapsed": 0.074,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltoracle.submit_price",
+      "elapsed": 0.071,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltyid.get_availability",
+      "elapsed": 0.068,
+      "status": "FAIL"
+    },
+    {
+      "test": "moltbridge.initialize",
+      "elapsed": 0.066,
+      "status": "FAIL"
+    },
+    {
+      "test": "dex_margin.set_maintenance_margin",
+      "elapsed": 0.065,
+      "status": "FAIL"
+    },
+    {
+      "test": "bountyboard.create_bounty",
+      "elapsed": 0.06,
+      "status": "FAIL"
+    },
+    {
+      "test": "compute_market.initialize",
+      "elapsed": 0.059,
+      "status": "FAIL"
+    }
+  ],
+  "latency": {
+    "min": 0.002,
+    "avg": 0.026,
+    "median": 0.026,
+    "max": 0.119
+  },
+  "results": [
+    {
+      "status": "PASS",
+      "msg": "validator healthy",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "current slot: 115",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "deployer airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "secondary airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "secondary funding via V1 failed: RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "secondary keypair could not be funded on any validator",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "discovered 27/27 contracts",
+      "ts": 1771938125,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "deployer not visible on validator 2 after 10s",
+      "ts": 1771938139,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "secondary not visible on validator 2 after 10s",
+      "ts": 1771938149,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "deployer not visible on validator 3 after 10s",
+      "ts": 1771938159,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "secondary not visible on validator 3 after 10s",
+      "ts": 1771938169,
+      "elapsed": 0.0
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.039
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.044
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.044
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.048
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.049
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.051
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.052
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.052
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.056
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.initialize_cp_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.054
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.056
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.057
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.057
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.058
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.059
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.066
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.074
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.074
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.create_pool error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.035
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.033
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.032
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.077
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.deposit error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.08
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.081
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.register_provider error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.032
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.set_protocol_addresses error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.032
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.set_identity_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.088
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.088
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.record_trade error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.set_preferred_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.register_provider error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.092
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.add_bridge_validator error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938170,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.set_protocol_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.transfer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.transfer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.11
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.borrow error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.set_quorum error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.039
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.set_moltcoin_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.mint_punk error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.039
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.set_addresses error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.set_storage_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.add_strategy error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.transfer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.set_moltyid_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.119
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.initialize error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.119
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.create_bounty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.06
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.create_pair error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.059
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.register_identity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.set_protocol_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_ohlcv error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.add_allowed_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.create_job error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.set_moltyid_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.044
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.set_required_confirmations error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.09
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.create_token error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.09
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.add_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.burn error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.approve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.repay error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.set_voting_period error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.set_rewards_pool error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.transfer_punk error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.register_route error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.store_data error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.deposit error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.approve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.set_identity_gate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.list_nft error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.initialize_ma_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.get_bounty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.set_preferred_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_identity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.set_platform_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_24h_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_allowed_quote_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.accept_job error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.set_moltcoin_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.059
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.register_feed error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.043
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.set_oracle_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.set_request_timeout error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.transfer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.buy error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_pool_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.approve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.burn error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.withdraw error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.create_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.set_reward_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.get_punk_metadata error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_route_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.confirm_storage error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.withdraw error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.burn error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.create_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.get_listing error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.create_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.get_bounty_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.add_allowed_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_identity_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.create_pool error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_trader_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.remove_allowed_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.submit_result error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.approve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.sell error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_position error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.balance_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.balance_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.set_musd_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.043
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.get_bridge_status error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.042
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_protocol_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.cast_vote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.set_referral_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.get_total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_swap_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.get_storage_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.get_vault_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.balance_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.create_stream_with_cliff error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.cancel_listing error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.place_bid error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.submit_work error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_allowed_quote_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_endpoint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.add_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_last_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.set_moltyid_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.confirm_result error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.set_mark_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.057
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.burn error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.get_token_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_pool_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltcoin.total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.submit_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.071
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.set_dex_gov_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.remove_bridge_validator error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_account_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.register_referral error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.get_owner_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_route_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.get_storage_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.get_user_position error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.get_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.get_marketplace_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.set_reserve_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.approve_submission error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.remove_allowed_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_endpoint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_record_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.swap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.set_listing_requirements error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.get_job_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.set_max_leverage error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.get_token_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_position_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.allowance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.balance_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.033
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.get_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.lock_tokens error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_interest_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.create_market error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_proposal_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.set_base_uri error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_best_route error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.get_strategy_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.allowance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.get_stream_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.record_trade error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.update_pair_fees error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.swap_a_for_b error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.propose_new_pair error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.get_provider_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.set_royalty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.04
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.set_marketplace_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.04
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_tvl error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.total_minted error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.cancel_bounty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.046
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.submit_mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.set_deposit_cap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_vote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.set_max_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.set_route_enabled error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.harvest error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.total_minted error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.get_withdrawable error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.038
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.accrue_lp_rewards error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_pair_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.swap_b_for_a error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.propose_fee_change error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.get_job_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.register_feed error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.038
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_metadata error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.057
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_market_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.038
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.get_auction_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.list_nft_with_royalty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.quote_swap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.total_burned error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.set_maintenance_margin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.065
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.get_provider_stake error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.075
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.set_platform_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.allowance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.has_confirmed_mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.set_reserve_factor error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_vote_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.swap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.set_deposit_cap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.total_burned error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.withdraw_from_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.get_punks_by_owner error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.029
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.claim_trading_rewards error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_trader_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.swap_a_for_b_with_deadline error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.vote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.set_platform_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.submit_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_metadata error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_market error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_preferred_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.038
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.make_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.swap_exact_in error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.open_position error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.claim_storage_rewards error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.bb_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.total_minted error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.submit_unlock error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.get_collection_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.034
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.finalize_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.multi_hop_swap error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.set_deposit_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.transfer_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.get_buy_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.05
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.set_royalty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.claim_lp_rewards error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_analytics.get_global_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.swap_b_for_a_with_deadline error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.cm_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_proposal_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.get_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_availability error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_price error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_pair_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.cancel_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.swap_exact_out error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_position_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.stake_collateral error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.has_confirmed_unlock error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.set_timelock_delay error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.update_collection_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.set_withdrawal_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.cancel_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.bb_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.get_graduation_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.balance_of error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_pending_rewards error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_pool_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.cm_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_preferred_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.get_feed_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_outcome_pool error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_trade_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.collect_fees error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.total_burned error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.054
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.buy_nft error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.035
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_margin_ratio error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.issue_challenge error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.is_source_tx_used error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.withdraw_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.execute_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.cancel_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.set_risk_tier error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "bountyboard.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.set_buy_cooldown error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.approve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_trading_tier error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_pool_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "compute_market.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_proposal_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.get_feed_list error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_pool_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_fee_treasury error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.remove_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.get_transfer_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_availability error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.068
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_tier_info error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.respond_challenge error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.liquidate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_dao_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.finalize_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_total_volume_routed error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.update_strategy_allocation error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.get_transfer_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.accept_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.set_sell_cooldown error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.burn error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_referral_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_quote error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.finalize_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.025
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.035
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.is_burn_proof_used error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.034
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.place_order error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.get_attestation_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.add_margin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.set_challenge_window error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.flash_borrow error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_active_proposals error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.make_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_router.get_router_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.remove_strategy error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.get_attestation_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.get_stream_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.mm_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.set_max_buy error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.mp_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_total_distributed error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.execute_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.set_update_interval error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.046
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.confirm_mint error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.024
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.get_epoch_remaining error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.057
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_rate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.remove_margin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.set_slash_percent error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.flash_repay error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_total_supply error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.withdraw_protocol_fees error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.get_epoch_remaining error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpay.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.mm_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.accept_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.set_creator_royalty error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.emergency_delist error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.add_reporter error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.confirm_unlock error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.mp_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.03
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_total_volume error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.get_last_attestation_slot error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.quote_buy error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.add_skill error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.slash_provider error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_deposit_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.get_treasury_balance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.cv_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.get_last_attestation_slot error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_order error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.056
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_liquidity_balance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.044
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltmarket.get_marketplace_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.ma_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.set_dex_addresses error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.liquidate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.031
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.get_transfer_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltpunks.get_collection_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_swap_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.021
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.get_reserve_ratio error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.021
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.quote_sell error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_skills error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "reef_storage.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_borrow_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.veto_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawvault.cv_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.022
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.get_reserve_ratio error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.021
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_best_bid error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.021
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_trader_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.remove_reporter error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.042
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.close_position error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.get_attestation_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.021
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.ma_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.027
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_total_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.028
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_total_fees_collected error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.attest_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.cancel_expired_request error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.051
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.add_initial_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_liquidation_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.018
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.cancel_proposal error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.attest_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_best_ask error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_total_volume error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_governance_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.vouch error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.026
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.get_oracle_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.withdraw_insurance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.get_epoch_remaining error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltauction.get_auction_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_protocol_fees error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_amm.get_amm_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "musd_token.transfer_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.018
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.set_moltyid_address error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.add_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "lobsterlend.get_platform_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.treasury_transfer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.018
+    },
+    {
+      "status": "FAIL",
+      "msg": "weth_token.transfer_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.018
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_spread error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.017
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.withdraw_fees error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.017
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_governance.get_voter_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.017
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_rewards.get_reward_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.018
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_vouches error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.016
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.get_last_attestation_slot error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.015
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_flash_loan_fee error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.015
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.mo_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.019
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.02
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.set_identity_gate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.014
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.dao_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.modify_order error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.011
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.freeze_token error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.014
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_delegate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.013
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_twap_cumulatives error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltoracle.mo_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.get_reserve_ratio error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.015
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.buy_shares error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.023
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.mb_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltdao.dao_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.cancel_order error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.012
+    },
+    {
+      "status": "FAIL",
+      "msg": "clawpump.unfreeze_token error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.011
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_delegate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.011
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_twap_snapshot_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.01
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.attest_reserves error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.01
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.sell_shares error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.011
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltbridge.mb_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.01
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_total_volume error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.013
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.cancel_all_orders error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.009
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.revoke_delegate error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.009
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.flash_loan_borrow error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "wsol_token.transfer_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_price_history error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_user_positions error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.pause_pair error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.update_reputation error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.flash_loan_repay error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.mint_complete_set error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_total_pnl error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.unpause_pair error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.update_reputation_typed error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.flash_loan_abort error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.redeem_complete_set error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_liquidation_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_reputation error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.remove_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_position error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.008
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_margin.get_margin_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_trust_tier error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.ms_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.007
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_user_markets error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.006
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_total_volume error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.006
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.update_agent_type error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.006
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.ms_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.get_lp_balance error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_user_orders error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.deactivate_identity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_swap_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.withdraw_liquidity error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "dex_core.get_open_order_count error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_agent_profile error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_total_volume error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.005
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.submit_resolution error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.004
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_recovery_guardians error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.004
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltswap.get_swap_stats error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.004
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.challenge_resolution error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.004
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.register_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.finalize_resolution error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.resolve_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.dao_resolve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.reverse_resolve error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.dao_void error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_achievements error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.redeem_shares error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_attestations error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.reclaim_collateral error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.add_skill_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.close_market error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_endpoint_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.emergency_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_metadata_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "prediction_market.emergency_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.003
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_availability_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.set_rate_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.update_agent_type_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.attest_skill error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.revoke_attestation error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.approve_recovery error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.execute_recovery error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.award_contribution_achievement error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.create_name_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.bid_name_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.get_name_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.finalize_name_auction error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.transfer_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.renew_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.release_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.transfer_name_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.renew_name_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.release_name_as error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.admin_register_reserved_name error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.transfer_admin error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.mid_pause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "FAIL",
+      "msg": "moltyid.mid_unpause error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771938171,
+      "elapsed": 0.002
+    },
+    {
+      "status": "PASS",
+      "msg": "prediction_market.rest_price_history count=0 (no trades yet)",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexCoreStats -> {'pair_count': 7, 'order_count': 0, 'trade_count': 0, 'total_volume': 0, 'fee_treasury': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexAmmStats -> {'pool_count': 7, 'position_count': 0, 'swap_count': 0, 'total_volume': 0, 'total_fees': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexMarginStats -> {'position_count': 0, 'total_volume': 0, 'liquidation_count': 0, 'total_pnl_profit': 0, 'total_pnl_loss': 0, 'insurance_fund': 0, 'max_leverage': 100, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexRewardsStats -> {'trade_count': 0, 'trader_count': 0, 'total_volume': 0, 'total_distributed': 0, 'epoch': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexRouterStats -> {'route_count': 14, 'swap_count': 0, 'total_volume': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexAnalyticsStats -> {'record_count': 0, 'trader_count': 0, 'total_volume': 0, 'total_candles': 161, 'tracked_pairs': 14, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getDexGovernanceStats -> {'proposal_count': 0, 'total_votes': 0, 'voter_count': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getMoltswapStats -> {'swap_count': 0, 'volume_a': 0, 'volume_b': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getLobsterLendStats -> {'total_deposits': 0, 'total_borrows': 0, 'reserves': 0, 'deposit_count': 0, 'borrow_count': 0, 'liquidation_count': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getClawPayStats -> {'stream_count': 0, 'total_streamed': 0, 'total_withdrawn': 0, 'cancel_count': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getBountyBoardStats -> {'bounty_count': 0, 'completed_count': 0, 'reward_volume': 0, 'cancel_count': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getComputeMarketStats -> {'job_count': 0, 'completed_count': 0, 'payment_volume': 0, 'dispute_count': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getReefStorageStats -> {'data_count': 0, 'total_bytes': 0, 'challenge_count': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getMoltMarketStats -> {'listing_count': 0, 'sale_count': 0, 'sale_volume': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getMoltAuctionStats -> {'auction_count': 0, 'total_volume': 0, 'total_sales': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rpc.getMoltPunksStats -> {'total_minted': 0, 'transfer_count': 0, 'burn_count': 0, 'paused': False}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/core -> {'pairCount': 7, 'orderCount': 0, 'tradeCount': 0, 'totalVolume': 0, 'feeTreasury': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/amm -> {'poolCount': 7, 'positionCount': 0, 'swapCount': 0, 'totalVolume': 0, 'totalFees': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/margin -> {'positionCount': 0, 'totalVolume': 0, 'liquidationCount': 0, 'insuranceFund': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/router -> {'routeCount': 14, 'swapCount': 0, 'totalVolume': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/rewards -> {'tradeCount': 0, 'traderCount': 0, 'totalVolume': 0, 'totalDistributed': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/analytics -> {'recordCount': 0, 'traderCount': 0, 'totalVolume': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/governance -> {'proposalCount': 0, 'activeProposals': 0, 'totalVotes': 0, 'voterCount': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    },
+    {
+      "status": "PASS",
+      "msg": "rest/api/v1/stats/moltswap -> {'swapCount': 0, 'volumeA': 0, 'volumeB': 0}",
+      "ts": 1771938171,
+      "elapsed": 0.0
+    }
+  ],
+  "timings": [
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.initialize",
+      "elapsed": 0.039,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.initialize",
+      "elapsed": 0.044,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.initialize",
+      "elapsed": 0.044,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.initialize",
+      "elapsed": 0.048,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.initialize",
+      "elapsed": 0.049,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.initialize",
+      "elapsed": 0.051,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.initialize",
+      "elapsed": 0.052,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.initialize",
+      "elapsed": 0.052,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.initialize",
+      "elapsed": 0.056,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.initialize_cp_admin",
+      "elapsed": 0.054,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.initialize",
+      "elapsed": 0.056,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.initialize",
+      "elapsed": 0.057,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.initialize",
+      "elapsed": 0.057,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.initialize",
+      "elapsed": 0.058,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.initialize",
+      "elapsed": 0.059,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.initialize",
+      "elapsed": 0.066,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.initialize",
+      "elapsed": 0.074,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.initialize",
+      "elapsed": 0.074,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.create_pool",
+      "elapsed": 0.035,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.mint",
+      "elapsed": 0.033,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.mint",
+      "elapsed": 0.032,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.initialize",
+      "elapsed": 0.077,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.deposit",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.initialize",
+      "elapsed": 0.08,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.initialize",
+      "elapsed": 0.081,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.register_provider",
+      "elapsed": 0.032,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.set_protocol_addresses",
+      "elapsed": 0.032,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.mint",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.set_identity_admin",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.initialize",
+      "elapsed": 0.088,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.initialize",
+      "elapsed": 0.088,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.record_trade",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.set_preferred_quote",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.register_provider",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.initialize",
+      "elapsed": 0.092,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.add_bridge_validator",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.set_protocol_fee",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.transfer",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.transfer",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.initialize",
+      "elapsed": 0.11,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.borrow",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.set_quorum",
+      "elapsed": 0.039,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.set_moltcoin_address",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.mint_punk",
+      "elapsed": 0.039,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.set_addresses",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.set_storage_price",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.add_strategy",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.transfer",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.set_moltyid_address",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.initialize",
+      "elapsed": 0.119,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.initialize",
+      "elapsed": 0.119,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.create_bounty",
+      "elapsed": 0.06,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.create_pair",
+      "elapsed": 0.059,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.register_identity",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.set_protocol_fee",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_ohlcv",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.add_allowed_quote",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.create_job",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.set_moltyid_address",
+      "elapsed": 0.044,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.set_required_confirmations",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.mint",
+      "elapsed": 0.09,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.create_token",
+      "elapsed": 0.09,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.add_liquidity",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.burn",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.approve",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.repay",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.set_voting_period",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.set_rewards_pool",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.transfer_punk",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.register_route",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.store_data",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.deposit",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.approve",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.set_identity_gate",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.list_nft",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.initialize_ma_admin",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.get_bounty",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.set_preferred_quote",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_identity",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.set_platform_fee",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_24h_stats",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_allowed_quote_count",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.accept_job",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.set_moltcoin_address",
+      "elapsed": 0.059,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.register_feed",
+      "elapsed": 0.043,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.set_oracle_address",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.set_request_timeout",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.transfer",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.buy",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_pool_info",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.approve",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.burn",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.withdraw",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.create_proposal",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.set_reward_rate",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.get_punk_metadata",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_route_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.confirm_storage",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.withdraw",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.burn",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.create_stream",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.get_listing",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.create_auction",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.get_bounty_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.add_allowed_quote",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_identity_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.create_pool",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_trader_stats",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.remove_allowed_quote",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.submit_result",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.approve",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.sell",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_position",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.balance_of",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.balance_of",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.set_musd_address",
+      "elapsed": 0.043,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.get_bridge_status",
+      "elapsed": 0.042,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_protocol_stats",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.cast_vote",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.set_referral_rate",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.get_total_supply",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_swap_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.get_storage_info",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.get_vault_stats",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.balance_of",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.create_stream_with_cliff",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.cancel_listing",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.place_bid",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.submit_work",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_allowed_quote_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_endpoint",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.add_liquidity",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_last_price",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.set_moltyid_address",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.confirm_result",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.set_mark_price",
+      "elapsed": 0.057,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.burn",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.get_token_info",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_pool_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltcoin",
+      "test": "moltcoin.total_supply",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.total_supply",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.submit_price",
+      "elapsed": 0.071,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.set_dex_gov_address",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.remove_bridge_validator",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_account_info",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_proposal",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.register_referral",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.get_owner_of",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_route_info",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.get_storage_price",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.get_user_position",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.total_supply",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.get_stream",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.get_marketplace_stats",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.set_reserve_price",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.approve_submission",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.remove_allowed_quote",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_endpoint",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_record_count",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.swap",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.set_listing_requirements",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.get_job_info",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.set_max_leverage",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.get_token_count",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_position_count",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.allowance",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.balance_of",
+      "elapsed": 0.033,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.get_price",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.lock_tokens",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_interest_rate",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.create_market",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_proposal_count",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.set_base_uri",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_best_route",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.get_strategy_info",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.allowance",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.get_stream_info",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.record_trade",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.update_pair_fees",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.emergency_pause",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.swap_a_for_b",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.propose_new_pair",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.get_provider_info",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.set_royalty",
+      "elapsed": 0.04,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.set_marketplace_fee",
+      "elapsed": 0.04,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_tvl",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.total_minted",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.cancel_bounty",
+      "elapsed": 0.046,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.total_supply",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.submit_mint",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.set_deposit_cap",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_vote",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.set_max_supply",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.set_route_enabled",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.harvest",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.total_minted",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.get_withdrawable",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.get_platform_stats",
+      "elapsed": 0.038,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.accrue_lp_rewards",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_pair_count",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.emergency_unpause",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.swap_b_for_a",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.propose_fee_change",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.get_job_count",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.register_feed",
+      "elapsed": 0.038,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_metadata",
+      "elapsed": 0.057,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_market_count",
+      "elapsed": 0.038,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.get_auction_info",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.list_nft_with_royalty",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.quote_swap",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.total_burned",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.set_maintenance_margin",
+      "elapsed": 0.065,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.get_provider_stake",
+      "elapsed": 0.075,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.set_platform_fee",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.allowance",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.has_confirmed_mint",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.set_reserve_factor",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_vote_count",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.swap",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.set_deposit_cap",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.total_burned",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.withdraw_from_stream",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.get_punks_by_owner",
+      "elapsed": 0.029,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.claim_trading_rewards",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_trader_count",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.swap_a_for_b_with_deadline",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.vote",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.set_platform_fee",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.submit_price",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_metadata",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_market",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_preferred_quote",
+      "elapsed": 0.038,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.make_offer",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.swap_exact_in",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.transfer_from",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.open_position",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.claim_storage_rewards",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.bb_pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.total_minted",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.submit_unlock",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.get_collection_stats",
+      "elapsed": 0.034,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.finalize_proposal",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.multi_hop_swap",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.set_deposit_fee",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.transfer_from",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.transfer_stream",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.get_buy_quote",
+      "elapsed": 0.05,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.set_royalty",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.claim_lp_rewards",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_analytics",
+      "test": "dex_analytics.get_global_stats",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.swap_b_for_a_with_deadline",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.cm_pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_proposal_count",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.get_price",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_availability",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_price",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_pair_info",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.cancel_offer",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.swap_exact_out",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.emergency_pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_position_info",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.stake_collateral",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.has_confirmed_unlock",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.unpause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.set_timelock_delay",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.update_collection_stats",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.emergency_pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.set_withdrawal_fee",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.emergency_pause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.cancel_stream",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.bb_unpause",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.get_graduation_info",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.balance_of",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_pending_rewards",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_pool_info",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.cm_unpause",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_preferred_quote",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.get_feed_count",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_outcome_pool",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_trade_count",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.collect_fees",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.emergency_unpause",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.total_burned",
+      "elapsed": 0.054,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.buy_nft",
+      "elapsed": 0.035,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_margin_ratio",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.issue_challenge",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.is_source_tx_used",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.withdraw_reserves",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.execute_proposal",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.cancel_auction",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.emergency_unpause",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.set_risk_tier",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.emergency_unpause",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.pause",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "bountyboard",
+      "test": "bountyboard.get_platform_stats",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.set_buy_cooldown",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.approve",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_trading_tier",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_pool_count",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "compute_market",
+      "test": "compute_market.get_platform_stats",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_proposal_info",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.get_feed_list",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_pool_reserves",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_fee_treasury",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.remove_liquidity",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.get_transfer_count",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_availability",
+      "elapsed": 0.068,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_tier_info",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.respond_challenge",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.liquidate",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_dao_stats",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.finalize_auction",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_total_volume_routed",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.update_strategy_allocation",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.get_transfer_count",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.unpause",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.accept_offer",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.set_sell_cooldown",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.burn",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_referral_rate",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_quote",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.finalize_proposal",
+      "elapsed": 0.025,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.transfer_from",
+      "elapsed": 0.035,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.is_burn_proof_used",
+      "elapsed": 0.034,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.place_order",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.emergency_pause",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.get_attestation_count",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_rate",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.add_margin",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.set_challenge_window",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.flash_borrow",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_active_proposals",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.make_offer",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_router",
+      "test": "dex_router.get_router_stats",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.remove_strategy",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.get_attestation_count",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.get_stream_count",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.mm_pause",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.set_max_buy",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.mp_pause",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_total_distributed",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_reserves",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.execute_proposal",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.set_update_interval",
+      "elapsed": 0.046,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.emergency_pause",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.confirm_mint",
+      "elapsed": 0.024,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.emergency_unpause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.get_epoch_remaining",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_platform_stats",
+      "elapsed": 0.057,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_rate",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.remove_margin",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.set_slash_percent",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.flash_repay",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_total_supply",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.withdraw_protocol_fees",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.get_epoch_remaining",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpay",
+      "test": "clawpay.get_platform_stats",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.mm_unpause",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.accept_offer",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.set_creator_royalty",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.emergency_pause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.emergency_delist",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.add_reporter",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.emergency_unpause",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.confirm_unlock",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.mp_unpause",
+      "elapsed": 0.03,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_total_volume",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.get_last_attestation_slot",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.quote_buy",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.add_skill",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.slash_provider",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_deposit_count",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.get_treasury_balance",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.cv_pause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.get_last_attestation_slot",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_order",
+      "elapsed": 0.056,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_liquidity_balance",
+      "elapsed": 0.044,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltmarket",
+      "test": "moltmarket.get_marketplace_stats",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.ma_pause",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.set_dex_addresses",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.emergency_unpause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.emergency_pause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.liquidate",
+      "elapsed": 0.031,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.get_transfer_count",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltpunks",
+      "test": "moltpunks.get_collection_stats",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_swap_count",
+      "elapsed": 0.021,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.get_reserve_ratio",
+      "elapsed": 0.021,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.quote_sell",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_skills",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "reef_storage",
+      "test": "reef_storage.get_platform_stats",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_borrow_count",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.veto_proposal",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawvault",
+      "test": "clawvault.cv_unpause",
+      "elapsed": 0.022,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.get_reserve_ratio",
+      "elapsed": 0.021,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_best_bid",
+      "elapsed": 0.021,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.pause",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_trader_count",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.emergency_unpause",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.remove_reporter",
+      "elapsed": 0.042,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.close_position",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.get_attestation_count",
+      "elapsed": 0.021,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.ma_unpause",
+      "elapsed": 0.027,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_total_liquidity",
+      "elapsed": 0.028,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_total_fees_collected",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.attest_reserves",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.cancel_expired_request",
+      "elapsed": 0.051,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.add_initial_liquidity",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_liquidation_count",
+      "elapsed": 0.018,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.cancel_proposal",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.attest_reserves",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_best_ask",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.unpause",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_total_volume",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_governance_stats",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.vouch",
+      "elapsed": 0.026,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.get_oracle_stats",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.withdraw_insurance",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.get_epoch_remaining",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltauction",
+      "test": "moltauction.get_auction_stats",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_protocol_fees",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_amm",
+      "test": "dex_amm.get_amm_stats",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "musd_token",
+      "test": "musd_token.transfer_admin",
+      "elapsed": 0.018,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.set_moltyid_address",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.add_liquidity",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "lobsterlend",
+      "test": "lobsterlend.get_platform_stats",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.treasury_transfer",
+      "elapsed": 0.018,
+      "status": "FAIL"
+    },
+    {
+      "contract": "weth_token",
+      "test": "weth_token.transfer_admin",
+      "elapsed": 0.018,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_spread",
+      "elapsed": 0.017,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.withdraw_fees",
+      "elapsed": 0.017,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_governance",
+      "test": "dex_governance.get_voter_count",
+      "elapsed": 0.017,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_rewards",
+      "test": "dex_rewards.get_reward_stats",
+      "elapsed": 0.018,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_vouches",
+      "elapsed": 0.016,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.get_last_attestation_slot",
+      "elapsed": 0.015,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_flash_loan_fee",
+      "elapsed": 0.015,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.mo_pause",
+      "elapsed": 0.019,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.emergency_pause",
+      "elapsed": 0.02,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.set_identity_gate",
+      "elapsed": 0.014,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.dao_pause",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.modify_order",
+      "elapsed": 0.011,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.freeze_token",
+      "elapsed": 0.014,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_delegate",
+      "elapsed": 0.013,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_twap_cumulatives",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltoracle",
+      "test": "moltoracle.mo_unpause",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.get_reserve_ratio",
+      "elapsed": 0.015,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.buy_shares",
+      "elapsed": 0.023,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.emergency_unpause",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.mb_pause",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltdao",
+      "test": "moltdao.dao_unpause",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.cancel_order",
+      "elapsed": 0.012,
+      "status": "FAIL"
+    },
+    {
+      "contract": "clawpump",
+      "test": "clawpump.unfreeze_token",
+      "elapsed": 0.011,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_delegate",
+      "elapsed": 0.011,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_twap_snapshot_count",
+      "elapsed": 0.01,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.attest_reserves",
+      "elapsed": 0.01,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.sell_shares",
+      "elapsed": 0.011,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltbridge",
+      "test": "moltbridge.mb_unpause",
+      "elapsed": 0.01,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_total_volume",
+      "elapsed": 0.013,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.cancel_all_orders",
+      "elapsed": 0.009,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.revoke_delegate",
+      "elapsed": 0.009,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.flash_loan_borrow",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "wsol_token",
+      "test": "wsol_token.transfer_admin",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_price_history",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_user_positions",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.pause_pair",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.update_reputation",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.flash_loan_repay",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.mint_complete_set",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_total_pnl",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.unpause_pair",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.update_reputation_typed",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.flash_loan_abort",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.redeem_complete_set",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_liquidation_count",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.emergency_pause",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_reputation",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.remove_liquidity",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_position",
+      "elapsed": 0.008,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_margin",
+      "test": "dex_margin.get_margin_stats",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.emergency_unpause",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_trust_tier",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.ms_pause",
+      "elapsed": 0.007,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_user_markets",
+      "elapsed": 0.006,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_total_volume",
+      "elapsed": 0.006,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.update_agent_type",
+      "elapsed": 0.006,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.ms_unpause",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.get_lp_balance",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_user_orders",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.deactivate_identity",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_swap_count",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.withdraw_liquidity",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "dex_core",
+      "test": "dex_core.get_open_order_count",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_agent_profile",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_total_volume",
+      "elapsed": 0.005,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.submit_resolution",
+      "elapsed": 0.004,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_recovery_guardians",
+      "elapsed": 0.004,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltswap",
+      "test": "moltswap.get_swap_stats",
+      "elapsed": 0.004,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.challenge_resolution",
+      "elapsed": 0.004,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.register_name",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.finalize_resolution",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.resolve_name",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.dao_resolve",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.reverse_resolve",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.dao_void",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_achievements",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.redeem_shares",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_attestations",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.reclaim_collateral",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.add_skill_as",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.close_market",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_endpoint_as",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.emergency_pause",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_metadata_as",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "prediction_market",
+      "test": "prediction_market.emergency_unpause",
+      "elapsed": 0.003,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_availability_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.set_rate_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.update_agent_type_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.attest_skill",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.revoke_attestation",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.approve_recovery",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.execute_recovery",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.award_contribution_achievement",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.create_name_auction",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.bid_name_auction",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.get_name_auction",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.finalize_name_auction",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.transfer_name",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.renew_name",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.release_name",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.transfer_name_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.renew_name_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.release_name_as",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.admin_register_reserved_name",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.transfer_admin",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.mid_pause",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    },
+    {
+      "contract": "moltyid",
+      "test": "moltyid.mid_unpause",
+      "elapsed": 0.002,
+      "status": "FAIL"
+    }
+  ]
+}

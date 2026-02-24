@@ -1,0 +1,1406 @@
+{
+  "rpc_url": "http://127.0.0.1:8899",
+  "strict_write_assertions": true,
+  "require_full_write_activity": true,
+  "enforce_domain_assertions": true,
+  "enable_negative_assertions": true,
+  "require_negative_reason_match": true,
+  "require_negative_code_match": false,
+  "require_scenario_for_discovered": true,
+  "min_negative_assertions_executed": 5,
+  "require_expected_contract_set": true,
+  "expected_contracts_file": "/Users/johnrobin/.openclaw/workspace/moltchain/tests/expected-contracts.json",
+  "contract_set_diff": {
+    "expected_count": 27,
+    "discovered_count": 27,
+    "missing_expected": [],
+    "unexpected_discovered": []
+  },
+  "summary": {
+    "pass": 82,
+    "fail": 119,
+    "skip": 0
+  },
+  "results": [
+    {
+      "contract": "global",
+      "action": "expected_contract_set",
+      "status": "PASS",
+      "detail": "matched",
+      "timestamp": 1771940161
+    },
+    {
+      "contract": "moltcoin",
+      "action": "initialize",
+      "status": "PASS",
+      "detail": "sig=c951d5a258283ee08aa010c2b6448d9630626271aa21a16886fa1dc601591cbc",
+      "timestamp": 1771940162
+    },
+    {
+      "contract": "moltcoin",
+      "action": "mint",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 6->6)",
+      "timestamp": 1771940162
+    },
+    {
+      "contract": "moltcoin",
+      "action": "transfer",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 6->6)",
+      "timestamp": 1771940163
+    },
+    {
+      "contract": "moltcoin",
+      "action": "burn",
+      "status": "PASS",
+      "detail": "sig=0cb0194bc40cdfec58e2c86ccba4ae9b96ed88c2880e0040874cb75fe2d55a8a",
+      "timestamp": 1771940163
+    },
+    {
+      "contract": "moltcoin",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=2->4,events=0->0,storage=6->6,required=4",
+      "timestamp": 1771940163
+    },
+    {
+      "contract": "moltcoin",
+      "action": "token_invariants",
+      "status": "FAIL",
+      "detail": "missing required successful steps: mint,transfer",
+      "timestamp": 1771940163
+    },
+    {
+      "contract": "clawpump",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 4->4)",
+      "timestamp": 1771940164
+    },
+    {
+      "contract": "clawpump",
+      "action": "create_token",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 4->4)",
+      "timestamp": 1771940164
+    },
+    {
+      "contract": "clawpump",
+      "action": "buy",
+      "status": "PASS",
+      "detail": "sig=fb3461235512545fac75c934a7b1e60b891b6cae202267363b4adc7732dfae23",
+      "timestamp": 1771940165
+    },
+    {
+      "contract": "clawpump",
+      "action": "get_platform_stats",
+      "status": "PASS",
+      "detail": "sig=ed330623bc0d6a73fbcef09b9a3ce1e91188554419501c366fda4f2ccdd83930",
+      "timestamp": 1771940165
+    },
+    {
+      "contract": "clawpump",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=6->8,events=0->0,storage=4->4,required=3",
+      "timestamp": 1771940165
+    },
+    {
+      "contract": "clawpump",
+      "action": "launch_token_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: create_token",
+      "timestamp": 1771940165
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "initialize",
+      "status": "PASS",
+      "detail": "sig=2946c3a9308fb65e369cea153195dcb66e92a02920ff44deb00d60d6d5925d16",
+      "timestamp": 1771940166
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "deposit",
+      "status": "PASS",
+      "detail": "sig=141709694df422045b2bbf8a005bd4e7b2c610228a5bcfe71d8c2342705ffbf8",
+      "timestamp": 1771940166
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "borrow",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 9->9, events 0->0, storage 6->6)",
+      "timestamp": 1771940167
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "repay",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 9->9, events 0->0, storage 6->6)",
+      "timestamp": 1771940167
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "get_protocol_stats",
+      "status": "PASS",
+      "detail": "sig=c4790ce7eeab4cd1e1d043cd1d85c52963963f8659274f23df6570c0bfa6fe10",
+      "timestamp": 1771940168
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=7->9,events=0->0,storage=6->6,required=4",
+      "timestamp": 1771940168
+    },
+    {
+      "contract": "lobsterlend",
+      "action": "lending_credit_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: borrow,repay",
+      "timestamp": 1771940168
+    },
+    {
+      "contract": "moltmarket",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 3->3)",
+      "timestamp": 1771940168
+    },
+    {
+      "contract": "moltmarket",
+      "action": "list_nft",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 3->3)",
+      "timestamp": 1771940169
+    },
+    {
+      "contract": "moltmarket",
+      "action": "cancel_listing",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 3->3)",
+      "timestamp": 1771940169
+    },
+    {
+      "contract": "moltmarket",
+      "action": "get_marketplace_stats",
+      "status": "PASS",
+      "detail": "sig=e851ddc2fccf89ca421cca244c14285884279fb2d90c8f4dad27a222c59c5a69",
+      "timestamp": 1771940170
+    },
+    {
+      "contract": "moltmarket",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=0,calls=6->6,events=0->0,storage=3->3,required=3",
+      "timestamp": 1771940170
+    },
+    {
+      "contract": "moltmarket",
+      "action": "market_listing_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: list_nft,cancel_listing",
+      "timestamp": 1771940170
+    },
+    {
+      "contract": "moltauction",
+      "action": "initialize",
+      "status": "PASS",
+      "detail": "sig=b51d73f36ab2213372ca3c057a534c4908de03ffff656f1440dc3d20a0e92925",
+      "timestamp": 1771940170
+    },
+    {
+      "contract": "moltauction",
+      "action": "create_auction",
+      "status": "PASS",
+      "detail": "sig=8f5371e8eb58bd171dbab8dc27697bf19e1ea129d67c374ed3ccb3f8dbfbbaf8",
+      "timestamp": 1771940171
+    },
+    {
+      "contract": "moltauction",
+      "action": "place_bid",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 3->3)",
+      "timestamp": 1771940171
+    },
+    {
+      "contract": "moltauction",
+      "action": "cancel_auction",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 3->3)",
+      "timestamp": 1771940172
+    },
+    {
+      "contract": "moltauction",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=5->7,events=0->0,storage=3->3,required=4",
+      "timestamp": 1771940172
+    },
+    {
+      "contract": "moltauction",
+      "action": "auction_bid_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: place_bid",
+      "timestamp": 1771940172
+    },
+    {
+      "contract": "moltbridge",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 7->7)",
+      "timestamp": 1771940172
+    },
+    {
+      "contract": "moltbridge",
+      "action": "set_required_confirmations",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 7->7)",
+      "timestamp": 1771940173
+    },
+    {
+      "contract": "moltbridge",
+      "action": "set_request_timeout",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 7->7)",
+      "timestamp": 1771940173
+    },
+    {
+      "contract": "moltbridge",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=0,calls=7->7,events=0->0,storage=7->7,required=3",
+      "timestamp": 1771940173
+    },
+    {
+      "contract": "moltbridge",
+      "action": "bridge_admin_config",
+      "status": "FAIL",
+      "detail": "missing required successful steps: set_required_confirmations,set_request_timeout",
+      "timestamp": 1771940173
+    },
+    {
+      "contract": "reef_storage",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 4->4, events 0->0, storage 4->4)",
+      "timestamp": 1771940174
+    },
+    {
+      "contract": "reef_storage",
+      "action": "register_provider",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 4->4, events 0->0, storage 4->4)",
+      "timestamp": 1771940174
+    },
+    {
+      "contract": "reef_storage",
+      "action": "set_storage_price",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 4->4, events 0->0, storage 4->4)",
+      "timestamp": 1771940175
+    },
+    {
+      "contract": "reef_storage",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=0,calls=4->4,events=0->0,storage=4->4,required=3",
+      "timestamp": 1771940175
+    },
+    {
+      "contract": "reef_storage",
+      "action": "storage_provider_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: register_provider,set_storage_price",
+      "timestamp": 1771940175
+    },
+    {
+      "contract": "clawvault",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 8->8)",
+      "timestamp": 1771940176
+    },
+    {
+      "contract": "clawvault",
+      "action": "deposit",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 8->8)",
+      "timestamp": 1771940176
+    },
+    {
+      "contract": "clawvault",
+      "action": "withdraw",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 8->8)",
+      "timestamp": 1771940177
+    },
+    {
+      "contract": "clawvault",
+      "action": "get_vault_stats",
+      "status": "PASS",
+      "detail": "sig=d6940651c2d9140652c1ff79176abf78a38336a4ba794582cdbc9559bc004af1",
+      "timestamp": 1771940177
+    },
+    {
+      "contract": "clawvault",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=0,calls=5->5,events=0->0,storage=8->8,required=3",
+      "timestamp": 1771940177
+    },
+    {
+      "contract": "clawvault",
+      "action": "vault_roundtrip_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: deposit,withdraw",
+      "timestamp": 1771940177
+    },
+    {
+      "contract": "clawpay",
+      "action": "initialize_cp_admin",
+      "status": "PASS",
+      "detail": "sig=28b43ad91d68564a1a1f44532f3b65f945213266423c80352d1639b0d312478d",
+      "timestamp": 1771940178
+    },
+    {
+      "contract": "clawpay",
+      "action": "create_stream",
+      "status": "PASS",
+      "detail": "sig=04ebedf211d0881dbd028904a28342857cfc2056857d514ce89c18fa79c4123f",
+      "timestamp": 1771940178
+    },
+    {
+      "contract": "clawpay",
+      "action": "get_stream_info",
+      "status": "PASS",
+      "detail": "sig=0649f4d65f2e25c8b2117a7f67a6cf16277714542eaf0d6993510f696155ba2e",
+      "timestamp": 1771940179
+    },
+    {
+      "contract": "clawpay",
+      "action": "activity_floor",
+      "status": "PASS",
+      "detail": "delta=2,required=2",
+      "timestamp": 1771940179
+    },
+    {
+      "contract": "moltyid",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940179
+    },
+    {
+      "contract": "moltyid",
+      "action": "register_identity",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940180
+    },
+    {
+      "contract": "moltyid",
+      "action": "set_endpoint",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940180
+    },
+    {
+      "contract": "moltyid",
+      "action": "set_metadata",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940181
+    },
+    {
+      "contract": "moltyid",
+      "action": "set_availability",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940181
+    },
+    {
+      "contract": "moltyid",
+      "action": "set_rate",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940182
+    },
+    {
+      "contract": "moltyid",
+      "action": "add_skill",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 42->42, events 0->0, storage 272->272)",
+      "timestamp": 1771940182
+    },
+    {
+      "contract": "moltyid",
+      "action": "vouch",
+      "status": "PASS",
+      "detail": "sig=cc4e33b95632daad8edb7c7fdd79dc4252b0ff71c61e259a3254ac32b9be54a3",
+      "timestamp": 1771940183
+    },
+    {
+      "contract": "moltyid",
+      "action": "set_delegate",
+      "status": "PASS",
+      "detail": "sig=8555e3e0e4682dd4d3c861c2ae11b44a9aa6418683096fa03990c744919b8648",
+      "timestamp": 1771940183
+    },
+    {
+      "contract": "moltyid",
+      "action": "revoke_delegate",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 44->44, events 0->0, storage 272->272)",
+      "timestamp": 1771940184
+    },
+    {
+      "contract": "moltyid",
+      "action": "register_identity",
+      "status": "PASS",
+      "detail": "sig=2ebd66e3d24d376981cccfeadc55b6bd0af562be2e0dad5d7a909daf8ceef47b",
+      "timestamp": 1771940184
+    },
+    {
+      "contract": "moltyid",
+      "action": "get_agent_profile",
+      "status": "PASS",
+      "detail": "sig=b086ae9689684ac8cac647ab546d87f3a25bc4ef8bf7483a8e9c6f44746f61a3",
+      "timestamp": 1771940185
+    },
+    {
+      "contract": "moltyid",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=42->44,events=0->0,storage=272->272,required=10",
+      "timestamp": 1771940185
+    },
+    {
+      "contract": "moltyid",
+      "action": "identity_lifecycle_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: set_endpoint,set_metadata,set_rate,revoke_delegate",
+      "timestamp": 1771940185
+    },
+    {
+      "contract": "moltdao",
+      "action": "initialize_dao",
+      "status": "PASS",
+      "detail": "sig=3c18f8bf191ccd89ae2b9e1435b96a3d54446aa2320df7a629900ac853db6770",
+      "timestamp": 1771940185
+    },
+    {
+      "contract": "moltdao",
+      "action": "create_proposal_typed",
+      "status": "PASS",
+      "detail": "sig=ba6ee49d9b2fbbd66d44f6e7fcfb3c5bb3fbf8f6c5bea0db363b582ce523dee3",
+      "timestamp": 1771940186
+    },
+    {
+      "contract": "moltdao",
+      "action": "vote",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 6->6)",
+      "timestamp": 1771940186
+    },
+    {
+      "contract": "moltdao",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=3->5,events=0->0,storage=6->6,required=3",
+      "timestamp": 1771940186
+    },
+    {
+      "contract": "moltdao",
+      "action": "dao_governance_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: vote",
+      "timestamp": 1771940186
+    },
+    {
+      "contract": "prediction_market",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 12->12)",
+      "timestamp": 1771940187
+    },
+    {
+      "contract": "prediction_market",
+      "action": "set_moltyid_address",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 5->5, events 0->0, storage 12->12)",
+      "timestamp": 1771940187
+    },
+    {
+      "contract": "prediction_market",
+      "action": "set_musd_address",
+      "status": "PASS",
+      "detail": "sig=8e3a0c0c497ec9319668bea6246ffd833e4bf7cfb272c34544da73a683e1de5f",
+      "timestamp": 1771940188
+    },
+    {
+      "contract": "prediction_market",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=1,calls=5->6,events=0->0,storage=12->12,required=3",
+      "timestamp": 1771940188
+    },
+    {
+      "contract": "prediction_market",
+      "action": "prediction_admin_wiring",
+      "status": "FAIL",
+      "detail": "missing required successful steps: set_moltyid_address",
+      "timestamp": 1771940188
+    },
+    {
+      "contract": "compute_market",
+      "action": "initialize",
+      "status": "PASS",
+      "detail": "sig=98713e8376b5e36ef626e2dbf8dcca652d68ba7fa3f7d25e206ea66fd8532c08",
+      "timestamp": 1771940189
+    },
+    {
+      "contract": "compute_market",
+      "action": "register_provider",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 6->6, events 0->0, storage 1->1)",
+      "timestamp": 1771940189
+    },
+    {
+      "contract": "compute_market",
+      "action": "submit_job",
+      "status": "PASS",
+      "detail": "sig=f6d4f2bdc8ea52d0366f2139a9abdb8dddf80e612d577feaec9cf864942fbbf1",
+      "timestamp": 1771940190
+    },
+    {
+      "contract": "compute_market",
+      "action": "get_job",
+      "status": "PASS",
+      "detail": "sig=7735a34b802382d667d0489c0113831e1a972a08fbfc2b1411f763d157128eb5",
+      "timestamp": 1771940190
+    },
+    {
+      "contract": "compute_market",
+      "action": "activity_floor",
+      "status": "PASS",
+      "detail": "delta=3,required=3",
+      "timestamp": 1771940190
+    },
+    {
+      "contract": "compute_market",
+      "action": "compute_job_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: register_provider",
+      "timestamp": 1771940190
+    },
+    {
+      "contract": "bountyboard",
+      "action": "set_identity_admin",
+      "status": "PASS",
+      "detail": "sig=36a0f4711a5dc52ab02aa0948d99f00db660bee821a930405df56b877f4ea708",
+      "timestamp": 1771940191
+    },
+    {
+      "contract": "bountyboard",
+      "action": "set_moltyid_address",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 9->9, events 0->0, storage 2->2)",
+      "timestamp": 1771940191
+    },
+    {
+      "contract": "bountyboard",
+      "action": "set_token_address",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 9->9, events 0->0, storage 2->2)",
+      "timestamp": 1771940192
+    },
+    {
+      "contract": "bountyboard",
+      "action": "create_bounty",
+      "status": "PASS",
+      "detail": "sig=12367c0a431a29067c4ca9037a593129bf68b2e336bf0c6231defb8ab9048b33",
+      "timestamp": 1771940192
+    },
+    {
+      "contract": "bountyboard",
+      "action": "submit_work",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 10->10, events 0->0, storage 2->2)",
+      "timestamp": 1771940193
+    },
+    {
+      "contract": "bountyboard",
+      "action": "get_bounty",
+      "status": "PASS",
+      "detail": "sig=db505b6e702f3abd88cf09674e8895fd866cda65bee3ae795f90c3c98506b714",
+      "timestamp": 1771940193
+    },
+    {
+      "contract": "bountyboard",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=8->10,events=0->0,storage=2->2,required=5",
+      "timestamp": 1771940193
+    },
+    {
+      "contract": "bountyboard",
+      "action": "bounty_submission_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: submit_work",
+      "timestamp": 1771940193
+    },
+    {
+      "contract": "moltoracle",
+      "action": "initialize_oracle",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 19->19, events 0->0, storage 11->11)",
+      "timestamp": 1771940194
+    },
+    {
+      "contract": "moltoracle",
+      "action": "add_price_feeder",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 19->19, events 0->0, storage 11->11)",
+      "timestamp": 1771940194
+    },
+    {
+      "contract": "moltoracle",
+      "action": "submit_price",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 19->19, events 0->0, storage 11->11)",
+      "timestamp": 1771940195
+    },
+    {
+      "contract": "moltoracle",
+      "action": "submit_price",
+      "status": "PASS",
+      "detail": "sig=6c16a6ffab70e53a4d93bb8d9982f521b3f63ac6c69824517f8fe917a2c05b9f",
+      "timestamp": 1771940195
+    },
+    {
+      "contract": "moltoracle",
+      "action": "commit_randomness",
+      "status": "PASS",
+      "detail": "sig=133d4d465d6f09a455bf6721fc25b6052dbc13ae946550e9f9dd6d82a282da8b",
+      "timestamp": 1771940196
+    },
+    {
+      "contract": "moltoracle",
+      "action": "request_randomness",
+      "status": "PASS",
+      "detail": "sig=accc99445318ef1fde82a03cf7ccfd276de13356737c527d0ffa4e73e03825ce",
+      "timestamp": 1771940196
+    },
+    {
+      "contract": "moltoracle",
+      "action": "get_oracle_stats",
+      "status": "PASS",
+      "detail": "sig=38685413ba8519500c3f639181ce7719975409c2332d9a12a2e6854a077511b9",
+      "timestamp": 1771940197
+    },
+    {
+      "contract": "moltoracle",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=19->20,events=0->0,storage=11->13,required=5",
+      "timestamp": 1771940197
+    },
+    {
+      "contract": "moltoracle",
+      "action": "oracle_freshness_flow",
+      "status": "FAIL",
+      "detail": "missing required successful steps: add_price_feeder",
+      "timestamp": 1771940197
+    },
+    {
+      "contract": "moltoracle",
+      "action": "oracle_signal_delta",
+      "status": "PASS",
+      "detail": "calls_delta=1, events_delta=0",
+      "timestamp": 1771940197
+    },
+    {
+      "contract": "moltpunks",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 4->4)",
+      "timestamp": 1771940197
+    },
+    {
+      "contract": "moltpunks",
+      "action": "mint",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 4->4)",
+      "timestamp": 1771940198
+    },
+    {
+      "contract": "moltpunks",
+      "action": "transfer",
+      "status": "PASS",
+      "detail": "sig=7852a225200716e168cc9ccd49ce46422a64635bb656d9cf193a550790289aa3",
+      "timestamp": 1771940198
+    },
+    {
+      "contract": "moltpunks",
+      "action": "approve",
+      "status": "PASS",
+      "detail": "sig=36bd82c46f4069844bc608a055791e98a71ef2fbd108502225ac92a63229a474",
+      "timestamp": 1771940199
+    },
+    {
+      "contract": "moltpunks",
+      "action": "transfer_from",
+      "status": "PASS",
+      "detail": "sig=7afb62d7604b1edf505f739782fcd9cdeec7985f9951cd2228c0acf3f58b8433",
+      "timestamp": 1771940199
+    },
+    {
+      "contract": "moltpunks",
+      "action": "mint",
+      "status": "PASS",
+      "detail": "sig=f2af824da63b018ab2516b3ba58af67a3da033474f99fdac3d385f9197df87cb",
+      "timestamp": 1771940200
+    },
+    {
+      "contract": "moltpunks",
+      "action": "activity_floor",
+      "status": "PASS",
+      "detail": "delta=4,required=4",
+      "timestamp": 1771940200
+    },
+    {
+      "contract": "moltpunks",
+      "action": "nft_ownership_flow",
+      "status": "PASS",
+      "detail": "required steps satisfied, calls_delta=4, events_delta=0, storage_delta=0",
+      "timestamp": 1771940200
+    },
+    {
+      "contract": "moltswap",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 14->14)",
+      "timestamp": 1771940201
+    },
+    {
+      "contract": "moltswap",
+      "action": "set_identity_admin",
+      "status": "PASS",
+      "detail": "sig=a90008bf5ac1765668cdbf4c4bc8d184d513137639a6e11b97fb92e1f9f7978f",
+      "timestamp": 1771940201
+    },
+    {
+      "contract": "moltswap",
+      "action": "add_liquidity",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 9->9, events 0->0, storage 14->14)",
+      "timestamp": 1771940202
+    },
+    {
+      "contract": "moltswap",
+      "action": "swap_a_for_b",
+      "status": "PASS",
+      "detail": "sig=8f829c5fbc629797be55a9d7cdc5b2eabba40f391f05538d6c3061eb2be07559",
+      "timestamp": 1771940202
+    },
+    {
+      "contract": "moltswap",
+      "action": "set_protocol_fee",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 10->10, events 0->0, storage 14->14)",
+      "timestamp": 1771940203
+    },
+    {
+      "contract": "moltswap",
+      "action": "set_protocol_fee",
+      "status": "PASS",
+      "detail": "sig=888c3d16e8c6a883617a357cfdf93febaceab2d13361d856eec07d4d508a3fa2",
+      "timestamp": 1771940203
+    },
+    {
+      "contract": "moltswap",
+      "action": "ms_pause",
+      "status": "PASS",
+      "detail": "sig=2bbdabaa7cd21b81eacc081bb12fb0a400ffc9e12b7abbea54b1750aae3dade5",
+      "timestamp": 1771940204
+    },
+    {
+      "contract": "moltswap",
+      "action": "ms_unpause",
+      "status": "PASS",
+      "detail": "sig=68ea4e2f6d850a98f1b94ddb12c38ac88e31ddaea02869044c991b3fa467cfe0",
+      "timestamp": 1771940204
+    },
+    {
+      "contract": "moltswap",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=4,calls=8->12,events=0->0,storage=14->14,required=7",
+      "timestamp": 1771940204
+    },
+    {
+      "contract": "moltswap",
+      "action": "swap_reserve_movement",
+      "status": "FAIL",
+      "detail": "missing required successful steps: add_liquidity",
+      "timestamp": 1771940204
+    },
+    {
+      "contract": "musd_token",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 7->7)",
+      "timestamp": 1771940205
+    },
+    {
+      "contract": "musd_token",
+      "action": "mint",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 7->7)",
+      "timestamp": 1771940205
+    },
+    {
+      "contract": "musd_token",
+      "action": "transfer",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 7->7)",
+      "timestamp": 1771940206
+    },
+    {
+      "contract": "musd_token",
+      "action": "approve",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 7->7)",
+      "timestamp": 1771940206
+    },
+    {
+      "contract": "musd_token",
+      "action": "burn",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 7->7)",
+      "timestamp": 1771940207
+    },
+    {
+      "contract": "musd_token",
+      "action": "mint",
+      "status": "PASS",
+      "detail": "sig=d6293cf4035e195a6d7521f43fe9e03af6e6e67cf22bdca88cac65d03a910e38",
+      "timestamp": 1771940207
+    },
+    {
+      "contract": "musd_token",
+      "action": "get_transfer_count",
+      "status": "PASS",
+      "detail": "sig=f2db34c4b905e1acdab785966e55c254cbeac47dc06da298f8717f7e295fb82d",
+      "timestamp": 1771940207
+    },
+    {
+      "contract": "musd_token",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=1,calls=8->9,events=0->0,storage=7->7,required=5",
+      "timestamp": 1771940207
+    },
+    {
+      "contract": "musd_token",
+      "action": "token_invariants",
+      "status": "FAIL",
+      "detail": "missing required successful steps: transfer,burn",
+      "timestamp": 1771940207
+    },
+    {
+      "contract": "weth_token",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 4->4, events 0->0, storage 7->7)",
+      "timestamp": 1771940208
+    },
+    {
+      "contract": "weth_token",
+      "action": "mint",
+      "status": "PASS",
+      "detail": "sig=7506aa69f1d82d5401f91dbcaa6e755eba59fcc0f821bd9ffde377901b288b1d",
+      "timestamp": 1771940208
+    },
+    {
+      "contract": "weth_token",
+      "action": "transfer",
+      "status": "PASS",
+      "detail": "sig=e549fe0a237a611d38a41f1f984ebcf5777f57f2e3a9db03c700fe658994466c",
+      "timestamp": 1771940209
+    },
+    {
+      "contract": "weth_token",
+      "action": "approve",
+      "status": "PASS",
+      "detail": "sig=7eabb975c045a7fa3761fdc73203db264280bdd2073ff99ed7726a0999475ac5",
+      "timestamp": 1771940209
+    },
+    {
+      "contract": "weth_token",
+      "action": "burn",
+      "status": "PASS",
+      "detail": "sig=04e813cb578e4d73311543434af279fc93c2b55934d5e97850991abddbc07486",
+      "timestamp": 1771940210
+    },
+    {
+      "contract": "weth_token",
+      "action": "get_transfer_count",
+      "status": "PASS",
+      "detail": "sig=a9b2204f2426a74bddb92ca99001aa94067dd7c9c20f568f8430e764fdf97796",
+      "timestamp": 1771940210
+    },
+    {
+      "contract": "weth_token",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=4,calls=4->8,events=0->0,storage=7->7,required=5",
+      "timestamp": 1771940210
+    },
+    {
+      "contract": "weth_token",
+      "action": "token_invariants",
+      "status": "PASS",
+      "detail": "required steps satisfied, calls_delta=4, events_delta=0, storage_delta=0",
+      "timestamp": 1771940210
+    },
+    {
+      "contract": "wsol_token",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 10->10, events 0->0, storage 7->7)",
+      "timestamp": 1771940211
+    },
+    {
+      "contract": "wsol_token",
+      "action": "mint",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 10->10, events 0->0, storage 7->7)",
+      "timestamp": 1771940211
+    },
+    {
+      "contract": "wsol_token",
+      "action": "transfer",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 10->10, events 0->0, storage 7->7)",
+      "timestamp": 1771940212
+    },
+    {
+      "contract": "wsol_token",
+      "action": "approve",
+      "status": "PASS",
+      "detail": "sig=3d7e6f025d7ff4ad968372d8f2cbff687d76fed939c3dc47f61ac7251e802a56",
+      "timestamp": 1771940213
+    },
+    {
+      "contract": "wsol_token",
+      "action": "burn",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 11->11, events 0->0, storage 7->7)",
+      "timestamp": 1771940213
+    },
+    {
+      "contract": "wsol_token",
+      "action": "get_transfer_count",
+      "status": "PASS",
+      "detail": "sig=c280ab26f9f7eba1fd57306070ca571b37f0cd3d30596858ad8ad6c701415f82",
+      "timestamp": 1771940214
+    },
+    {
+      "contract": "wsol_token",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=1,calls=10->11,events=0->0,storage=7->7,required=5",
+      "timestamp": 1771940214
+    },
+    {
+      "contract": "wsol_token",
+      "action": "token_invariants",
+      "status": "FAIL",
+      "detail": "missing required successful steps: mint,transfer,burn",
+      "timestamp": 1771940214
+    },
+    {
+      "contract": "dex_core",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 25->25, events 0->0, storage 40->40)",
+      "timestamp": 1771940214
+    },
+    {
+      "contract": "dex_core",
+      "action": "set_preferred_quote",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 25->25, events 0->0, storage 40->40)",
+      "timestamp": 1771940215
+    },
+    {
+      "contract": "dex_core",
+      "action": "create_pair",
+      "status": "PASS",
+      "detail": "sig=b157655a5bdaea384c0ecc29c2e41efc978a5603a467e3baeff15a35b5d10cec",
+      "timestamp": 1771940215
+    },
+    {
+      "contract": "dex_core",
+      "action": "update_pair_fees",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 26->26, events 0->0, storage 40->40)",
+      "timestamp": 1771940216
+    },
+    {
+      "contract": "dex_core",
+      "action": "place_order",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 26->26, events 0->0, storage 40->40)",
+      "timestamp": 1771940216
+    },
+    {
+      "contract": "dex_core",
+      "action": "modify_order",
+      "status": "PASS",
+      "detail": "sig=d2051a4138d38bd85cede9e55e2b69fc94e11956436abc52e2a5e1316685d19d",
+      "timestamp": 1771940217
+    },
+    {
+      "contract": "dex_core",
+      "action": "cancel_all_orders",
+      "status": "PASS",
+      "detail": "sig=45a41fc6df0d1560c32df79aa2d0367aeafb994775145418e29dfa577ccb5346",
+      "timestamp": 1771940217
+    },
+    {
+      "contract": "dex_core",
+      "action": "get_pair_count",
+      "status": "PASS",
+      "detail": "sig=346c1d31c74bdd9eab9def0336f78a19fdc7f9ee902ab1fcfc987cbbf8825416",
+      "timestamp": 1771940218
+    },
+    {
+      "contract": "dex_core",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=4,calls=25->29,events=0->0,storage=40->40,required=7",
+      "timestamp": 1771940218
+    },
+    {
+      "contract": "dex_amm",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 11->11, events 0->0, storage 15->15)",
+      "timestamp": 1771940218
+    },
+    {
+      "contract": "dex_amm",
+      "action": "create_pool",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 11->11, events 0->0, storage 15->15)",
+      "timestamp": 1771940219
+    },
+    {
+      "contract": "dex_amm",
+      "action": "add_liquidity",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 11->11, events 0->0, storage 15->15)",
+      "timestamp": 1771940219
+    },
+    {
+      "contract": "dex_amm",
+      "action": "swap_exact_in",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 11->11, events 0->0, storage 15->15)",
+      "timestamp": 1771940220
+    },
+    {
+      "contract": "dex_amm",
+      "action": "remove_liquidity",
+      "status": "PASS",
+      "detail": "sig=a5557d9ce7f643b553abd94113ae764988fc30788b85523167ec0df8d0d16e45",
+      "timestamp": 1771940220
+    },
+    {
+      "contract": "dex_amm",
+      "action": "get_pool_count",
+      "status": "PASS",
+      "detail": "sig=7a385e0848d3e9fb62f1f48ed10703d397333e6087bc460bd14cfecfffb93316",
+      "timestamp": 1771940221
+    },
+    {
+      "contract": "dex_amm",
+      "action": "get_position_count",
+      "status": "PASS",
+      "detail": "sig=70c1e6bd56055a795d0f749b93d0632a5f97387c508ef4f3daf0d0614e588d0d",
+      "timestamp": 1771940221
+    },
+    {
+      "contract": "dex_amm",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=11->13,events=0->0,storage=15->15,required=5",
+      "timestamp": 1771940221
+    },
+    {
+      "contract": "dex_router",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 20->20, events 0->0, storage 29->29)",
+      "timestamp": 1771940222
+    },
+    {
+      "contract": "dex_router",
+      "action": "set_addresses",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 20->20, events 0->0, storage 29->29)",
+      "timestamp": 1771940222
+    },
+    {
+      "contract": "dex_router",
+      "action": "register_route",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 20->20, events 0->0, storage 29->29)",
+      "timestamp": 1771940223
+    },
+    {
+      "contract": "dex_router",
+      "action": "set_route_enabled",
+      "status": "PASS",
+      "detail": "sig=7663b3d385233efedadf6a49ea006e1884c056b43a67dfb9bb34c9ebf475e43f",
+      "timestamp": 1771940223
+    },
+    {
+      "contract": "dex_router",
+      "action": "get_best_route",
+      "status": "PASS",
+      "detail": "sig=74c1f3c2974fa1e7388fe63adeda66637773712bd8b9d2b974f53323c33ac517",
+      "timestamp": 1771940224
+    },
+    {
+      "contract": "dex_router",
+      "action": "get_route_count",
+      "status": "PASS",
+      "detail": "sig=a5bd39672ed30bc99a30ef3d0ba3b583962794f0dcbf17da3f0351224cf84242",
+      "timestamp": 1771940224
+    },
+    {
+      "contract": "dex_router",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=20->22,events=0->0,storage=29->29,required=4",
+      "timestamp": 1771940224
+    },
+    {
+      "contract": "dex_margin",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 37->37)",
+      "timestamp": 1771940225
+    },
+    {
+      "contract": "dex_margin",
+      "action": "set_mark_price",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 37->37)",
+      "timestamp": 1771940226
+    },
+    {
+      "contract": "dex_margin",
+      "action": "open_position",
+      "status": "PASS",
+      "detail": "sig=09d480bd3d0e8238eae32c09e3eaaaa4ad6afc50abeb99f56cfd9d65f4ade33c",
+      "timestamp": 1771940226
+    },
+    {
+      "contract": "dex_margin",
+      "action": "add_margin",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 40->40)",
+      "timestamp": 1771940227
+    },
+    {
+      "contract": "dex_margin",
+      "action": "remove_margin",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 8->8, events 0->0, storage 40->40)",
+      "timestamp": 1771940227
+    },
+    {
+      "contract": "dex_margin",
+      "action": "close_position",
+      "status": "PASS",
+      "detail": "sig=9526045451b448cd7f5768db94352d8248856fc798dce1523ba8d879c4009cba",
+      "timestamp": 1771940228
+    },
+    {
+      "contract": "dex_margin",
+      "action": "get_margin_stats",
+      "status": "PASS",
+      "detail": "sig=1a2a156fb297b870006e14935b73bf730afca09e6474e2560f7e4dd556051135",
+      "timestamp": 1771940228
+    },
+    {
+      "contract": "dex_margin",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=3,calls=8->10,events=0->0,storage=37->40,required=6",
+      "timestamp": 1771940228
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940229
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "set_moltcoin_address",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940229
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "set_rewards_pool",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940230
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "set_reward_rate",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940230
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "record_trade",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940231
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "register_referral",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 3->3, events 0->0, storage 5->5)",
+      "timestamp": 1771940231
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "get_total_distributed",
+      "status": "PASS",
+      "detail": "sig=572febc8bedc3757cef16e25aba769cd7435a842bc478403aaf06c1d8992fc68",
+      "timestamp": 1771940232
+    },
+    {
+      "contract": "dex_rewards",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=0,calls=3->3,events=0->0,storage=5->5,required=6",
+      "timestamp": 1771940232
+    },
+    {
+      "contract": "dex_governance",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 14->14, events 0->0, storage 13->13)",
+      "timestamp": 1771940232
+    },
+    {
+      "contract": "dex_governance",
+      "action": "set_moltyid_address",
+      "status": "PASS",
+      "detail": "sig=35c7dd07767ff78ec93114503fbb4013c04b5711b4573a18ad76986357f0a412",
+      "timestamp": 1771940233
+    },
+    {
+      "contract": "dex_governance",
+      "action": "set_preferred_quote",
+      "status": "PASS",
+      "detail": "sig=7385381b1404391b07ac1cccdca7133566c3087beec53af1a886cf63a3ad1548",
+      "timestamp": 1771940233
+    },
+    {
+      "contract": "dex_governance",
+      "action": "set_listing_requirements",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 16->16, events 0->0, storage 13->13)",
+      "timestamp": 1771940234
+    },
+    {
+      "contract": "dex_governance",
+      "action": "propose_fee_change",
+      "status": "PASS",
+      "detail": "sig=b3ce77df721d9be58df148dc1cb613cb9e8bb2722a02621f4eaeebc50f90ef15",
+      "timestamp": 1771940234
+    },
+    {
+      "contract": "dex_governance",
+      "action": "get_proposal_count",
+      "status": "PASS",
+      "detail": "sig=01d39875f17a48c9351b92c03b976850eb36806e771603388c104e366bb26970",
+      "timestamp": 1771940235
+    },
+    {
+      "contract": "dex_governance",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=2,calls=14->16,events=0->0,storage=13->14,required=5",
+      "timestamp": 1771940235
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "initialize",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 400->400)",
+      "timestamp": 1771940235
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "record_trade",
+      "status": "FAIL",
+      "detail": "no observable write delta (calls 7->7, events 0->0, storage 400->400)",
+      "timestamp": 1771940236
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "get_record_count",
+      "status": "PASS",
+      "detail": "sig=779aea16a65b249bdf408aaafc32b37660f7409dc9bedb472edea79e496225e6",
+      "timestamp": 1771940237
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "get_last_price",
+      "status": "PASS",
+      "detail": "sig=219f77adee92004d44ecd3f6f5b275d20e6043b3f4149f823537e866fbafbfe1",
+      "timestamp": 1771940237
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "get_24h_stats",
+      "status": "PASS",
+      "detail": "sig=d70c20615b93f96c0a9b841189961e48fd7a705f202d3c2fce566bdc4b326dd6",
+      "timestamp": 1771940237
+    },
+    {
+      "contract": "dex_analytics",
+      "action": "activity_floor",
+      "status": "FAIL",
+      "detail": "delta=1,calls=7->8,events=0->0,storage=400->400,required=2",
+      "timestamp": 1771940237
+    },
+    {
+      "contract": "global",
+      "action": "negative_assertion_floor",
+      "status": "PASS",
+      "detail": "executed=5,required=5",
+      "timestamp": 1771940237
+    }
+  ],
+  "generated_at": 1771940237
+}

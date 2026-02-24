@@ -1,0 +1,70 @@
+{
+  "baseline_no_load": {
+    "captured_slots": 30,
+    "duration_seconds": 149.29,
+    "counts_all": {
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 11,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 7,
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 12
+    },
+    "counts_tx_blocks": {},
+    "counts_heartbeat_blocks": {
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 11,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 7,
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 12
+    },
+    "leader_share_stddev": 0.07200822998230956,
+    "tx_vs_leader_mad": 0.3333333333333333,
+    "tx_vs_heartbeat_correlation": 0.0,
+    "tx_block_count": 1,
+    "heartbeat_block_count": 30
+  },
+  "sequential_load": {
+    "captured_slots": 90,
+    "duration_seconds": 45.38,
+    "counts_all": {
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 34,
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 32,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 24
+    },
+    "counts_tx_blocks": {
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 8,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 9,
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 14
+    },
+    "counts_heartbeat_blocks": {
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 18,
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 26,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 15
+    },
+    "leader_share_stddev": 0.04800548665487304,
+    "tx_vs_leader_mad": 0.07980884109916368,
+    "tx_vs_heartbeat_correlation": -0.40119542023121285,
+    "tx_block_count": 31,
+    "heartbeat_block_count": 59
+  },
+  "parallel_load": {
+    "captured_slots": 90,
+    "duration_seconds": 93.0,
+    "counts_all": {
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 27,
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 35,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 28
+    },
+    "counts_tx_blocks": {
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 18,
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 8,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 10
+    },
+    "counts_heartbeat_blocks": {
+      "8R6NB3sszPQrqc4VwJrwMZa36qM6LERGXULBAyH3Batu": 19,
+      "78FaEdEEZ7RZiJsxt7SABEFMXPMmYXwXJQNTzZenPJ7U": 18,
+      "CLtBY56eQgK9Th74vaSSLeyU7uP9Pa2ej33672FnUmKe": 17
+    },
+    "leader_share_stddev": 0.03954473426678264,
+    "tx_vs_leader_mad": 0.07407407407407407,
+    "tx_vs_heartbeat_correlation": -0.9449111825230678,
+    "tx_block_count": 36,
+    "heartbeat_block_count": 54
+  }
+}

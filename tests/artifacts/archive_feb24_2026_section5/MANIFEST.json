@@ -1,0 +1,121 @@
+{
+  "archive_root": "tests/artifacts/archive_feb24_2026_section5",
+  "file_count": 23,
+  "files": [
+    {
+      "path": "comprehensive-e2e-report.json",
+      "bytes": 88537,
+      "sha256": "96b855c51231f65f64e53a44be6d94ed0b1be1e2eb44568f8826d2ceda3b434e"
+    },
+    {
+      "path": "contracts-write-e2e-report.json",
+      "bytes": 42733,
+      "sha256": "c7f357a984002d1d939332058e9fbca062747d6f02fea5f0ae56e5ee22b6276b"
+    },
+    {
+      "path": "genesis-wiring-report.json",
+      "bytes": 5776,
+      "sha256": "7ffb98fc62abcff94c3bf762fb357378676a19828408f5d81aad8226f973f213"
+    },
+    {
+      "path": "load-test-report.json",
+      "bytes": 370,
+      "sha256": "e18ffab1f01ea3a82a00c0b329146a748657863789d74553e35dab79a056c53d"
+    },
+    {
+      "path": "parallel-e2e-report.json",
+      "bytes": 187667,
+      "sha256": "c42a7297994684d148d7f323dbd034d837dc37d6e21a5b02d14a028cbdebd412"
+    },
+    {
+      "path": "validator_rotation_feb24/baseline_no_load.json",
+      "bytes": 5368,
+      "sha256": "26dc8c7b4e94400e54ae73d423b7e694c0c58da30b40c1c0b99a0d205f29585c"
+    },
+    {
+      "path": "validator_rotation_feb24/contracts_write_par_a_report.json",
+      "bytes": 43285,
+      "sha256": "77653ed10e581de87548459930865bcc50f4d02833fe51434269c8c3d2aca8c9"
+    },
+    {
+      "path": "validator_rotation_feb24/contracts_write_par_b_report.json",
+      "bytes": 43252,
+      "sha256": "3578928327b0a608c503ecfa1de4f8cd2d9bf7023c01453a5644b207ccaf6358"
+    },
+    {
+      "path": "validator_rotation_feb24/contracts_write_seq_report.json",
+      "bytes": 43275,
+      "sha256": "027866eeb16009cc056978efacf4ac7384374d5be367f6fec814bf4ad56123b5"
+    },
+    {
+      "path": "validator_rotation_feb24/contracts_write_seq_report_run3.json",
+      "bytes": 43064,
+      "sha256": "de4df5636ddf3d84869c912ec58bc4fcdfc6c8a9c14e610fa7c8fd2026f93500"
+    },
+    {
+      "path": "validator_rotation_feb24/getValidators_snapshot.json",
+      "bytes": 1235,
+      "sha256": "3a1d44b4a1471fa164ab6b398cc9f4d60368945de15942d9c755a1b659e939a3"
+    },
+    {
+      "path": "validator_rotation_feb24/parallel_e2e.log",
+      "bytes": 79156,
+      "sha256": "8980de1a8631a6cb0cfe2bac7222eaef17fc051e8fe969e76c738c6c646564be"
+    },
+    {
+      "path": "validator_rotation_feb24/parallel_load_a.log",
+      "bytes": 21737,
+      "sha256": "f346eb715dc612887ff222641b7ccd8232ab40bde9ddcb745a01f31b2d21d385"
+    },
+    {
+      "path": "validator_rotation_feb24/parallel_load_b.log",
+      "bytes": 21680,
+      "sha256": "48ef7435d28c3b413e880d726abf7b92581732f8acc5fb088d99d355b696ec62"
+    },
+    {
+      "path": "validator_rotation_feb24/parallel_load_window.json",
+      "bytes": 15186,
+      "sha256": "c03dd0b318955bbc5b4785d59fd791aa54b5d262458d284691c0b7cbb975f681"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_load.log",
+      "bytes": 21702,
+      "sha256": "e52d26d8f06a7bdabd2a74cfcebec5924664d2353f1c92a238f884c45b7d4253"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_load_run2.log",
+      "bytes": 1118,
+      "sha256": "9a9e8fdce70a6570c2da944ef464ebb3d03648e428fef9667368eeac3cdf1021"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_load_run3.log",
+      "bytes": 21461,
+      "sha256": "64b0ce72fffe0c595fa97ed28442241d135131cfa192c706f27be5e38d255245"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_load_window.json",
+      "bytes": 15096,
+      "sha256": "88c6307ca747f72ade0deaeaa5cd731544b6e6e475496e51726c29c07531defb"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_tx_load.log",
+      "bytes": 2357,
+      "sha256": "8873839a1f3dc7bb9bab10bb2846b0c718d12ed03c858d093b5dbd76d23fb27e"
+    },
+    {
+      "path": "validator_rotation_feb24/sequential_window_load.log",
+      "bytes": 1118,
+      "sha256": "8d2513ccea3158474e24296884a463498507db18d04934ed78615ad213901a39"
+    },
+    {
+      "path": "validator_rotation_feb24/summary_metrics.json",
+      "bytes": 2534,
+      "sha256": "487e628b8c9e36f3c5ab425c5fd4727c02cb3e942187e76d3427a6321ecc8e93"
+    },
+    {
+      "path": "validator_rotation_feb24/test.json",
+      "bytes": 9,
+      "sha256": "805e2deeb05e0c13ff4024a8dcdff78ecfde69412452391ce84e85b98a94445c"
+    }
+  ]
+}
