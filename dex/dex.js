@@ -823,6 +823,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch
     const MOLT_GENESIS_PRICE = 0.10;
 
+    // Display-inversion helpers for MOLT-quoted wrapped pairs.
+    // On-chain pairs are stored as wBNB/MOLT (base=wBNB, quote=MOLT) with price
+    // in MOLT/wBNB (~5850). The UI displays these as MOLT/wBNB with price in
+    // wBNB/MOLT (~0.000171). All data from the API/WS must be inverted to match
+    // the display convention before reaching the chart.
+    function isDisplayInvertedPair(pair) {
+        if (!pair) return false;
+        const base = (pair.base || '').toUpperCase();
+        const quote = (pair.quote || '').toUpperCase();
+        return quote === 'MOLT' && ['WSOL', 'WETH', 'WBNB'].includes(base);
+    }
+
+    function invertPrice(price) {
+        return (price && price > 0) ? 1 / price : 0;
+    }
+
+    function invertCandle(c) {
+        if (!c || !c.open) return c;
+        return {
+            time: c.time,
+            open: invertPrice(c.open),
+            high: invertPrice(c.low),    // high and low swap when inverting
+            low: invertPrice(c.high),
+            close: invertPrice(c.close),
+            volume: c.volume
+        };
+    }
+
     const state = {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
@@ -982,17 +1010,24 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get('/pairs');
             if (Array.isArray(data) && data.length > 0) {
-                pairs = data.map(p => ({
-                    ...normalizePairDisplay(
-                        p.baseSymbol || p.baseToken,
-                        p.quoteSymbol || p.quoteToken,
-                        p.symbol || `${p.baseSymbol || p.baseToken || 'MOLT'}/${p.quoteSymbol || p.quoteToken || 'mUSD'}`
-                    ),
-                    pairId: p.pairId,
-                    base: p.baseSymbol || p.baseToken,
-                    quote: p.quoteSymbol || p.quoteToken,
-                    price: p.lastPrice || 0, change: p.change24h ?? 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
-                }));
+                pairs = data.map(p => {
+                    const pair = {
+                        ...normalizePairDisplay(
+                            p.baseSymbol || p.baseToken,
+                            p.quoteSymbol || p.quoteToken,
+                            p.symbol || `${p.baseSymbol || p.baseToken || 'MOLT'}/${p.quoteSymbol || p.quoteToken || 'mUSD'}`
+                        ),
+                        pairId: p.pairId,
+                        base: p.baseSymbol || p.baseToken,
+                        quote: p.quoteSymbol || p.quoteToken,
+                        price: p.lastPrice || 0, change: p.change24h ?? 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
+                    };
+                    // Invert API price for display-inverted pairs (on-chain wBNB/MOLT → display MOLT/wBNB)
+                    if (isDisplayInvertedPair(pair) && pair.price > 0) {
+                        pair.price = invertPrice(pair.price);
+                    }
+                    return pair;
+                });
             }
         } catch (e) { console.warn('[DEX] Pairs API unavailable:', e.message); }
         if (pairs.length) {
@@ -1032,11 +1067,21 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get(`/pairs/${state.activePairId}/orderbook?depth=20`);
             if (data?.asks && data?.bids) {
-                const map = arr => arr.map(a => ({ price: +a.price, amount: +(a.quantity || a.amount || 0) / 1e9, total: 0 }));
-                const asks = map(data.asks); asks.sort((a, b) => a.price - b.price);
-                let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
-                const bids = map(data.bids); bids.sort((a, b) => b.price - a.price);
-                t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                const inv = isDisplayInvertedPair(state.activePair);
+                const map = arr => arr.map(a => ({ price: inv ? invertPrice(+a.price) : +a.price, amount: +(a.quantity || a.amount || 0) / 1e9, total: 0 }));
+                let asks, bids;
+                if (inv) {
+                    // Inverted: on-chain bids become display asks, on-chain asks become display bids
+                    asks = map(data.bids); asks.sort((a, b) => a.price - b.price);
+                    let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
+                    bids = map(data.asks); bids.sort((a, b) => b.price - a.price);
+                    t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                } else {
+                    asks = map(data.asks); asks.sort((a, b) => a.price - b.price);
+                    let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
+                    bids = map(data.bids); bids.sort((a, b) => b.price - a.price);
+                    t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                }
                 state.orderBook = { asks, bids }; renderOrderBook();
                 return;
             }
@@ -1051,8 +1096,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=40`);
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.querySelector('.trades-list'); if (!container) return;
+                const inv = isDisplayInvertedPair(state.activePair);
                 container.innerHTML = data.map(tr => {
-                    const buy = tr.side === 'buy'; const price = +tr.price || 0; const amount = (tr.quantity || tr.amount || 0) / 1e9;
+                    const buy = tr.side === 'buy'; const rawPrice = +tr.price || 0;
+                    const price = inv ? invertPrice(rawPrice) : rawPrice;
+                    const amount = (tr.quantity || tr.amount || 0) / 1e9;
                     return `<div class="trade-row"><span class="trade-price ${buy ? 'buy' : 'sell'}">${formatPrice(price)}</span><span>${formatAmount(amount)}</span><span class="trade-time">${tr.timestamp ? new Date(tr.timestamp).toLocaleTimeString() : ''}</span></div>`;
                 }).join(''); return;
             }
@@ -1067,7 +1115,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams({ interval: resolutionToSec(interval || '15'), limit: 300 });
             if (from) params.set('from', Math.floor(from)); if (to) params.set('to', Math.floor(to));
             const { data } = await api.get(`/pairs/${state.activePairId}/candles?${params}`);
-            if (Array.isArray(data) && data.length > 0) return data.map(c => ({ time: (c.timestamp || c.time || 0) * 1000, open: c.open || 0, high: c.high || 0, low: c.low || 0, close: c.close || 0, volume: c.volume || 0 }));
+            if (Array.isArray(data) && data.length > 0) {
+                const invert = isDisplayInvertedPair(state.activePair);
+                return data.map(c => {
+                    const bar = { time: (c.timestamp || c.time || 0) * 1000, open: c.open || 0, high: c.high || 0, low: c.low || 0, close: c.close || 0, volume: c.volume || 0 };
+                    return invert ? invertCandle(bar) : bar;
+                });
+            }
         } catch { /* fallback */ }
         return null;
     }
@@ -1144,31 +1198,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
         dexWs.subscribe(`orderbook:${pairId}`, (d) => {
             if (d.bids && d.asks) {
-                const map = arr => arr.map(a => ({ price: a.price, amount: (a.quantity || 0) / 1e9, total: 0 }));
-                const asks = map(d.asks); asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
-                const bids = map(d.bids); bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                const inv = isDisplayInvertedPair(state.activePair);
+                const map = arr => arr.map(a => ({ price: inv ? invertPrice(a.price) : a.price, amount: (a.quantity || 0) / 1e9, total: 0 }));
+                // When inverted, on-chain bids become display asks and vice versa
+                let asks, bids;
+                if (inv) {
+                    asks = map(d.bids); asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
+                    bids = map(d.asks); bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                } else {
+                    asks = map(d.asks); asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
+                    bids = map(d.bids); bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
+                }
                 state.orderBook = { asks, bids }; throttledRenderOrderBook();
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
         dexWs.subscribe(`trades:${pairId}`, (d) => {
             if (d.price) {
-                state.lastPrice = d.price; updateTickerDisplay();
+                // Invert on-chain price for display-inverted pairs (wBNB/MOLT → MOLT/wBNB)
+                const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.price) : d.price;
+                state.lastPrice = displayPrice; updateTickerDisplay();
                 const c = document.querySelector('.trades-list');
                 if (c && state.currentView === 'trade') {
                     const row = document.createElement('div'); row.className = 'trade-row';
-                    row.innerHTML = `<span class="trade-price ${d.side === 'buy' ? 'buy' : 'sell'}">${formatPrice(d.price)}</span><span>${formatAmount((d.quantity || 0) / 1e9)}</span><span class="trade-time">${new Date().toLocaleTimeString()}</span>`;
+                    row.innerHTML = `<span class="trade-price ${d.side === 'buy' ? 'buy' : 'sell'}">${formatPrice(displayPrice)}</span><span>${formatAmount((d.quantity || 0) / 1e9)}</span><span class="trade-time">${new Date().toLocaleTimeString()}</span>`;
                     c.prepend(row); if (c.children.length > 40) c.lastChild.remove();
                 }
-                streamBarUpdate(d.price, d.quantity || 0);
+                streamBarUpdate(displayPrice, d.quantity || 0);
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
         dexWs.subscribe(`ticker:${pairId}`, (d) => {
             if (d.lastPrice) {
-                state.lastPrice = d.lastPrice;
+                // Invert on-chain price for display-inverted pairs
+                const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.lastPrice) : d.lastPrice;
+                state.lastPrice = displayPrice;
                 const pair = pairs.find(p => p.pairId === pairId);
-                if (pair) { pair.price = d.lastPrice; pair.change = d.change24h ?? pair.change; }
+                if (pair) { pair.price = displayPrice; pair.change = d.change24h ?? pair.change; }
                 updateTickerDisplay();
                 renderPairList(); // F1 fix: refresh dropdown prices on every ticker update
             }
@@ -1272,8 +1338,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 const chEl = stats[0];
                 chEl.textContent = `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%`;
                 chEl.className = `stat-value ${ch >= 0 ? 'positive' : 'negative'}`;
-                stats[1].textContent = formatPrice(t.high24h || 0);
-                stats[2].textContent = formatPrice(t.low24h || 0);
+                // Invert high/low for display-inverted pairs (note: inverted high = 1/low, inverted low = 1/high)
+                const inv = isDisplayInvertedPair(pair);
+                const high = inv ? invertPrice(t.low24h || 0) : (t.high24h || 0);
+                const low = inv ? invertPrice(t.high24h || 0) : (t.low24h || 0);
+                stats[1].textContent = formatPrice(high);
+                stats[2].textContent = formatPrice(low);
                 stats[3].textContent = formatVolume((t.volume24h || 0) / 1e9);
                 stats[4].textContent = String(t.trades24h || '0');
             } else {
@@ -1476,7 +1546,9 @@ document.addEventListener('DOMContentLoaded', () => {
             resolveSymbol: (name, ok, err) => {
                 const p = pairs.find(x => x.id === name || ('MoltChain:' + x.id) === name) || pairs[0];
                 if (!p) { err('Not found'); return; }
-                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'MoltChain', listed_exchange: 'MoltChain', minmov: 1, pricescale: p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1','5','15','60','240','1D','3D','1W'], volume_precision: 2, data_status: 'streaming' }), 0);
+                // Display-inverted pairs have very small prices (~0.000171) — always use high pricescale
+                const ps = isDisplayInvertedPair(p) ? 100000000 : (p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100);
+                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'MoltChain', listed_exchange: 'MoltChain', minmov: 1, pricescale: ps, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1','5','15','60','240','1D','3D','1W'], volume_precision: 2, data_status: 'streaming' }), 0);
             },
             getBars: async (si, res, pp, ok) => {
                 const apiC = await loadCandles(pp.from, pp.to, res);

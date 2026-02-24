@@ -3018,6 +3018,12 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["mintable"] = serde_json::json!(false);
                 meta["burnable"] = serde_json::json!(true);
                 meta["is_native"] = serde_json::json!(true);
+                // Cosmetic profile metadata — shown in explorer contract page
+                meta["description"] = serde_json::json!(
+                    "The native utility token of MoltChain — used for gas fees, staking, governance, and DEX trading. Deflationary via 50% fee burn."
+                );
+                meta["website"] = serde_json::json!("https://moltchain.io");
+                meta["logo_url"] = serde_json::json!("/assets/molt-logo.png");
             }
             "wrapped" => {
                 // Wrapped tokens start at 0 supply, 9 decimals
@@ -3025,6 +3031,15 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["decimals"] = serde_json::json!(9);
                 meta["mintable"] = serde_json::json!(true);
                 meta["burnable"] = serde_json::json!(true);
+                // Cosmetic description per wrapped asset
+                let desc = match symbol {
+                    "mUSD" => "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
+                    "wSOL" => "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
+                    "wETH" => "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
+                    "wBNB" => "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
+                    _ => "Wrapped asset on MoltChain.",
+                };
+                meta["description"] = serde_json::json!(desc);
             }
             _ => {}
         }
@@ -3570,15 +3585,16 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             .map(|pk| pk.0)
             .unwrap_or(admin);
 
-        // set_rewards_pool is a named export: args = [caller 32B][addr 32B]
-        let mut args = Vec::with_capacity(64);
+        // Opcode 13 = set_rewards_pool. Format: [13][caller 32B][addr 32B]
+        let mut args = Vec::with_capacity(65);
+        args.push(13u8);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&builder_grants_addr);
         if genesis_exec_contract(
             state,
             dex_rewards_pk,
             deployer_pubkey,
-            "set_rewards_pool",
+            "call",
             &args,
             "dex_rewards(builder_grants)",
         ) {
