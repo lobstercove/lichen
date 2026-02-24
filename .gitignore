@@ -152,3 +152,10 @@ shared-theme.css
 
 # ── Local-only operator skills (keep on disk, ignore in git) ──
 skills/
+
+# ── Local-only dev/runtime surfaces (not open source) ───────────
+docs/
+faucet/
+monitoring/
+keypairs/
+moltchain/
