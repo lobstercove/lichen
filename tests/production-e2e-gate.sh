@@ -14,9 +14,9 @@ if [[ -z "$TREASURY_KEYPAIR" || ! -f "$TREASURY_KEYPAIR" ]]; then
 fi
 REQUIRE_MULTI_VALIDATOR="${REQUIRE_MULTI_VALIDATOR:-1}"
 STRICT_NO_SKIPS="${STRICT_NO_SKIPS:-1}"
-RUN_SDK_SUITE="${RUN_SDK_SUITE:-0}"
+RUN_SDK_SUITE="${RUN_SDK_SUITE:-1}"
 RUN_DEEP_SERVICES_SUITE="${RUN_DEEP_SERVICES_SUITE:-1}"
-RUN_CONTRACT_WRITE_SUITE="${RUN_CONTRACT_WRITE_SUITE:-0}"
+RUN_CONTRACT_WRITE_SUITE="${RUN_CONTRACT_WRITE_SUITE:-1}"
 REQUIRE_DEX_API="${REQUIRE_DEX_API:-1}"
 # Auto-detect faucet and custody availability if not explicitly set
 if [[ -z "${REQUIRE_FAUCET+x}" ]]; then
@@ -52,6 +52,7 @@ EXPECTED_CONTRACTS_FILE="${EXPECTED_CONTRACTS_FILE:-$ROOT_DIR/tests/expected-con
 CONTRACT_ACTIVITY_OVERRIDES_DEFAULT='{"dex_core":7,"dex_router":4,"dex_margin":6,"moltbridge":3,"lobsterlend":4,"moltswap":4,"moltoracle":4,"moltpunks":4,"reef_storage":3,"clawpump":3,"prediction_market":3,"moltyid":8}'
 CONTRACT_ACTIVITY_OVERRIDES="${CONTRACT_ACTIVITY_OVERRIDES:-$CONTRACT_ACTIVITY_OVERRIDES_DEFAULT}"
 WRITE_E2E_REPORT_PATH="${WRITE_E2E_REPORT_PATH:-$ROOT_DIR/tests/artifacts/contracts-write-e2e-report.json}"
+CONTRACT_WRITE_KEYPAIR="${CONTRACT_WRITE_KEYPAIR:-$ROOT_DIR/keypairs/deployer.json}"
 DEX_BOOTSTRAP_BASE_SYMBOL="${DEX_BOOTSTRAP_BASE_SYMBOL-MOLT}"
 DEX_BOOTSTRAP_QUOTE_SYMBOL="${DEX_BOOTSTRAP_QUOTE_SYMBOL-MUSD}"
 DEX_API_URL="${DEX_API_URL:-${RPC_URL}/api/v1}"
@@ -244,6 +245,34 @@ ensure_wallet() {
 
 FUNDING_DEGRADED=0
 
+convert_secret_keypair_for_cli() {
+  local src="$1"
+  local dst="$2"
+  python3 - "$src" "$dst" <<'PY'
+import json, sys
+from nacl.signing import SigningKey
+
+src, dst = sys.argv[1], sys.argv[2]
+data = json.load(open(src, 'r', encoding='utf-8'))
+secret = data.get('secret_key')
+if not isinstance(secret, str):
+  raise SystemExit(1)
+secret = secret.strip().lower().removeprefix('0x')
+if len(secret) != 64:
+  raise SystemExit(1)
+seed = bytes.fromhex(secret)
+sk = SigningKey(seed)
+pk = bytes(sk.verify_key)
+out = {
+  'privateKey': list(seed),
+  'publicKey': list(pk),
+  'secretKey': list(seed + pk),
+  'address': data.get('pubkey', '')
+}
+json.dump(out, open(dst, 'w', encoding='utf-8'))
+PY
+}
+
 fund_wallet_from_treasury() {
   local to_addr="$1"
   local amount_molt="$2"
@@ -276,6 +305,18 @@ PY
   if "$MOLT_BIN" --rpc-url "$RPC_URL" transfer "$to_addr" "$amount_molt" --keypair "$TREASURY_KEYPAIR" >/tmp/e2e-transfer.log 2>&1; then
     pass "Treasury funded $to_addr with ${amount_molt} MOLT"
   else
+    if grep -qi 'Unsupported keypair format' /tmp/e2e-transfer.log; then
+      local converted_keypair
+      converted_keypair="$(mktemp -t e2e-treasury-cli)"
+      if convert_secret_keypair_for_cli "$TREASURY_KEYPAIR" "$converted_keypair" >/dev/null 2>&1; then
+        if "$MOLT_BIN" --rpc-url "$RPC_URL" transfer "$to_addr" "$amount_molt" --keypair "$converted_keypair" >/tmp/e2e-transfer.log 2>&1; then
+          pass "Treasury funded $to_addr with ${amount_molt} MOLT (converted keypair format)"
+          rm -f "$converted_keypair" >/dev/null 2>&1 || true
+          return 0
+        fi
+      fi
+      rm -f "$converted_keypair" >/dev/null 2>&1 || true
+    fi
     # Transfer failed (keypair format mismatch etc.), fall back to airdrop
     local airdrop_molt=$amount_molt
     if (( airdrop_molt > 100 )); then airdrop_molt=100; fi
@@ -328,6 +369,10 @@ run_script_stage() {
     pass "Stage passed: $name"
   else
     fail "Stage failed: $name"
+  fi
+
+  if grep -Eq '(^[[:space:]]*❌[[:space:]]*FAIL([[:space:]]|$)|❌[[:space:]]*FAILED:[[:space:]]*[1-9]|FAILED:[[:space:]]*[1-9])' "$out_file"; then
+    fail "Stage reported internal failures: $name"
   fi
 
   if [[ "$STRICT_NO_SKIPS" == "1" ]]; then
@@ -429,6 +474,7 @@ AGENT_ADDR="$(extract_wallet_address "$AGENT_WALLET_NAME" || true)"
 HUMAN_ADDR="$(extract_wallet_address "$HUMAN_WALLET_NAME" || true)"
 AGENT_KEYPAIR=""
 HUMAN_KEYPAIR=""
+CONTRACT_WRITE_SIGNER=""
 AGENT_WALLET_PATH="$(wallet_keypair_path "$AGENT_WALLET_NAME" || true)"
 
 if [[ -f "$SIGNER_KEYPAIR" ]]; then
@@ -442,6 +488,28 @@ if [[ -z "$AGENT_KEYPAIR" || ! -f "$AGENT_KEYPAIR" ]]; then
     AGENT_KEYPAIR="$AGENT_WALLET_PATH"
     pass "Using wallet keypair path for agent signer"
   fi
+fi
+
+HUMAN_KEYPAIR="$(wallet_signer_keypair_path "$HUMAN_WALLET_NAME" || true)"
+if [[ -z "$HUMAN_KEYPAIR" || ! -f "$HUMAN_KEYPAIR" ]]; then
+  local_human_wallet_path="$(wallet_keypair_path "$HUMAN_WALLET_NAME" || true)"
+  if [[ -n "$local_human_wallet_path" && -f "$local_human_wallet_path" ]]; then
+    HUMAN_KEYPAIR="$local_human_wallet_path"
+    pass "Using wallet keypair path for human signer"
+  fi
+fi
+
+if [[ -z "$HUMAN_KEYPAIR" || ! -f "$HUMAN_KEYPAIR" ]]; then
+  if [[ -n "$AGENT_KEYPAIR" && -f "$AGENT_KEYPAIR" ]]; then
+    HUMAN_KEYPAIR="$AGENT_KEYPAIR"
+    pass "Human signer fallback to agent keypair"
+  fi
+fi
+
+CONTRACT_WRITE_SIGNER="$AGENT_KEYPAIR"
+if [[ -n "$CONTRACT_WRITE_KEYPAIR" && -f "$CONTRACT_WRITE_KEYPAIR" ]]; then
+  CONTRACT_WRITE_SIGNER="$CONTRACT_WRITE_KEYPAIR"
+  pass "Using contract write signer: $CONTRACT_WRITE_SIGNER"
 fi
 
 if [[ -n "$AGENT_ADDR" && -n "$HUMAN_ADDR" ]]; then
@@ -483,7 +551,7 @@ else
   skip "Deep services E2E disabled (set RUN_DEEP_SERVICES_SUITE=1 to enable)"
 fi
 if [[ "$RUN_CONTRACT_WRITE_SUITE" == "1" ]]; then
-  run_script_stage "Contract write scenarios" "cd '$ROOT_DIR' && PYTHONPATH='$ROOT_DIR/sdk/python' RPC_URL='$RPC_URL' AGENT_KEYPAIR='$AGENT_KEYPAIR' HUMAN_KEYPAIR='$HUMAN_KEYPAIR' REQUIRE_ALL_SCENARIOS='$REQUIRE_ALL_SCENARIOS' STRICT_WRITE_ASSERTIONS='$STRICT_WRITE_ASSERTIONS' TX_CONFIRM_TIMEOUT_SECS='$TX_CONFIRM_TIMEOUT_SECS' REQUIRE_FULL_WRITE_ACTIVITY='$REQUIRE_FULL_WRITE_ACTIVITY' MIN_CONTRACT_ACTIVITY_DELTA='$MIN_CONTRACT_ACTIVITY_DELTA' CONTRACT_ACTIVITY_OVERRIDES='$CONTRACT_ACTIVITY_OVERRIDES' ENFORCE_DOMAIN_ASSERTIONS='$ENFORCE_DOMAIN_ASSERTIONS' ENABLE_NEGATIVE_ASSERTIONS='$ENABLE_NEGATIVE_ASSERTIONS' REQUIRE_NEGATIVE_REASON_MATCH='$REQUIRE_NEGATIVE_REASON_MATCH' REQUIRE_NEGATIVE_CODE_MATCH='$REQUIRE_NEGATIVE_CODE_MATCH' REQUIRE_SCENARIO_FOR_DISCOVERED='$REQUIRE_SCENARIO_FOR_DISCOVERED' MIN_NEGATIVE_ASSERTIONS_EXECUTED='$MIN_NEGATIVE_ASSERTIONS_EXECUTED' REQUIRE_EXPECTED_CONTRACT_SET='$REQUIRE_EXPECTED_CONTRACT_SET' EXPECTED_CONTRACTS_FILE='$EXPECTED_CONTRACTS_FILE' WRITE_E2E_REPORT_PATH='$WRITE_E2E_REPORT_PATH' '$PYTHON_BIN' tests/contracts-write-e2e.py"
+  run_script_stage "Contract write scenarios" "cd '$ROOT_DIR' && PYTHONPATH='$ROOT_DIR/sdk/python' RPC_URL='$RPC_URL' AGENT_KEYPAIR='$CONTRACT_WRITE_SIGNER' HUMAN_KEYPAIR='$HUMAN_KEYPAIR' REQUIRE_ALL_SCENARIOS='$REQUIRE_ALL_SCENARIOS' STRICT_WRITE_ASSERTIONS='$STRICT_WRITE_ASSERTIONS' TX_CONFIRM_TIMEOUT_SECS='$TX_CONFIRM_TIMEOUT_SECS' REQUIRE_FULL_WRITE_ACTIVITY='$REQUIRE_FULL_WRITE_ACTIVITY' MIN_CONTRACT_ACTIVITY_DELTA='$MIN_CONTRACT_ACTIVITY_DELTA' CONTRACT_ACTIVITY_OVERRIDES='$CONTRACT_ACTIVITY_OVERRIDES' ENFORCE_DOMAIN_ASSERTIONS='$ENFORCE_DOMAIN_ASSERTIONS' ENABLE_NEGATIVE_ASSERTIONS='$ENABLE_NEGATIVE_ASSERTIONS' REQUIRE_NEGATIVE_REASON_MATCH='$REQUIRE_NEGATIVE_REASON_MATCH' REQUIRE_NEGATIVE_CODE_MATCH='$REQUIRE_NEGATIVE_CODE_MATCH' REQUIRE_SCENARIO_FOR_DISCOVERED='$REQUIRE_SCENARIO_FOR_DISCOVERED' MIN_NEGATIVE_ASSERTIONS_EXECUTED='$MIN_NEGATIVE_ASSERTIONS_EXECUTED' REQUIRE_EXPECTED_CONTRACT_SET='$REQUIRE_EXPECTED_CONTRACT_SET' EXPECTED_CONTRACTS_FILE='$EXPECTED_CONTRACTS_FILE' WRITE_E2E_REPORT_PATH='$WRITE_E2E_REPORT_PATH' '$PYTHON_BIN' tests/contracts-write-e2e.py"
 else
   skip "Contract write scenario suite disabled (set RUN_CONTRACT_WRITE_SUITE=1 to enable)"
 fi
