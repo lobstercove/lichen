@@ -58,33 +58,37 @@ let bridgeMintSubId = null;
 let balanceWsReconnectTimer = null;
 let balanceWsSubscribedAddress = null;
 let bridgeWsActive = false;
+let _wsReconnectDelay = 1000;  // exponential backoff: 1s → 2s → 4s → … → 30s
+let _wsKeepaliveTimer = null;
 
 function connectBalanceWebSocket() {
     const wallet = getActiveWallet();
     if (!wallet) return;
     
-    // Don't reconnect if already subscribed to this address
-    if (balanceWs && balanceWs.readyState === WebSocket.OPEN && balanceWsSubscribedAddress === wallet.address) {
-        return;
+    // Don't reconnect if already connected or connecting for this address
+    if (balanceWs && balanceWsSubscribedAddress === wallet.address) {
+        if (balanceWs.readyState === WebSocket.OPEN || balanceWs.readyState === WebSocket.CONNECTING) {
+            return;
+        }
     }
     
     // Close existing connection
     disconnectBalanceWebSocket();
     
     const wsUrl = getWsEndpoint();
-    // console.log(`[WS] Connecting to ${wsUrl} for account ${wallet.address}`);
     
     try {
         balanceWs = new WebSocket(wsUrl);
+        balanceWsSubscribedAddress = wallet.address;  // Mark intent immediately
     } catch (e) {
         console.warn('[WS] Failed to create WebSocket:', e);
+        balanceWsSubscribedAddress = null;
         scheduleWsReconnect();
         return;
     }
     
     balanceWs.onopen = () => {
-        // console.log('[WS] Connected, subscribing to account changes');
-        balanceWsSubscribedAddress = wallet.address;
+        _wsReconnectDelay = 1000;  // Reset backoff on successful connect
         // Subscribe to account balance changes
         balanceWs.send(JSON.stringify({
             jsonrpc: '2.0',
@@ -105,6 +109,15 @@ function connectBalanceWebSocket() {
             method: 'subscribeBridgeMints',
             params: null
         }));
+        
+        // Client-side keepalive: send a lightweight ping every 25s
+        // (server sends Ping frames at 15s; this ensures bidirectional liveness)
+        if (_wsKeepaliveTimer) clearInterval(_wsKeepaliveTimer);
+        _wsKeepaliveTimer = setInterval(() => {
+            if (balanceWs && balanceWs.readyState === WebSocket.OPEN) {
+                balanceWs.send(JSON.stringify({ method: 'ping' }));
+            }
+        }, 25000);
     };
     
     balanceWs.onmessage = (event) => {
@@ -160,7 +173,7 @@ function connectBalanceWebSocket() {
     };
     
     balanceWs.onclose = (event) => {
-        // console.log(`[WS] Disconnected (code: ${event.code})`);
+        if (_wsKeepaliveTimer) { clearInterval(_wsKeepaliveTimer); _wsKeepaliveTimer = null; }
         balanceWsSubId = null;
         bridgeLockSubId = null;
         bridgeMintSubId = null;
@@ -220,6 +233,7 @@ function handleBridgeMintEvent(data) {
 }
 
 function disconnectBalanceWebSocket() {
+    if (_wsKeepaliveTimer) { clearInterval(_wsKeepaliveTimer); _wsKeepaliveTimer = null; }
     if (balanceWsReconnectTimer) {
         clearTimeout(balanceWsReconnectTimer);
         balanceWsReconnectTimer = null;
@@ -262,13 +276,15 @@ function disconnectBalanceWebSocket() {
 
 function scheduleWsReconnect() {
     if (balanceWsReconnectTimer) return;
+    const delay = _wsReconnectDelay;
+    _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, 30000);  // exponential backoff: max 30s
     balanceWsReconnectTimer = setTimeout(() => {
         balanceWsReconnectTimer = null;
         const dashboard = document.getElementById('walletDashboard');
         if (dashboard && dashboard.style.display !== 'none') {
             connectBalanceWebSocket();
         }
-    }, 5000);
+    }, delay);
 }
 
 // ===== HTTP BALANCE POLLING FALLBACK =====
@@ -1164,6 +1180,7 @@ function switchWallet(walletId) {
     // Reconnect WS + polling for new wallet address
     stopBalancePolling();
     disconnectBalanceWebSocket();
+    _wsReconnectDelay = 1000;  // Reset backoff for intentional switch
     showDashboard();
 }
 
@@ -3611,15 +3628,14 @@ function switchNetwork(network) {
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
     
-    // Restart WS + polling on new endpoint
+    // Tear down old connections — showDashboard() will re-establish them
     stopBalancePolling();
     disconnectBalanceWebSocket();
-    connectBalanceWebSocket();
-    startBalancePolling();
+    _wsReconnectDelay = 1000;  // Reset backoff for intentional switch
 
     showToast(`Switched to ${NETWORK_LABELS[network] || network}`);
 
-    // Refresh wallet data after network switch
+    // Refresh wallet data after network switch (this re-connects WS + polling)
     if (typeof showDashboard === 'function') {
         showDashboard();
     }
