@@ -442,32 +442,17 @@ function renderIdentityBanner(compact = false) {
     `;
 }
 
-// ── No Identity — Interactive Onboarding Steps ──
+// ── No Identity — Simple Registration Card ──
 function renderNoIdentity(container) {
     container.innerHTML = `
-        ${renderIdentityBanner()}
         <div class="id-onboard">
             <div class="id-onboard-step id-onboard-active" onclick="showRegisterIdentityModal()">
-                <div class="id-onboard-num">1</div>
+                <div class="id-onboard-num"><i class="fas fa-fingerprint" style="font-size:1rem;"></i></div>
                 <div class="id-onboard-body">
-                    <div class="id-onboard-title">Register Identity</div>
-                    <div class="id-onboard-desc">Choose a display name and agent type. Free — only the 0.0001 MOLT transaction fee.</div>
+                    <div class="id-onboard-title">Register Your MoltyID</div>
+                    <div class="id-onboard-desc">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 MOLT transaction fee.</div>
                 </div>
                 <div class="id-onboard-arrow"><i class="fas fa-chevron-right"></i></div>
-            </div>
-            <div class="id-onboard-step id-onboard-locked">
-                <div class="id-onboard-num"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
-                <div class="id-onboard-body">
-                    <div class="id-onboard-title">Claim a .molt Name</div>
-                    <div class="id-onboard-desc">Register a human-readable name (5+ chars, 20 MOLT/year). Premium 3–4 char via auction.</div>
-                </div>
-            </div>
-            <div class="id-onboard-step id-onboard-locked">
-                <div class="id-onboard-num"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
-                <div class="id-onboard-body">
-                    <div class="id-onboard-title">Build Reputation</div>
-                    <div class="id-onboard-desc">Earn rep through transactions, governance, vouches. Unlock trust tiers &amp; achievements.</div>
-                </div>
             </div>
         </div>
     `;
@@ -588,7 +573,9 @@ function renderNameSection(moltName, nameDetails) {
                 <div class="id-section-body id-section-empty">
                     <p>No name registered</p>
                     <small>5+ chars from 20 MOLT/yr</small>
-                    <button class="btn btn-small btn-primary" style="margin-top:0.5rem;" onclick="showRegisterNameModal()">
+                </div>
+                <div class="id-section-foot">
+                    <button class="btn btn-small btn-primary" onclick="showRegisterNameModal()">
                         <i class="fas fa-plus"></i> Register
                     </button>
                 </div>
@@ -782,8 +769,18 @@ async function showRegisterIdentityModal() {
         }
         showToast('Identity registered! Loading profile...');
         _identityCache = null;
+        // Show immediate feedback — swap to loading state
+        const container = document.getElementById('identityContent');
+        if (container) {
+            container.innerHTML = `
+                <div class="id-loading">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <span>Identity registered — loading dashboard...</span>
+                </div>
+            `;
+        }
         // Retry loading identity — the tx may take 1-3 blocks to be indexed
-        await retryLoadIdentity(8, 2000);
+        await retryLoadIdentity(10, 1500);
     } catch (e) {
         showToast('Registration failed: ' + e.message);
     }
@@ -808,10 +805,14 @@ async function showEditProfileModal() {
     try {
         showToast('Updating agent type...');
         const tx = await buildContractCall('update_agent_type', { agent_type: parseInt(values.agentType) }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Update failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Agent type updated!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Update failed: ' + e.message);
     }
@@ -827,32 +828,55 @@ async function showRegisterNameModal() {
                 <div class="id-pricing-row id-pricing-muted"><span>4 chars</span><span>100 MOLT/year <em>(auction only)</em></span></div>
                 <div class="id-pricing-row id-pricing-muted"><span>3 chars</span><span>500 MOLT/year <em>(auction only)</em></span></div>
             </div>
-            <small>Names are lowercase, 3-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.<br>Premium short names (3-4 chars) can only be acquired through the auction system.</small>
+            <small>Names are lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.<br>Premium short names (3-4 chars) can only be acquired through the auction system.</small>
+            <div id="nameRegCostPreview" style="margin-top:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-tertiary,#1a1e2e);border-radius:8px;font-size:0.85rem;display:none;">
+                <span style="opacity:0.7;">Total cost:</span> <strong id="nameRegCostValue">—</strong>
+            </div>
         `,
         icon: 'fas fa-at',
         confirmText: 'Register Name',
         fields: [
-            { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname' },
-            { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1' },
+            { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname (5+ characters)' },
+            { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
-        ]
+        ],
+        onRender: (modal) => {
+            const nameInput = modal.querySelector('#name');
+            const durationInput = modal.querySelector('#duration');
+            const preview = modal.querySelector('#nameRegCostPreview');
+            const costValue = modal.querySelector('#nameRegCostValue');
+            const updateCost = () => {
+                const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
+                const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
+                if (n.length >= 5) {
+                    const costPerYear = getNameCostPerYear(n.length);
+                    const total = costPerYear * d;
+                    if (costValue) costValue.textContent = `${total} MOLT (${costPerYear} MOLT × ${d} yr)`;
+                    if (preview) preview.style.display = 'block';
+                } else {
+                    if (preview) preview.style.display = 'none';
+                }
+            };
+            if (nameInput) nameInput.addEventListener('input', updateCost);
+            if (durationInput) durationInput.addEventListener('input', updateCost);
+        }
     });
     if (!values || !values.password || !values.name) return;
     
-    const name = values.name.toLowerCase().replace(/\.molt$/, '');
+    const name = values.name.toLowerCase().replace(/\.molt$/, '').trim();
     const duration = Math.max(1, Math.min(10, parseInt(values.duration) || 1));
     const costPerYear = getNameCostPerYear(name.length);
     const totalCost = costPerYear * duration;
     
-    // Validate name format
-    if (name.length < 3 || name.length > 32 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(name)) {
-        showToast('Invalid name: 3-32 chars, a-z 0-9 hyphens, no leading/trailing hyphens');
+    // Validate name length — 5+ chars required (3-4 are auction-only)
+    if (name.length < 5) {
+        showToast('Name must be at least 5 characters. 3-4 char names are auction-only.');
         return;
     }
     
-    // Premium short names are auction-only
-    if (name.length <= 4) {
-        showToast(`${name.length}-char names are premium and can only be acquired through auctions`);
+    // Validate name format
+    if (name.length > 32 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(name)) {
+        showToast('Invalid name: 5-32 chars, a-z 0-9 hyphens, no leading/trailing hyphens');
         return;
     }
     
@@ -862,7 +886,11 @@ async function showRegisterNameModal() {
             name: name,
             duration_years: duration
         }, values.password, totalCost);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Registration failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast(`${name}.molt registered!`);
         _identityCache = null;
         await retryLoadIdentity(5, 1200);
@@ -885,7 +913,7 @@ async function showRenewNameModal() {
         icon: 'fas fa-redo',
         confirmText: 'Renew Name',
         fields: [
-            { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1' },
+            { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ]
     });
@@ -900,10 +928,14 @@ async function showRenewNameModal() {
             name: name,
             additional_years: years
         }, values.password, totalCost);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Renewal failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Name renewed!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Renewal failed: ' + e.message);
     }
@@ -940,10 +972,14 @@ async function showTransferNameModal() {
             name: name,
             new_owner: values.recipient
         }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Transfer failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Name transferred!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Transfer failed: ' + e.message);
     }
@@ -980,10 +1016,14 @@ async function showReleaseNameModal() {
     try {
         showToast('Releasing name...');
         const tx = await buildContractCall('release_name', { name: name }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Release failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Name released');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Release failed: ' + e.message);
     }
@@ -998,24 +1038,34 @@ async function showAddSkillModal() {
         confirmText: 'Add Skill',
         fields: [
             { id: 'skillName', label: 'Skill Name', type: 'text', placeholder: 'e.g. Rust, Trading, Security' },
-            { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50' },
+            { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50', min: 1, max: 100, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ]
     });
     if (!values || !values.password || !values.skillName) return;
+    
+    const skillName = values.skillName.trim();
+    if (!skillName || skillName.length > 64) {
+        showToast('Skill name required (1-64 chars)');
+        return;
+    }
     
     const proficiency = Math.max(1, Math.min(100, parseInt(values.proficiency) || 50));
     
     try {
         showToast('Adding skill...');
         const tx = await buildContractCall('add_skill', {
-            name: values.skillName,
+            name: skillName,
             proficiency: proficiency
         }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Skill added!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Failed: ' + e.message);
     }
@@ -1044,10 +1094,14 @@ async function showVouchModal() {
     try {
         showToast('Sending vouch...');
         const tx = await buildContractCall('vouch', { vouchee: values.vouchee }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Vouch failed: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Vouch sent!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Vouch failed: ' + e.message);
     }
@@ -1085,7 +1139,7 @@ async function showEditAgentModal() {
         if (values.endpoint !== currentEndpoint) {
             tasks.push(async () => {
                 const tx = await buildContractCall('set_endpoint', { url: values.endpoint }, values.password);
-                await rpc.sendTransaction(tx);
+                return await rpc.sendTransaction(tx);
             });
         }
         
@@ -1096,7 +1150,7 @@ async function showEditAgentModal() {
         if (newRateShells !== oldRateShells) {
             tasks.push(async () => {
                 const tx = await buildContractCall('set_rate', { molt_per_unit: newRateShells }, values.password);
-                await rpc.sendTransaction(tx);
+                return await rpc.sendTransaction(tx);
             });
         }
         
@@ -1106,7 +1160,7 @@ async function showEditAgentModal() {
         if (newAvailNum !== oldAvailNum) {
             tasks.push(async () => {
                 const tx = await buildContractCall('set_availability', { status: newAvailNum }, values.password);
-                await rpc.sendTransaction(tx);
+                return await rpc.sendTransaction(tx);
             });
         }
         
@@ -1118,11 +1172,15 @@ async function showEditAgentModal() {
         showToast('Saving agent configuration...');
         // Execute sequentially (each needs fresh blockhash)
         for (const task of tasks) {
-            await task();
+            const taskResult = await task();
+            if (taskResult?.error) {
+                showToast('Update failed: ' + (taskResult.error || 'unknown'));
+                return;
+            }
         }
         showToast('Agent service updated!');
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Update failed: ' + e.message);
     }

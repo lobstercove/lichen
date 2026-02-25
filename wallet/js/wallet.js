@@ -60,10 +60,12 @@ let balanceWsSubscribedAddress = null;
 let bridgeWsActive = false;
 let _wsReconnectDelay = 1000;  // exponential backoff: 1s → 2s → 4s → … → 30s
 let _wsKeepaliveTimer = null;
+let _wsManualClose = false;
 
 function connectBalanceWebSocket() {
     const wallet = getActiveWallet();
     if (!wallet) return;
+    _wsManualClose = false;
     
     // Don't reconnect if already connected or connecting for this address
     if (balanceWs && balanceWsSubscribedAddress === wallet.address) {
@@ -72,8 +74,8 @@ function connectBalanceWebSocket() {
         }
     }
     
-    // Close existing connection
-    disconnectBalanceWebSocket();
+    // Close existing connection without entering manual-stop mode
+    disconnectBalanceWebSocket(false);
     
     const wsUrl = getWsEndpoint();
     
@@ -179,6 +181,8 @@ function connectBalanceWebSocket() {
         bridgeMintSubId = null;
         bridgeWsActive = false;
         balanceWsSubscribedAddress = null;
+        balanceWs = null;
+        if (_wsManualClose) return;
         scheduleWsReconnect();
     };
     
@@ -232,7 +236,8 @@ function handleBridgeMintEvent(data) {
     loadAssets();
 }
 
-function disconnectBalanceWebSocket() {
+function disconnectBalanceWebSocket(manual = true) {
+    _wsManualClose = !!manual;
     if (_wsKeepaliveTimer) { clearInterval(_wsKeepaliveTimer); _wsKeepaliveTimer = null; }
     if (balanceWsReconnectTimer) {
         clearTimeout(balanceWsReconnectTimer);
@@ -276,6 +281,9 @@ function disconnectBalanceWebSocket() {
 
 function scheduleWsReconnect() {
     if (balanceWsReconnectTimer) return;
+    if (_wsManualClose) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const delay = _wsReconnectDelay;
     _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, 30000);  // exponential backoff: max 30s
     balanceWsReconnectTimer = setTimeout(() => {
@@ -285,6 +293,20 @@ function scheduleWsReconnect() {
             connectBalanceWebSocket();
         }
     }, delay);
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+        if (!_wsManualClose) connectBalanceWebSocket();
+    });
+}
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && !_wsManualClose) {
+            connectBalanceWebSocket();
+        }
+    });
 }
 
 // ===== HTTP BALANCE POLLING FALLBACK =====
@@ -1876,7 +1898,7 @@ async function showReefStakeModal() {
         icon: 'fas fa-layer-group',
         confirmText: 'Stake MOLT',
         fields: [
-            { id: 'stakeAmount', label: 'Amount (MOLT)', type: 'number', placeholder: '0.00' },
+            { id: 'stakeAmount', label: 'Amount (MOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             { id: 'lockTier', label: 'Lock Tier', type: 'select',
               options: [
                   { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
@@ -1965,7 +1987,7 @@ async function showReefUnstakeModal() {
         icon: 'fas fa-unlock-alt',
         confirmText: 'Unstake',
         fields: [
-            { id: 'unstakeAmount', label: 'Amount (stMOLT)', type: 'number', placeholder: '0.00' },
+            { id: 'unstakeAmount', label: 'Amount (stMOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
     });
@@ -3067,7 +3089,10 @@ function showPasswordModal(options) {
                 return `<div class="form-group"><label>${field.label}</label><select id="${field.id}" class="form-input">${optionsHTML}</select></div>`;
             }
             const val = field.value !== undefined ? ` value="${escapeHtml(String(field.value))}"` : '';
-            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}></div>`;
+            const minAttr = field.min !== undefined ? ` min="${field.min}"` : '';
+            const maxAttr = field.max !== undefined ? ` max="${field.max}"` : '';
+            const stepAttr = field.step !== undefined ? ` step="${field.step}"` : '';
+            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}${minAttr}${maxAttr}${stepAttr}></div>`;
         }).join('');
         
         modal.innerHTML = `
@@ -3095,6 +3120,11 @@ function showPasswordModal(options) {
         
         document.body.appendChild(modal);
         requestAnimationFrame(() => modal.classList.add('show'));
+        
+        // Call onRender callback for dynamic behavior (e.g. cost previews)
+        if (typeof options.onRender === 'function') {
+            try { options.onRender(modal); } catch (_) {}
+        }
         
         // Focus first input
         setTimeout(() => {

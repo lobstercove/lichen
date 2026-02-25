@@ -2961,6 +2961,10 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 }
 .id-section-empty p { margin: 0 0 0.15rem; }
 .id-section-empty small { font-size: 0.75rem; opacity: 0.7; }
+.id-section-foot {
+    padding: 0.5rem 0.75rem 0.75rem;
+    border-top: 1px solid var(--border);
+}
 .id-section-actions {
     display: flex;
     gap: 0.75rem;
