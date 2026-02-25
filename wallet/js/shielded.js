@@ -683,27 +683,27 @@ function renderNoteList() {
 
     if (unspent.length === 0) {
         container.innerHTML = `
-            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                <i class="fas fa-shield-alt" style="font-size: 2rem; opacity: 0.3; margin-bottom: 0.75rem;"></i>
+            <div class="shield-empty-state">
+                <i class="fas fa-shield-alt"></i>
                 <p>No shielded notes yet</p>
-                <p style="font-size: 0.85rem;">Shield MOLT to create your first private note</p>
+                <p class="shield-empty-sub">Shield MOLT to create your first private note</p>
             </div>
         `;
         return;
     }
 
     container.innerHTML = unspent.map((note, i) => `
-        <div class="note-item" style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; background: var(--bg-darker); border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid var(--border);">
+        <div class="shield-note-item">
             <div>
-                <div style="font-weight: 600; font-size: 0.95rem;">
-                    <i class="fas fa-lock" style="color: #a855f7; margin-right: 0.25rem;"></i>
+                <div class="shield-note-amount">
+                    <i class="fas fa-lock"></i>
                     ${(note.value / SHELLS_PER_MOLT).toFixed(4)} MOLT
                 </div>
-                <div style="font-size: 0.8rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
+                <div class="shield-note-meta">
                     Note #${note.index} &bull; ${note.commitment ? note.commitment.slice(0, 12) + '...' : ''}
                 </div>
             </div>
-            <span class="badge" style="background: rgba(6, 214, 160, 0.2); color: #06d6a0; font-size: 0.75rem;">
+            <span class="shield-note-badge">
                 <i class="fas fa-check-circle"></i> Unspent
             </span>
         </div>
@@ -720,11 +720,14 @@ function showShieldedStatus(message, state) {
     }
 
     statusEl.style.display = 'block';
+    const iconMap = {
+        pending: '<i class="fas fa-spinner fa-spin"></i>',
+        error: '<i class="fas fa-exclamation-circle"></i>',
+        success: '<i class="fas fa-check-circle"></i>',
+    };
     statusEl.innerHTML = `
-        <div style="padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem;
-            background: ${state === 'pending' ? 'rgba(168, 85, 247, 0.1)' : state === 'error' ? 'rgba(244, 63, 94, 0.1)' : 'rgba(6, 214, 160, 0.1)'};
-            border: 1px solid ${state === 'pending' ? 'rgba(168, 85, 247, 0.2)' : state === 'error' ? 'rgba(244, 63, 94, 0.2)' : 'rgba(6, 214, 160, 0.2)'};">
-            ${state === 'pending' ? '<i class="fas fa-spinner fa-spin"></i>' : state === 'error' ? '<i class="fas fa-exclamation-circle"></i>' : '<i class="fas fa-check-circle"></i>'}
+        <div class="shield-status-inner ${state || 'pending'}">
+            ${iconMap[state] || iconMap.pending}
             ${message}
         </div>
     `;

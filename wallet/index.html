@@ -510,10 +510,10 @@
                                 <div class="shield-balance-sub" id="shieldedBalanceShellsValue">0 shells</div>
                             </div>
                             <div class="shield-balance-actions">
-                                <button class="btn btn-primary btn-small" onclick="openShieldModal()">
+                                <button class="btn btn-shield btn-small" onclick="openShieldModal()">
                                     <i class="fas fa-arrow-down"></i> Shield
                                 </button>
-                                <button class="btn btn-secondary btn-small" onclick="openUnshieldModal()">
+                                <button class="btn btn-unshield btn-small" onclick="openUnshieldModal()">
                                     <i class="fas fa-arrow-up"></i> Unshield
                                 </button>
                             </div>
@@ -526,7 +526,7 @@
                     <!-- Shielded Address & Keys -->
                     <div class="shield-card">
                         <h4 class="shield-section-title">
-                            <i class="fas fa-key" style="color: var(--accent);"></i> Shielded Keys
+                            <i class="fas fa-key"></i> Shielded Keys
                         </h4>
                         <div class="shield-key-row">
                             <label class="shield-key-label">Shielded Address</label>
@@ -540,7 +540,7 @@
                         <div class="shield-key-row">
                             <label class="shield-key-label">Viewing Key</label>
                             <div class="address-display">
-                                <code class="shield-key-value" style="color: var(--text-muted);">Share with auditors for selective disclosure</code>
+                                <code class="shield-key-value">Share with auditors for selective disclosure</code>
                                 <button class="btn-icon" onclick="copyViewingKey()" title="Copy viewing key">
                                     <i class="fas fa-eye"></i>
                                 </button>
@@ -555,7 +555,7 @@
                     <!-- Pool Statistics -->
                     <div class="shield-card">
                         <h4 class="shield-section-title">
-                            <i class="fas fa-chart-pie" style="color: #06d6a0;"></i> Pool Statistics
+                            <i class="fas fa-chart-pie"></i> Pool Statistics
                         </h4>
                         <div class="shield-stats-grid">
                             <div class="shield-stat-item">
@@ -573,7 +573,7 @@
                     <div class="shield-card">
                         <div class="shield-notes-header">
                             <h4 class="shield-section-title">
-                                <i class="fas fa-file-invoice" style="color: #f59e0b;"></i> Shielded Notes
+                                <i class="fas fa-file-invoice"></i> Shielded Notes
                             </h4>
                             <span class="shield-note-count" id="ownedNoteCount">0 unspent / 0 total</span>
                         </div>
@@ -679,7 +679,7 @@
                         </label>
                         <div class="address-display">
                             <input type="text" id="walletAddress" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('native')" title="Copy native address">
+                            <button class="btn-circle" onclick="copyAddress('native', this)" title="Copy native address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -692,7 +692,7 @@
                         </label>
                         <div class="address-display">
                             <input type="text" id="walletAddressEVM" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('evm')" title="Copy EVM address">
+                            <button class="btn-circle" onclick="copyAddress('evm', this)" title="Copy EVM address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
@@ -713,7 +713,7 @@
                     <div class="deposit-options">
                         <div class="deposit-card" onclick="showDepositInfo('SOL')">
                             <div class="deposit-card-icon" style="background: rgba(153, 69, 255, 0.12); color: #9945FF;">
-                                <i class="fas fa-sun"></i>
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" alt="Solana" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Solana</strong>
@@ -724,10 +724,21 @@
 
                         <div class="deposit-card" onclick="showDepositInfo('ETH')">
                             <div class="deposit-card-icon" style="background: rgba(98, 126, 234, 0.12); color: #627EEA;">
-                                <i class="fab fa-ethereum"></i>
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" alt="Ethereum" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Ethereum</strong>
+                                <span>USDC, USDT</span>
+                            </div>
+                            <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
+                        </div>
+
+                        <div class="deposit-card" onclick="showDepositInfo('BNB')">
+                            <div class="deposit-card-icon" style="background: rgba(240, 185, 11, 0.12); color: #F0B90B;">
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" alt="BNB" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                            </div>
+                            <div class="deposit-card-info">
+                                <strong>Bridge from BNB Chain</strong>
                                 <span>USDC, USDT</span>
                             </div>
                             <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
@@ -1001,7 +1012,7 @@
             </div>
             <div class="modal-body">
                 <div class="shield-modal-info">
-                    <i class="fas fa-lock" style="color: #a855f7;"></i>
+                    <i class="fas fa-lock"></i>
                     Move MOLT from your transparent balance into the shielded pool.
                     A ZK proof is generated client-side to protect your privacy.
                 </div>
@@ -1076,7 +1087,7 @@
             </div>
             <div class="modal-body">
                 <div class="shield-modal-info">
-                    <i class="fas fa-user-shield" style="color: #a855f7;"></i>
+                    <i class="fas fa-user-shield"></i>
                     Send MOLT privately. Neither the amount, sender, nor recipient is revealed on-chain.
                     Both parties maintain full privacy.
                 </div>
