@@ -1908,9 +1908,9 @@ async function showReefStakeModal() {
         message: `Enter the amount of MOLT to stake, choose a lock tier, and sign with your password.
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
                 <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
-                <strong>30-Day Lock:</strong> 1.1x rewards<br>
-                <strong>180-Day Lock:</strong> 1.25x rewards<br>
-                <strong>365-Day Lock:</strong> 1.5x rewards
+                <strong>30-Day Lock:</strong> 1.6x rewards<br>
+                <strong>180-Day Lock:</strong> 2.4x rewards<br>
+                <strong>365-Day Lock:</strong> 3.6x rewards
             </div>`,
         icon: 'fas fa-layer-group',
         confirmText: 'Stake MOLT',
@@ -1919,9 +1919,9 @@ async function showReefStakeModal() {
             { id: 'lockTier', label: 'Lock Tier', type: 'select',
               options: [
                   { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
-                  { value: '1', label: '30-Day Lock — 1.1x rewards' },
-                  { value: '2', label: '180-Day Lock — 1.25x rewards' },
-                  { value: '3', label: '365-Day Lock — 1.5x rewards' },
+                  { value: '1', label: '30-Day Lock — 1.6x rewards' },
+                  { value: '2', label: '180-Day Lock — 2.4x rewards' },
+                  { value: '3', label: '365-Day Lock — 3.6x rewards' },
               ]},
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]

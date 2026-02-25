@@ -45,6 +45,10 @@ const MAX_PRICE_AGE_SECONDS: u64 = 1800;
 const SIDE_LONG: u8 = 0;
 const SIDE_SHORT: u8 = 1;
 
+// Margin mode
+const MARGIN_MODE_ISOLATED: u8 = 0;
+const MARGIN_MODE_CROSS: u8 = 1;
+
 // Position status
 const POS_OPEN: u8 = 0;
 const POS_CLOSED: u8 = 1;
@@ -212,7 +216,8 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 // Bytes 98..106 : accumulated_funding (u64)
 // Bytes 106..114: sl_price (u64, stop-loss trigger price, 0 = none)
 // Bytes 114..122: tp_price (u64, take-profit trigger price, 0 = none)
-// Bytes 122..128: padding
+// Byte  122     : margin_mode (0=isolated, 1=cross)
+// Bytes 123..128: padding
 
 /// V1 position records are 112 bytes — guards use this for backward compat
 const POSITION_SIZE_V1: usize = 112;
@@ -222,6 +227,7 @@ fn encode_position(
     trader: &[u8; 32], pos_id: u64, pair_id: u64, side: u8, status: u8,
     size: u64, margin: u64, entry_price: u64, leverage: u64,
     created_slot: u64, realized_pnl: u64, accumulated_funding: u64,
+    margin_mode: u8,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(POSITION_SIZE);
     data.extend_from_slice(trader);
@@ -239,6 +245,7 @@ fn encode_position(
     // SL/TP default to 0 (no trigger)
     data.extend_from_slice(&u64_to_bytes(0)); // sl_price
     data.extend_from_slice(&u64_to_bytes(0)); // tp_price
+    data.push(margin_mode);
     while data.len() < POSITION_SIZE { data.push(0); }
     data
 }
@@ -277,6 +284,14 @@ fn decode_pos_margin(data: &[u8]) -> u64 { if data.len() >= 66 { bytes_to_u64(&d
 fn decode_pos_entry_price(data: &[u8]) -> u64 { if data.len() >= 74 { bytes_to_u64(&data[66..74]) } else { 0 } }
 fn decode_pos_leverage(data: &[u8]) -> u64 { if data.len() >= 82 { bytes_to_u64(&data[74..82]) } else { 0 } }
 fn decode_pos_accumulated_funding(data: &[u8]) -> u64 { if data.len() >= 106 { bytes_to_u64(&data[98..106]) } else { 0 } }
+fn decode_pos_margin_mode(data: &[u8]) -> u8 {
+    if data.len() > 122 {
+        let mode = data[122];
+        if mode == MARGIN_MODE_CROSS { MARGIN_MODE_CROSS } else { MARGIN_MODE_ISOLATED }
+    } else {
+        MARGIN_MODE_ISOLATED
+    }
+}
 
 fn update_pos_status(data: &mut Vec<u8>, s: u8) { if data.len() > 49 { data[49] = s; } }
 fn update_pos_size(data: &mut Vec<u8>, s: u64) {
@@ -543,6 +558,17 @@ pub fn open_position(
     trader: *const u8, pair_id: u64, side: u8, size: u64,
     leverage: u64, margin_amount: u64,
 ) -> u32 {
+    open_position_with_mode(trader, pair_id, side, size, leverage, margin_amount, MARGIN_MODE_ISOLATED)
+}
+
+/// Open a new margin position with explicit margin mode.
+/// Returns: 0=success, 1=paused, 2=invalid leverage, 3=insufficient margin,
+///          4=max positions, 5=reentrancy, 6=no mark price, 7=pair not margin-enabled,
+///          8=collateral lock failed, 9=invalid margin mode
+pub fn open_position_with_mode(
+    trader: *const u8, pair_id: u64, side: u8, size: u64,
+    leverage: u64, margin_amount: u64, margin_mode: u8,
+) -> u32 {
     if !reentrancy_enter() { return 5; }
     if !require_not_paused() { reentrancy_exit(); return 1; }
 
@@ -559,9 +585,21 @@ pub fn open_position(
     // Check pair is enabled for margin
     if load_u64(&margin_enabled_key(pair_id)) != 1 { reentrancy_exit(); return 7; }
 
+    if margin_mode != MARGIN_MODE_ISOLATED && margin_mode != MARGIN_MODE_CROSS {
+        reentrancy_exit();
+        return 9;
+    }
+
     // Validate leverage
     let max_lev = load_u64(&max_leverage_key(pair_id));
-    let effective_max = if max_lev > 0 { max_lev } else { MAX_LEVERAGE_ISOLATED };
+    let effective_max = if margin_mode == MARGIN_MODE_CROSS {
+        let pair_cap = if max_lev > 0 { max_lev } else { MAX_LEVERAGE_CROSS };
+        core::cmp::min(pair_cap, MAX_LEVERAGE_CROSS)
+    } else if max_lev > 0 {
+        max_lev
+    } else {
+        MAX_LEVERAGE_ISOLATED
+    };
     if leverage == 0 || leverage > effective_max { reentrancy_exit(); return 2; }
     if side > SIDE_SHORT { reentrancy_exit(); return 2; }
 
@@ -604,7 +642,7 @@ pub fn open_position(
     let data = encode_position(
         &t, pos_id, pair_id, side, POS_OPEN,
         size, margin_amount, mark_price, leverage,
-        slot, 0, 0,
+        slot, 0, 0, margin_mode,
     );
     storage_set(&position_key(pos_id), &data);
     save_u64(POSITION_COUNT_KEY, pos_id);
@@ -1385,7 +1423,7 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        // 2 = open_position(trader[32], pair_id[8], side[1], size[8], leverage[8], margin[8])
+        // 2 = open_position(trader[32], pair_id[8], side[1], size[8], leverage[8], margin[8], margin_mode[1]?)
         2 => {
             if args.len() >= 66 {
                 let pair_id = bytes_to_u64(&args[33..41]);
@@ -1393,7 +1431,8 @@ pub extern "C" fn call() {
                 let size = bytes_to_u64(&args[42..50]);
                 let leverage = bytes_to_u64(&args[50..58]);
                 let margin = bytes_to_u64(&args[58..66]);
-                let r = open_position(args[1..33].as_ptr(), pair_id, side, size, leverage, margin);
+                let margin_mode = if args.len() >= 67 { args[66] } else { MARGIN_MODE_ISOLATED };
+                let r = open_position_with_mode(args[1..33].as_ptr(), pair_id, side, size, leverage, margin, margin_mode);
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
@@ -1805,6 +1844,41 @@ mod tests {
         test_mock::set_slot(100);
         // 100x tier: initial_margin_bps=100 → required = 1B * 100/10000 = 10_000_000
         assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 100, 10_000_000), 0);
+    }
+
+    #[test]
+    fn test_open_position_cross_mode_enforces_3x_cap() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(
+            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 4, 250_000_000, MARGIN_MODE_CROSS),
+            2
+        );
+    }
+
+    #[test]
+    fn test_open_position_cross_mode_persisted_on_chain() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(
+            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 3, 333_300_000, MARGIN_MODE_CROSS),
+            0
+        );
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin_mode(&data), MARGIN_MODE_CROSS);
+    }
+
+    #[test]
+    fn test_open_position_invalid_margin_mode_rejected() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        assert_eq!(
+            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000, 9),
+            9
+        );
     }
 
     #[test]

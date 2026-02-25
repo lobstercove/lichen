@@ -218,6 +218,7 @@ pub struct MarginPositionJson {
     pub trader: String,
     pub pair_id: u64,
     pub side: &'static str,
+    pub margin_type: &'static str,
     pub status: &'static str,
     pub size: u64,
     pub margin: u64,
@@ -724,7 +725,7 @@ fn decode_lp_position(data: &[u8], position_id: u64) -> Option<PositionJson> {
     })
 }
 
-/// Decode a margin position from 112-byte blob
+/// Decode a margin position from 112-byte (V1) / 128-byte (V2+) blob
 fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
     if data.len() < 112 {
         return None;
@@ -736,6 +737,11 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
     let side = match data[48] {
         0 => "long",
         _ => "short",
+    };
+    let margin_type = if data.len() > 122 && data[122] == 1 {
+        "cross"
+    } else {
+        "isolated"
     };
     let status = match data[49] {
         0 => "open",
@@ -768,6 +774,7 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
         trader,
         pair_id,
         side,
+        margin_type,
         status,
         size,
         margin,

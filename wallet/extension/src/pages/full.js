@@ -760,7 +760,7 @@ async function loadStakingTab() {
     const remainingDays = isLocked ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
 
     const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
-    const tierMultipliers = ['1.0x', '1.1x', '1.25x', '1.5x'];
+    const tierMultipliers = ['1.0x', '1.6x', '2.4x', '3.6x'];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];
 
@@ -898,9 +898,9 @@ async function showStakeModal() {
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
         <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
-        <option value="1">30-Day Lock — 1.1x rewards</option>
-        <option value="2">180-Day Lock — 1.25x rewards</option>
-        <option value="3">365-Day Lock — 1.5x rewards</option>
+        <option value="1">30-Day Lock — 1.6x rewards</option>
+        <option value="2">180-Day Lock — 2.4x rewards</option>
+        <option value="3">365-Day Lock — 3.6x rewards</option>
       </select>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="stakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">

@@ -488,9 +488,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── DEX Margin instruction builders ──
-    // Opcode 2: open_position(trader, pair_id, side, size, leverage, margin)
-    function buildOpenPositionArgs(trader, pairId, side, size, leverage, margin) {
-        const buf = new ArrayBuffer(66);
+    // Opcode 2: open_position(trader, pair_id, side, size, leverage, margin, margin_mode)
+    function buildOpenPositionArgs(trader, pairId, side, size, leverage, margin, marginType = 'isolated') {
+        const buf = new ArrayBuffer(67);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 2); // opcode
@@ -500,6 +500,7 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, 42, size);
         writeU64LE(view, 50, leverage);
         writeU64LE(view, 58, margin);
+        writeU8(arr, 66, marginType === 'cross' ? 1 : 0);
         return arr;
     }
 
@@ -1332,8 +1333,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tvWidget?.activeChart) { try { tvWidget.activeChart().setSymbol(pair.id, () => {}); } catch { drawChart(); } } else drawChart();
         // Update oracle reference line for new pair
         updateOracleReferenceLine();
-        // Update margin enablement warning for new pair
-        if (state.tradeMode === 'margin') { checkMarginPairEnabled(); updateMarginInfo(); }
+        // Update margin mode availability for new pair
+        if (state.tradeMode === 'margin' && !isMarginEnabledForActivePair()) {
+            setTradeMode('spot', { notifyOnBlocked: true });
+        } else {
+            syncMarginAvailabilityUi();
+            if (state.tradeMode === 'margin') updateMarginInfo();
+        }
     }
 
     function updatePairStats(pair) {
@@ -1676,7 +1682,37 @@ document.addEventListener('DOMContentLoaded', () => {
         if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`;
     }
 
-    document.querySelectorAll('.trade-mode').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.tradeMode = btn.dataset.mode; const mi = document.getElementById('marginInline'); if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin'); updateSubmitBtn(); updateMarginSltpVisibility(); if (state.tradeMode === 'margin') { applyLeverageConstraints(); checkMarginPairEnabled(); loadMarginStats(); loadMarginPositions(); updateMarginInfo(); } }); });
+    function isMarginEnabledForActivePair() {
+        return marginEnabledPairIds.includes(state.activePairId);
+    }
+
+    function setTradeMode(mode, { notifyOnBlocked = false } = {}) {
+        if (mode === 'margin' && !isMarginEnabledForActivePair()) {
+            syncMarginAvailabilityUi();
+            if (notifyOnBlocked) showNotification('Margin is unavailable for this pair', 'warning');
+            return false;
+        }
+        state.tradeMode = mode;
+        document.querySelectorAll('.trade-mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        const mi = document.getElementById('marginInline');
+        if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin');
+        updateSubmitBtn();
+        updateMarginSltpVisibility();
+        if (state.tradeMode === 'margin') {
+            applyLeverageConstraints();
+            loadMarginStats();
+            loadMarginPositions();
+            updateMarginInfo();
+        }
+        syncMarginAvailabilityUi();
+        return true;
+    }
+
+    document.querySelectorAll('.trade-mode').forEach(btn => {
+        btn.addEventListener('click', () => {
+            setTradeMode(btn.dataset.mode, { notifyOnBlocked: true });
+        });
+    });
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
     document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); }));
@@ -2013,7 +2049,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
-                    buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit)
+                    buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType)
                 )]);
                 showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
                 // Auto-set SL/TP on newly opened position if the user specified values
@@ -2777,11 +2813,31 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/margin/enabled-pairs');
             if (data && Array.isArray(data.enabledPairIds)) marginEnabledPairIds = data.enabledPairIds;
         } catch { /* keep empty */ }
+        syncMarginAvailabilityUi();
+        if (state.tradeMode === 'margin' && !isMarginEnabledForActivePair()) {
+            setTradeMode('spot');
+        }
     }
     function checkMarginPairEnabled() {
+        syncMarginAvailabilityUi();
+    }
+
+    function syncMarginAvailabilityUi() {
+        const enabled = isMarginEnabledForActivePair();
         const warn = document.getElementById('marginPairWarning');
-        const enabled = marginEnabledPairIds.includes(state.activePairId);
-        if (warn) warn.classList.toggle('hidden', enabled);
+        if (warn) warn.classList.toggle('hidden', enabled || state.tradeMode !== 'margin');
+
+        const marginModeBtn = document.querySelector('.trade-mode[data-mode="margin"]');
+        if (marginModeBtn) {
+            marginModeBtn.disabled = !enabled;
+            marginModeBtn.classList.toggle('mode-disabled', !enabled);
+            marginModeBtn.title = enabled ? '' : 'Margin unavailable for this pair';
+        }
+
+        document.querySelectorAll('.margin-inline-type').forEach(btn => {
+            btn.disabled = !enabled;
+            btn.classList.toggle('mode-disabled', !enabled);
+        });
     }
 
     // F10.7 FIX: Maintenance margin BPS lookup matching contract tier table
@@ -3308,6 +3364,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     container.innerHTML = data.map(pos => {
                         const side = pos.side === 'long' ? 'Long' : 'Short';
                         const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
+                        const marginType = pos.marginType === 'cross' ? 'Cross' : 'Isolated';
                         const leverage = pos.leverage || state.leverageValue || 2;
                         // Unrealized PnL computation
                         const mark = pos.markPrice || state.lastPrice;
@@ -3345,7 +3402,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         return `<div class="${rowClass}" data-position-id="${posId}">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
-                                <span class="mono-value">${leverage}x</span>
+                                <span class="mono-value">${leverage}x · ${marginType}</span>
                             </div>
                             <div class="margin-pos-details">
                                 <span>Size: ${formatAmount(sizeRaw / 1e9)}</span>

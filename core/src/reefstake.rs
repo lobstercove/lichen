@@ -187,12 +187,13 @@ impl LockTier {
     }
 
     /// Reward multiplier in basis points (10000 = 1.0x)
+    /// Target APY ratios: Flexible ~5%, 30-Day ~8%, 180-Day ~12%, 365-Day ~18%
     pub fn reward_multiplier_bp(&self) -> u64 {
         match self {
-            Self::Flexible => 10_000, // 1.0x
-            Self::Lock30 => 11_000,   // 1.1x
-            Self::Lock180 => 12_500,   // 1.25x
-            Self::Lock365 => 15_000,  // 1.5x
+            Self::Flexible => 10_000, // 1.0x  (base ~5%)
+            Self::Lock30 => 16_000,   // 1.6x  (~8%)
+            Self::Lock180 => 24_000,  // 2.4x  (~12%)
+            Self::Lock365 => 36_000,  // 3.6x  (~18%)
         }
     }
 
