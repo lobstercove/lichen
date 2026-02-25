@@ -209,57 +209,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error('Invalid key length — expected 32 or 64 bytes (hex)');
                 }
                 this.keypair = kp;
-                this.address = (window.bs58 && bs58.encode)
-                    ? bs58.encode(kp.publicKey)
-                    : bytesToHex(kp.publicKey);
+                this.address = bs58encode(kp.publicKey);
                 this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
                 return this;
             }
-            // Fallback — try RPC importWallet
-            try {
-                const result = await api.rpc('importWallet', [keyStr]);
-                if (result && (result.address || result.pubkey)) {
-                    this.address = result.address || result.pubkey;
-                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-                    this.keypair = { connected: true, imported: true };
-                    return this;
-                }
-            } catch (e) { /* fall through */ }
-            throw new Error('Cannot import key — no crypto library available');
+            throw new Error('Cannot import key — crypto library not loaded');
         },
         /** Generate a fresh Ed25519 keypair */
         async generate() {
             if (window.nacl && window.nacl.sign) {
                 const kp = nacl.sign.keyPair();
                 this.keypair = kp;
-                this.address = (window.bs58 && bs58.encode)
-                    ? bs58.encode(kp.publicKey)
-                    : bytesToHex(kp.publicKey);
+                this.address = bs58encode(kp.publicKey);
                 this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
                 return this;
             }
-            // Fallback: ask RPC to create a wallet
-            const w = await this._ensureWallet();
-            if (w) {
-                const result = await w.connect();
-                if (result && result.address) {
-                    this.address = result.address;
-                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-                    this.keypair = { connected: true, generated: true };
-                    return this;
-                }
-            }
-            // Last resort: createWallet RPC
-            try {
-                const result = await api.rpc('createWallet', []);
-                if (result && (result.address || result.pubkey)) {
-                    this.address = result.address || result.pubkey;
-                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-                    this.keypair = { connected: true, generated: true };
-                    return this;
-                }
-            } catch (e) { /* fall through */ }
-            throw new Error('Cannot generate wallet — no crypto library available');
+            throw new Error('Cannot generate wallet — crypto library not loaded');
         },
         sign(message) {
             throw new Error('Direct signing removed — use wallet extension');
@@ -2184,22 +2149,23 @@ document.addEventListener('DOMContentLoaded', () => {
             if (words.length < 12) { showNotification('Enter at least 12 mnemonic words', 'warning'); return; }
             const mnemonic = words.join(' ');
             try {
-                // Try MoltChain SDK mnemonic import
-                if (window.MoltChain && window.MoltChain.Wallet && window.MoltChain.Wallet.fromMnemonic) {
-                    const w = MoltChain.Wallet.fromMnemonic(mnemonic);
-                    wallet.address = w.address || w.publicKey;
+                // Derive Ed25519 keypair from BIP39 mnemonic via PBKDF2 (Solana-compatible)
+                if (window.nacl && window.nacl.sign && window.crypto && window.crypto.subtle) {
+                    const enc = new TextEncoder();
+                    const keyMaterial = await crypto.subtle.importKey(
+                        'raw', enc.encode(mnemonic), 'PBKDF2', false, ['deriveBits']
+                    );
+                    const seedBits = await crypto.subtle.deriveBits(
+                        { name: 'PBKDF2', salt: enc.encode('mnemonic'), iterations: 2048, hash: 'SHA-512' },
+                        keyMaterial, 512
+                    );
+                    const seed = new Uint8Array(seedBits).slice(0, 32);
+                    const kp = nacl.sign.keyPair.fromSeed(seed);
+                    wallet.keypair = kp;
+                    wallet.address = bs58encode(kp.publicKey);
                     wallet.shortAddr = wallet.address.slice(0, 8) + '...' + wallet.address.slice(-6);
-                    wallet.keypair = w.keypair || { connected: true, imported: true };
                 } else {
-                    // Fallback: try RPC importWallet with mnemonic
-                    const result = await api.rpc('importWallet', [mnemonic]);
-                    if (result && (result.address || result.pubkey)) {
-                        wallet.address = result.address || result.pubkey;
-                        wallet.shortAddr = wallet.address.slice(0, 8) + '...' + wallet.address.slice(-6);
-                        wallet.keypair = { connected: true, imported: true };
-                    } else {
-                        throw new Error('Mnemonic import not supported by this node');
-                    }
+                    throw new Error('Mnemonic import requires crypto support — use a modern browser');
                 }
                 savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
                 localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
