@@ -1433,10 +1433,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Poll block height for footer display
     async function pollBlockHeight() {
         try {
-            const resp = await fetch(`${RPC_BASE}/block/latest`);
-            if (resp.ok) {
-                const data = await resp.json();
-                const slot = data.slot || data.header?.slot || data.blockHeight || 0;
+            const slot = await api.rpc('getSlot', []);
+            if (typeof slot === 'number') {
                 updateFooterStatus(slot, true);
             }
         } catch {

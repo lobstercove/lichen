@@ -366,3 +366,39 @@ function formatShells(shells) {
 }
 
 // console.log('✅ shared/utils.js loaded');
+
+// ── Chain Status Bar — auto-wire any page with id="chainBlockHeight" ──
+(function initChainStatusBarShared() {
+    if (typeof document === 'undefined') return;
+    function wire() {
+        var blockEl = document.getElementById('chainBlockHeight');
+        if (!blockEl) return; // No status bar on this page
+        var dotEl = document.getElementById('chainDot');
+        var latEl = document.getElementById('chainLatency');
+        var currentBlock = 0;
+
+        function poll() {
+            var t0 = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+            moltRpcCall('getSlot', []).then(function(slot) {
+                var ms = Math.round(((typeof performance !== 'undefined') ? performance.now() : Date.now()) - t0);
+                if (typeof slot === 'number' && slot > currentBlock) currentBlock = slot;
+                blockEl.textContent = 'Block #' + currentBlock.toLocaleString();
+                if (latEl) latEl.textContent = ms + ' ms';
+                if (dotEl) { dotEl.classList.add('connected'); dotEl.classList.remove('disconnected'); }
+            }).catch(function() {
+                blockEl.textContent = 'Reconnecting\u2026';
+                if (latEl) latEl.textContent = '';
+                if (dotEl) { dotEl.classList.remove('connected'); dotEl.classList.add('disconnected'); }
+            });
+        }
+
+        poll();
+        setInterval(poll, 5000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wire);
+    } else {
+        wire();
+    }
+})();
