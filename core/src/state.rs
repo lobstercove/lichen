@@ -1899,12 +1899,9 @@ impl StateStore {
 
         // Get or create receiver account
         // AUDIT-FIX C-5: Track whether this is a new account for counter increment
-        let to_existed = self.get_account(to)?.is_some();
-        let mut to_account = if to_existed {
-            self.get_account(to)?.unwrap()
-        } else {
-            Account::new(0, *to)
-        };
+        let existing = self.get_account(to)?;
+        let to_existed = existing.is_some();
+        let mut to_account = existing.unwrap_or_else(|| Account::new(0, *to));
 
         // Credit spendable balance
         to_account.add_spendable(shells)?;
