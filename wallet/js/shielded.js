@@ -778,18 +778,37 @@ function openShieldedTransferModal() {
     document.getElementById('shieldedTransferModal').classList.add('show');
 }
 
-function confirmShield() {
-    const amount = parseFloat(document.getElementById('shieldAmount').value);
+async function confirmShield() {
+    let amount = parseFloat(document.getElementById('shieldAmount').value);
     if (isNaN(amount) || amount <= 0) {
         showToast('Enter a valid amount');
         return;
     }
+    // Balance guard: check transparent balance
+    try {
+        const wallet = getActiveWallet();
+        if (wallet) {
+            const balResult = await rpc.call('getBalance', [wallet.address]);
+            const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
+            const maxShieldable = Math.max(0, spendable - BASE_FEE_MOLT);
+            if (maxShieldable <= 0) {
+                showToast('Insufficient MOLT balance to shield');
+                return;
+            }
+            if (amount > maxShieldable) {
+                amount = parseFloat(maxShieldable.toFixed(6));
+                document.getElementById('shieldAmount').value = amount;
+                showToast(`Amount adjusted to available balance: ${(maxShieldable).toFixed(4)} MOLT`);
+                return; // Let user review
+            }
+        }
+    } catch (e) { /* let RPC reject */ }
     closeModal('shieldModal');
     shieldMolt(amount);
 }
 
 function confirmUnshield() {
-    const amount = parseFloat(document.getElementById('unshieldAmount').value);
+    let amount = parseFloat(document.getElementById('unshieldAmount').value);
     const recipient = document.getElementById('unshieldRecipient').value.trim();
     if (isNaN(amount) || amount <= 0) {
         showToast('Enter a valid amount');
@@ -799,12 +818,24 @@ function confirmUnshield() {
         showToast('Enter a recipient address');
         return;
     }
+    // Balance guard: check shielded balance
+    const availableMolt = (shieldedState.shieldedBalance || 0) / SHELLS_PER_MOLT;
+    if (availableMolt <= 0) {
+        showToast('No shielded balance to unshield');
+        return;
+    }
+    if (amount > availableMolt) {
+        amount = parseFloat(availableMolt.toFixed(6));
+        document.getElementById('unshieldAmount').value = amount;
+        showToast(`Amount adjusted to shielded balance: ${availableMolt.toFixed(4)} MOLT`);
+        return; // Let user review
+    }
     closeModal('unshieldModal');
     unshieldMolt(amount, recipient);
 }
 
 function confirmShieldedTransfer() {
-    const amount = parseFloat(document.getElementById('shieldedTransferAmount').value);
+    let amount = parseFloat(document.getElementById('shieldedTransferAmount').value);
     const viewingKey = document.getElementById('shieldedTransferRecipientVK').value.trim();
     if (isNaN(amount) || amount <= 0) {
         showToast('Enter a valid amount');
@@ -813,6 +844,18 @@ function confirmShieldedTransfer() {
     if (!viewingKey || viewingKey.length !== 64) {
         showToast('Enter a valid recipient viewing key (64 hex chars)');
         return;
+    }
+    // Balance guard: check shielded balance
+    const availableMolt = (shieldedState.shieldedBalance || 0) / SHELLS_PER_MOLT;
+    if (availableMolt <= 0) {
+        showToast('No shielded balance for transfer');
+        return;
+    }
+    if (amount > availableMolt) {
+        amount = parseFloat(availableMolt.toFixed(6));
+        document.getElementById('shieldedTransferAmount').value = amount;
+        showToast(`Amount adjusted to shielded balance: ${availableMolt.toFixed(4)} MOLT`);
+        return; // Let user review
     }
     closeModal('shieldedTransferModal');
     shieldedTransfer(amount, viewingKey);

@@ -894,9 +894,14 @@ async function handleSendNow() {
 
     const balResult = await rpc.getBalance(wallet.address);
     const spendable = Number(balResult?.spendable || balResult?.shells || 0) / 1_000_000_000;
-    const totalNeeded = amount + 0.001;
-    if (spendable < totalNeeded) {
-      alert(`Insufficient MOLT: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })}, have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })}.`);
+    const maxSendable = Math.max(0, spendable - 0.001);
+    if (maxSendable <= 0) {
+      alert('Insufficient MOLT balance (not enough to cover fee)');
+      return;
+    }
+    if (amount > maxSendable) {
+      document.getElementById('sendAmount').value = maxSendable.toFixed(6);
+      alert(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} MOLT. Review and re-confirm.`);
       return;
     }
 
