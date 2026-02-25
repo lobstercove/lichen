@@ -54,6 +54,10 @@ const ACHIEVEMENT_DEFS = [
     { id: 6, name: 'Legendary Agent',        icon: 'fa-crown',         desc: 'Reached 5,000+ reputation' },
     { id: 7, name: 'Well Endorsed',          icon: 'fa-handshake',     desc: 'Received 10+ vouches' },
     { id: 8, name: 'Bootstrap Graduation',   icon: 'fa-graduation-cap', desc: 'Completed bootstrap graduation' },
+    { id: 9, name: 'Name Registrar',         icon: 'fa-at',            desc: 'Registered a .molt name' },
+    { id: 10, name: 'Skill Master',          icon: 'fa-tools',         desc: 'Added 5+ skills to your profile' },
+    { id: 11, name: 'Social Butterfly',      icon: 'fa-users',         desc: 'Received 3+ vouches' },
+    { id: 12, name: 'First Name',            icon: 'fa-id-card',       desc: 'Registered your first .molt name' },
 ];
 
 function getTrustTier(score) {

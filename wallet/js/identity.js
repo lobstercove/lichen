@@ -20,7 +20,8 @@ const AGENT_TYPES = [
     { value: 6, label: 'Governance',     desc: 'Voting, proposals, DAO operations' },
     { value: 7, label: 'Oracle',         desc: 'External data feeds, price oracles' },
     { value: 8, label: 'Storage',        desc: 'Data persistence, archival, backups' },
-    { value: 9, label: 'General',        desc: 'Multi-purpose or uncategorized agent' }
+    { value: 9, label: 'General',        desc: 'Multi-purpose or uncategorized agent' },
+    { value: 10, label: 'Personal',      desc: 'Human user — personal identity' }
 ];
 
 // ACHIEVEMENT_DEFS provided by shared/utils.js (loaded before this file)
@@ -253,6 +254,41 @@ function encodeMoltyIdArgs(callerPubkey, functionName, params) {
                 u32LE(skillNameBytes.length),
             ]);
         }
+        case 'create_name_auction': {
+            // create_name_auction(caller_ptr:I32, name_ptr:I32, name_len:I32(u32), reserve_bid:I64, end_slot:I64)
+            const nameBytes = te.encode(params.name || '');
+            // Layout: ptr(32), ptr(32), u32(4) — then raw I64 vals appended
+            const base = buildLayoutArgs([0x20, 0x20, 0x04], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+            ]);
+            // Append reserve_bid and end_slot as raw I64 LE
+            const extra = new Uint8Array(16);
+            extra.set(u64LE(params.reserve_bid || 0), 0);
+            extra.set(u64LE(params.end_slot_offset || 432000), 8);
+            const result = new Uint8Array(base.length + extra.length);
+            result.set(base, 0);
+            result.set(extra, base.length);
+            return result;
+        }
+        case 'bid_name_auction': {
+            // bid_name_auction(bidder_ptr:I32, name_ptr:I32, name_len:I32(u32), bid_amount:I64)
+            // bid_amount is both a param AND must match tx value
+            const nameBytes = te.encode(params.name || '');
+            const base = buildLayoutArgs([0x20, 0x20, 0x04], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+            ]);
+            // Append bid_amount as raw I64 LE
+            const bidAmountShells = Math.floor((params.bid_amount || 0) * 1_000_000_000);
+            const extra = u64LE(bidAmountShells);
+            const result = new Uint8Array(base.length + extra.length);
+            result.set(base, 0);
+            result.set(extra, base.length);
+            return result;
+        }
         default:
             // Fallback: JSON-encode (legacy — will likely fail for ptr-param functions)
             return new TextEncoder().encode(JSON.stringify(params));
@@ -470,8 +506,8 @@ function renderIdentity(container, data) {
     
     const agentType = getAgentTypeName(identity.agent_type);
     const agentDesc = AGENT_TYPES.find(a => a.value === Number(identity.agent_type))?.desc || '';
-    const rawName = moltName || identity?.name || 'Unnamed';
-    const displayName = escHtml(rawName.endsWith('.molt') ? rawName : rawName);
+    const rawName = identity?.name || profile?.identity?.display_name || 'Unnamed';
+    const displayName = escHtml(rawName);
     const isActive = identity.is_active !== false && identity.is_active !== 0;
     
     const skills = Array.isArray(profile?.skills) ? profile.skills : [];
@@ -498,6 +534,8 @@ function renderIdentity(container, data) {
             ${renderAgentSection(endpoint, availability, rateMolt, profile?.agent?.metadata)}
         </div>
     `;
+    // Load auctions after DOM is rendered
+    setTimeout(() => loadAuctionList(), 100);
 }
 
 // ============================================================================
@@ -507,6 +545,10 @@ function renderIdentity(container, data) {
 // ── Profile Strip (top bar, always visible when has identity) ──
 function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, moltName) {
     const moltDisplay = moltName ? escHtml((moltName.endsWith('.molt') ? moltName : moltName + '.molt')) : null;
+    // Avoid showing "name name.molt" when display name matches the .molt name
+    const moltBase = moltName ? moltName.replace(/\.molt$/, '').toLowerCase() : null;
+    const rawDisplayLower = String(displayName).toLowerCase().replace(/\.molt$/, '');
+    const showDisplayName = !moltDisplay || rawDisplayLower !== moltBase;
     return `
         <div class="id-profile-strip">
             <div class="id-strip-avatar" style="background:${tier.color}18; border-color:${tier.color};">
@@ -514,8 +556,8 @@ function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActi
             </div>
             <div class="id-strip-info">
                 <div class="id-strip-name">
-                    ${escHtml(displayName)}
-                    ${moltDisplay ? `<span class="id-strip-molt">${moltDisplay}</span>` : ''}
+                    ${showDisplayName ? escHtml(displayName) : ''}
+                    ${moltDisplay ? `<span class="id-strip-molt">${moltDisplay}</span>` : (showDisplayName ? '' : escHtml(displayName))}
                 </div>
                 <div class="id-strip-meta">
                     <span class="id-pill" style="background:${tier.color}18;color:${tier.color};border-color:${tier.color}33;">${tier.name}</span>
@@ -564,6 +606,20 @@ function renderRepSection(rep, tier, nextTier, repPct, maxRep) {
 
 // ── Name Section ──
 function renderNameSection(moltName, nameDetails) {
+    // Auction sub-section (always shown)
+    const auctionHtml = `
+        <div class="id-section-divider" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border,#2a2e3e);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+                <span style="font-size:0.8rem;opacity:0.7;"><i class="fas fa-gavel"></i> Premium Name Auctions</span>
+                <button class="id-link-btn" onclick="loadAuctionList()"><i class="fas fa-sync-alt"></i> Refresh</button>
+            </div>
+            <div id="auctionListContainer" style="font-size:0.8rem;">
+                <span style="opacity:0.5;">Loading auctions...</span>
+            </div>
+            <div id="adminAuctionCreate"></div>
+        </div>
+    `;
+
     if (!moltName) {
         return `
             <div class="id-section">
@@ -573,11 +629,12 @@ function renderNameSection(moltName, nameDetails) {
                 <div class="id-section-body id-section-empty">
                     <p>No name registered</p>
                     <small>5+ chars from 20 MOLT/yr</small>
-                </div>
-                <div class="id-section-foot">
-                    <button class="btn btn-small btn-primary" onclick="showRegisterNameModal()">
-                        <i class="fas fa-plus"></i> Register
-                    </button>
+                    <div style="margin-top:0.75rem;">
+                        <button class="btn btn-small btn-primary" onclick="showRegisterNameModal()">
+                            <i class="fas fa-plus"></i> Register
+                        </button>
+                    </div>
+                    ${auctionHtml}
                 </div>
             </div>
         `;
@@ -586,7 +643,17 @@ function renderNameSection(moltName, nameDetails) {
     const name = moltName.endsWith('.molt') ? moltName : moltName + '.molt';
     const expiry = nameDetails?.expiry_slot;
     const registered = nameDetails?.registered_slot || 0;
-    const expiryDisplay = expiry ? formatSlotExpiry(expiry, registered) : '—';
+    // Expiry will be updated asynchronously
+    const expiryId = 'nameExpiry_' + Date.now();
+
+    // Kick off async slot fetch to update expiry display
+    (async () => {
+        try {
+            const currentSlot = await getCurrentSlot();
+            const el = document.getElementById(expiryId);
+            if (el) el.textContent = 'Expires ' + (expiry ? formatSlotExpiry(expiry, registered, currentSlot) : '—');
+        } catch(_) {}
+    })();
 
     return `
         <div class="id-section">
@@ -595,12 +662,13 @@ function renderNameSection(moltName, nameDetails) {
             </div>
             <div class="id-section-body">
                 <div class="id-name-display">${escHtml(name)}</div>
-                <div class="id-name-expiry">Expires ${expiryDisplay}</div>
+                <div class="id-name-expiry" id="${expiryId}">Expires ${expiry ? formatSlotExpiry(expiry, registered, _cachedCurrentSlot) : '—'}</div>
                 <div class="id-section-actions">
                     <button class="id-link-btn" onclick="showRenewNameModal()"><i class="fas fa-redo"></i> Renew</button>
                     <button class="id-link-btn" onclick="showTransferNameModal()"><i class="fas fa-exchange-alt"></i> Transfer</button>
                     <button class="id-link-btn id-link-danger" onclick="showReleaseNameModal()"><i class="fas fa-trash-alt"></i> Release</button>
                 </div>
+                ${auctionHtml}
             </div>
         </div>
     `;
@@ -714,18 +782,39 @@ function renderAgentSection(endpoint, availability, rateMolt, metadata) {
 }
 
 // ============================================================================
-// SLOT EXPIRY FORMATTER (same logic as explorer)
+// SLOT EXPIRY FORMATTER — queries chain for real current slot
 // ============================================================================
-function formatSlotExpiry(expirySlot, registeredSlot) {
+let _cachedCurrentSlot = null;
+let _cachedSlotTime = 0;
+
+async function getCurrentSlot() {
+    // Cache for 30 seconds to avoid hammering RPC
+    if (_cachedCurrentSlot && Date.now() - _cachedSlotTime < 30000) return _cachedCurrentSlot;
+    try {
+        const slot = await rpc.call('getSlot', []);
+        if (typeof slot === 'number' && slot > 0) {
+            _cachedCurrentSlot = slot;
+            _cachedSlotTime = Date.now();
+            return slot;
+        }
+    } catch (_) {}
+    return _cachedCurrentSlot || 0;
+}
+
+function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
     const SLOTS_PER_SEC = 2;
-    const now = Date.now() / 1000;
-    const currentSlot = Math.floor(now * SLOTS_PER_SEC);
+    if (!currentSlot || currentSlot <= 0) {
+        // Fallback: just show relative years from registration
+        const totalSlots = expirySlot - (registeredSlot || 0);
+        const years = Math.max(1, Math.round(totalSlots / 63_072_000));
+        return `~${years}yr from registration`;
+    }
     const secsUntil = (expirySlot - currentSlot) / SLOTS_PER_SEC;
+    const now = Date.now() / 1000;
     const expiryDate = new Date((now + secsUntil) * 1000);
     const monthYear = expiryDate.toLocaleString(undefined, { month: 'short', year: 'numeric' });
-    
     const totalSlots = expirySlot - (registeredSlot || 0);
-    const years = Math.round(totalSlots / 63_072_000);
+    const years = Math.max(1, Math.round(totalSlots / 63_072_000));
     return `${monthYear} (~${years}yr)`;
 }
 
@@ -845,6 +934,15 @@ async function showRegisterNameModal() {
             const durationInput = modal.querySelector('#duration');
             const preview = modal.querySelector('#nameRegCostPreview');
             const costValue = modal.querySelector('#nameRegCostValue');
+            // Enforce lowercase as user types
+            if (nameInput) {
+                nameInput.style.textTransform = 'lowercase';
+                nameInput.addEventListener('input', () => {
+                    const pos = nameInput.selectionStart;
+                    nameInput.value = nameInput.value.toLowerCase();
+                    nameInput.setSelectionRange(pos, pos);
+                });
+            }
             const updateCost = () => {
                 const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
                 const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
@@ -1186,3 +1284,174 @@ async function showEditAgentModal() {
     }
 }
 
+// ============================================================================
+// AUCTION SYSTEM — Premium .molt Name Auctions
+// ============================================================================
+
+// Known premium names that may have auctions (admin curated)
+const PREMIUM_AUCTION_NAMES = ['eth', 'btc', 'sol', 'dex', 'dao', 'nft', 'defi', 'swap', 'lend', 'pay', 'molt', 'reef', 'claw', 'moon', 'pump'];
+
+async function loadAuctionList() {
+    const container = document.getElementById('auctionListContainer');
+    if (!container) return;
+    container.innerHTML = '<span style="opacity:0.5;"><i class="fas fa-spinner fa-spin"></i> Checking auctions...</span>';
+
+    try {
+        const currentSlot = await getCurrentSlot();
+        const auctions = [];
+        // Query known premium names for active auctions
+        for (const name of PREMIUM_AUCTION_NAMES) {
+            try {
+                const result = await rpc.call('getNameAuction', [name]);
+                if (result && result.active) {
+                    auctions.push({ ...result, name });
+                }
+            } catch (_) {}
+        }
+
+        if (auctions.length === 0) {
+            container.innerHTML = '<span style="opacity:0.5;">No active auctions</span>';
+        } else {
+            container.innerHTML = auctions.map(a => {
+                const ended = a.ended || (currentSlot > a.end_slot);
+                const highBid = (a.highest_bid / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+                const reserve = (a.reserve_bid / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+                const bidder = a.highest_bidder && a.highest_bidder !== '11111111111111111111111111111111'
+                    ? a.highest_bidder.slice(0, 6) + '...' + a.highest_bidder.slice(-4)
+                    : 'None';
+                const slotsLeft = Math.max(0, a.end_slot - currentSlot);
+                const secsLeft = Math.floor(slotsLeft / 2);
+                const timeLeft = secsLeft > 86400 ? Math.floor(secsLeft / 86400) + 'd' :
+                    secsLeft > 3600 ? Math.floor(secsLeft / 3600) + 'h' :
+                    secsLeft > 60 ? Math.floor(secsLeft / 60) + 'm' : secsLeft + 's';
+
+                return `
+                    <div style="padding:0.4rem 0;border-bottom:1px solid var(--border,#2a2e3e22);">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <strong style="color:var(--accent,#ff6b35);">${escHtml(a.name)}.molt</strong>
+                            ${ended
+                                ? '<span style="font-size:0.7rem;color:#f59e0b;">ENDED</span>'
+                                : `<span style="font-size:0.7rem;opacity:0.6;">${timeLeft} left</span>`}
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.75rem;opacity:0.7;">
+                            <span>Bid: ${highBid} MOLT (reserve: ${reserve})</span>
+                            <span>By: ${bidder}</span>
+                        </div>
+                        ${!ended ? `<button class="id-link-btn" onclick="showBidAuctionModal('${escHtml(a.name)}')" style="margin-top:0.25rem;font-size:0.75rem;"><i class="fas fa-gavel"></i> Place Bid</button>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Admin create auction button
+        const adminContainer = document.getElementById('adminAuctionCreate');
+        if (adminContainer) {
+            // Check if current wallet is admin (simple heuristic: check if the wallet deployed the contract)
+            try {
+                const wallet = getActiveWallet();
+                const moltyidAddr = await getMoltyIdProgramAddress();
+                if (wallet && moltyidAddr) {
+                    const accountInfo = await rpc.call('getAccount', [moltyidAddr]).catch(() => null);
+                    const deployer = accountInfo?.deployer || accountInfo?.owner || '';
+                    if (deployer === wallet.address) {
+                        adminContainer.innerHTML = `
+                            <div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px dashed var(--border,#2a2e3e);">
+                                <button class="id-link-btn" onclick="showCreateAuctionModal()" style="font-size:0.75rem;"><i class="fas fa-plus"></i> Create Auction (Admin)</button>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (_) {}
+        }
+    } catch (e) {
+        container.innerHTML = '<span style="opacity:0.5;color:#f87171;">Failed to load auctions</span>';
+    }
+}
+
+async function showBidAuctionModal(name) {
+    const values = await showPasswordModal({
+        title: `Bid on ${name}.molt`,
+        message: 'Enter your bid amount in MOLT. Must exceed the current highest bid.',
+        icon: 'fas fa-gavel',
+        confirmText: 'Place Bid',
+        fields: [
+            { id: 'amount', label: 'Bid Amount (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+        ]
+    });
+    if (!values || !values.password || !values.amount) return;
+
+    const bidAmount = parseFloat(values.amount);
+    if (isNaN(bidAmount) || bidAmount <= 0) {
+        showToast('Invalid bid amount');
+        return;
+    }
+
+    try {
+        showToast(`Placing bid of ${bidAmount} MOLT on ${name}.molt...`);
+        const tx = await buildContractCall('bid_name_auction', { name: name }, values.password, bidAmount);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Bid failed: ' + (result.error || 'unknown'));
+            return;
+        }
+        showToast(`Bid placed on ${name}.molt!`);
+        await loadAuctionList();
+    } catch (e) {
+        showToast('Bid failed: ' + e.message);
+    }
+}
+
+async function showCreateAuctionModal() {
+    const values = await showPasswordModal({
+        title: 'Create Premium Name Auction',
+        message: 'Admin only: create an auction for a premium short name (3-4 chars).',
+        icon: 'fas fa-gavel',
+        confirmText: 'Create Auction',
+        fields: [
+            { id: 'name', label: 'Name (3-4 chars)', type: 'text', placeholder: 'eth' },
+            { id: 'reserve', label: 'Reserve Bid (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },
+            { id: 'endSlots', label: 'Duration (slots, ~2/sec)', type: 'number', placeholder: '432000', min: 216000, max: 3024000, step: 1 },
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+        ],
+        onRender: (modal) => {
+            const nameInput = modal.querySelector('#name');
+            if (nameInput) {
+                nameInput.style.textTransform = 'lowercase';
+                nameInput.addEventListener('input', () => {
+                    const pos = nameInput.selectionStart;
+                    nameInput.value = nameInput.value.toLowerCase();
+                    nameInput.setSelectionRange(pos, pos);
+                });
+            }
+        }
+    });
+    if (!values || !values.password || !values.name) return;
+
+    const name = values.name.toLowerCase().trim();
+    if (name.length < 3 || name.length > 4) {
+        showToast('Premium names must be 3-4 characters');
+        return;
+    }
+
+    const reserveShells = Math.floor(parseFloat(values.reserve || '100') * 1_000_000_000);
+    const endSlots = parseInt(values.endSlots || '432000');
+
+    try {
+        showToast(`Creating auction for ${name}.molt...`);
+        const tx = await buildContractCall('create_name_auction', {
+            name: name,
+            reserve_bid: reserveShells,
+            end_slot_offset: endSlots
+        }, values.password);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Failed: ' + (result.error || 'unknown'));
+            return;
+        }
+        showToast(`Auction created for ${name}.molt!`);
+        await loadAuctionList();
+    } catch (e) {
+        showToast('Failed: ' + e.message);
+    }
+}

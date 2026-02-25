@@ -479,6 +479,19 @@ fn count_executable_accounts(state: &StateStore) -> u64 {
 }
 
 fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
+    if ix.program_id == CONTRACT_PROGRAM_ID {
+        // Contract calls: parse JSON payload to extract "value" field
+        if let Ok(json_str) = std::str::from_utf8(&ix.data) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                if let Some(call) = val.get("Call") {
+                    if let Some(v) = call.get("value").and_then(|v| v.as_u64()) {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        return None;
+    }
     if ix.program_id != SYSTEM_PROGRAM_ID {
         return None;
     }
@@ -6639,6 +6652,10 @@ fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
         6 => "Legendary Agent",
         7 => "Well Endorsed",
         8 => "Bootstrap Graduation",
+        9 => "Name Registrar",
+        10 => "Skill Master",
+        11 => "Social Butterfly",
+        12 => "First Name",
         _ => "Unknown Achievement",
     }
 }

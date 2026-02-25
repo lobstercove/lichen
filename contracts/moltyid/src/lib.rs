@@ -121,6 +121,7 @@ const AGENT_TYPE_GOVERNANCE: u8 = 6;
 const AGENT_TYPE_ORACLE: u8 = 7;
 const AGENT_TYPE_STORAGE: u8 = 8;
 const AGENT_TYPE_GENERAL: u8 = 9;
+const AGENT_TYPE_PERSONAL: u8 = 10;
 
 fn is_valid_agent_type(agent_type: u8) -> bool {
     matches!(
@@ -135,6 +136,7 @@ fn is_valid_agent_type(agent_type: u8) -> bool {
             | AGENT_TYPE_ORACLE
             | AGENT_TYPE_STORAGE
             | AGENT_TYPE_GENERAL
+            | AGENT_TYPE_PERSONAL
     )
 }
 
@@ -1111,7 +1113,16 @@ pub extern "C" fn add_skill(
     if record.len() >= 123 {
         record[115..123].copy_from_slice(&ts_bytes);
     }
+
+    // Award reputation for adding a skill (+10 rep)
+    let old_rep = bytes_to_u64(&record[99..107]);
+    let new_rep = core::cmp::min(old_rep.saturating_add(10), MAX_REPUTATION);
+    record[99..107].copy_from_slice(&u64_to_bytes(new_rep));
     storage_set(&id_key, &record);
+    storage_set(&reputation_key(&caller), &u64_to_bytes(new_rep));
+
+    // Check achievements based on new rep and skill count
+    check_achievements_full(&caller, new_rep, record[123], vouch_count_from_record(&record));
 
     log_info("Skill added");
     reentrancy_exit();
@@ -1405,6 +1416,11 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     }
     storage_set(&vouchee_id_key, &vouchee_record);
     storage_set(&reputation_key(&vouchee), &vouchee_rep_bytes);
+
+    // Check achievements for vouchee (rep milestones + vouch count)
+    let vouchee_vouch_new = vouchee_vouch_count + 1;
+    let vouchee_skill_count = if vouchee_record.len() >= 124 { vouchee_record[123] } else { 0 };
+    check_achievements_full(&vouchee, new_vouchee_rep, vouchee_skill_count, vouchee_vouch_new as u16);
 
     log_info("Vouch recorded successfully");
     reentrancy_exit();
@@ -1959,6 +1975,10 @@ const ACHIEVEMENT_VETERAN: u8 = 5;         // Reached reputation 1000
 const ACHIEVEMENT_LEGEND: u8 = 6;          // Reached reputation 5000
 const ACHIEVEMENT_ENDORSED: u8 = 7;        // Received 10+ vouches
 const ACHIEVEMENT_GRADUATION: u8 = 8;      // Graduated (bootstrap debt repaid)
+const ACHIEVEMENT_NAME_REGISTRAR: u8 = 9;  // Registered a .molt name
+const ACHIEVEMENT_SKILL_MASTER: u8 = 10;   // Added 5+ skills
+const ACHIEVEMENT_SOCIAL: u8 = 11;         // Received 3+ vouches
+const ACHIEVEMENT_FIRST_NAME: u8 = 12;     // Registered first .molt name
 
 /// Check and award achievements based on reputation milestones
 fn check_achievements(target: &[u8], reputation: u64) {
@@ -1973,6 +1993,25 @@ fn check_achievements(target: &[u8], reputation: u64) {
     }
     if reputation >= 5000 {
         award_achievement(target, &hex, ACHIEVEMENT_LEGEND, "Legendary Agent (rep 5000+)");
+    }
+}
+
+/// Extended check: rep milestones + skill/vouch count achievements
+fn check_achievements_full(target: &[u8], reputation: u64, skill_count: u8, vouch_count: u16) {
+    check_achievements(target, reputation);
+    let hex = hex_encode_addr(target);
+
+    // Vouch count milestones
+    if vouch_count >= 3 {
+        award_achievement(target, &hex, ACHIEVEMENT_SOCIAL, "Social Butterfly (3+ vouches)");
+    }
+    if vouch_count >= 10 {
+        award_achievement(target, &hex, ACHIEVEMENT_ENDORSED, "Well Endorsed (10+ vouches)");
+    }
+
+    // Skill count milestones
+    if skill_count >= 5 {
+        award_achievement(target, &hex, ACHIEVEMENT_SKILL_MASTER, "Skill Master (5+ skills)");
     }
 }
 
@@ -2572,6 +2611,24 @@ pub extern "C" fn register_name(
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
+
+    // Award reputation for name registration (+25 rep) and check achievements
+    let id_key = identity_key(&caller);
+    if let Some(mut id_record) = storage_get(&id_key) {
+        if id_record.len() >= IDENTITY_SIZE {
+            let old_rep = bytes_to_u64(&id_record[99..107]);
+            let new_rep = core::cmp::min(old_rep.saturating_add(25), MAX_REPUTATION);
+            id_record[99..107].copy_from_slice(&u64_to_bytes(new_rep));
+            id_record[115..123].copy_from_slice(&u64_to_bytes(get_timestamp()));
+            storage_set(&id_key, &id_record);
+            storage_set(&reputation_key(&caller), &u64_to_bytes(new_rep));
+            // Award "First Name" and "Name Registrar" achievements
+            let hex = hex_encode_addr(&caller);
+            award_achievement(&caller, &hex, ACHIEVEMENT_FIRST_NAME, "First .molt Name");
+            award_achievement(&caller, &hex, ACHIEVEMENT_NAME_REGISTRAR, "Name Registrar");
+            check_achievements(&caller, new_rep);
+        }
+    }
 
     log_info(".molt name registered!");
     reentrancy_exit();
@@ -4967,9 +5024,11 @@ mod tests {
 
         let expires = 10_000 + 60_000;
         let perms = DELEGATE_PERM_PROFILE | DELEGATE_PERM_AGENT_TYPE;
+        test_mock::set_caller(owner);
         assert_eq!(set_delegate(owner.as_ptr(), delegate.as_ptr(), perms, expires), 0);
 
         let endpoint = b"https://agent.example/api";
+        test_mock::set_caller(delegate);
         assert_eq!(
             set_endpoint_as(delegate.as_ptr(), owner.as_ptr(), endpoint.as_ptr(), endpoint.len() as u32),
             0
@@ -5009,6 +5068,7 @@ mod tests {
         assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Other".as_ptr(), 5), 0);
 
         // only profile permission
+        test_mock::set_caller(owner);
         assert_eq!(
             set_delegate(
                 owner.as_ptr(),
@@ -5020,16 +5080,20 @@ mod tests {
         );
 
         // Missing agent-type permission
+    test_mock::set_caller(delegate);
         assert_eq!(update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING), 2);
 
         // Outsider cannot act
+    test_mock::set_caller(outsider);
         assert_eq!(set_rate_as(outsider.as_ptr(), owner.as_ptr(), 55_000), 1);
 
         // Expired delegation should fail
         test_mock::set_timestamp(20_500);
+    test_mock::set_caller(delegate);
         assert_eq!(set_rate_as(delegate.as_ptr(), owner.as_ptr(), 55_000), 1);
 
         // Revoke idempotence path
+    test_mock::set_caller(owner);
         assert_eq!(revoke_delegate(owner.as_ptr(), delegate.as_ptr()), 1);
     }
 
@@ -5052,17 +5116,21 @@ mod tests {
         test_mock::set_slot(5_000);
         test_mock::set_value(50_000_000_000);
         let name = b"delegated-name";
+        test_mock::set_caller(owner);
         assert_eq!(register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
 
         // without naming permission should fail
+        test_mock::set_caller(owner);
         assert_eq!(
             set_delegate(owner.as_ptr(), delegate.as_ptr(), DELEGATE_PERM_PROFILE, 31_000),
             0
         );
+        test_mock::set_caller(delegate);
         test_mock::set_value(100_000_000);
         assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 2);
 
         // with naming permission should succeed
+        test_mock::set_caller(owner);
         assert_eq!(
             set_delegate(
                 owner.as_ptr(),
@@ -5072,6 +5140,7 @@ mod tests {
             ),
             0
         );
+        test_mock::set_caller(delegate);
         test_mock::set_value(50_000_000_000);
         assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
         assert_eq!(release_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32), 0);
@@ -5095,22 +5164,30 @@ mod tests {
         test_mock::set_slot(10_000);
         let premium = b"xya";
 
+        // Configure escrow for outbid refund path
+        configure_mid_escrow(&admin);
+
         // Premium names are auction-only in direct registration path
+        test_mock::set_caller(bidder1);
         test_mock::set_value(1_000_000_000);
         assert_eq!(register_name(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 8);
 
+        test_mock::set_caller(admin);
         assert_eq!(
-            create_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 500_000_000, 200_500),
+            create_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 500_000_000_000, 310_000),
             0
         );
 
-        test_mock::set_value(600_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 600_000_000), 0);
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 600_000_000_000), 0);
 
-        test_mock::set_value(700_000_000);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), premium.as_ptr(), premium.len() as u32, 700_000_000), 0);
+        test_mock::set_caller(bidder2);
+        test_mock::set_value(700_000_000_000);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), premium.as_ptr(), premium.len() as u32, 700_000_000_000), 0);
 
-        test_mock::set_slot(200_501);
+        test_mock::set_slot(310_001);
+        test_mock::set_caller(admin);
         assert_eq!(finalize_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 0);
 
         let nk = name_key(premium);
@@ -5492,6 +5569,7 @@ mod tests {
             new_name.len() as u32,
         );
 
+        test_mock::set_caller(owner);
         let result = transfer_name(
             owner.as_ptr(),
             name.as_ptr(),
@@ -5754,9 +5832,11 @@ mod tests {
         assert_eq!(result, 20);
 
         // Unpause
+        test_mock::set_caller(admin);
         assert_eq!(mid_unpause(admin.as_ptr()), 0);
 
         // Now works
+        test_mock::set_caller(agent);
         let result = register_identity(agent.as_ptr(), 1, name.as_ptr(), name.len() as u32);
         assert_eq!(result, 0);
     }
@@ -5769,10 +5849,14 @@ mod tests {
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
+        test_mock::set_caller(non_admin);
         assert_eq!(mid_pause(non_admin.as_ptr()), 1); // not admin
+        test_mock::set_caller(admin);
         assert_eq!(mid_pause(admin.as_ptr()), 0);
         assert_eq!(mid_pause(admin.as_ptr()), 2); // already paused
+        test_mock::set_caller(non_admin);
         assert_eq!(mid_unpause(non_admin.as_ptr()), 1); // not admin
+        test_mock::set_caller(admin);
         assert_eq!(mid_unpause(admin.as_ptr()), 0);
         assert_eq!(mid_unpause(admin.as_ptr()), 2); // not paused
     }
@@ -5838,13 +5922,16 @@ mod tests {
         update_reputation(admin.as_ptr(), voucher.as_ptr(), 100, 1);
 
         // Pause
+        test_mock::set_caller(admin);
         mid_pause(admin.as_ptr());
         test_mock::set_caller(voucher);
         let result = vouch(voucher.as_ptr(), vouchee.as_ptr());
         assert_eq!(result, 20);
 
         // Unpause
+        test_mock::set_caller(admin);
         mid_unpause(admin.as_ptr());
+        test_mock::set_caller(voucher);
         let result = vouch(voucher.as_ptr(), vouchee.as_ptr());
         assert_eq!(result, 0);
     }
@@ -5859,14 +5946,18 @@ mod tests {
         initialize(admin.as_ptr());
 
         // Non-admin can't transfer
+        test_mock::set_caller(other);
         assert_eq!(transfer_admin(other.as_ptr(), new_admin.as_ptr()), 1);
 
         // Admin transfers
+        test_mock::set_caller(admin);
         assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
 
         // Old admin no longer works
+        test_mock::set_caller(admin);
         assert_eq!(mid_pause(admin.as_ptr()), 1);
         // New admin works
+        test_mock::set_caller(new_admin);
         assert_eq!(mid_pause(new_admin.as_ptr()), 0);
     }
 
@@ -6341,17 +6432,17 @@ mod tests {
 
         // Create auction
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
 
         // First bid succeeds (no refund needed yet)
         test_mock::set_caller(bidder1);
-        test_mock::set_value(600);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
 
         // Second bid: triggers refund but token address not configured → error 30
         test_mock::set_caller(bidder2);
-        test_mock::set_value(700);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 30);
+        test_mock::set_value(700_000_000_000);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 30);
     }
 
     #[test]
@@ -6376,22 +6467,22 @@ mod tests {
 
         // Create auction
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
 
         // First bid
         test_mock::set_caller(bidder1);
-        test_mock::set_value(600);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
 
         // Second bid: triggers refund, should succeed with token configured
         test_mock::set_caller(bidder2);
-        test_mock::set_value(700);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 0);
+        test_mock::set_value(700_000_000_000);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 0);
 
         // Verify the auction record was updated to bidder2
         let ak = name_auction_key(name);
         let record = storage_get(&ak).unwrap();
-        assert_eq!(bytes_to_u64(&record[25..33]), 700);
+        assert_eq!(bytes_to_u64(&record[25..33]), 700_000_000_000);
         assert_eq!(&record[33..65], &bidder2);
     }
 
@@ -6417,16 +6508,16 @@ mod tests {
         storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
 
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
 
         test_mock::set_caller(bidder1);
-        test_mock::set_value(600);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+        test_mock::set_value(600_000_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
 
         // Second bid: token set but self-address not → error 31
         test_mock::set_caller(bidder2);
-        test_mock::set_value(700);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 31);
+        test_mock::set_value(700_000_000_000);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 31);
     }
 
     #[test]
@@ -6446,7 +6537,7 @@ mod tests {
         // Clear guard — should work again (will fail on other checks but not reentrancy)
         storage_set(MOLTYID_REENTRANCY_KEY, &[0u8]);
         // bid_name_auction should get past reentrancy (fail on identity check instead)
-        test_mock::set_caller(Address(addr));
+        test_mock::set_caller(addr);
         assert_eq!(bid_name_auction(addr.as_ptr(), name.as_ptr(), 4, 100), 1); // "Bidder must have MoltyID"
     }
 
@@ -6462,29 +6553,41 @@ mod tests {
         let bidder2 = [3u8; 32];
 
         // Setup identities
-        test_mock::set_caller(Address(creator));
-        storage_set(&identity_key(&creator), &[0u8; 128]);
-        test_mock::set_caller(Address(bidder1));
-        storage_set(&identity_key(&bidder1), &[0u8; 128]);
-        test_mock::set_caller(Address(bidder2));
-        storage_set(&identity_key(&bidder2), &[0u8; 128]);
+        test_mock::set_caller(creator);
+        initialize(creator.as_ptr());
+
+        test_mock::set_caller(creator);
+        assert_eq!(
+            register_identity(creator.as_ptr(), AGENT_TYPE_GENERAL, b"Creator".as_ptr(), 7),
+            0
+        );
+        test_mock::set_caller(bidder1);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
+        test_mock::set_caller(bidder2);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
 
         // Create auction
-        let name = b"premium";
-        test_mock::set_caller(Address(creator));
+        let name = b"prm";
+        test_mock::set_caller(creator);
         test_mock::set_slot(100);
-        let result = create_name_auction(creator.as_ptr(), name.as_ptr(), 7, 500);
+        let result = create_name_auction(creator.as_ptr(), name.as_ptr(), name.len() as u32, 50_000_000_000, 300_100);
         assert_eq!(result, 0, "Auction creation should succeed");
 
         // First bid
-        test_mock::set_caller(Address(bidder1));
-        test_mock::set_value(600);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), 7, 600), 0);
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(60_000_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 60_000_000_000), 0);
 
         // After first bid, auction record should have bidder1
         let ak = name_auction_key(name);
         let record = storage_get(&ak).unwrap();
-        assert_eq!(bytes_to_u64(&record[25..33]), 600);
+        assert_eq!(bytes_to_u64(&record[25..33]), 60_000_000_000);
         assert_eq!(&record[33..65], &bidder1);
     }
 }
