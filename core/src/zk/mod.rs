@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 
 // Re-exports
 pub use keys::{ShieldedKeypair, SpendingKey, ViewingKey};
-pub use merkle::{fr_to_bytes, poseidon_config, poseidon_hash_fr, MerklePath, MerkleTree, TREE_DEPTH};
+pub use merkle::{
+    fr_to_bytes, poseidon_config, poseidon_hash_fr, MerklePath, MerkleTree, TREE_DEPTH,
+};
 pub use note::{EncryptedNote, Note, Nullifier};
 pub use pedersen::PedersenCommitment;
 pub use prover::Prover;

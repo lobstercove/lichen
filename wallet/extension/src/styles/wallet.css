@@ -1754,6 +1754,7 @@
 .settings-modal-content {
     max-width: 540px;
     max-height: 80vh;
+    overflow: hidden;
 }
 .settings-modal-content .modal-body {
     padding: 1.25rem 1.5rem;
@@ -1761,7 +1762,7 @@
     max-height: calc(80vh - 70px);
 }
 .settings-modal-body {
-    overflow-y: auto;
+    overflow-y: visible;
 }
 
 .settings-modal-body::-webkit-scrollbar {

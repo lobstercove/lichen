@@ -17,6 +17,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
+type SetupFn = fn() -> Result<setup::CeremonyOutput, String>;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -81,10 +83,10 @@ fn main() {
 
     // Generate each circuit sequentially to keep memory bounded.
     // Each circuit's PK is dropped before starting the next one.
-    let circuits: Vec<(&str, fn() -> Result<setup::CeremonyOutput, String>)> = vec![
-        ("shield", setup::setup_shield as fn() -> _),
-        ("unshield", setup::setup_unshield as fn() -> _),
-        ("transfer", setup::setup_transfer as fn() -> _),
+    let circuits: Vec<(&str, SetupFn)> = vec![
+        ("shield", setup::setup_shield as SetupFn),
+        ("unshield", setup::setup_unshield as SetupFn),
+        ("transfer", setup::setup_transfer as SetupFn),
     ];
 
     let total_start = Instant::now();

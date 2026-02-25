@@ -80,8 +80,9 @@ impl ShieldCircuit {
 impl ConstraintSynthesizer<Fr> for ShieldCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         // ── Public inputs ──────────────────────────────────────────────
-        let amount_var =
-            FpVar::new_input(cs.clone(), || self.amount.ok_or(SynthesisError::AssignmentMissing))?;
+        let amount_var = FpVar::new_input(cs.clone(), || {
+            self.amount.ok_or(SynthesisError::AssignmentMissing)
+        })?;
 
         let commitment_var = FpVar::new_input(cs.clone(), || {
             self.commitment.ok_or(SynthesisError::AssignmentMissing)
@@ -198,7 +199,11 @@ mod tests {
         let circuit = ShieldCircuit::empty();
         // generate_constraints should not panic in setup mode
         let result = circuit.generate_constraints(cs.clone());
-        assert!(result.is_ok(), "empty circuit failed in setup mode: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "empty circuit failed in setup mode: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -207,7 +212,10 @@ mod tests {
         let b2 = Fr::rand(&mut OsRng);
         let c1 = poseidon_hash_fr(Fr::from(1000u64), b1);
         let c2 = poseidon_hash_fr(Fr::from(1000u64), b2);
-        assert_ne!(c1, c2, "different blindings should give different commitments");
+        assert_ne!(
+            c1, c2,
+            "different blindings should give different commitments"
+        );
 
         // Both should produce satisfied circuits with their own commitments
         for (blinding, commitment) in [(b1, c1), (b2, c2)] {

@@ -1,0 +1,144 @@
+{
+  "contract": "wbnb_token",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "admin", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "mint",
+      "opcode": 1,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "to", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "burn",
+      "opcode": 2,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer",
+      "opcode": 3,
+      "params": [
+        { "name": "from", "type": "Pubkey" },
+        { "name": "to", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "approve",
+      "opcode": 4,
+      "params": [
+        { "name": "owner", "type": "Pubkey" },
+        { "name": "spender", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer_from",
+      "opcode": 5,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "from", "type": "Pubkey" },
+        { "name": "to", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "attest_reserves",
+      "opcode": 6,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "reserve_amount", "type": "u64" },
+        { "name": "proof_hash", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "balance_of",
+      "opcode": 7,
+      "params": [
+        { "name": "addr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "allowance",
+      "opcode": 8,
+      "params": [
+        { "name": "owner", "type": "Pubkey" },
+        { "name": "spender", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "total_supply",
+      "opcode": 9,
+      "params": []
+    },
+    {
+      "name": "total_minted",
+      "opcode": 10,
+      "params": []
+    },
+    {
+      "name": "total_burned",
+      "opcode": 11,
+      "params": []
+    },
+    {
+      "name": "get_reserve_ratio",
+      "opcode": 12,
+      "params": []
+    },
+    {
+      "name": "get_last_attestation_slot",
+      "opcode": 13,
+      "params": []
+    },
+    {
+      "name": "get_attestation_count",
+      "opcode": 14,
+      "params": []
+    },
+    {
+      "name": "get_epoch_remaining",
+      "opcode": 15,
+      "params": []
+    },
+    {
+      "name": "get_transfer_count",
+      "opcode": 16,
+      "params": []
+    },
+    {
+      "name": "emergency_pause",
+      "opcode": 17,
+      "params": [
+        { "name": "caller", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "emergency_unpause",
+      "opcode": 18,
+      "params": [
+        { "name": "caller", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "transfer_admin",
+      "opcode": 19,
+      "params": [
+        { "name": "caller", "type": "Pubkey" },
+        { "name": "new_admin", "type": "Pubkey" }
+      ]
+    }
+  ]
+}

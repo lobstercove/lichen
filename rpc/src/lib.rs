@@ -511,6 +511,24 @@ fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
     }
 }
 
+/// Extract the function name from a contract call instruction (for display purposes)
+fn parse_contract_function(ix: &Instruction) -> Option<String> {
+    if ix.program_id != CONTRACT_PROGRAM_ID {
+        return None;
+    }
+    if let Ok(json_str) = std::str::from_utf8(&ix.data) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(call) = val.get("Call") {
+                return call.get("function").and_then(|f| f.as_str()).map(|s| s.to_string());
+            }
+            if val.get("Deploy").is_some() {
+                return Some("deploy".to_string());
+            }
+        }
+    }
+    None
+}
+
 fn instruction_type(ix: &Instruction) -> &'static str {
     if ix.program_id == SYSTEM_PROGRAM_ID {
         if ix.data.first() == Some(&0) {
@@ -954,13 +972,14 @@ fn tx_to_rpc_json(
     fee_config: &moltchain_core::FeeConfig,
 ) -> serde_json::Value {
     let first_ix = tx.message.instructions.first();
-    let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
+    let (tx_type, from, to, amount, contract_fn) = if let Some(ix) = first_ix {
         let from = ix.accounts.first().map(|acc| acc.to_base58());
         let to = ix.accounts.get(1).map(|acc| acc.to_base58());
         let amount = parse_transfer_amount(ix);
-        (instruction_type(ix), from, to, amount)
+        let contract_fn = parse_contract_function(ix);
+        (instruction_type(ix), from, to, amount, contract_fn)
     } else {
-        ("Unknown", None, None, None)
+        ("Unknown", None, None, None::<u64>, None)
     };
 
     let instructions: Vec<serde_json::Value> = tx
@@ -999,6 +1018,7 @@ fn tx_to_rpc_json(
         "to": to,
         "amount": amount_molt,
         "amount_shells": amount.unwrap_or(0),
+        "contract_function": contract_fn,
         "message": {
             "instructions": instructions,
             "recent_blockhash": tx.message.recent_blockhash.to_hex(),
@@ -6644,6 +6664,7 @@ fn moltyid_trust_tier_name(tier: u8) -> &'static str {
 
 fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
     match achievement_id {
+        // Identity (1-12)
         1 => "First Transaction",
         2 => "Governance Voter",
         3 => "Program Builder",
@@ -6656,6 +6677,99 @@ fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
         10 => "Skill Master",
         11 => "Social Butterfly",
         12 => "First Name",
+        // DEX (13-21)
+        13 => "First Trade",
+        14 => "LP Provider",
+        15 => "LP Withdrawal",
+        16 => "DEX User",
+        17 => "Multi-hop Trader",
+        18 => "Margin Trader",
+        19 => "Position Closer",
+        20 => "Yield Farmer",
+        21 => "Analytics Explorer",
+        // Lending (31-38)
+        31 => "First Lend",
+        32 => "First Borrow",
+        33 => "Loan Repaid",
+        34 => "Liquidator",
+        35 => "Withdrawal Expert",
+        36 => "Stablecoin Minter",
+        37 => "Stablecoin Redeemer",
+        38 => "Stable Sender",
+        // Staking (41-48)
+        41 => "First Stake",
+        42 => "Unstaked",
+        43 => "ReefStake Pioneer",
+        44 => "Locked Staker",
+        45 => "Diamond Hands",
+        46 => "Whale Staker",
+        47 => "Reward Harvester",
+        48 => "stMOLT Transferrer",
+        // Bridge (51-56)
+        51 => "Bridge Pioneer",
+        52 => "Bridge Out",
+        53 => "Bridge User",
+        54 => "Wrapper",
+        55 => "Unwrapper",
+        56 => "Cross-chain Trader",
+        // Shield/Privacy (57-60)
+        57 => "Privacy Pioneer",
+        58 => "Unshielded",
+        59 => "Shadow Sender",
+        60 => "ZK Privacy User",
+        // NFT (63-70)
+        63 => "Collection Creator",
+        64 => "First Mint",
+        65 => "NFT Trader",
+        66 => "First Listing",
+        67 => "First Purchase",
+        68 => "Bidder",
+        69 => "Deal Maker",
+        70 => "Punk Collector",
+        // Governance (71-73)
+        71 => "Proposal Creator",
+        72 => "First Vote",
+        73 => "Delegator",
+        // Oracle (81-82)
+        81 => "Oracle Reporter",
+        82 => "Oracle User",
+        // Storage (86-88)
+        86 => "File Uploader",
+        87 => "Data Retriever",
+        88 => "Storage User",
+        // Marketplace/Auction (91-93)
+        91 => "Auctioneer",
+        92 => "Auction Bidder",
+        93 => "Auction Winner",
+        // Bounty (96-98)
+        96 => "Bounty Poster",
+        97 => "Bounty Hunter",
+        98 => "Bounty Judge",
+        // Prediction (101-104)
+        101 => "Market Maker",
+        102 => "First Prediction",
+        103 => "Oracle Resolver",
+        104 => "Prediction Winner",
+        // General milestones (106-124)
+        106 => "Big Spender",
+        107 => "Whale Transfer",
+        108 => "EVM Connected",
+        109 => "Identity Created",
+        110 => "Profile Customizer",
+        111 => "Voucher",
+        112 => "Agent Creator",
+        113 => "Compute Provider",
+        114 => "Compute Consumer",
+        115 => "Payment Creator",
+        116 => "First Payment",
+        117 => "Subscription Creator",
+        118 => "Token Launcher",
+        119 => "Early Buyer",
+        120 => "Token Seller",
+        121 => "Vault Depositor",
+        122 => "Vault Withdrawer",
+        123 => "Token Contract User",
+        124 => "Contract Interactor",
         _ => "Unknown Achievement",
     }
 }
@@ -7051,7 +7165,7 @@ async fn handle_get_moltyid_achievements(
     }
 
     let mut achievements = Vec::new();
-    for achievement_id in 1u8..=8u8 {
+    for achievement_id in 1u8..=128u8 {
         if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
         {
             if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
@@ -7161,7 +7275,7 @@ async fn handle_get_moltyid_profile(
     }
 
     let mut achievements = Vec::new();
-    for achievement_id in 1u8..=8u8 {
+    for achievement_id in 1u8..=128u8 {
         if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
         {
             if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
@@ -9229,7 +9343,7 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         "tiers": [
             { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": apy_percent },
             { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.1, "apy_percent": apy_percent * 1.1 },
-            { "id": 2, "name": "90-Day Lock", "lock_days": 90, "multiplier": 1.25, "apy_percent": apy_percent * 1.25 },
+            { "id": 2, "name": "180-Day Lock", "lock_days": 180, "multiplier": 1.25, "apy_percent": apy_percent * 1.25 },
             { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 1.5, "apy_percent": apy_percent * 1.5 },
         ],
         "cooldown_days": 7

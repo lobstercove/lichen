@@ -205,6 +205,7 @@ async function loadMoltyIdentityData(address) {
             rpcCall('getMoltyIdProfile', [address]).catch(() => null),
             rpcCall('reverseMoltName', [address]).catch(() => null)
         ]);
+        await fetchCurrentSlot().catch(() => 0);
 
         const profile = profileResult || {};
         // RPC returns identity fields at the top level of the profile, not nested
@@ -308,8 +309,10 @@ function renderIdentityPane(profile) {
     const repPct = Math.max(0, Math.min(100, (reputationScore / maxRep) * 100));
     const nextTierInfo = getNextTierInfo(reputationScore);
     const ladder = trustTierLadder(reputationTier);
-    const registeredAt = formatTimestamp(identity.created_at || profile.created_at);
-    const updatedAt = formatTimestamp(identity.updated_at || profile.updated_at);
+    const registeredAtRaw = formatTimestamp(identity.created_at || profile.created_at);
+    const updatedAtRaw = formatTimestamp(identity.updated_at || profile.updated_at);
+    const registeredAt = registeredAtRaw === 'Unknown' ? 'Registered (timestamp unavailable)' : registeredAtRaw;
+    const updatedAt = updatedAtRaw === 'Unknown' ? 'No updates recorded' : updatedAtRaw;
     const rawName = identity?.display_name || identity?.name || 'Unnamed';
     const displayName = escapeHtml(rawName);
     const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
@@ -568,9 +571,15 @@ function trustTierLadder(currentTier) {
 function formatTimestamp(value) {
     const n = Number(value || 0);
     if (!n) return 'Unknown';
-    const ms = n > 1_000_000_000_000
-        ? n
-        : (n > 1_500_000_000 ? n * 1000 : NaN);
+    let ms = NaN;
+    if (n > 1_000_000_000_000) {
+        ms = n;
+    } else if (n > 1_500_000_000) {
+        ms = n * 1000;
+    } else if (_explorerCurrentSlot && n > 0 && MS_PER_SLOT > 0) {
+        const deltaSlots = n - _explorerCurrentSlot;
+        ms = Date.now() + (deltaSlots * MS_PER_SLOT);
+    }
     if (!Number.isFinite(ms) || ms < 1_577_836_800_000) return 'Unknown';
     const date = new Date(ms);
     if (Number.isNaN(date.getTime())) return 'Unknown';

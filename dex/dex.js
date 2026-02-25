@@ -73,21 +73,36 @@ document.addEventListener('DOMContentLoaded', () => {
         constructor(url) {
             this.url = url;
             this.ws = null;
-            this.subs = new Map();
+            this.subs = new Map(); // channel -> { subId, method, params, callback }
             this.pending = [];
             this.nextReqId = 1;
             this.pendingReqs = new Map();
             this.reconnectDelay = 1000;
+            this.reconnectTimer = null;
+            this.connected = false;
+            this._closing = false;
             this.connect();
         }
         connect() {
-            try { this.ws = new WebSocket(this.url); } catch { return; }
+            if (this._closing) return;
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+            try { this.ws = new WebSocket(this.url); } catch {
+                this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay);
+                return;
+            }
             this.ws.onopen = () => {
                 console.log('[WS] Connected');
                 this.reconnectDelay = 1000;
                 this.connected = true;
                 if (this.onConnectionChange) this.onConnectionChange(true);
-                for (const [, sub] of this.subs) this._sendSubscribe(sub.method, sub.params);
+                for (const [channel, sub] of this.subs) {
+                    this._sendSubscribe(sub.method, sub.params)
+                        .then((newSubId) => { sub.subId = newSubId; this.subs.set(channel, sub); })
+                        .catch(() => {});
+                }
                 this.pending.forEach(msg => this.ws.send(msg));
                 this.pending = [];
             };
@@ -102,21 +117,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     if (msg.method === 'notification' && msg.params) {
-                        const sub = this.subs.get(msg.params.subscription);
+                        const sub = Array.from(this.subs.values()).find((entry) => entry.subId === msg.params.subscription);
                         if (sub?.callback) sub.callback(msg.params.result);
                     }
                     if (msg.channel && msg.data) {
-                        for (const [, sub] of this.subs) {
-                            if (sub.channel === msg.channel && sub.callback) sub.callback(msg.data);
+                        const sub = this.subs.get(msg.channel);
+                        if (sub?.callback) sub.callback(msg.data);
+                        else {
+                            for (const [, fallbackSub] of this.subs) {
+                                if (fallbackSub.channel === msg.channel && fallbackSub.callback) fallbackSub.callback(msg.data);
+                            }
                         }
                     }
                 } catch { /* ignore */ }
             };
             this.ws.onclose = () => {
                 this.connected = false;
+                this.ws = null;
                 if (this.onConnectionChange) this.onConnectionChange(false);
                 if (this._closing) return;
-                setTimeout(() => this.connect(), this.reconnectDelay);
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, this.reconnectDelay);
                 this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
             };
             this.ws.onerror = () => {};
@@ -132,28 +155,63 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         async subscribe(channel, callback) {
+            const existing = this.subs.get(channel);
+            if (existing) {
+                existing.callback = callback;
+                this.subs.set(channel, existing);
+                return existing.subId || channel;
+            }
+
+            const entry = { channel, method: 'subscribeDex', params: { channel }, callback, subId: null };
+            this.subs.set(channel, entry);
+
             try {
                 const subId = await this._sendSubscribe('subscribeDex', { channel });
-                this.subs.set(subId, { channel, method: 'subscribeDex', params: { channel }, callback });
-                return subId;
+                entry.subId = subId;
+                this.subs.set(channel, entry);
+                return subId || channel;
             } catch {
-                const pendingId = this.nextReqId++;
-                this.subs.set(pendingId, { channel, method: 'subscribeDex', params: { channel }, callback });
-                return pendingId;
+                return channel;
             }
         }
-        unsubscribe(subId) {
-            const sub = this.subs.get(subId);
-            this.subs.delete(subId);
-            if (sub && this.ws?.readyState === WebSocket.OPEN) {
+        unsubscribe(subscriptionOrChannel) {
+            let channel = null;
+            let sub = null;
+
+            if (this.subs.has(subscriptionOrChannel)) {
+                channel = subscriptionOrChannel;
+                sub = this.subs.get(channel);
+            } else {
+                for (const [key, value] of this.subs) {
+                    if (value.subId === subscriptionOrChannel) {
+                        channel = key;
+                        sub = value;
+                        break;
+                    }
+                }
+            }
+
+            if (!channel || !sub) return;
+            this.subs.delete(channel);
+
+            if (sub.subId && this.ws?.readyState === WebSocket.OPEN) {
                 try {
-                    this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: 'unsubscribeDex', params: { subscription: subId } }));
+                    this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: 'unsubscribeDex', params: { subscription: sub.subId } }));
                 } catch { /* connection may have closed */ }
             }
         }
         close() {
             this._closing = true;
+            this.connected = false;
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
             if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+            this.pendingReqs.forEach(({ reject }) => reject(new Error('WebSocket closed')));
+            this.pendingReqs.clear();
+            this.pending = [];
+            this.subs.clear();
         }
     }
 
@@ -184,53 +242,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.address = result.address;
                 this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
                 this.keypair = { connected: true }; // Compatibility flag — no actual key material
+                this.signingReady = true;
                 return this;
             }
             throw new Error('Wallet connection failed');
         },
-        async connectAddress(addr) {
+        async connectAddress(addr, options = {}) {
+            const { signingReady = false } = options;
             // Connect to a known address (e.g. from saved wallets list) — read-only until extension signs
             this.address = addr;
             this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
-            this.keypair = { connected: true };
+            this.signingReady = !!signingReady;
+            this.keypair = this.signingReady ? { connected: true } : null;
             return this;
         },
         /** Import wallet from hex or base58 private key */
-        async fromSecretKey(keyStr) {
-            // Try nacl first — real Ed25519 keypair from secret key bytes
-            const bytes = hexToBytes(keyStr);
-            if (window.nacl && window.nacl.sign) {
-                let kp;
-                if (bytes.length === 64) {
-                    kp = nacl.sign.keyPair.fromSecretKey(new Uint8Array(bytes));
-                } else if (bytes.length === 32) {
-                    kp = nacl.sign.keyPair.fromSeed(new Uint8Array(bytes));
-                } else {
-                    throw new Error('Invalid key length — expected 32 or 64 bytes (hex)');
-                }
-                this.keypair = kp;
-                this.address = bs58encode(kp.publicKey);
-                this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-                return this;
-            }
-            throw new Error('Cannot import key — crypto library not loaded');
+        async fromSecretKey() {
+            throw new Error('Private key import is disabled in DEX. Use MoltChain Wallet extension.');
         },
         /** Generate a fresh Ed25519 keypair */
         async generate() {
-            if (window.nacl && window.nacl.sign) {
-                const kp = nacl.sign.keyPair();
-                this.keypair = kp;
-                this.address = bs58encode(kp.publicKey);
-                this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-                return this;
-            }
-            throw new Error('Cannot generate wallet — crypto library not loaded');
+            throw new Error('DEX key generation is disabled. Create wallets in MoltChain Wallet extension.');
         },
         sign(message) {
             throw new Error('Direct signing removed — use wallet extension');
         },
         async sendTransaction(instructions) {
             if (!this.address) throw new Error('Wallet not connected');
+            if (!this.signingReady) throw new Error('Signing session not active. Reconnect wallet extension to sign.');
             // Delegate signing to wallet extension
             const w = await this._ensureWallet();
             if (w && typeof w.sendTransaction === 'function') {
@@ -820,7 +859,7 @@ document.addEventListener('DOMContentLoaded', () => {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
         currentView: 'trade', leverageValue: 2, lastPrice: MOLT_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
-        candles: [], connected: false, tradeMode: 'spot', _wsSubs: [],
+        candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], marginMaxLeverage: 100,
         // Task 5.1: Slippage tolerance (loaded from localStorage)
         slippagePct: parseFloat(localStorage.getItem('dexSlippage')) || 0.5,
         // Task 5.2: Notification preferences
@@ -1146,6 +1185,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     function connectWebSocket() {
         try {
+            if (dexWs) dexWs.close();
             dexWs = new DexWS(WS_URL);
             dexWs.onConnectionChange = (connected) => {
                 if (typeof updateFooterStatus === 'function') updateFooterStatus(footerBlockHeight, connected);
@@ -1580,23 +1620,80 @@ document.addEventListener('DOMContentLoaded', () => {
     const priceInput = document.getElementById('orderPrice'), amountInput = document.getElementById('orderAmount'), totalInput = document.getElementById('orderTotal');
     const submitBtn = document.getElementById('submitOrder'), stopGroup = document.querySelector('.stop-price-group');
 
-    orderTabs.forEach(tab => tab.addEventListener('click', () => { orderTabs.forEach(t => t.classList.remove('active')); tab.classList.add('active'); state.orderSide = tab.dataset.side; updateSubmitBtn(); }));
-    orderTypeBtns.forEach(btn => btn.addEventListener('click', () => { orderTypeBtns.forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.orderType = btn.dataset.type; if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none'; if (priceInput) priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block'; }));
+    function updateMarginSltpVisibility() {
+        const sltpRow = document.querySelector('.margin-sltp-row');
+        if (!sltpRow) return;
+        const hidden = state.tradeMode === 'margin' && state.orderType === 'stop-limit';
+        sltpRow.style.display = hidden ? 'none' : 'flex';
+    }
+
+    orderTabs.forEach(tab => tab.addEventListener('click', () => {
+        orderTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        state.orderSide = tab.dataset.side;
+        state.marginSide = state.orderSide === 'buy' ? 'long' : 'short';
+        updateSubmitBtn();
+        if (state.tradeMode === 'margin') updateMarginInfo();
+    }));
+    orderTypeBtns.forEach(btn => btn.addEventListener('click', () => {
+        orderTypeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.orderType = btn.dataset.type;
+        if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
+        if (priceInput) priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
+        updateMarginSltpVisibility();
+        if (state.tradeMode === 'margin') updateMarginInfo();
+    }));
 
     function updateSubmitBtn() { if (!submitBtn) return; const m = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : ''; submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`; submitBtn.textContent = `${state.orderSide === 'buy' ? 'Buy' : 'Sell'}${m} ${state.activePair?.base || ''}`; }
 
-    document.querySelectorAll('.trade-mode').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.tradeMode = btn.dataset.mode; const mi = document.getElementById('marginInline'); if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin'); updateSubmitBtn(); if (state.tradeMode === 'margin') { checkMarginPairEnabled(); loadMarginStats(); loadMarginPositions(); updateMarginInfo(); } }); });
+    function getAllowedLeverageLevels(maxLeverage) {
+        const contractLevels = [2, 3, 5, 10, 25, 50, 100];
+        return contractLevels.filter(level => level <= Math.max(2, maxLeverage));
+    }
+
+    function snapLeverageToAllowed(rawValue, maxLeverage) {
+        const levels = getAllowedLeverageLevels(maxLeverage);
+        if (!levels.length) return 2;
+        const value = Number(rawValue || levels[0]);
+        return levels.reduce((closest, level) => (
+            Math.abs(level - value) < Math.abs(closest - value) ? level : closest
+        ), levels[0]);
+    }
+
+    function applyLeverageConstraints() {
+        if (!inlineLeverage) return;
+        const crossCap = 3;
+        const modeMax = state.marginType === 'cross'
+            ? Math.min(state.marginMaxLeverage || 100, crossCap)
+            : (state.marginMaxLeverage || 100);
+        const effectiveMax = Math.max(2, modeMax);
+        inlineLeverage.max = String(effectiveMax);
+        inlineLeverage.min = '2';
+        inlineLeverage.step = '1';
+        state.leverageValue = snapLeverageToAllowed(state.leverageValue, effectiveMax);
+        inlineLeverage.value = String(state.leverageValue);
+        if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`;
+    }
+
+    document.querySelectorAll('.trade-mode').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.tradeMode = btn.dataset.mode; const mi = document.getElementById('marginInline'); if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin'); updateSubmitBtn(); updateMarginSltpVisibility(); if (state.tradeMode === 'margin') { applyLeverageConstraints(); checkMarginPairEnabled(); loadMarginStats(); loadMarginPositions(); updateMarginInfo(); } }); });
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
-    if (inlineLeverage) inlineLeverage.addEventListener('input', () => { state.leverageValue = parseFloat(inlineLeverage.value); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
-    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; if (inlineLeverage) inlineLeverage.max = state.marginType === 'isolated' ? '5' : '3'; }));
+    if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
+    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); }));
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
     const ROUTE_TYPE_LABELS = { clob: 'CLOB Direct', amm: 'AMM Pool', split: 'CLOB + AMM Split', multi_hop: 'Multi-Hop', legacy_swap: 'Legacy Swap' };
     function calcTotal() {
         if (!priceInput || !amountInput || !totalInput) return;
-        const p = parseFloat(priceInput.value) || 0, a = parseFloat(amountInput.value) || 0;
+        const rawP = parseFloat(priceInput.value);
+        const rawA = parseFloat(amountInput.value);
+        const p = Math.max(0, Number.isFinite(rawP) ? rawP : 0);
+        const a = Math.max(0, Number.isFinite(rawA) ? rawA : 0);
+        if (Number.isFinite(rawP) && rawP < 0) priceInput.value = String(p);
+        if (Number.isFinite(rawA) && rawA < 0) amountInput.value = String(a);
         totalInput.value = (p * a).toFixed(4);
+        if (state.tradeMode === 'margin') updateMarginInfo();
         const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
         // Show inline estimate immediately, then refine via API
         if (fe) fe.textContent = `~${(p * a * 0.0005).toFixed(4)} ${state.activePair?.quote || ''}`;
@@ -1628,7 +1725,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (priceInput) priceInput.addEventListener('input', calcTotal);
     if (amountInput) amountInput.addEventListener('input', calcTotal);
-    if (totalInput) totalInput.addEventListener('input', () => { if (!priceInput || !amountInput) return; const p = parseFloat(priceInput.value) || 0, t = parseFloat(totalInput.value) || 0; if (p > 0) amountInput.value = (t / p).toFixed(4); });
+    if (totalInput) totalInput.addEventListener('input', () => {
+        if (!priceInput || !amountInput) return;
+        const p = Math.max(0, parseFloat(priceInput.value) || 0);
+        const rawT = parseFloat(totalInput.value);
+        const t = Math.max(0, Number.isFinite(rawT) ? rawT : 0);
+        if (Number.isFinite(rawT) && rawT < 0) totalInput.value = String(t);
+        if (p > 0) amountInput.value = (t / p).toFixed(4);
+        if (state.tradeMode === 'margin') updateMarginInfo();
+    });
 
     document.querySelectorAll('.preset-btn').forEach(btn => btn.addEventListener('click', () => {
         const pct = parseInt(btn.dataset.pct, 10) / 100, tok = state.orderSide === 'buy' ? state.activePair?.quote : state.activePair?.base, bal = tok ? balances[tok] : null;
@@ -1916,7 +2021,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginTPInput = document.getElementById('marginTP');
                 const slVal = parseFloat(marginSLInput?.value) || 0;
                 const tpVal = parseFloat(marginTPInput?.value) || 0;
-                if (slVal > 0 || tpVal > 0) {
+                if (state.orderType !== 'stop-limit' && (slVal > 0 || tpVal > 0)) {
                     try {
                         // Get position count to determine the new position's ID
                         const { data: posData } = await api.get(`/margin/positions?trader=${wallet.address}`);
@@ -2083,7 +2188,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
     let savedWallets = JSON.parse(localStorage.getItem('dexWallets') || '[]');
 
-    function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'import'); } }
+    function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'extension'); } }
     function closeWalletModalFn() { if (walletModal) walletModal.classList.add('hidden'); }
     function switchWmTab(t) { wmTabs.forEach(x => x.classList.toggle('active', x.dataset.wmTab === t)); Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== t); }); }
 
@@ -2092,6 +2197,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (walletModal) walletModal.addEventListener('click', e => { if (e.target === walletModal) closeWalletModalFn(); });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
+
+    // Security mode: DEX does not accept plaintext private keys or mnemonics.
+    const importTabBtn = document.querySelector('.wm-tab[data-wm-tab="import"]');
+    const createTabBtn = document.querySelector('.wm-tab[data-wm-tab="create"]');
+    if (importTabBtn) importTabBtn.classList.add('hidden');
+    if (createTabBtn) createTabBtn.classList.add('hidden');
 
     // Import-type toggle (Private Key / Mnemonic)
     document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
@@ -2125,54 +2236,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Import tab — connect from private key or mnemonic
     const wmConnectBtn = document.getElementById('wmConnectBtn');
     if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
-        const activeImport = document.querySelector('.wm-import-type.active');
-        const importType = activeImport?.dataset?.import || 'key';
-
-        if (importType === 'key') {
-            const ki = document.getElementById('wmPrivateKey'), key = ki?.value?.trim();
-            if (!key) { showNotification('Enter private key (hex or base58)', 'warning'); return; }
-            try {
-                await wallet.fromSecretKey(key);
-                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
-                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-                connectWalletTo(wallet.address, wallet.shortAddr);
-                closeWalletModalFn();
-                if (ki) ki.value = '';
-                showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
-            } catch (e) { showNotification(`Import failed: ${e.message}`, 'error'); }
-        } else {
-            // Mnemonic import
-            const inputs = document.querySelectorAll('#mnemonicGrid input');
-            const words = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
-            if (words.length < 12) { showNotification('Enter at least 12 mnemonic words', 'warning'); return; }
-            const mnemonic = words.join(' ');
-            try {
-                // Derive Ed25519 keypair from BIP39 mnemonic via PBKDF2 (Solana-compatible)
-                if (window.nacl && window.nacl.sign && window.crypto && window.crypto.subtle) {
-                    const enc = new TextEncoder();
-                    const keyMaterial = await crypto.subtle.importKey(
-                        'raw', enc.encode(mnemonic), 'PBKDF2', false, ['deriveBits']
-                    );
-                    const seedBits = await crypto.subtle.deriveBits(
-                        { name: 'PBKDF2', salt: enc.encode('mnemonic'), iterations: 2048, hash: 'SHA-512' },
-                        keyMaterial, 512
-                    );
-                    const seed = new Uint8Array(seedBits).slice(0, 32);
-                    const kp = nacl.sign.keyPair.fromSeed(seed);
-                    wallet.keypair = kp;
-                    wallet.address = bs58encode(kp.publicKey);
-                    wallet.shortAddr = wallet.address.slice(0, 8) + '...' + wallet.address.slice(-6);
-                } else {
-                    throw new Error('Mnemonic import requires crypto support — use a modern browser');
-                }
-                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
-                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-                connectWalletTo(wallet.address, wallet.shortAddr);
-                closeWalletModalFn();
-                inputs.forEach(i => i.value = '');
-                showNotification('Wallet imported: ' + wallet.shortAddr, 'success');
-            } catch (e) { showNotification(`Mnemonic import failed: ${e.message}`, 'error'); }
-        }
+        showNotification('Private key and mnemonic import are disabled in DEX. Use Wallet Extension tab.', 'warning');
+        switchWmTab('extension');
     });
 
     // Extension tab — connect via wallet extension
@@ -2182,7 +2247,7 @@ document.addEventListener('DOMContentLoaded', () => {
             await wallet.connect();
             savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
             localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            connectWalletTo(wallet.address, wallet.shortAddr);
+            connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
             closeWalletModalFn();
             showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
         } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
@@ -2191,25 +2256,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Create tab — generate a new Ed25519 keypair
     const wmCreateBtn = document.getElementById('wmCreateBtn');
     if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
-        try {
-            await wallet.generate();
-            const ae = document.getElementById('wmNewAddress'), ke = document.getElementById('wmNewKey'), cd = document.getElementById('wmCreatedWallet');
-            if (ae) ae.textContent = wallet.address;
-            if (ke) ke.textContent = wallet.keypair && wallet.keypair.secretKey ? bytesToHex(wallet.keypair.secretKey) : '(key held by extension)';
-            if (cd) cd.classList.remove('hidden');
-            savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
-            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            connectWalletTo(wallet.address, wallet.shortAddr);
-            showNotification('New wallet created: ' + wallet.shortAddr, 'success');
-        } catch (e) { showNotification(`Wallet creation failed: ${e.message}`, 'error'); }
+        showNotification('Wallet creation inside DEX is disabled. Use MoltChain Wallet extension.', 'warning');
+        switchWmTab('extension');
     });
 
     document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
 
-    async function connectWalletTo(address, shortAddr) {
+    async function connectWalletTo(address, shortAddr, options = {}) {
+        const { signingReady = false } = options;
         state.connected = true; state.walletAddress = address;
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
-        await wallet.connectAddress(address);
+        await wallet.connectAddress(address, { signingReady });
         // M16: Resolve .molt name and fetch MoltyID profile for connected trader
         let displayLabel = shortAddr;
         try {
@@ -2243,7 +2300,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function disconnectWallet() {
-        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null; wallet._moltWallet = null;
+        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet._moltWallet = null;
         state.moltName = null; state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
@@ -2740,7 +2797,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateMarginInfo() {
         const e = document.getElementById('marginEntry'), l = document.getElementById('marginLiqPrice'), r = document.getElementById('marginRatio');
-        if (e) e.textContent = formatPrice(state.lastPrice);
+        const manualPrice = parseFloat(priceInput?.value || '0') || 0;
+        const referencePrice = manualPrice > 0 ? manualPrice : state.lastPrice;
+        if (e) e.textContent = formatPrice(referencePrice);
         // F10.7 FIX: Liquidation price uses tier-appropriate maintenance BPS
         // Liq occurs when margin_ratio drops to maintenance level
         // For long: liq_price = entry * (1 - (margin/notional - maintBps/10000))
@@ -2749,8 +2808,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const maintBps = getMaintenanceBps(state.leverageValue);
         const maintFrac = maintBps / 10000;
         if (l) l.textContent = formatPrice(state.marginSide === 'long'
-            ? state.lastPrice * (1 - 1 / state.leverageValue + maintFrac)
-            : state.lastPrice * (1 + 1 / state.leverageValue - maintFrac));
+            ? referencePrice * (1 - 1 / state.leverageValue + maintFrac)
+            : referencePrice * (1 + 1 / state.leverageValue - maintFrac));
         if (r) r.textContent = `${(100 / state.leverageValue).toFixed(1)}%`;
     }
 
@@ -3202,16 +3261,20 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginInsurance', formatVolume((data.insuranceFund || 0) / 1e9));
+                const maxLev = Number(data.maxLeverage ?? data.max_leverage ?? 0);
+                if (maxLev > 0) state.marginMaxLeverage = Math.min(100, maxLev);
             }
         } catch { /* API unavailable */ }
         // Load margin info
         try {
             const { data } = await api.get('/margin/info');
             if (data) {
-                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                if (data.maxLeverage) { const ls = document.getElementById('leverageSlider'); if (ls) ls.max = String(data.maxLeverage); }
+                const maxLev = Number(data.maxLeverage ?? data.max_leverage ?? 0);
+                if (maxLev > 0) state.marginMaxLeverage = Math.min(100, maxLev);
             }
         } catch { /* keep defaults */ }
+        applyLeverageConstraints();
+        updateMarginInfo();
         // Load funding rate
         try {
             const { data } = await api.get('/margin/funding-rate');
@@ -5523,21 +5586,8 @@ document.addEventListener('DOMContentLoaded', () => {
         connectBinancePriceFeed();
         if (savedWallets.length) {
             const l = savedWallets[savedWallets.length - 1];
-            // AUDIT-FIX F10.11: Auto-connect is display-only — no keypair stored.
-            // Show "(view only)" indicator so user knows signing is disabled.
-            state.connected = true; state.walletAddress = l.address;
-            wallet.address = l.address;
             const shortAddr = l.short || l.address.slice(0, 8) + '...';
-            if (connectBtn) {
-                connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)} <span style="font-size:0.65rem;opacity:0.7;margin-left:4px;">(view only)</span>`;
-                connectBtn.className = 'btn btn-small btn-secondary';
-                connectBtn.title = 'View-only mode — click to connect wallet extension for signing';
-            }
-            toggleWalletPanels(true);
-            applyWalletGateAll(); // F10E.1: Re-apply wallet-gate after auto-connect
-            try { await loadBalances(l.address); await loadUserOrders(l.address); } catch { /* API unavailable */ }
-            renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions();
-            if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
+            await connectWalletTo(l.address, shortAddr, { signingReady: false });
         }
     })().catch(e => console.error('[DEX] Init error:', e));
 

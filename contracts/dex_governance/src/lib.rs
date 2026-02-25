@@ -1164,6 +1164,32 @@ mod tests {
         admin
     }
 
+    fn setup_with_reputation() -> [u8; 32] {
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid.as_ptr()), 0);
+
+        let hex_chars: &[u8; 16] = b"0123456789abcdef";
+        let seed_rep = |addr: [u8; 32]| {
+            let mut rep_key = Vec::with_capacity(68);
+            rep_key.extend_from_slice(b"rep:");
+            for &byte in &addr {
+                rep_key.push(hex_chars[(byte >> 4) as usize]);
+                rep_key.push(hex_chars[(byte & 0x0f) as usize]);
+            }
+            storage_set(&rep_key, &u64_to_bytes(1_000));
+        };
+
+        for id in 0u8..=255 {
+            seed_rep([id; 32]);
+            let mut first_byte = [0u8; 32];
+            first_byte[0] = id;
+            seed_rep(first_byte);
+        }
+
+        admin
+    }
+
     #[test]
     fn test_initialize() {
         test_mock::reset();
@@ -1184,7 +1210,7 @@ mod tests {
 
     #[test]
     fn test_propose_new_pair() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1209,7 +1235,7 @@ mod tests {
 
     #[test]
     fn test_vote_approve() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let voter = [3u8; 32];
         let base = [10u8; 32];
@@ -1225,7 +1251,7 @@ mod tests {
 
     #[test]
     fn test_vote_reject() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let voter = [3u8; 32];
         let base = [10u8; 32];
@@ -1241,7 +1267,7 @@ mod tests {
 
     #[test]
     fn test_double_vote_prevented() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let voter = [3u8; 32];
         let base = [10u8; 32];
@@ -1256,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_vote_after_period() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let voter = [3u8; 32];
         let base = [10u8; 32];
@@ -1272,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_finalize_passed() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1300,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_finalize_rejected() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1328,7 +1354,7 @@ mod tests {
 
     #[test]
     fn test_finalize_still_active() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1340,7 +1366,7 @@ mod tests {
 
     #[test]
     fn test_execute_proposal_after_timelock() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1423,7 +1449,7 @@ mod tests {
 
     #[test]
     fn test_get_proposal_info() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1462,7 +1488,7 @@ mod tests {
 
     #[test]
     fn test_propose_pair_enforces_preferred_quote() {
-        let admin = setup();
+        let admin = setup_with_reputation();
         let musd = [42u8; 32];
         set_preferred_quote(admin.as_ptr(), musd.as_ptr());
         let proposer = [2u8; 32];
@@ -1484,7 +1510,7 @@ mod tests {
 
     #[test]
     fn test_propose_pair_no_preferred_allows_any() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1609,7 +1635,7 @@ mod tests {
     // AUDIT-FIX P2: Security regression test
     #[test]
     fn test_finalize_insufficient_quorum() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1652,7 +1678,7 @@ mod tests {
 
     #[test]
     fn test_execute_new_pair_dispatches_cross_call() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1685,7 +1711,7 @@ mod tests {
 
     #[test]
     fn test_execute_fee_change_dispatches_and_records() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         test_mock::set_slot(200);
         test_mock::set_caller(proposer);
@@ -1713,7 +1739,7 @@ mod tests {
 
     #[test]
     fn test_execute_cannot_reexecute() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1728,7 +1754,7 @@ mod tests {
 
     #[test]
     fn test_execute_rejected_proposal_fails() {
-        let _admin = setup();
+        let _admin = setup_with_reputation();
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];

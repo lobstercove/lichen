@@ -2268,8 +2268,8 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
             if v > 0 {
                 v
             } else {
-                20
-            } // default 20x
+                100
+            } // default 100x
         },
     };
 

@@ -71,7 +71,7 @@ const CF_SYMBOL_BY_PROGRAM: &str = "symbol_by_program"; // Program pubkey -> sym
 const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> event_key (secondary index)
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (MoltyID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
-// Shielded pool (ZK privacy layer)
+                                                // Shielded pool (ZK privacy layer)
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
@@ -820,7 +820,7 @@ impl StateStore {
             // Shielded pool (ZK privacy layer)
             ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,LE)->commitment(32)
             ColumnFamilyDescriptor::new(CF_SHIELDED_NULLIFIERS, point_lookup_opts(32)), // key=nullifier(32)->0x01
-            ColumnFamilyDescriptor::new(CF_SHIELDED_POOL, small_cf_opts()),             // singleton pool state
+            ColumnFamilyDescriptor::new(CF_SHIELDED_POOL, small_cf_opts()), // singleton pool state
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -4194,7 +4194,10 @@ impl StateStore {
     /// "founding_moltys", "ecosystem_partnerships", "reserve_pool".
     pub fn get_wallet_pubkey(&self, role: &str) -> Result<Option<Pubkey>, String> {
         let accounts = self.get_genesis_accounts()?;
-        Ok(accounts.into_iter().find(|(r, _, _, _)| r == role).map(|(_, pk, _, _)| pk))
+        Ok(accounts
+            .into_iter()
+            .find(|(r, _, _, _)| r == role)
+            .map(|(_, pk, _, _)| pk))
     }
 
     /// Get community treasury wallet pubkey.
@@ -4261,21 +4264,15 @@ impl StateStore {
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
         let cliff_end = match self.db.get_cf(&cf, b"founding_vest_cliff_end") {
-            Ok(Some(data)) if data.len() == 8 => {
-                u64::from_le_bytes(data[..8].try_into().unwrap())
-            }
+            Ok(Some(data)) if data.len() == 8 => u64::from_le_bytes(data[..8].try_into().unwrap()),
             _ => return Ok(None),
         };
         let vest_end = match self.db.get_cf(&cf, b"founding_vest_end") {
-            Ok(Some(data)) if data.len() == 8 => {
-                u64::from_le_bytes(data[..8].try_into().unwrap())
-            }
+            Ok(Some(data)) if data.len() == 8 => u64::from_le_bytes(data[..8].try_into().unwrap()),
             _ => return Ok(None),
         };
         let total_amount = match self.db.get_cf(&cf, b"founding_vest_total_amount") {
-            Ok(Some(data)) if data.len() == 8 => {
-                u64::from_le_bytes(data[..8].try_into().unwrap())
-            }
+            Ok(Some(data)) if data.len() == 8 => u64::from_le_bytes(data[..8].try_into().unwrap()),
             _ => return Ok(None),
         };
 
@@ -4334,9 +4331,7 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
         let current = match self.db.get_cf(&cf, b"governed_proposal_counter") {
-            Ok(Some(data)) if data.len() == 8 => {
-                u64::from_le_bytes(data[..8].try_into().unwrap())
-            }
+            Ok(Some(data)) if data.len() == 8 => u64::from_le_bytes(data[..8].try_into().unwrap()),
             _ => 0,
         };
         let next = current + 1;
@@ -4375,9 +4370,8 @@ impl StateStore {
         let key = format!("governed_proposal:{}", id);
         match self.db.get_cf(&cf, key.as_bytes()) {
             Ok(Some(data)) => {
-                let proposal: crate::multisig::GovernedProposal =
-                    serde_json::from_slice(&data)
-                        .map_err(|e| format!("Failed to deserialize proposal: {}", e))?;
+                let proposal: crate::multisig::GovernedProposal = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize proposal: {}", e))?;
                 Ok(Some(proposal))
             }
             Ok(None) => Ok(None),
@@ -4571,9 +4565,12 @@ impl StateStore {
 
     /// Store slot_duration_ms in CF_STATS at genesis boot.
     pub fn set_slot_duration_ms(&self, ms: u64) -> Result<(), String> {
-        let cf = self.db.cf_handle(CF_STATS)
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
-        self.db.put_cf(&cf, b"slot_duration_ms", ms.to_le_bytes())
+        self.db
+            .put_cf(&cf, b"slot_duration_ms", ms.to_le_bytes())
             .map_err(|e| format!("Failed to store slot_duration_ms: {}", e))
     }
 
@@ -6621,11 +6618,31 @@ mod tests {
 
         // Simulate genesis: store all 6 wallet entries
         let wallets: Vec<(String, Pubkey, u64, u8)> = vec![
-            ("validator_rewards".into(), Pubkey([0x01; 32]), 100_000_000, 10),
-            ("community_treasury".into(), Pubkey([0x02; 32]), 250_000_000, 25),
+            (
+                "validator_rewards".into(),
+                Pubkey([0x01; 32]),
+                100_000_000,
+                10,
+            ),
+            (
+                "community_treasury".into(),
+                Pubkey([0x02; 32]),
+                250_000_000,
+                25,
+            ),
             ("builder_grants".into(), Pubkey([0x03; 32]), 350_000_000, 35),
-            ("founding_moltys".into(), Pubkey([0x04; 32]), 100_000_000, 10),
-            ("ecosystem_partnerships".into(), Pubkey([0x05; 32]), 100_000_000, 10),
+            (
+                "founding_moltys".into(),
+                Pubkey([0x04; 32]),
+                100_000_000,
+                10,
+            ),
+            (
+                "ecosystem_partnerships".into(),
+                Pubkey([0x05; 32]),
+                100_000_000,
+                10,
+            ),
             ("reserve_pool".into(), Pubkey([0x06; 32]), 100_000_000, 10),
         ];
         state.set_genesis_accounts(&wallets).unwrap();
@@ -6638,12 +6655,30 @@ mod tests {
         assert_eq!(treasury, Some(Pubkey([0x01; 32])));
 
         // Verify all 6 wallet role-based accessors
-        assert_eq!(state.get_wallet_pubkey("validator_rewards").unwrap(), Some(Pubkey([0x01; 32])));
-        assert_eq!(state.get_community_treasury_pubkey().unwrap(), Some(Pubkey([0x02; 32])));
-        assert_eq!(state.get_builder_grants_pubkey().unwrap(), Some(Pubkey([0x03; 32])));
-        assert_eq!(state.get_founding_moltys_pubkey().unwrap(), Some(Pubkey([0x04; 32])));
-        assert_eq!(state.get_ecosystem_partnerships_pubkey().unwrap(), Some(Pubkey([0x05; 32])));
-        assert_eq!(state.get_reserve_pool_pubkey().unwrap(), Some(Pubkey([0x06; 32])));
+        assert_eq!(
+            state.get_wallet_pubkey("validator_rewards").unwrap(),
+            Some(Pubkey([0x01; 32]))
+        );
+        assert_eq!(
+            state.get_community_treasury_pubkey().unwrap(),
+            Some(Pubkey([0x02; 32]))
+        );
+        assert_eq!(
+            state.get_builder_grants_pubkey().unwrap(),
+            Some(Pubkey([0x03; 32]))
+        );
+        assert_eq!(
+            state.get_founding_moltys_pubkey().unwrap(),
+            Some(Pubkey([0x04; 32]))
+        );
+        assert_eq!(
+            state.get_ecosystem_partnerships_pubkey().unwrap(),
+            Some(Pubkey([0x05; 32]))
+        );
+        assert_eq!(
+            state.get_reserve_pool_pubkey().unwrap(),
+            Some(Pubkey([0x06; 32]))
+        );
 
         // Unknown role returns None
         assert_eq!(state.get_wallet_pubkey("nonexistent").unwrap(), None);
@@ -6667,8 +6702,18 @@ mod tests {
 
         // Store genesis accounts with community_treasury (4th element is percentage u8)
         let accounts: Vec<(String, Pubkey, u64, u8)> = vec![
-            ("validator_rewards".to_string(), validator_rewards_pk, 100_000_000, 10),
-            ("community_treasury".to_string(), community_pk, 250_000_000, 25),
+            (
+                "validator_rewards".to_string(),
+                validator_rewards_pk,
+                100_000_000,
+                10,
+            ),
+            (
+                "community_treasury".to_string(),
+                community_pk,
+                250_000_000,
+                25,
+            ),
         ];
         state.set_genesis_accounts(&accounts).unwrap();
         state.set_treasury_pubkey(&validator_rewards_pk).unwrap();
@@ -6678,8 +6723,14 @@ mod tests {
             .get_community_treasury_pubkey()
             .unwrap()
             .expect("community_treasury must be set");
-        assert_eq!(dao_treasury, community_pk, "DAO treasury must be community_treasury wallet");
-        assert_ne!(dao_treasury, validator_rewards_pk, "DAO treasury must NOT be validator_rewards");
+        assert_eq!(
+            dao_treasury, community_pk,
+            "DAO treasury must be community_treasury wallet"
+        );
+        assert_ne!(
+            dao_treasury, validator_rewards_pk,
+            "DAO treasury must NOT be validator_rewards"
+        );
     }
 
     // ─── Shielded pool state tests ──────────────────────────────────

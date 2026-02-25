@@ -67,11 +67,7 @@ pub fn setup_all() -> Result<Vec<CeremonyOutput>, String> {
 }
 
 /// Serialize proving and verification keys
-fn serialize_keys(
-    pk: ProvingKey<Bn254>,
-    vk: VerifyingKey<Bn254>,
-    name: &str,
-) -> CeremonyOutput {
+fn serialize_keys(pk: ProvingKey<Bn254>, vk: VerifyingKey<Bn254>, name: &str) -> CeremonyOutput {
     let mut pk_bytes = Vec::new();
     pk.serialize_compressed(&mut pk_bytes)
         .expect("PK serialization should not fail");

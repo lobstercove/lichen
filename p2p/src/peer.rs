@@ -263,8 +263,7 @@ impl PeerManager {
         if self.peers.len() >= self.max_peers {
             return Err(format!(
                 "Max peer limit reached ({}), rejecting {}",
-                self.max_peers,
-                peer_addr
+                self.max_peers, peer_addr
             ));
         }
 
@@ -606,8 +605,7 @@ impl PeerManager {
                             if peers.len() >= max_peers {
                                 warn!(
                                     "P2P: Rejected inbound connection from {} — at max peers ({})",
-                                    peer_addr,
-                                    max_peers
+                                    peer_addr, max_peers
                                 );
                                 return;
                             }

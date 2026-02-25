@@ -3261,7 +3261,10 @@ mod tests {
         // leader selection returns None (chain halts) — never produces blocks
         // with 0-stake validators.
         let leader = set.select_leader_weighted(0, &pool);
-        assert_eq!(leader, None, "Should return None when no validator meets MIN_VALIDATOR_STAKE");
+        assert_eq!(
+            leader, None,
+            "Should return None when no validator meets MIN_VALIDATOR_STAKE"
+        );
     }
 
     #[test]
@@ -4374,21 +4377,22 @@ mod tests {
             ));
         }
 
-        let slashed = tracker.apply_economic_slashing_with_params(
-            &pk, &mut pool, &params, 100,
-        );
+        let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params, 100);
 
         let remaining = pool.get_stake(&pk).unwrap().total_stake();
         assert!(
             remaining >= MIN_VALIDATOR_STAKE,
             "Stake ({}) must never drop below MIN_VALIDATOR_STAKE ({})",
-            remaining, MIN_VALIDATOR_STAKE
+            remaining,
+            MIN_VALIDATOR_STAKE
         );
 
         // The max slashable is the buffer: 100K - 75K = 25K MOLT
         let max_slashable = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE;
-        assert_eq!(slashed, max_slashable,
-            "Should slash exactly the 25K buffer, not more");
+        assert_eq!(
+            slashed, max_slashable,
+            "Should slash exactly the 25K buffer, not more"
+        );
     }
 
     // ================================================================
@@ -5089,7 +5093,10 @@ mod tests {
 
         // Same slot, same hash → benign P2P echo → returns None
         let v2 = va.try_vote(1, hash);
-        assert!(v2.is_none(), "Second vote for same (slot, hash) must return None");
+        assert!(
+            v2.is_none(),
+            "Second vote for same (slot, hash) must return None"
+        );
     }
 
     #[test]
@@ -5159,7 +5166,11 @@ mod tests {
         for slot in 1..=10 {
             let hash = Hash::new([slot as u8; 32]);
             let vote = va.try_vote(slot, hash).expect("First vote must succeed");
-            assert!(vote.verify(), "Vote signature for slot {} must verify", slot);
+            assert!(
+                vote.verify(),
+                "Vote signature for slot {} must verify",
+                slot
+            );
         }
     }
 
@@ -5181,7 +5192,10 @@ mod tests {
 
         // Fork block arrives — VoteAuthority MUST refuse
         let v2 = va.try_vote(5, fork_hash);
-        assert!(v2.is_none(), "Fork re-vote must be REFUSED to prevent DoubleVote slashing");
+        assert!(
+            v2.is_none(),
+            "Fork re-vote must be REFUSED to prevent DoubleVote slashing"
+        );
 
         // Verify we recorded the original hash, not the fork
         assert!(va.has_voted(5));
@@ -5213,11 +5227,17 @@ mod tests {
 
         // Transaction block reward should be 0.1 MOLT
         let tx_reward = pool.distribute_block_reward(&v1, 1, false);
-        assert_eq!(tx_reward, 100_000_000, "TX block reward must be 0.1 MOLT (100M shells)");
+        assert_eq!(
+            tx_reward, 100_000_000,
+            "TX block reward must be 0.1 MOLT (100M shells)"
+        );
 
         // Heartbeat block reward should be 0.05 MOLT
         let hb_reward = pool.distribute_block_reward(&v1, 2, true);
-        assert_eq!(hb_reward, 50_000_000, "Heartbeat reward must be 0.05 MOLT (50M shells)");
+        assert_eq!(
+            hb_reward, 50_000_000,
+            "Heartbeat reward must be 0.05 MOLT (50M shells)"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -5239,7 +5259,10 @@ mod tests {
         assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR), 80_000_000);
         assert_eq!(decayed_reward(50_000_000, SLOTS_PER_YEAR), 40_000_000);
         // Mid-year-1 (slot = 1.5 years → still year 1 since integer division)
-        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2), 80_000_000);
+        assert_eq!(
+            decayed_reward(100_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2),
+            80_000_000
+        );
     }
 
     #[test]
@@ -5267,21 +5290,35 @@ mod tests {
         // Year 50 (cap): 0.8^50 → effectively 0
         // After 50 years of 20% decay, 100M becomes ~1,427 shells
         let reward = decayed_reward(100_000_000, SLOTS_PER_YEAR * 50);
-        assert!(reward < 2_000, "Year 50 reward should be near zero, got {}", reward);
+        assert!(
+            reward < 2_000,
+            "Year 50 reward should be near zero, got {}",
+            reward
+        );
         // Still > 0 due to integer rounding
         assert!(reward > 0, "Year 50 tx reward should not be exactly 0");
 
         // Heartbeat: even smaller
         let hb = decayed_reward(50_000_000, SLOTS_PER_YEAR * 50);
-        assert!(hb < 1_000, "Year 50 heartbeat should be near zero, got {}", hb);
+        assert!(
+            hb < 1_000,
+            "Year 50 heartbeat should be near zero, got {}",
+            hb
+        );
     }
 
     #[test]
     fn test_decayed_reward_overflow_safe() {
         // Extremely large slot values should not panic or overflow
         // Past year 50, decay is capped — no infinite loop
-        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR * 100), decayed_reward(100_000_000, SLOTS_PER_YEAR * 50));
-        assert_eq!(decayed_reward(100_000_000, u64::MAX), decayed_reward(100_000_000, SLOTS_PER_YEAR * 50));
+        assert_eq!(
+            decayed_reward(100_000_000, SLOTS_PER_YEAR * 100),
+            decayed_reward(100_000_000, SLOTS_PER_YEAR * 50)
+        );
+        assert_eq!(
+            decayed_reward(100_000_000, u64::MAX),
+            decayed_reward(100_000_000, SLOTS_PER_YEAR * 50)
+        );
         // Zero base reward stays zero
         assert_eq!(decayed_reward(0, SLOTS_PER_YEAR * 10), 0);
         // u64::MAX base reward with year 0 — no decay applied, no overflow
@@ -5310,7 +5347,10 @@ mod tests {
 
     #[test]
     fn test_annual_reward_decay_constant() {
-        assert_eq!(ANNUAL_REWARD_DECAY_BPS, 2000, "Decay must be 20% (2000 bps)");
+        assert_eq!(
+            ANNUAL_REWARD_DECAY_BPS, 2000,
+            "Decay must be 20% (2000 bps)"
+        );
     }
 
     #[test]
@@ -5320,11 +5360,15 @@ mod tests {
         let mut pool = StakePool::new();
         let v1 = Pubkey::new([1u8; 32]);
         // Use bootstrap index 0 + BOOTSTRAP_GRANT_AMOUNT to create validator with debt
-        pool.stake_with_index(v1, BOOTSTRAP_GRANT_AMOUNT, 0, 0).unwrap();
+        pool.stake_with_index(v1, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
+            .unwrap();
 
         // Confirm producer has bootstrap debt
         let info = pool.get_stake(&v1).unwrap();
-        assert!(info.bootstrap_debt > 0, "Bootstrap validator must have bootstrap debt");
+        assert!(
+            info.bootstrap_debt > 0,
+            "Bootstrap validator must have bootstrap debt"
+        );
         assert_eq!(info.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
 
         // Distribute fee reward (simulates 30% producer share)
@@ -5350,8 +5394,14 @@ mod tests {
         );
         // Standard 50/50 split: liquid = fee_share - (fee_share/2).min(debt)
         // fee_share/2 = 150_000; debt >> 150_000, so paid = 150_000, liquid = 150_000
-        assert_eq!(liquid, 150_000, "Standard 50/50 split: liquid should be half");
-        assert_eq!(debt_payment, 150_000, "Standard 50/50 split: debt payment should be half");
+        assert_eq!(
+            liquid, 150_000,
+            "Standard 50/50 split: liquid should be half"
+        );
+        assert_eq!(
+            debt_payment, 150_000,
+            "Standard 50/50 split: debt payment should be half"
+        );
     }
 
     #[test]
@@ -5364,13 +5414,19 @@ mod tests {
 
         // Verify no debt
         let info = pool.get_stake(&v1).unwrap();
-        assert_eq!(info.bootstrap_debt, 0, "Self-funded validator should have no debt");
+        assert_eq!(
+            info.bootstrap_debt, 0,
+            "Self-funded validator should have no debt"
+        );
 
         let fee_share = 500_000;
         pool.distribute_fees(&v1, fee_share, 200);
         let (liquid, debt_payment) = pool.claim_rewards(&v1, 200);
 
-        assert_eq!(liquid, fee_share, "Fully vested: 100% of fee share should be liquid");
+        assert_eq!(
+            liquid, fee_share,
+            "Fully vested: 100% of fee share should be liquid"
+        );
         assert_eq!(debt_payment, 0, "Fully vested: no debt repayment");
     }
 
@@ -5388,7 +5444,10 @@ mod tests {
 
         // Right at genesis: 0 unlocked
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, genesis_time);
-        assert_eq!(unlocked, 0, "At genesis, no founding moltys should be unlocked");
+        assert_eq!(
+            unlocked, 0,
+            "At genesis, no founding moltys should be unlocked"
+        );
 
         // 1 second after genesis: still 0 (within cliff)
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, genesis_time + 1);
@@ -5404,8 +5463,7 @@ mod tests {
         let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
 
         // 1 second before cliff ends: still 0
-        let unlocked =
-            founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end - 1);
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end - 1);
         assert_eq!(unlocked, 0, "1 second before cliff: no tokens unlock");
 
         // Halfway through cliff: still 0
@@ -5424,12 +5482,21 @@ mod tests {
 
         // Right at cliff end: 0% of linear period elapsed → 0 unlocked
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end);
-        assert_eq!(unlocked, 0, "At cliff end, linear period hasn't started yielding");
+        assert_eq!(
+            unlocked, 0,
+            "At cliff end, linear period hasn't started yielding"
+        );
 
         // 1 second after cliff: tiny amount unlocked
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end + 1);
-        assert!(unlocked > 0, "1 second after cliff, some tokens should unlock");
-        assert!(unlocked < total / 1_000, "1 second after cliff: unlocked should be tiny");
+        assert!(
+            unlocked > 0,
+            "1 second after cliff, some tokens should unlock"
+        );
+        assert!(
+            unlocked < total / 1_000,
+            "1 second after cliff: unlocked should be tiny"
+        );
 
         // Halfway through linear period (9 months after cliff = 15 months total)
         let linear_period = vest_end - cliff_end; // 18 months in seconds

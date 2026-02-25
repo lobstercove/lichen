@@ -168,10 +168,7 @@ async fn rest_get_pool_state(State(state): State<Arc<RpcState>>) -> Response {
             merkle_root: hex::encode(pool.merkle_root),
             commitment_count: pool.commitment_count,
             total_shielded: pool.total_shielded,
-            total_shielded_molt: format!(
-                "{:.9}",
-                pool.total_shielded as f64 / 1_000_000_000.0
-            ),
+            total_shielded_molt: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
             vk_shield_hash: hex::encode(pool.vk_shield_hash),
             vk_unshield_hash: hex::encode(pool.vk_unshield_hash),
             vk_transfer_hash: hex::encode(pool.vk_transfer_hash),
@@ -210,7 +207,10 @@ async fn rest_get_merkle_path(
     }
 
     // Rebuild Merkle tree from all stored commitments
-    let commitments = match state.state.get_all_shielded_commitments(pool.commitment_count) {
+    let commitments = match state
+        .state
+        .get_all_shielded_commitments(pool.commitment_count)
+    {
         Ok(c) => c,
         Err(e) => return api_err(&format!("Failed to load commitments: {}", e)),
     };
@@ -389,10 +389,13 @@ pub(crate) async fn handle_get_shielded_pool_state(
     state: &RpcState,
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pool = state.state.get_shielded_pool_state().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let pool = state
+        .state
+        .get_shielded_pool_state()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     Ok(serde_json::json!({
         "merkleRoot": hex::encode(pool.merkle_root),
@@ -415,10 +418,13 @@ pub(crate) async fn handle_get_shielded_merkle_root(
     state: &RpcState,
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pool = state.state.get_shielded_pool_state().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let pool = state
+        .state
+        .get_shielded_pool_state()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     Ok(serde_json::json!({
         "merkleRoot": hex::encode(pool.merkle_root),
@@ -446,10 +452,13 @@ pub(crate) async fn handle_get_shielded_merkle_path(
             message: "Invalid params: expected [index] where index is a number".to_string(),
         })?;
 
-    let pool = state.state.get_shielded_pool_state().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let pool = state
+        .state
+        .get_shielded_pool_state()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     if index >= pool.commitment_count {
         return Err(RpcError {
@@ -461,14 +470,13 @@ pub(crate) async fn handle_get_shielded_merkle_path(
         });
     }
 
-    let commitments =
-        state
-            .state
-            .get_all_shielded_commitments(pool.commitment_count)
-            .map_err(|e| RpcError {
-                code: -32000,
-                message: format!("Failed to load commitments: {}", e),
-            })?;
+    let commitments = state
+        .state
+        .get_all_shielded_commitments(pool.commitment_count)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to load commitments: {}", e),
+        })?;
 
     let mut tree = MerkleTree::new();
     for comm in &commitments {
@@ -513,10 +521,13 @@ pub(crate) async fn handle_is_nullifier_spent(
         message: msg,
     })?;
 
-    let spent = state.state.is_nullifier_spent(&hash_bytes).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let spent = state
+        .state
+        .is_nullifier_spent(&hash_bytes)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     Ok(serde_json::json!({
         "nullifier": hash_hex,
@@ -530,10 +541,13 @@ pub(crate) async fn handle_get_shielded_commitments(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pool = state.state.get_shielded_pool_state().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let pool = state
+        .state
+        .get_shielded_pool_state()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     let (from, limit) = if let Some(ref p) = params {
         let obj = p
@@ -691,8 +705,7 @@ mod tests {
 
     #[test]
     fn test_submit_body_deserialization() {
-        let body: SubmitBody =
-            serde_json::from_str(r#"{"transaction": "dGVzdA=="}"#).unwrap();
+        let body: SubmitBody = serde_json::from_str(r#"{"transaction": "dGVzdA=="}"#).unwrap();
         assert_eq!(body.transaction, "dGVzdA==");
     }
 }

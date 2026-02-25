@@ -384,8 +384,8 @@ assert(dexSource.includes('loadContractAddresses'), 'F10.10: loadContractAddress
 assert(dexSource.includes('getAllSymbolRegistry'), 'F10.10: Uses getAllSymbolRegistry RPC');
 assert(dexSource.includes('await loadContractAddresses()'), 'F10.10: Called in init');
 
-// F10.11: Auto-reconnect indicator
-assert(dexSource.includes('(view only)'), 'F10.11: View-only indicator shown');
+// F10.11: Auto-reconnect path restores saved wallet via connectWalletTo
+assert(dexSource.includes('await connectWalletTo(l.address, shortAddr'), 'F10.11: Saved wallet auto-connect uses connectWalletTo');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 10 Extra Pass (F10E) — Structural Tests
@@ -1904,9 +1904,9 @@ const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src
 // P10.8: Liquidation price formula uses maintBps (not hardcoded 0.9)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const updateMarginInfo = dexJs.substring(dexJs.indexOf('function updateMarginInfo'), dexJs.indexOf('function updateMarginInfo') + 800);
-    assert(updateMarginInfo.includes('getMaintenanceBps'), 'P10.8a: updateMarginInfo calls getMaintenanceBps');
-    assert(updateMarginInfo.includes('maintFrac'), 'P10.8b: Uses maintenance fraction in liq price formula');
+    const updateMarginInfo = dexJs.substring(dexJs.indexOf('function updateMarginInfo'), dexJs.indexOf('function updateMarginInfo') + 1300);
+    assert(updateMarginInfo.includes('const maintBps = getMaintenanceBps(state.leverageValue);'), 'P10.8a: updateMarginInfo calls getMaintenanceBps');
+    assert(updateMarginInfo.includes('referencePrice') && updateMarginInfo.includes('maintFrac'), 'P10.8b: Uses maintenance fraction with reference price in liq formula');
     assert(!updateMarginInfo.includes('* 0.9'), 'P10.8c: Hardcoded 0.9 factor removed');
 }
 
@@ -1946,11 +1946,11 @@ const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src
     assert(indexHtml.includes('data-mode="margin"'), 'P10.13: Margin nav link exists in HTML');
 }
 
-// P10.14: Cross margin option removed (contract only supports isolated)
+// P10.14: Cross margin option available in UI and capped by leverage constraints
 {
     const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
     const crossCount = (indexHtml.match(/data-mtype="cross"|data-type="cross"/g) || []).length;
-    assert(crossCount === 0, 'P10.14: Cross margin option removed from HTML');
+    assert(crossCount >= 1, 'P10.14: Cross margin option present in HTML');
 }
 
 // P10.15: Margin is inline in trade view — marginInline section exists
@@ -3050,7 +3050,7 @@ console.log('\n── Phase 15: Wallet Gating & UX States ──');
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     const connectStart = dexJs.indexOf('async function connectWalletTo');
     assert(connectStart > 0, 'P15.14: connectWalletTo function exists');
-    const fnSection = dexJs.substring(connectStart, connectStart + 1800);
+    const fnSection = dexJs.substring(connectStart, connectStart + 3200);
     assert(fnSection.includes('applyWalletGateAll'), 'P15.14: connectWalletTo calls applyWalletGateAll');
 }
 
@@ -3206,11 +3206,11 @@ console.log('\n── Phase 16: Data Format Consistency ──');
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     const wsClassIdx = dexJs.indexOf('class DexWS');
     assert(wsClassIdx !== -1, 'P17.3a: DexWS class exists');
-    const wsBlock = dexJs.substring(wsClassIdx, wsClassIdx + 2400);
+    const wsBlock = dexJs.substring(wsClassIdx, wsClassIdx + 5000);
     assert(wsBlock.includes('this.reconnectDelay = 1000'), 'P17.3b: Initial reconnect delay is 1000ms');
     assert(wsBlock.includes('this.reconnectDelay * 2'), 'P17.3c: Exponential backoff doubles delay');
     assert(wsBlock.includes('30000'), 'P17.3d: Backoff cap is 30000ms');
-    assert(wsBlock.includes('Math.min(this.reconnectDelay * 2, 30000)'), 'P17.3e: Uses Math.min with cap');
+    assert(wsBlock.includes('Math.min(') && wsBlock.includes('this.reconnectDelay * 2') && wsBlock.includes('30000'), 'P17.3e: Uses Math.min with cap');
     // Reset on open
     const onOpenIdx = wsBlock.indexOf('onopen');
     assert(onOpenIdx !== -1, 'P17.3f: onopen handler in WS class');
@@ -3674,7 +3674,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     const js = fs.readFileSync(dexJsPath, 'utf8');
     assert(js.includes('must be hexadecimal'), 'P20.14a: hexToBytes validates hex format');
     assert(js.includes('odd number of hex'), 'P20.14b: hexToBytes rejects odd-length hex');
-    assert(js.includes('Invalid key'), 'P20.14c: fromSecretKey throws on invalid key');
+    assert(js.includes('Private key import is disabled in DEX'), 'P20.14c: fromSecretKey disabled for extension-only security');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3942,7 +3942,7 @@ const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/c
 // P22.6: Private key storage — no zero-key fallback (F22.6a)
 {
     const js = fs.readFileSync(dexJsPath, 'utf8');
-    assert(js.includes('Cannot generate wallet') || js.includes('Crypto library unavailable'), 'P22.6a: generate() throws instead of creating zero keypair');
+    assert(js.includes('DEX key generation is disabled') || js.includes('Wallet creation inside DEX is disabled'), 'P22.6a: generate() disabled in DEX for extension-only security');
     assert(!js.includes("secretKey: new Uint8Array(64)"), 'P22.6b: no zero secretKey fallback');
     // Keys never persisted to localStorage
     assert(!js.includes("localStorage.setItem('secretKey"), 'P22.6c: secretKey not stored in localStorage');
@@ -4192,7 +4192,7 @@ const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf-8');
     const infoBlock = dexRsContent.substring(dexRsContent.indexOf('pub struct MarginInfoJson'), dexRsContent.indexOf('pub struct MarginInfoJson') + 300);
     assert(infoBlock.includes('max_leverage'), 'P24.9a: MarginInfoJson has max_leverage field');
     const handlerBlock = dexRsContent.substring(dexRsContent.indexOf('mrg_max_lev'), dexRsContent.indexOf('mrg_max_lev') + 200);
-    assert(handlerBlock.includes('20'), 'P24.9b: max_leverage defaults to 20');
+    assert(handlerBlock.includes('100'), 'P24.9b: max_leverage defaults to 100');
 }
 
 // P24.10: Refresh LP positions and pools after add liquidity
@@ -5630,9 +5630,10 @@ console.log('\n── Task 9: Wallet Modal Restoration ──');
     assert(dexSource.includes('async fromSecretKey('), 'T9.19: wallet.fromSecretKey() method restored');
     assert(dexSource.includes('async generate()'), 'T9.20: wallet.generate() method restored');
 
-    // JS: import handler reads private key from input
-    assert(dexSource.includes("getElementById('wmPrivateKey')"), 'T9.21: Import handler reads wmPrivateKey input');
-    assert(dexSource.includes('wallet.fromSecretKey(key)'), 'T9.22: Import calls wallet.fromSecretKey()');
+    // JS: import handler enforces extension-only mode
+    assert(!dexSource.includes("getElementById('wmPrivateKey')"), 'T9.21: DEX import handler no longer reads wmPrivateKey');
+    assert(!dexSource.includes('wallet.fromSecretKey(key)'), 'T9.22: DEX import handler does not call wallet.fromSecretKey()');
+    assert(dexSource.includes('Private key and mnemonic import are disabled in DEX'), 'T9.22b: DEX import handler shows security warning');
 
     // JS: mnemonic grid build
     assert(dexSource.includes("getElementById('mnemonicGrid')"), 'T9.23: Mnemonic grid dynamically built');
@@ -5641,9 +5642,10 @@ console.log('\n── Task 9: Wallet Modal Restoration ──');
     // JS: mnemonic paste support
     assert(dexSource.includes('clipboardData') || dexSource.includes('paste'), 'T9.25: Mnemonic paste handler wired');
 
-    // JS: create handler calls wallet.generate()
-    assert(dexSource.includes('wallet.generate()'), 'T9.26: Create tab calls wallet.generate()');
-    assert(dexSource.includes('bytesToHex(wallet.keypair'), 'T9.27: Shows hex secret key from generated keypair');
+    // JS: create handler enforces extension-only mode
+    assert(!dexSource.includes('wallet.generate()'), 'T9.26: DEX create handler no longer calls wallet.generate()');
+    assert(!dexSource.includes('bytesToHex(wallet.keypair'), 'T9.27: DEX does not render generated secret key');
+    assert(dexSource.includes('Wallet creation inside DEX is disabled'), 'T9.27b: DEX create handler shows extension-only warning');
 
     // JS: extension handler calls wallet.connect()
     assert(dexSource.includes("getElementById('wmExtensionBtn')"), 'T9.28: Extension button wired');

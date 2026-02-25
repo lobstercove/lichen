@@ -808,7 +808,9 @@ async fn post_create_template(
         return api_err("chain is not ready: no slots available");
     }
 
-    let close_slot = req.close_slot.unwrap_or(slot.saturating_add(DEFAULT_CLOSE_SLOTS));
+    let close_slot = req
+        .close_slot
+        .unwrap_or(slot.saturating_add(DEFAULT_CLOSE_SLOTS));
     if close_slot <= slot {
         return api_err("close_slot must be greater than current slot");
     }

@@ -164,7 +164,9 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
         })?;
 
         // Merkle path siblings
-        let path = self.merkle_path.unwrap_or_else(|| vec![Fr::from(0u64); TREE_DEPTH]);
+        let path = self
+            .merkle_path
+            .unwrap_or_else(|| vec![Fr::from(0u64); TREE_DEPTH]);
         let sibling_vars: Vec<FpVar<Fr>> = path
             .iter()
             .map(|s| FpVar::new_witness(cs.clone(), || Ok(*s)))
@@ -202,10 +204,8 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
         for i in 0..TREE_DEPTH {
             // Conditional select: if path_bit is true, left = sibling, right = current
             // Otherwise, left = current, right = sibling
-            let left =
-                FpVar::conditionally_select(&path_bit_vars[i], &sibling_vars[i], &current)?;
-            let right =
-                FpVar::conditionally_select(&path_bit_vars[i], &current, &sibling_vars[i])?;
+            let left = FpVar::conditionally_select(&path_bit_vars[i], &sibling_vars[i], &current)?;
+            let right = FpVar::conditionally_select(&path_bit_vars[i], &current, &sibling_vars[i])?;
 
             current = poseidon_hash_var(cs.clone(), config, &left, &right)?;
         }
@@ -304,7 +304,11 @@ mod tests {
         tree.insert(fr_to_bytes(&commitment_fr));
         let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -342,7 +346,11 @@ mod tests {
         tree.insert(fr_to_bytes(&commitment_fr));
         let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -378,7 +386,11 @@ mod tests {
         let mut tree = MerkleTree::new();
         tree.insert(fr_to_bytes(&commitment_fr));
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let wrong_root = Fr::from(99999u64); // wrong root
 
@@ -419,7 +431,11 @@ mod tests {
         tree.insert(fr_to_bytes(&commitment_fr));
         let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
         let proof = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -450,7 +466,11 @@ mod tests {
         cs.set_mode(ark_relations::r1cs::SynthesisMode::Setup);
         let circuit = UnshieldCircuit::empty();
         let result = circuit.generate_constraints(cs.clone());
-        assert!(result.is_ok(), "empty unshield circuit failed in setup: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "empty unshield circuit failed in setup: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -474,7 +494,11 @@ mod tests {
 
         let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
         let proof = tree.proof(2).unwrap();
-        let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let recipient_preimage = Fr::from(999u64);
         let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
@@ -493,7 +517,10 @@ mod tests {
             proof.path_bits,
         );
         circuit.generate_constraints(cs.clone()).unwrap();
-        assert!(cs.is_satisfied().unwrap(), "unshield with multiple leaves failed");
+        assert!(
+            cs.is_satisfied().unwrap(),
+            "unshield with multiple leaves failed"
+        );
     }
 
     #[test]

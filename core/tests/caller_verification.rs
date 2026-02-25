@@ -479,8 +479,8 @@ fn a5_03_consensus_reads_from_genesis_params() {
 #[test]
 fn a5_03_graduated_slashing_math() {
     use moltchain_core::consensus::{
-        SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, MIN_VALIDATOR_STAKE,
-        BOOTSTRAP_GRANT_AMOUNT,
+        SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, BOOTSTRAP_GRANT_AMOUNT,
+        MIN_VALIDATOR_STAKE,
     };
     use moltchain_core::genesis::ConsensusParams;
     use moltchain_core::Keypair;

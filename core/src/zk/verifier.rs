@@ -104,8 +104,8 @@ impl Verifier {
         ))?;
 
         // Deserialize the proof
-        let groth16_proof = deserialize_proof(&proof.proof_bytes)
-            .map_err(|e| ShieldedError::InvalidProof(e))?;
+        let groth16_proof =
+            deserialize_proof(&proof.proof_bytes).map_err(ShieldedError::InvalidProof)?;
 
         // Convert public inputs from bytes to field elements
         let public_inputs: Vec<Fr> = proof

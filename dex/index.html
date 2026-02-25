@@ -162,9 +162,10 @@
                         <div class="margin-inline-row">
                             <div class="margin-inline-types">
                                 <button class="margin-inline-type active" data-mtype="isolated">Isolated</button>
+                                <button class="margin-inline-type" data-mtype="cross">Cross</button>
                             </div>
                             <div class="margin-inline-leverage">
-                                <input type="range" id="inlineLeverage" min="1" max="5" step="0.5" value="2" class="leverage-slider">
+                                <input type="range" id="inlineLeverage" min="2" max="100" step="1" value="2" class="leverage-slider">
                                 <span class="leverage-tag" id="inlineLeverageTag">2x</span>
                             </div>
                         </div>
@@ -180,14 +181,14 @@
                             <div class="form-group" style="flex:1;margin:0;">
                                 <label style="font-size:0.72rem;">Stop-Loss</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="marginSL" placeholder="0.00" step="0.0001" style="font-size:0.8rem;">
+                                    <input type="number" id="marginSL" placeholder="0.00" step="any" min="0" style="font-size:0.8rem;">
                                     <span class="input-unit" style="font-size:0.7rem;">mUSD</span>
                                 </div>
                             </div>
                             <div class="form-group" style="flex:1;margin:0;">
                                 <label style="font-size:0.72rem;">Take-Profit</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="marginTP" placeholder="0.00" step="0.0001" style="font-size:0.8rem;">
+                                    <input type="number" id="marginTP" placeholder="0.00" step="any" min="0" style="font-size:0.8rem;">
                                     <span class="input-unit" style="font-size:0.7rem;">mUSD</span>
                                 </div>
                             </div>
@@ -208,21 +209,21 @@
                         <div class="form-group" id="priceGroup">
                             <label>Price</label>
                             <div class="input-with-unit">
-                                <input type="number" id="orderPrice" placeholder="0.0000" step="0.0001">
+                                <input type="number" id="orderPrice" placeholder="0.0000" step="any" min="0">
                                 <span class="input-unit">mUSD</span>
                             </div>
                         </div>
                         <div class="form-group stop-price-group" id="stopPriceGroup" style="display: none;">
                             <label>Stop Price</label>
                             <div class="input-with-unit">
-                                <input type="number" id="stopPrice" placeholder="0.0000" step="0.0001">
+                                <input type="number" id="stopPrice" placeholder="0.0000" step="any" min="0">
                                 <span class="input-unit">mUSD</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label>Amount</label>
                             <div class="input-with-unit">
-                                <input type="number" id="orderAmount" placeholder="0.00" step="0.01">
+                                <input type="number" id="orderAmount" placeholder="0.00" step="any" min="0">
                                 <span class="input-unit">MOLT</span>
                             </div>
                         </div>

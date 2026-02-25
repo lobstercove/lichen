@@ -149,13 +149,13 @@ impl Note {
 
         // Derive symmetric key: SHA-256(ephemeral_pk || recipient_vk)
         let mut key_hasher = Sha256::new();
-        key_hasher.update(&ephemeral_pk);
+        key_hasher.update(ephemeral_pk);
         key_hasher.update(recipient_viewing_key);
         let encryption_key: [u8; 32] = key_hasher.finalize().into();
 
         // Derive nonce: first 12 bytes of SHA-256(encryption_key || "nonce")
         let mut nonce_hasher = Sha256::new();
-        nonce_hasher.update(&encryption_key);
+        nonce_hasher.update(encryption_key);
         nonce_hasher.update(b"nonce");
         let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
         let nonce = Nonce::from_slice(&nonce_material[..12]);
@@ -184,20 +184,20 @@ impl Note {
     ) -> Result<Self, &'static str> {
         // Derive symmetric key: SHA-256(ephemeral_pk || viewing_key)
         let mut key_hasher = Sha256::new();
-        key_hasher.update(&encrypted.ephemeral_pk);
+        key_hasher.update(encrypted.ephemeral_pk);
         key_hasher.update(viewing_key);
         let decryption_key: [u8; 32] = key_hasher.finalize().into();
 
         // Derive nonce (same as encrypt)
         let mut nonce_hasher = Sha256::new();
-        nonce_hasher.update(&decryption_key);
+        nonce_hasher.update(decryption_key);
         nonce_hasher.update(b"nonce");
         let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
         let nonce = Nonce::from_slice(&nonce_material[..12]);
 
         // ChaCha20-Poly1305 authenticated decryption
-        let cipher = ChaCha20Poly1305::new_from_slice(&decryption_key)
-            .map_err(|_| "invalid key length")?;
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(&decryption_key).map_err(|_| "invalid key length")?;
         let plaintext = cipher
             .decrypt(nonce, encrypted.ciphertext.as_ref())
             .map_err(|_| "decryption failed — wrong key or corrupted ciphertext")?;

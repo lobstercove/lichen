@@ -1610,7 +1610,11 @@ fn validate_webhook_destination(config: &CustodyConfig, raw_url: &str) -> Result
     }
 
     let host = webhook_host_from_url(raw_url)?;
-    if config.webhook_allowed_hosts.iter().any(|allowed| allowed == &host) {
+    if config
+        .webhook_allowed_hosts
+        .iter()
+        .any(|allowed| allowed == &host)
+    {
         Ok(())
     } else {
         Err(format!(
@@ -4003,17 +4007,30 @@ fn record_audit_event_ext(
     let index_key = format!("{:020}:{}", timestamp_ms.max(0), event_id);
     db.put_cf(index_cf, index_key.as_bytes(), event_id.as_bytes())
         .map_err(|e| format!("db put index: {}", e))?;
-    let type_index_key = format!("type:{}:{:020}:{}", event_type, timestamp_ms.max(0), event_id);
-    db.put_cf(type_index_cf, type_index_key.as_bytes(), event_id.as_bytes())
-        .map_err(|e| format!("db put type index: {}", e))?;
+    let type_index_key = format!(
+        "type:{}:{:020}:{}",
+        event_type,
+        timestamp_ms.max(0),
+        event_id
+    );
+    db.put_cf(
+        type_index_cf,
+        type_index_key.as_bytes(),
+        event_id.as_bytes(),
+    )
+    .map_err(|e| format!("db put type index: {}", e))?;
     let entity = if entity_id.is_empty() {
         "unknown"
     } else {
         entity_id
     };
     let entity_index_key = format!("entity:{}:{:020}:{}", entity, timestamp_ms.max(0), event_id);
-    db.put_cf(entity_index_cf, entity_index_key.as_bytes(), event_id.as_bytes())
-        .map_err(|e| format!("db put entity index: {}", e))?;
+    db.put_cf(
+        entity_index_cf,
+        entity_index_key.as_bytes(),
+        event_id.as_bytes(),
+    )
+    .map_err(|e| format!("db put entity index: {}", e))?;
     if let Some(hash) = tx_hash.filter(|h| !h.is_empty()) {
         let tx_index_key = format!("tx:{}:{:020}:{}", hash, timestamp_ms.max(0), event_id);
         db.put_cf(tx_index_cf, tx_index_key.as_bytes(), event_id.as_bytes())
@@ -7264,7 +7281,10 @@ async fn list_events(
                 _ => format!("type:{}:", event_type_filter.as_deref().unwrap_or("")),
             };
 
-            if after.starts_with("type:") || after.starts_with("entity:") || after.starts_with("tx:") {
+            if after.starts_with("type:")
+                || after.starts_with("entity:")
+                || after.starts_with("tx:")
+            {
                 Some(after.to_string())
             } else {
                 match state.db.get_cf(events_cf, after.as_bytes()) {
@@ -7365,7 +7385,8 @@ async fn list_events(
         if events.len() >= limit {
             break;
         }
-        let (index_key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+        let (index_key, value) =
+            item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
 
         if use_filter_index && !index_key.starts_with(filter_prefix_bytes) {
             break;
@@ -7426,7 +7447,8 @@ async fn list_events(
             if events.len() >= limit {
                 break;
             }
-            let (key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+            let (key, value) =
+                item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
             let event = match serde_json::from_slice::<Value>(&value) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -7909,12 +7931,18 @@ mod tests {
 
         let sol_old = derive_solana_address(derivation_path, old_seed).expect("derive old sol");
         let sol_new = derive_solana_address(derivation_path, new_seed).expect("derive new sol");
-        assert_ne!(sol_old, sol_new, "solana derived address must rotate with seed");
+        assert_ne!(
+            sol_old, sol_new,
+            "solana derived address must rotate with seed"
+        );
 
         let evm_path = "m/44'/60'/0'/0/0";
         let evm_old = derive_evm_address(evm_path, old_seed).expect("derive old evm");
         let evm_new = derive_evm_address(evm_path, new_seed).expect("derive new evm");
-        assert_ne!(evm_old, evm_new, "evm derived address must rotate with seed");
+        assert_ne!(
+            evm_old, evm_new,
+            "evm derived address must rotate with seed"
+        );
     }
 
     /// F2-01: BIP-44 coin type mapping test

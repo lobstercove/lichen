@@ -38,7 +38,7 @@ fn generator_h() -> G1Affine {
     // Simple deterministic point generation: hash repeatedly until valid
     loop {
         let mut attempt_hasher = Sha256::new();
-        attempt_hasher.update(&seed);
+        attempt_hasher.update(seed);
         let attempt = attempt_hasher.finalize();
 
         if let Some(point) = try_decode_point(&attempt) {
@@ -63,10 +63,7 @@ fn try_decode_point(hash: &[u8]) -> Option<G1Affine> {
     // This is a simplified version; production should use a proper hash-to-curve
     use ark_bn254::Fq;
     let x = Fq::from_le_bytes_mod_order(hash);
-    G1Affine::get_point_from_x_unchecked(x, false).map(|p| {
-        // Clear cofactor (BN254 G1 has cofactor 1, so this is identity)
-        p.into()
-    })
+    G1Affine::get_point_from_x_unchecked(x, false)
 }
 
 /// A Pedersen commitment: C = value * G + blinding * H
@@ -92,8 +89,8 @@ impl PedersenCommitment {
         let h = generator_h();
 
         let value_scalar = Fr::from(value);
-        let point = (G1Projective::from(g) * value_scalar + G1Projective::from(h) * blinding)
-            .into_affine();
+        let point =
+            (G1Projective::from(g) * value_scalar + G1Projective::from(h) * blinding).into_affine();
 
         Self { point }
     }
@@ -141,7 +138,8 @@ impl PedersenCommitment {
 
     /// Homomorphic addition: Commit(a, r1) + Commit(b, r2) = Commit(a+b, r1+r2)
     pub fn add(&self, other: &PedersenCommitment) -> PedersenCommitment {
-        let point = (G1Projective::from(self.point) + G1Projective::from(other.point)).into_affine();
+        let point =
+            (G1Projective::from(self.point) + G1Projective::from(other.point)).into_affine();
         PedersenCommitment { point }
     }
 }

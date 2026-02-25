@@ -472,7 +472,7 @@ async function navigateExplorerSearch(query) {
     if (isAddressLike) {
         try {
             const contractInfo = await rpc.getContractInfo(value);
-            if (contractInfo) {
+            if (contractInfo && contractInfo.is_executable === true) {
                 window.location.href = `contract.html?address=${encoded}`;
                 return;
             }

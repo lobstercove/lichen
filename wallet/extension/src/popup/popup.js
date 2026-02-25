@@ -795,7 +795,7 @@ async function loadExtensionStaking() {
     `).join('');
 
     // Tier cards
-    const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
+    const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
     const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];

@@ -256,28 +256,43 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
         );
         return;
     } else {
-        info!("🔑 ZK verification keys found in cache ({})", shared_zk_dir.display());
+        info!(
+            "🔑 ZK verification keys found in cache ({})",
+            shared_zk_dir.display()
+        );
     }
 
     // Read all three VK files
     let shield_vk = match fs::read(&shield_path) {
         Ok(b) => b,
         Err(e) => {
-            warn!("⚠️  Failed reading shield VK at {}: {}", shield_path.display(), e);
+            warn!(
+                "⚠️  Failed reading shield VK at {}: {}",
+                shield_path.display(),
+                e
+            );
             return;
         }
     };
     let unshield_vk = match fs::read(&unshield_path) {
         Ok(b) => b,
         Err(e) => {
-            warn!("⚠️  Failed reading unshield VK at {}: {}", unshield_path.display(), e);
+            warn!(
+                "⚠️  Failed reading unshield VK at {}: {}",
+                unshield_path.display(),
+                e
+            );
             return;
         }
     };
     let transfer_vk = match fs::read(&transfer_path) {
         Ok(b) => b,
         Err(e) => {
-            warn!("⚠️  Failed reading transfer VK at {}: {}", transfer_path.display(), e);
+            warn!(
+                "⚠️  Failed reading transfer VK at {}: {}",
+                transfer_path.display(),
+                e
+            );
             return;
         }
     };
@@ -292,7 +307,8 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
             );
             // Persist VK hashes to pool state so the explorer / RPC
             // can confirm the verifier is initialised (vkShieldHash ≠ 0x00…).
-            match processor.persist_vk_hashes_to_pool_state(&shield_vk, &unshield_vk, &transfer_vk) {
+            match processor.persist_vk_hashes_to_pool_state(&shield_vk, &unshield_vk, &transfer_vk)
+            {
                 Ok(_) => info!("✓ VK hashes persisted to shielded pool state"),
                 Err(e) => warn!("⚠️  Failed persisting VK hashes: {}", e),
             }
@@ -1360,16 +1376,19 @@ fn bridge_dex_trades_to_analytics(
         };
 
         let _ = state.put_contract_storage(
-            &analytics_pk, b"ana_rec_count",
+            &analytics_pk,
+            b"ana_rec_count",
             &prev_rec.saturating_add(total_new_trades).to_le_bytes(),
         );
         let _ = state.put_contract_storage(
-            &analytics_pk, b"ana_total_volume",
+            &analytics_pk,
+            b"ana_total_volume",
             &prev_vol.saturating_add(total_new_volume).to_le_bytes(),
         );
         // Use max of pairs_count vs prev — tracks unique pairs seen over time
         let _ = state.put_contract_storage(
-            &analytics_pk, b"ana_trader_count",
+            &analytics_pk,
+            b"ana_trader_count",
             &prev_pairs.max(pairs_count).to_le_bytes(),
         );
     }
@@ -2366,181 +2385,185 @@ async fn apply_block_effects(
     // deterministically applies the same reward when processing any block.
     // No treasury private key needed — the protocol itself authorizes it.
     let block_hash = block.hash();
-    if !skip_rewards {
-        if !reward_already {
-            // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
-            let reward_config = moltchain_core::consensus::RewardConfig::new();
-            let molt_price = moltchain_core::consensus::molt_price_from_state(state);
-            let reward_total = if is_heartbeat {
-                reward_config.get_adjusted_heartbeat_reward(molt_price)
-            } else {
-                reward_config.get_adjusted_transaction_reward(molt_price)
-            };
+    if !skip_rewards && !reward_already {
+        // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
+        let reward_config = moltchain_core::consensus::RewardConfig::new();
+        let molt_price = moltchain_core::consensus::molt_price_from_state(state);
+        let reward_total = if is_heartbeat {
+            reward_config.get_adjusted_heartbeat_reward(molt_price)
+        } else {
+            reward_config.get_adjusted_transaction_reward(molt_price)
+        };
 
-            // 1. Check treasury can afford the reward BEFORE updating StakePool
-            let treasury_pubkey = state.get_treasury_pubkey().ok().flatten();
-            let can_afford = if let Some(ref tpk) = treasury_pubkey {
-                state
+        // 1. Check treasury can afford the reward BEFORE updating StakePool
+        let treasury_pubkey = state.get_treasury_pubkey().ok().flatten();
+        let can_afford = if let Some(ref tpk) = treasury_pubkey {
+            state
+                .get_account(tpk)
+                .ok()
+                .flatten()
+                .map(|a| a.shells >= reward_total)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !can_afford {
+            if let Some(ref tpk) = treasury_pubkey {
+                let bal = state
                     .get_account(tpk)
                     .ok()
                     .flatten()
-                    .map(|a| a.shells >= reward_total)
-                    .unwrap_or(false)
-            } else {
-                false
+                    .map(|a| a.shells)
+                    .unwrap_or(0);
+                warn!(
+                    "⚠️  Treasury balance {} < reward {}, skipping protocol reward",
+                    bal, reward_total
+                );
+            }
+        } else {
+            // 2. Update StakePool (tracks rewards, vesting, bootstrap debt)
+            let (liquid, debt_payment, reward) = {
+                let mut pool = stake_pool.write().await;
+                let is_active = pool
+                    .get_stake(&producer)
+                    .map(|info| info.is_active)
+                    .unwrap_or(false);
+                if !is_active {
+                    (0u64, 0u64, 0u64)
+                } else {
+                    let reward = pool.distribute_block_reward(&producer, slot, is_heartbeat);
+                    pool.record_block_produced(&producer);
+                    let (liquid, debt_payment) = pool.claim_rewards(&producer, slot);
+                    // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
+                    let pool_snapshot = pool.clone();
+                    drop(pool);
+                    if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                        warn!("⚠️  Failed to persist stake pool reward update: {}", e);
+                    }
+                    (liquid, debt_payment, reward)
+                }
             };
 
-            if !can_afford {
-                if let Some(ref tpk) = treasury_pubkey {
-                    let bal = state
-                        .get_account(tpk)
+            // 3. Protocol-level balance transfer: treasury → producer
+            if reward > 0 {
+                if let Some(ref treasury_pubkey) = treasury_pubkey {
+                    let mut treasury_account = state
+                        .get_account(treasury_pubkey)
                         .ok()
                         .flatten()
-                        .map(|a| a.shells)
-                        .unwrap_or(0);
-                    warn!(
-                        "⚠️  Treasury balance {} < reward {}, skipping protocol reward",
-                        bal, reward_total
-                    );
-                }
-            } else {
-                // 2. Update StakePool (tracks rewards, vesting, bootstrap debt)
-                let (liquid, debt_payment, reward) = {
-                    let mut pool = stake_pool.write().await;
-                    let is_active = pool
-                        .get_stake(&producer)
-                        .map(|info| info.is_active)
-                        .unwrap_or(false);
-                    if !is_active {
-                        (0u64, 0u64, 0u64)
-                    } else {
-                        let reward = pool.distribute_block_reward(&producer, slot, is_heartbeat);
-                        pool.record_block_produced(&producer);
-                        let (liquid, debt_payment) = pool.claim_rewards(&producer, slot);
-                        // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
-                        let pool_snapshot = pool.clone();
-                        drop(pool);
-                        if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                            warn!("⚠️  Failed to persist stake pool reward update: {}", e);
-                        }
-                        (liquid, debt_payment, reward)
-                    }
-                };
+                        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
 
-                // 3. Protocol-level balance transfer: treasury → producer
-                if reward > 0 {
-                    if let Some(ref treasury_pubkey) = treasury_pubkey {
-                        let mut treasury_account = state
-                            .get_account(treasury_pubkey)
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                    // Debit treasury: only the liquid portion leaves treasury
+                    // Debt repayment is internal bookkeeping (reclassifies existing stake)
+                    // H12 fix: when liquid==0, no treasury debit or producer credit needed
+                    let debit_amount = liquid;
+                    treasury_account.shells = treasury_account.shells.saturating_sub(debit_amount);
+                    treasury_account.spendable =
+                        treasury_account.spendable.saturating_sub(debit_amount);
 
-                        // Debit treasury: only the liquid portion leaves treasury
-                        // Debt repayment is internal bookkeeping (reclassifies existing stake)
-                        // H12 fix: when liquid==0, no treasury debit or producer credit needed
-                        let debit_amount = liquid;
-                        treasury_account.shells =
-                            treasury_account.shells.saturating_sub(debit_amount);
-                        treasury_account.spendable =
-                            treasury_account.spendable.saturating_sub(debit_amount);
-
-                        // Credit producer: only liquid portion to spendable
-                        // During vesting: 50% liquid to spendable, 50% debt repayment (no new coins)
-                        // Fully vested: 100% liquid
-                        // H12 fix: when liquid==0, credit nothing (was falling through to reward_total)
-                        let credit_amount = liquid;
-                        let mut producer_account = state
-                            .get_account(&producer)
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-                        producer_account.add_spendable(credit_amount).unwrap_or_else(|e| {
-                            warn!("\u{26a0}\u{fe0f}  Overflow crediting producer block reward: {}", e);
-                        });
-
-                        // L4-01 fix: treasury debit + producer credit in single atomic WriteBatch
-                        if let Err(e) = state.atomic_put_accounts(
-                            &[
-                                (treasury_pubkey, &treasury_account),
-                                (&producer, &producer_account),
-                            ],
-                            0,
-                        ) {
+                    // Credit producer: only liquid portion to spendable
+                    // During vesting: 50% liquid to spendable, 50% debt repayment (no new coins)
+                    // Fully vested: 100% liquid
+                    // H12 fix: when liquid==0, credit nothing (was falling through to reward_total)
+                    let credit_amount = liquid;
+                    let mut producer_account = state
+                        .get_account(&producer)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                    producer_account
+                        .add_spendable(credit_amount)
+                        .unwrap_or_else(|e| {
                             warn!(
-                                "⚠️  Failed to persist block reward (treasury→producer): {}",
+                                "\u{26a0}\u{fe0f}  Overflow crediting producer block reward: {}",
                                 e
                             );
-                        }
+                        });
+
+                    // L4-01 fix: treasury debit + producer credit in single atomic WriteBatch
+                    if let Err(e) = state.atomic_put_accounts(
+                        &[
+                            (treasury_pubkey, &treasury_account),
+                            (&producer, &producer_account),
+                        ],
+                        0,
+                    ) {
+                        warn!(
+                            "⚠️  Failed to persist block reward (treasury→producer): {}",
+                            e
+                        );
                     }
+                }
 
-                    let reward_type = if is_heartbeat {
-                        "heartbeat"
-                    } else {
-                        "transaction"
-                    };
-                    info!(
-                        "💰 Block reward: {:.3} MOLT ({}) | liquid {:.3}, debt {:.3}",
-                        reward as f64 / 1_000_000_000.0,
-                        reward_type,
-                        liquid as f64 / 1_000_000_000.0,
-                        debt_payment as f64 / 1_000_000_000.0,
-                    );
+                let reward_type = if is_heartbeat {
+                    "heartbeat"
+                } else {
+                    "transaction"
+                };
+                info!(
+                    "💰 Block reward: {:.3} MOLT ({}) | liquid {:.3}, debt {:.3}",
+                    reward as f64 / 1_000_000_000.0,
+                    reward_type,
+                    liquid as f64 / 1_000_000_000.0,
+                    debt_payment as f64 / 1_000_000_000.0,
+                );
 
-                    // ── ReefStake liquid staking reward distribution ──
-                    // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of each block
-                    // reward to the ReefStake pool, funding stMOLT yield.
-                    let reef_share = (reward_total as u128
-                        * moltchain_core::REEFSTAKE_BLOCK_SHARE_BPS as u128
-                        / 10_000) as u64;
-                    if reef_share > 0 {
-                        match state.get_reefstake_pool() {
-                            Ok(mut reef_pool) => {
-                                if reef_pool.st_molt_token.total_supply > 0 {
-                                    // AUDIT-FIX E-6: Re-read treasury from state to get the
-                                    // post-block-reward-debit balance. The re-read is safe because
-                                    // atomic_put_accounts above writes directly to RocksDB.
-                                    if let Some(ref tpk) = treasury_pubkey {
-                                        let mut t_acct =
-                                            state.get_account(tpk).ok().flatten().unwrap_or_else(
-                                                || Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                // ── ReefStake liquid staking reward distribution ──
+                // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of each block
+                // reward to the ReefStake pool, funding stMOLT yield.
+                let reef_share = (reward_total as u128
+                    * moltchain_core::REEFSTAKE_BLOCK_SHARE_BPS as u128
+                    / 10_000) as u64;
+                if reef_share > 0 {
+                    match state.get_reefstake_pool() {
+                        Ok(mut reef_pool) => {
+                            if reef_pool.st_molt_token.total_supply > 0 {
+                                // AUDIT-FIX E-6: Re-read treasury from state to get the
+                                // post-block-reward-debit balance. The re-read is safe because
+                                // atomic_put_accounts above writes directly to RocksDB.
+                                if let Some(ref tpk) = treasury_pubkey {
+                                    let mut t_acct =
+                                        state.get_account(tpk).ok().flatten().unwrap_or_else(
+                                            || Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                                        );
+                                    if t_acct.shells >= reef_share {
+                                        t_acct.shells = t_acct.shells.saturating_sub(reef_share);
+                                        t_acct.spendable =
+                                            t_acct.spendable.saturating_sub(reef_share);
+                                        reef_pool.distribute_rewards(reef_share);
+                                        // L4-01 fix: treasury debit + pool update in single atomic WriteBatch
+                                        if let Err(e) = state.atomic_put_account_with_reefstake(
+                                            tpk, &t_acct, &reef_pool,
+                                        ) {
+                                            warn!(
+                                                "⚠️  Failed to persist ReefStake distribution: {}",
+                                                e
                                             );
-                                        if t_acct.shells >= reef_share {
-                                            t_acct.shells =
-                                                t_acct.shells.saturating_sub(reef_share);
-                                            t_acct.spendable =
-                                                t_acct.spendable.saturating_sub(reef_share);
-                                            reef_pool.distribute_rewards(reef_share);
-                                            // L4-01 fix: treasury debit + pool update in single atomic WriteBatch
-                                            if let Err(e) = state.atomic_put_account_with_reefstake(
-                                                tpk, &t_acct, &reef_pool,
-                                            ) {
-                                                warn!("⚠️  Failed to persist ReefStake distribution: {}", e);
-                                            } else {
-                                                debug!(
+                                        } else {
+                                            debug!(
                                                     "🌊 ReefStake: distributed {:.6} MOLT to {} stakers",
                                                     reef_share as f64 / 1_000_000_000.0,
                                                     reef_pool.positions.len(),
                                                 );
-                                            }
                                         }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                warn!("⚠️  Failed to load ReefStake pool: {}", e);
-                            }
+                        }
+                        Err(e) => {
+                            warn!("⚠️  Failed to load ReefStake pool: {}", e);
                         }
                     }
                 }
             }
+        }
 
-            if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
-                warn!(
-                    "⚠️  Failed to record reward distribution for slot {}: {}",
-                    slot, e
-                );
-            }
+        if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
+            warn!(
+                "⚠️  Failed to record reward distribution for slot {}: {}",
+                slot, e
+            );
         }
     }
 
@@ -2732,7 +2755,8 @@ async fn apply_block_effects(
         }
     }
 
-    let treasury_share = total_fee.saturating_sub(burn + fee_liquid + voters_paid + community_share);
+    let treasury_share =
+        total_fee.saturating_sub(burn + fee_liquid + voters_paid + community_share);
 
     // Credit community treasury wallet
     if community_share > 0 {
@@ -2744,9 +2768,11 @@ async fn apply_block_effects(
                     _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
                 },
             };
-            community_account.add_spendable(community_share).unwrap_or_else(|e| {
-                warn!("⚠️  Overflow crediting community treasury fees: {}", e);
-            });
+            community_account
+                .add_spendable(community_share)
+                .unwrap_or_else(|e| {
+                    warn!("⚠️  Overflow crediting community treasury fees: {}", e);
+                });
             if let Err(e) = batch.put_account(&community_pubkey, &community_account) {
                 warn!("⚠️  Failed to credit community treasury fees: {}", e);
             }
@@ -2803,10 +2829,12 @@ async fn apply_block_effects(
         if block_time >= cliff_end {
             if let Ok(Some(fm_pubkey)) = state.get_founding_moltys_pubkey() {
                 if let Ok(Some(mut fm_acct)) = state.get_account(&fm_pubkey) {
-                    let target_unlocked =
-                        moltchain_core::consensus::founding_vesting_unlocked(
-                            total_amount, cliff_end, vest_end, block_time,
-                        );
+                    let target_unlocked = moltchain_core::consensus::founding_vesting_unlocked(
+                        total_amount,
+                        cliff_end,
+                        vest_end,
+                        block_time,
+                    );
                     let already_unlocked = total_amount.saturating_sub(fm_acct.locked);
                     if target_unlocked > already_unlocked {
                         let new_unlock = target_unlocked - already_unlocked;
@@ -3023,7 +3051,9 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                     "The Native Home of Agents. Portable identity + rep tiers \u{2022} Agents run validators & earn \u{2022} DeFi \u{2022} DAO \u{2022} DApps \u{2022} DEX \u{2022} Oracles \u{2022} Storage \u{2022} Vault \u{2022} Pools \u{2022} Bounty"
                 );
                 meta["website"] = serde_json::json!("https://moltchain.network");
-                meta["logo_url"] = serde_json::json!("https://moltchain.network/assets/MoltChain_Logo_256.png");
+                meta["logo_url"] = serde_json::json!(
+                    "https://moltchain.network/assets/img/coins/128x128/molt.png"
+                );
                 meta["icon_class"] = serde_json::json!("fas fa-fire");
                 meta["twitter"] = serde_json::json!("https://x.com/MoltChainHQ");
                 meta["telegram"] = serde_json::json!("https://t.me/moltchainhq");
@@ -3036,27 +3066,34 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["mintable"] = serde_json::json!(true);
                 meta["burnable"] = serde_json::json!(true);
                 // Logo and description per wrapped asset
-                let (desc, logo) = match symbol {
+                let (desc, logo, logo_url) = match symbol {
                     "MUSD" | "mUSD" => (
                         "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
                         "fas fa-dollar-sign",
+                        "https://moltchain.network/assets/img/coins/128x128/musd.png",
                     ),
                     "WSOL" | "wSOL" => (
                         "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
                         "fab fa-solana",
+                        "https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png",
                     ),
                     "WETH" | "wETH" => (
                         "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
                         "fab fa-ethereum",
+                        "https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png",
                     ),
                     "WBNB" | "wBNB" => (
                         "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
                         "fas fa-coins",
+                        "https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png",
                     ),
-                    _ => ("Wrapped asset on MoltChain.", "fas fa-coins"),
+                    _ => ("Wrapped asset on MoltChain.", "fas fa-coins", ""),
                 };
                 meta["description"] = serde_json::json!(desc);
                 meta["icon_class"] = serde_json::json!(logo);
+                if !logo_url.is_empty() {
+                    meta["logo_url"] = serde_json::json!(logo_url);
+                }
             }
             _ => {}
         }
@@ -3275,10 +3312,16 @@ fn genesis_exec_contract_with_value(
             if !result.success {
                 let rc = result.return_code.unwrap_or(1);
                 if rc != 0 {
-                    warn!("  FAIL {}: contract returned error code {} — {:?}", label, rc, result.error);
+                    warn!(
+                        "  FAIL {}: contract returned error code {} — {:?}",
+                        label, rc, result.error
+                    );
                     return false;
                 }
-                warn!("  WARN {}: contract returned !success with rc=0: {:?}", label, result.error);
+                warn!(
+                    "  WARN {}: contract returned !success with rc=0: {:?}",
+                    label, result.error
+                );
             }
             for (key, val_opt) in &result.storage_changes {
                 match val_opt {
@@ -3731,8 +3774,10 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                 bg_acct.deduct_spendable(seed_shells).ok();
                 state.put_account(&bg_pubkey, &bg_acct).ok();
 
-                let mut contract_acct = state.get_account(dex_rewards_pk)
-                    .ok().flatten()
+                let mut contract_acct = state
+                    .get_account(dex_rewards_pk)
+                    .ok()
+                    .flatten()
                     .unwrap_or_else(|| Account::new(0, *dex_rewards_pk));
                 contract_acct.add_spendable(seed_shells).ok();
                 state.put_account(dex_rewards_pk, &contract_acct).ok();
@@ -3771,12 +3816,22 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         // ── DEX Router: register genesis routes (10 routes for 5 pairs) ──
         // Opcode 2 = register_route. 115 bytes:
         // [opcode 1B][caller 32B][token_in 32B][token_out 32B][route_type 1B][pool_id 8B][secondary_id 8B][split_percent 1B]
-        let wsol_addr = address_map.get("wsol_token").map(|p| p.0).unwrap_or([0u8; 32]);
-        let weth_addr = address_map.get("weth_token").map(|p| p.0).unwrap_or([0u8; 32]);
-        let wbnb_addr = address_map.get("wbnb_token").map(|p| p.0).unwrap_or([0u8; 32]);
+        let wsol_addr = address_map
+            .get("wsol_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
+        let weth_addr = address_map
+            .get("weth_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
+        let wbnb_addr = address_map
+            .get("wbnb_token")
+            .map(|p| p.0)
+            .unwrap_or([0u8; 32]);
 
         // (token_in, token_out, pair_id, pool_id, label)
-        let route_pairs: [([u8; 32], [u8; 32], u64, u64, &str); 7] = [
+        type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
+        let route_pairs: [RoutePair; 7] = [
             (molt_addr, musd_addr, 1, 1, "MOLT/mUSD"),
             (wsol_addr, musd_addr, 2, 2, "wSOL/mUSD"),
             (weth_addr, musd_addr, 3, 3, "wETH/mUSD"),
@@ -3798,7 +3853,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             clob_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
             clob_args.push(0); // split_percent
             if genesis_exec_contract(
-                state, router_pk, deployer_pubkey, "call", &clob_args,
+                state,
+                router_pk,
+                deployer_pubkey,
+                "call",
+                &clob_args,
                 &format!("dex_router(route CLOB {})", label),
             ) {
                 info!("  ROUTE CLOB {} (pair_id={})", label, pair_id);
@@ -3817,7 +3876,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             amm_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
             amm_args.push(0); // split_percent
             if genesis_exec_contract(
-                state, router_pk, deployer_pubkey, "call", &amm_args,
+                state,
+                router_pk,
+                deployer_pubkey,
+                "call",
+                &amm_args,
                 &format!("dex_router(route AMM {})", label),
             ) {
                 info!("  ROUTE AMM {} (pool_id={})", label, pool_id);
@@ -4307,10 +4370,16 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                 att_data.push(5u8); // Level 5 (highest) for system attestations
                 att_data.extend_from_slice(&now_ts.to_le_bytes());
 
-                if let Err(_) = state.put_contract_storage(moltyid_pk, &att_key, &att_data) {
+                if state
+                    .put_contract_storage(moltyid_pk, &att_key, &att_data)
+                    .is_err()
+                {
                     continue;
                 }
-                attest_entries.push(AttestEntry { key: att_key, value: att_data });
+                attest_entries.push(AttestEntry {
+                    key: att_key,
+                    value: att_data,
+                });
 
                 // Build attestation count key: "attest_count_{target_hex}_{skill_hash_hex}"
                 let mut count_key = Vec::with_capacity(13 + 64 + 1 + 32);
@@ -4333,12 +4402,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                     })
                     .unwrap_or(0);
                 let new_count = (existing + 1).to_le_bytes().to_vec();
-                let _ = state.put_contract_storage(
-                    moltyid_pk,
-                    &count_key,
-                    &new_count,
-                );
-                attest_entries.push(AttestEntry { key: count_key, value: new_count });
+                let _ = state.put_contract_storage(moltyid_pk, &count_key, &new_count);
+                attest_entries.push(AttestEntry {
+                    key: count_key,
+                    value: new_count,
+                });
 
                 attest_count += 1;
             }
@@ -4347,7 +4415,9 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         // Also update embedded ContractAccount storage so RPC reads see it
         if attest_count > 0 {
             if let Ok(Some(yid_account)) = state.get_account(moltyid_pk) {
-                if let Ok(mut yid_contract) = serde_json::from_slice::<ContractAccount>(&yid_account.data) {
+                if let Ok(mut yid_contract) =
+                    serde_json::from_slice::<ContractAccount>(&yid_account.data)
+                {
                     for entry in &attest_entries {
                         yid_contract.set_storage(entry.key.clone(), entry.value.clone());
                     }
@@ -4879,11 +4949,7 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         // Enable margin trading: mrg_ena_{pair_id} → [1u64 LE]
         let ena_key = format!("mrg_ena_{}", pair_id);
         let ena_val = 1u64.to_le_bytes().to_vec();
-        let _ = state.put_contract_storage(
-            &margin_pk,
-            ena_key.as_bytes(),
-            &ena_val,
-        );
+        let _ = state.put_contract_storage(&margin_pk, ena_key.as_bytes(), &ena_val);
         margin_entries.push((ena_key.into_bytes(), ena_val));
 
         info!(
@@ -4894,7 +4960,9 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 
     // Also update embedded ContractAccount storage so RPC reads see it
     if let Ok(Some(margin_account)) = state.get_account(&margin_pk) {
-        if let Ok(mut margin_contract) = serde_json::from_slice::<ContractAccount>(&margin_account.data) {
+        if let Ok(mut margin_contract) =
+            serde_json::from_slice::<ContractAccount>(&margin_account.data)
+        {
             for (key, value) in &margin_entries {
                 margin_contract.set_storage(key.clone(), value.clone());
             }
@@ -5102,8 +5170,11 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 
             // Write oracle prices for each external asset — only when changed
             if prices_changed {
-                let oracle_feeds: [(&[u8], f64); 3] =
-                    [(b"wSOL", wsol_usd), (b"wETH", weth_usd), (b"wBNB", wbnb_usd)];
+                let oracle_feeds: [(&[u8], f64); 3] = [
+                    (b"wSOL", wsol_usd),
+                    (b"wETH", weth_usd),
+                    (b"wBNB", wbnb_usd),
+                ];
 
                 for (asset, price_usd) in &oracle_feeds {
                     if *price_usd <= 0.0 {
@@ -5579,9 +5650,7 @@ fn main() {
                 let sleep_for = Duration::from_secs(backoff_secs);
                 warn!(
                     "⏳ Retrying spawn in {}s (attempt {}/{})",
-                    backoff_secs,
-                    restart_count,
-                    max_restarts
+                    backoff_secs, restart_count, max_restarts
                 );
                 std::thread::sleep(sleep_for);
                 backoff_secs = (backoff_secs * 2).min(60);
@@ -5604,9 +5673,7 @@ fn main() {
                 let sleep_for = Duration::from_secs(backoff_secs);
                 warn!(
                     "⏳ Retrying after wait failure in {}s (attempt {}/{})",
-                    backoff_secs,
-                    restart_count,
-                    max_restarts
+                    backoff_secs, restart_count, max_restarts
                 );
                 std::thread::sleep(sleep_for);
                 backoff_secs = (backoff_secs * 2).min(60);
@@ -6046,7 +6113,12 @@ async fn run_validator() {
         // P2P reserved relay peers: read from MOLTCHAIN_P2P_RESERVED_PEERS env var (comma-separated)
         reserved_relay_peers: std::env::var("MOLTCHAIN_P2P_RESERVED_PEERS")
             .ok()
-            .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
             .unwrap_or_default(),
     };
 
@@ -6545,14 +6617,19 @@ async fn run_validator() {
 
                 for dw in dist_wallets.iter() {
                     if dw.role == "ecosystem_partnerships" {
-                        let config = GovernedWalletConfig::new(2, all_signers.clone(), "ecosystem_partnerships");
+                        let config = GovernedWalletConfig::new(
+                            2,
+                            all_signers.clone(),
+                            "ecosystem_partnerships",
+                        );
                         if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
                             error!("Failed to store ecosystem_partnerships governed config: {e}");
                         } else {
                             info!("  ✓ ecosystem_partnerships governed wallet: threshold={}, {} signers", config.threshold, config.signers.len());
                         }
                     } else if dw.role == "reserve_pool" {
-                        let config = GovernedWalletConfig::new(3, all_signers.clone(), "reserve_pool");
+                        let config =
+                            GovernedWalletConfig::new(3, all_signers.clone(), "reserve_pool");
                         if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
                             error!("Failed to store reserve_pool governed config: {e}");
                         } else {
@@ -6567,8 +6644,14 @@ async fn run_validator() {
             // The deployer needs operational funds for contract deployment gas fees.
             let ops_fund_molt: u64 = 10_000;
             let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
-            if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
-                let mut treasury_acct = state.get_account(&treasury_dw.pubkey).ok().flatten()
+            if let Some(treasury_dw) = dist_wallets
+                .iter()
+                .find(|dw| dw.role == "validator_rewards")
+            {
+                let mut treasury_acct = state
+                    .get_account(&treasury_dw.pubkey)
+                    .ok()
+                    .flatten()
                     .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
                 if treasury_acct.spendable >= ops_fund_shells {
                     treasury_acct.deduct_spendable(ops_fund_shells).ok();
@@ -6576,14 +6659,20 @@ async fn run_validator() {
                         error!("Failed to debit treasury for auto-fund: {e}");
                     }
 
-                    let mut genesis_acct = state.get_account(&genesis_pubkey).ok().flatten()
+                    let mut genesis_acct = state
+                        .get_account(&genesis_pubkey)
+                        .ok()
+                        .flatten()
                         .unwrap_or_else(|| Account::new(0, genesis_pubkey));
                     genesis_acct.add_spendable(ops_fund_shells).ok();
                     if let Err(e) = state.put_account(&genesis_pubkey, &genesis_acct) {
                         error!("Failed to credit deployer for auto-fund: {e}");
                     }
 
-                    info!("  ✓ Auto-funded genesis/deployer with {} MOLT from treasury", ops_fund_molt);
+                    info!(
+                        "  ✓ Auto-funded genesis/deployer with {} MOLT from treasury",
+                        ops_fund_molt
+                    );
                 } else {
                     warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
                 }
@@ -6598,21 +6687,29 @@ async fn run_validator() {
             let faucet_kp = Keypair::generate();
             let faucet_pubkey = faucet_kp.pubkey();
             // Save faucet keypair to genesis-keys directory
-            let faucet_keypair_path = genesis_keypairs_dir.join(
-                format!("faucet-{}.json", genesis_config.chain_id)
-            );
+            let faucet_keypair_path =
+                genesis_keypairs_dir.join(format!("faucet-{}.json", genesis_config.chain_id));
             let faucet_seed = faucet_kp.to_seed();
             let faucet_seed_json = serde_json::json!({
-                "seed": hex::encode(&faucet_seed),
+                "seed": hex::encode(faucet_seed),
                 "pubkey": faucet_pubkey.to_base58(),
                 "role": "faucet"
             });
-            if let Err(e) = std::fs::write(&faucet_keypair_path, serde_json::to_string_pretty(&faucet_seed_json).unwrap_or_default()) {
+            if let Err(e) = std::fs::write(
+                &faucet_keypair_path,
+                serde_json::to_string_pretty(&faucet_seed_json).unwrap_or_default(),
+            ) {
                 error!("Failed to save faucet keypair: {e}");
             }
             // Fund faucet from treasury
-            if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
-                let mut treasury_acct = state.get_account(&treasury_dw.pubkey).ok().flatten()
+            if let Some(treasury_dw) = dist_wallets
+                .iter()
+                .find(|dw| dw.role == "validator_rewards")
+            {
+                let mut treasury_acct = state
+                    .get_account(&treasury_dw.pubkey)
+                    .ok()
+                    .flatten()
                     .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
                 if treasury_acct.spendable >= faucet_fund_shells {
                     treasury_acct.deduct_spendable(faucet_fund_shells).ok();
@@ -6624,9 +6721,12 @@ async fn run_validator() {
                     if let Err(e) = state.put_account(&faucet_pubkey, &faucet_acct) {
                         error!("Failed to credit faucet account: {e}");
                     }
-                    info!("  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})",
-                          faucet_fund_molt, faucet_pubkey.to_base58(),
-                          faucet_keypair_path.display());
+                    info!(
+                        "  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})",
+                        faucet_fund_molt,
+                        faucet_pubkey.to_base58(),
+                        faucet_keypair_path.display()
+                    );
                 } else {
                     warn!("  ⚠️  Treasury has insufficient funds for faucet auto-fund");
                 }
@@ -6802,12 +6902,15 @@ async fn run_validator() {
                 let cliff_end = genesis_timestamp + FOUNDING_CLIFF_SECONDS;
                 let vest_end = genesis_timestamp + FOUNDING_VEST_TOTAL_SECONDS;
                 let total_shells = Account::molt_to_shells(fm_dw.amount_molt);
-                if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_shells) {
+                if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_shells)
+                {
                     error!("Failed to store founding vesting params: {e}");
                 } else {
                     info!(
                         "  ✓ Founding moltys vesting: cliff={}, vest_end={}, total={}M MOLT",
-                        cliff_end, vest_end, fm_dw.amount_molt / 1_000_000
+                        cliff_end,
+                        vest_end,
+                        fm_dw.amount_molt / 1_000_000
                     );
                 }
             }
@@ -6986,9 +7089,7 @@ async fn run_validator() {
             let molt_price_exists = state.get_program_storage("ORACLE", b"price_MOLT").is_some();
 
             // Check if margin prices are present (mrg_mark_1 = MOLT/mUSD)
-            let mrg_mark_1_exists = state
-                .get_program_storage("MARGIN", b"mrg_mark_1")
-                .is_some();
+            let mrg_mark_1_exists = state.get_program_storage("MARGIN", b"mrg_mark_1").is_some();
 
             if !mrg_mark_1_exists {
                 info!("🔄 RECONCILE: Margin prices missing — seeding mark/index prices");
@@ -7121,8 +7222,7 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.as_str());
 
-    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port)
-    {
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port) {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("Failed to load or generate validator keypair: {}", err);
@@ -7803,11 +7903,9 @@ async fn run_validator() {
     // 1. P2P echo (own block comes back through network)
     // 2. Fork re-evaluation (FIX-FORK-2 lets competing block through)
     // 3. View rotation race (producer + receiver try to vote concurrently)
-    let vote_authority: Arc<tokio::sync::Mutex<VoteAuthority>> =
-        Arc::new(tokio::sync::Mutex::new(VoteAuthority::new(
-            validator_keypair.to_seed(),
-            validator_pubkey,
-        )));
+    let vote_authority: Arc<tokio::sync::Mutex<VoteAuthority>> = Arc::new(tokio::sync::Mutex::new(
+        VoteAuthority::new(validator_keypair.to_seed(), validator_pubkey),
+    ));
 
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
@@ -8268,45 +8366,54 @@ async fn run_validator() {
                             // in the block receiver. VoteAuthority prevents all DoubleVote
                             // scenarios: P2P echo, fork re-evaluation, and view rotation.
                             let block_hash = block.hash();
-                            let maybe_vote = vote_authority_for_rx.lock().await.try_vote(block_slot, block_hash);
+                            let maybe_vote = vote_authority_for_rx
+                                .lock()
+                                .await
+                                .try_vote(block_slot, block_hash);
 
                             if let Some(vote) = maybe_vote {
-                            // Add our own vote (validated against validator set)
-                            {
-                                let mut agg = vote_agg_for_blocks.write().await;
-                                let vs = validator_set_for_blocks.read().await;
-                                if agg.add_vote_validated(vote.clone(), &vs) {
-                                    info!("🗳️  Cast vote for block {}", block_slot);
+                                // Add our own vote (validated against validator set)
+                                {
+                                    let mut agg = vote_agg_for_blocks.write().await;
+                                    let vs = validator_set_for_blocks.read().await;
+                                    if agg.add_vote_validated(vote.clone(), &vs) {
+                                        info!("🗳️  Cast vote for block {}", block_slot);
 
-                                    // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                    let pool = stake_pool_for_blocks.read().await;
-                                    if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
-                                        info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
-                                        // Update finality tracker + persist to StateStore
-                                        if finality_for_blocks.mark_confirmed(block_slot) {
-                                            let _ = state_for_blocks.set_last_confirmed_slot(
-                                                finality_for_blocks.confirmed_slot(),
-                                            );
-                                            let _ = state_for_blocks.set_last_finalized_slot(
-                                                finality_for_blocks.finalized_slot(),
-                                            );
+                                        // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
+                                        let pool = stake_pool_for_blocks.read().await;
+                                        if agg.has_supermajority(
+                                            block_slot,
+                                            &block_hash,
+                                            &vs,
+                                            &pool,
+                                        ) {
+                                            info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
+                                            // Update finality tracker + persist to StateStore
+                                            if finality_for_blocks.mark_confirmed(block_slot) {
+                                                let _ = state_for_blocks.set_last_confirmed_slot(
+                                                    finality_for_blocks.confirmed_slot(),
+                                                );
+                                                let _ = state_for_blocks.set_last_finalized_slot(
+                                                    finality_for_blocks.finalized_slot(),
+                                                );
+                                            }
                                         }
+                                        drop(pool);
                                     }
-                                    drop(pool);
+                                    // Drop agg + vs before broadcast
                                 }
-                                // Drop agg + vs before broadcast
-                            }
 
-                            // PERF-OPT 3: Fire-and-forget vote broadcast.
-                            // Don't await the broadcast — let QUIC sends happen
-                            // concurrently while we proceed to apply_block_effects.
-                            {
-                                let vote_msg = P2PMessage::new(MessageType::Vote(vote), local_addr);
-                                let pm = peer_mgr_for_sync.clone();
-                                tokio::spawn(async move {
-                                    pm.broadcast(vote_msg).await;
-                                });
-                            }
+                                // PERF-OPT 3: Fire-and-forget vote broadcast.
+                                // Don't await the broadcast — let QUIC sends happen
+                                // concurrently while we proceed to apply_block_effects.
+                                {
+                                    let vote_msg =
+                                        P2PMessage::new(MessageType::Vote(vote), local_addr);
+                                    let pm = peer_mgr_for_sync.clone();
+                                    tokio::spawn(async move {
+                                        pm.broadcast(vote_msg).await;
+                                    });
+                                }
                             } else {
                                 info!(
                                     "⚠️  VoteAuthority: slot {} already voted — skipping (prevents DoubleVote)",
@@ -11163,7 +11270,8 @@ async fn run_validator() {
         // HEARTBEAT-FIX: Check shared last_block_time to see when ANY block
         // (local or network-received) last occurred. This prevents simultaneous
         // heartbeats from multiple validators.
-        let is_heartbeat_time = last_block_time_for_local.lock().await.elapsed() >= Duration::from_secs(5);
+        let is_heartbeat_time =
+            last_block_time_for_local.lock().await.elapsed() >= Duration::from_secs(5);
 
         // Peek at mempool to determine if this would be a heartbeat or tx block
         let has_pending = {

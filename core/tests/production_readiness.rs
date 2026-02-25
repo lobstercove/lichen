@@ -1471,9 +1471,15 @@ fn test_slashing_economic_penalty() {
     );
     tracker.add_evidence(evidence);
     let slashed_amount = tracker.apply_economic_slashing(&v1.pubkey(), &mut pool);
-    assert!(slashed_amount > 0, "Slashing should remove stake from the 25K buffer");
+    assert!(
+        slashed_amount > 0,
+        "Slashing should remove stake from the 25K buffer"
+    );
     let remaining = pool.get_stake(&v1.pubkey()).unwrap().total_stake();
-    assert!(remaining >= MIN_VALIDATOR_STAKE, "Stake must never drop below MIN_VALIDATOR_STAKE");
+    assert!(
+        remaining >= MIN_VALIDATOR_STAKE,
+        "Stake must never drop below MIN_VALIDATOR_STAKE"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

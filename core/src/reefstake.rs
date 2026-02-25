@@ -171,7 +171,7 @@ pub enum LockTier {
     #[default]
     Flexible = 0, // No lock, 7-day unstake cooldown, 1.0x multiplier
     Lock30 = 1,  // 30-day lock, 1.1x multiplier
-    Lock90 = 2,  // 90-day lock, 1.25x multiplier
+    Lock180 = 2,  // 180-day lock, 1.25x multiplier
     Lock365 = 3, // 365-day lock, 1.5x multiplier
 }
 
@@ -180,7 +180,7 @@ impl LockTier {
         match v {
             0 => Some(Self::Flexible),
             1 => Some(Self::Lock30),
-            2 => Some(Self::Lock90),
+            2 => Some(Self::Lock180),
             3 => Some(Self::Lock365),
             _ => None,
         }
@@ -191,7 +191,7 @@ impl LockTier {
         match self {
             Self::Flexible => 10_000, // 1.0x
             Self::Lock30 => 11_000,   // 1.1x
-            Self::Lock90 => 12_500,   // 1.25x
+            Self::Lock180 => 12_500,   // 1.25x
             Self::Lock365 => 15_000,  // 1.5x
         }
     }
@@ -203,7 +203,7 @@ impl LockTier {
         match self {
             Self::Flexible => 0,       // No lock (7-day unstake cooldown applies separately)
             Self::Lock30 => 6_480_000, // 30 days
-            Self::Lock90 => 19_440_000, // 90 days
+            Self::Lock180 => 38_880_000, // 180 days
             Self::Lock365 => 78_840_000, // 365 days
         }
     }
@@ -212,7 +212,7 @@ impl LockTier {
         match self {
             Self::Flexible => "Flexible",
             Self::Lock30 => "30-Day Lock",
-            Self::Lock90 => "90-Day Lock",
+            Self::Lock180 => "180-Day Lock",
             Self::Lock365 => "365-Day Lock",
         }
     }

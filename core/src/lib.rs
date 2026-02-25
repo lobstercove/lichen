@@ -17,12 +17,12 @@ pub mod mempool;
 pub mod multisig; // Multi-signature wallet support
 pub mod network;
 pub mod nft;
-#[cfg(feature = "zk")]
-pub mod zk;
 pub mod processor;
 pub mod reefstake; // Liquid staking protocol
 pub mod state;
 pub mod transaction;
+#[cfg(feature = "zk")]
+pub mod zk;
 
 // Re-exports
 pub use account::{Account, Keypair, Pubkey};
@@ -32,11 +32,11 @@ pub use consensus::{
     slot_to_epoch, BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, PriceOracle,
     RewardAdjustmentInfo, RewardConfig, SlashingEvidence, SlashingOffense, SlashingTracker,
     StakeInfo, StakePool, StakingStats, StateOracle, ValidatorInfo, ValidatorSet, Vote,
-    VoteAggregator, VoteAuthority, BLOCK_REWARD, BOOTSTRAP_GRANT_AMOUNT, DOWNTIME_FORGIVENESS_SLOTS,
-    DOWNTIME_SUSPENSION_SLOTS, DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, HEARTBEAT_BLOCK_REWARD,
-    MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS, MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE,
-    PENALTY_REPAYMENT_BOOST_SLOTS, PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH,
-    TRANSACTION_BLOCK_REWARD, UPTIME_BONUS_THRESHOLD_BPS,
+    VoteAggregator, VoteAuthority, BLOCK_REWARD, BOOTSTRAP_GRANT_AMOUNT,
+    DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS, DOWNTIME_TIER2_SLASH_BPS,
+    FINALITY_DEPTH, HEARTBEAT_BLOCK_REWARD, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
+    MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PENALTY_REPAYMENT_BOOST_SLOTS,
+    PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH, TRANSACTION_BLOCK_REWARD, UPTIME_BONUS_THRESHOLD_BPS,
 };
 pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,

@@ -30,12 +30,9 @@
 //! on-chain transaction.
 
 use moltchain_core::zk::{
-    circuits::shield::ShieldCircuit,
-    circuits::transfer::TransferCircuit,
-    circuits::unshield::UnshieldCircuit,
-    fr_to_bytes, poseidon_hash_fr,
-    setup::load_verification_key,
-    Prover, Verifier, TREE_DEPTH,
+    circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
+    circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr,
+    setup::load_verification_key, Prover, Verifier, TREE_DEPTH,
 };
 
 use ark_bn254::Fr;
@@ -78,16 +75,14 @@ fn cmd_shield(args: &[String], pk_dir: &str) {
             process::exit(1);
         });
 
-    let pk_bytes = fs::read(PathBuf::from(pk_dir).join("pk_shield.bin"))
-        .unwrap_or_else(|e| {
-            eprintln!("error: failed to read pk_shield.bin: {}", e);
-            process::exit(1);
-        });
-    let vk_bytes = fs::read(PathBuf::from(pk_dir).join("vk_shield.bin"))
-        .unwrap_or_else(|e| {
-            eprintln!("error: failed to read vk_shield.bin: {}", e);
-            process::exit(1);
-        });
+    let pk_bytes = fs::read(PathBuf::from(pk_dir).join("pk_shield.bin")).unwrap_or_else(|e| {
+        eprintln!("error: failed to read pk_shield.bin: {}", e);
+        process::exit(1);
+    });
+    let vk_bytes = fs::read(PathBuf::from(pk_dir).join("vk_shield.bin")).unwrap_or_else(|e| {
+        eprintln!("error: failed to read vk_shield.bin: {}", e);
+        process::exit(1);
+    });
 
     let mut prover = Prover::new();
     prover.load_shield_key(&pk_bytes).unwrap_or_else(|e| {
@@ -183,32 +178,26 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         eprintln!("error: --blinding is required (from shield output)");
         process::exit(1);
     });
-    let blinding = Fr::from_le_bytes_mod_order(
-        &hex::decode(&blinding_hex).unwrap_or_else(|e| {
-            eprintln!("error: invalid --blinding hex: {}", e);
-            process::exit(1);
-        }),
-    );
+    let blinding = Fr::from_le_bytes_mod_order(&hex::decode(&blinding_hex).unwrap_or_else(|e| {
+        eprintln!("error: invalid --blinding hex: {}", e);
+        process::exit(1);
+    }));
 
     let serial_hex = find_arg(args, "--serial").unwrap_or_else(|| {
         eprintln!("error: --serial is required (from shield output)");
         process::exit(1);
     });
-    let serial = Fr::from_le_bytes_mod_order(
-        &hex::decode(&serial_hex).unwrap_or_else(|e| {
-            eprintln!("error: invalid --serial hex: {}", e);
-            process::exit(1);
-        }),
-    );
+    let serial = Fr::from_le_bytes_mod_order(&hex::decode(&serial_hex).unwrap_or_else(|e| {
+        eprintln!("error: invalid --serial hex: {}", e);
+        process::exit(1);
+    }));
 
     // Accept --spending-key (hex) or generate one.
     let spending_key = if let Some(sk_hex) = find_arg(args, "--spending-key") {
-        Fr::from_le_bytes_mod_order(
-            &hex::decode(&sk_hex).unwrap_or_else(|e| {
-                eprintln!("error: invalid --spending-key hex: {}", e);
-                process::exit(1);
-            }),
-        )
+        Fr::from_le_bytes_mod_order(&hex::decode(&sk_hex).unwrap_or_else(|e| {
+            eprintln!("error: invalid --spending-key hex: {}", e);
+            process::exit(1);
+        }))
     } else {
         Fr::rand(&mut OsRng)
     };
@@ -374,11 +363,17 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
     });
 
     if witness.inputs.len() != 2 {
-        eprintln!("error: transfer requires exactly 2 inputs, got {}", witness.inputs.len());
+        eprintln!(
+            "error: transfer requires exactly 2 inputs, got {}",
+            witness.inputs.len()
+        );
         process::exit(1);
     }
     if witness.outputs.len() != 2 {
-        eprintln!("error: transfer requires exactly 2 outputs, got {}", witness.outputs.len());
+        eprintln!(
+            "error: transfer requires exactly 2 outputs, got {}",
+            witness.outputs.len()
+        );
         process::exit(1);
     }
 
@@ -404,28 +399,27 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
 
     for (i, inp) in witness.inputs.iter().enumerate() {
         input_values[i] = inp.amount;
-        input_blindings_fr[i] = Fr::from_le_bytes_mod_order(
-            &hex::decode(&inp.blinding).unwrap_or_else(|e| {
+        input_blindings_fr[i] =
+            Fr::from_le_bytes_mod_order(&hex::decode(&inp.blinding).unwrap_or_else(|e| {
                 eprintln!("error: input[{}].blinding invalid hex: {}", i, e);
                 process::exit(1);
-            }),
-        );
-        input_serials_fr[i] = Fr::from_le_bytes_mod_order(
-            &hex::decode(&inp.serial).unwrap_or_else(|e| {
+            }));
+        input_serials_fr[i] =
+            Fr::from_le_bytes_mod_order(&hex::decode(&inp.serial).unwrap_or_else(|e| {
                 eprintln!("error: input[{}].serial invalid hex: {}", i, e);
                 process::exit(1);
-            }),
-        );
-        spending_keys_fr[i] = Fr::from_le_bytes_mod_order(
-            &hex::decode(&inp.spending_key).unwrap_or_else(|e| {
+            }));
+        spending_keys_fr[i] =
+            Fr::from_le_bytes_mod_order(&hex::decode(&inp.spending_key).unwrap_or_else(|e| {
                 eprintln!("error: input[{}].spending_key invalid hex: {}", i, e);
                 process::exit(1);
-            }),
-        );
+            }));
         if inp.merkle_path.len() != TREE_DEPTH {
             eprintln!(
                 "error: input[{}].merkle_path has {} siblings, expected {}",
-                i, inp.merkle_path.len(), TREE_DEPTH
+                i,
+                inp.merkle_path.len(),
+                TREE_DEPTH
             );
             process::exit(1);
         }
@@ -443,7 +437,9 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
         if inp.path_bits.len() != TREE_DEPTH {
             eprintln!(
                 "error: input[{}].path_bits has {} bits, expected {}",
-                i, inp.path_bits.len(), TREE_DEPTH
+                i,
+                inp.path_bits.len(),
+                TREE_DEPTH
             );
             process::exit(1);
         }
@@ -461,12 +457,10 @@ fn cmd_transfer(args: &[String], pk_dir: &str) {
     for (j, out) in witness.outputs.iter().enumerate() {
         output_values[j] = out.amount;
         output_blindings_fr[j] = if let Some(ref b_hex) = out.blinding {
-            Fr::from_le_bytes_mod_order(
-                &hex::decode(b_hex).unwrap_or_else(|e| {
-                    eprintln!("error: output[{}].blinding invalid hex: {}", j, e);
-                    process::exit(1);
-                }),
-            )
+            Fr::from_le_bytes_mod_order(&hex::decode(b_hex).unwrap_or_else(|e| {
+                eprintln!("error: output[{}].blinding invalid hex: {}", j, e);
+                process::exit(1);
+            }))
         } else {
             Fr::rand(&mut OsRng)
         };

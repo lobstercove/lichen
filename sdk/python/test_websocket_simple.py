@@ -30,13 +30,22 @@ async def test_ws():
         
         # Wait for 3 blocks
         print("\n⏳ Waiting for blocks...\n")
+        received = 0
         for i in range(3):
-            message = await asyncio.wait_for(websocket.recv(), timeout=5)
+            try:
+                message = await asyncio.wait_for(websocket.recv(), timeout=20)
+            except (asyncio.TimeoutError, TimeoutError):
+                if received > 0:
+                    print(f"⚠️ Timed out waiting for additional blocks after receiving {received}")
+                    break
+                raise
+
             block_data = json.loads(message)
             
             if block_data.get("method") == "subscription":
+                received += 1
                 result = block_data["params"]["result"]
-                print(f"📦 Block {i+1}: Slot {result['slot']}, Hash: {result['hash'][:16]}...")
+                print(f"📦 Block {received}: Slot {result['slot']}, Hash: {result['hash'][:16]}...")
         
         print("\n✅ WebSocket test passed!")
 

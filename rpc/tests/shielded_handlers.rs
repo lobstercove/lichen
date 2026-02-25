@@ -98,19 +98,21 @@ fn create_empty_app() -> axum::Router {
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
         state,
-        None, None, None,
+        None,
+        None,
+        None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
 /// Create a test app with pre-populated shielded pool state.
 /// Inserts `n_commitments` commitments and marks `spent_nullifiers` as spent.
-fn create_populated_app(
-    n_commitments: u64,
-    spent_nullifiers: &[[u8; 32]],
-) -> axum::Router {
+fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
 
@@ -152,10 +154,15 @@ fn create_populated_app(
     let _ = Box::leak(Box::new(dir));
     build_rpc_router(
         state,
-        None, None, None,
+        None,
+        None,
+        None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -280,10 +287,7 @@ async fn test_rpc_get_shielded_merkle_path_out_of_range() {
     assert!(resp["error"].is_object());
     let err = &resp["error"];
     assert_eq!(err["code"], -32001);
-    assert!(err["message"]
-        .as_str()
-        .unwrap()
-        .contains("out of range"));
+    assert!(err["message"].as_str().unwrap().contains("out of range"));
 }
 
 #[tokio::test]
@@ -448,7 +452,9 @@ async fn test_rest_get_pool_state_populated() {
 #[tokio::test]
 async fn test_rest_get_merkle_root() {
     let app = create_populated_app(2, &[]);
-    let resp = rest_get(&app, "/api/v1/shielded/merkle-root").await.unwrap();
+    let resp = rest_get(&app, "/api/v1/shielded/merkle-root")
+        .await
+        .unwrap();
 
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["commitmentCount"], 2);
@@ -467,8 +473,14 @@ async fn test_rest_get_merkle_path_valid() {
     assert_eq!(resp["success"], true);
     let data = &resp["data"];
     assert_eq!(data["index"], 1);
-    assert_eq!(data["siblings"].as_array().unwrap().len(), moltchain_core::zk::TREE_DEPTH);
-    assert_eq!(data["pathBits"].as_array().unwrap().len(), moltchain_core::zk::TREE_DEPTH);
+    assert_eq!(
+        data["siblings"].as_array().unwrap().len(),
+        moltchain_core::zk::TREE_DEPTH
+    );
+    assert_eq!(
+        data["pathBits"].as_array().unwrap().len(),
+        moltchain_core::zk::TREE_DEPTH
+    );
 }
 
 #[tokio::test]
@@ -479,10 +491,7 @@ async fn test_rest_get_merkle_path_out_of_range() {
         .unwrap();
 
     assert_eq!(resp["success"], false);
-    assert!(resp["error"]
-        .as_str()
-        .unwrap()
-        .contains("out of range"));
+    assert!(resp["error"].as_str().unwrap().contains("out of range"));
 }
 
 // ── GET /api/v1/shielded/nullifier/:hash ─────────────────────────────────────
@@ -528,7 +537,9 @@ async fn test_rest_get_nullifier_invalid_hex() {
 #[tokio::test]
 async fn test_rest_get_commitments_default() {
     let app = create_populated_app(5, &[]);
-    let resp = rest_get(&app, "/api/v1/shielded/commitments").await.unwrap();
+    let resp = rest_get(&app, "/api/v1/shielded/commitments")
+        .await
+        .unwrap();
 
     assert_eq!(resp["success"], true);
     let data = &resp["data"];
@@ -633,7 +644,9 @@ async fn test_rpc_rest_merkle_root_consistency() {
     let rpc_root = rpc_resp["result"]["merkleRoot"].as_str().unwrap();
 
     // Get root via REST
-    let rest_resp = rest_get(&app, "/api/v1/shielded/merkle-root").await.unwrap();
+    let rest_resp = rest_get(&app, "/api/v1/shielded/merkle-root")
+        .await
+        .unwrap();
     let rest_root = rest_resp["data"]["merkleRoot"].as_str().unwrap();
 
     assert_eq!(rpc_root, rest_root);
@@ -759,10 +772,15 @@ async fn test_merkle_proof_roundtrip_verification() {
 fn create_app_from_state(state: StateStore) -> axum::Router {
     build_rpc_router(
         state,
-        None, None, None,
+        None,
+        None,
+        None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -784,9 +802,7 @@ async fn test_rpc_reflects_processor_shielded_state() {
     ];
 
     for (i, comm) in commitments.iter().enumerate() {
-        state
-            .insert_shielded_commitment(i as u64, comm)
-            .unwrap();
+        state.insert_shielded_commitment(i as u64, comm).unwrap();
         tree.insert(*comm);
     }
 

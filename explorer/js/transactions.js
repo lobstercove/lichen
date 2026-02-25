@@ -189,19 +189,27 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     let wsRefreshTimer = null;
+    let blockSubRegistered = false;
+
+    const ensureBlockSubscription = () => {
+        if (blockSubRegistered) return;
+        blockSubRegistered = true;
+        ws.subscribe('subscribeBlocks', () => {
+            if (cursorStack.length === 0 && !wsRefreshTimer) {
+                wsRefreshTimer = setTimeout(() => {
+                    wsRefreshTimer = null;
+                    loadPage(undefined);
+                }, 3000);
+            }
+        }).catch(() => {
+            blockSubRegistered = false;
+        });
+    };
 
     if (typeof ws !== 'undefined') {
         ws.onOpen(() => {
             stopPolling();
-            ws.subscribe('subscribeBlocks', () => {
-                // Debounce WS block events — refresh at most every 3 seconds
-                if (cursorStack.length === 0 && !wsRefreshTimer) {
-                    wsRefreshTimer = setTimeout(() => {
-                        wsRefreshTimer = null;
-                        loadPage(undefined);
-                    }, 3000);
-                }
-            });
+            ensureBlockSubscription();
         });
         ws.onClose(() => startPolling());
         ws.connect();

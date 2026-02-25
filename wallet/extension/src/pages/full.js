@@ -596,18 +596,112 @@ const TRUST_TIERS = [
 ];
 
 const ACHIEVEMENT_DEFS = [
-  { id: 1, name: 'First Transaction', icon: 'fas fa-exchange-alt' },
-  { id: 2, name: 'Governance Voter', icon: 'fas fa-vote-yea' },
-  { id: 3, name: 'Builder', icon: 'fas fa-code' },
-  { id: 4, name: 'Trusted', icon: 'fas fa-shield-alt' },
-  { id: 5, name: 'Veteran', icon: 'fas fa-medal' },
-  { id: 6, name: 'Legend', icon: 'fas fa-crown' },
-  { id: 7, name: 'Endorsed', icon: 'fas fa-handshake' },
-  { id: 8, name: 'Graduated', icon: 'fas fa-graduation-cap' },
-  { id: 9, name: 'Name Registrar', icon: 'fas fa-at' },
-  { id: 10, name: 'Skill Master', icon: 'fas fa-tools' },
-  { id: 11, name: 'Social Butterfly', icon: 'fas fa-users' },
-  { id: 12, name: 'First Name', icon: 'fas fa-id-card' }
+  // Identity (1-12)
+  { id: 1,   name: 'First Transaction',   icon: 'fas fa-exchange-alt' },
+  { id: 2,   name: 'Governance Voter',     icon: 'fas fa-vote-yea' },
+  { id: 3,   name: 'Program Builder',      icon: 'fas fa-code' },
+  { id: 4,   name: 'Trusted Agent',        icon: 'fas fa-shield-alt' },
+  { id: 5,   name: 'Veteran Agent',        icon: 'fas fa-medal' },
+  { id: 6,   name: 'Legendary Agent',      icon: 'fas fa-crown' },
+  { id: 7,   name: 'Well Endorsed',        icon: 'fas fa-handshake' },
+  { id: 8,   name: 'Bootstrap Graduation', icon: 'fas fa-graduation-cap' },
+  { id: 9,   name: 'Name Registrar',       icon: 'fas fa-at' },
+  { id: 10,  name: 'Skill Master',         icon: 'fas fa-tools' },
+  { id: 11,  name: 'Social Butterfly',     icon: 'fas fa-users' },
+  { id: 12,  name: 'First Name',           icon: 'fas fa-id-card' },
+  // DEX (13-21)
+  { id: 13,  name: 'First Trade',          icon: 'fas fa-chart-line' },
+  { id: 14,  name: 'LP Provider',          icon: 'fas fa-water' },
+  { id: 15,  name: 'LP Withdrawal',        icon: 'fas fa-faucet' },
+  { id: 16,  name: 'DEX User',             icon: 'fas fa-random' },
+  { id: 17,  name: 'Multi-hop Trader',     icon: 'fas fa-route' },
+  { id: 18,  name: 'Margin Trader',        icon: 'fas fa-chart-bar' },
+  { id: 19,  name: 'Position Closer',      icon: 'fas fa-compress-alt' },
+  { id: 20,  name: 'Yield Farmer',         icon: 'fas fa-seedling' },
+  { id: 21,  name: 'Analytics Explorer',   icon: 'fas fa-chart-pie' },
+  // Lending (31-38)
+  { id: 31,  name: 'First Lend',           icon: 'fas fa-hand-holding-usd' },
+  { id: 32,  name: 'First Borrow',         icon: 'fas fa-file-invoice-dollar' },
+  { id: 33,  name: 'Loan Repaid',          icon: 'fas fa-check-circle' },
+  { id: 34,  name: 'Liquidator',           icon: 'fas fa-gavel' },
+  { id: 35,  name: 'Withdrawal Expert',    icon: 'fas fa-sign-out-alt' },
+  { id: 36,  name: 'Stablecoin Minter',    icon: 'fas fa-coins' },
+  { id: 37,  name: 'Stablecoin Redeemer',  icon: 'fas fa-undo' },
+  { id: 38,  name: 'Stable Sender',        icon: 'fas fa-paper-plane' },
+  // Staking (41-48)
+  { id: 41,  name: 'First Stake',          icon: 'fas fa-layer-group' },
+  { id: 42,  name: 'Unstaked',             icon: 'fas fa-unlock' },
+  { id: 43,  name: 'ReefStake Pioneer',    icon: 'fas fa-fish' },
+  { id: 44,  name: 'Locked Staker',        icon: 'fas fa-lock' },
+  { id: 45,  name: 'Diamond Hands',        icon: 'fas fa-gem' },
+  { id: 46,  name: 'Whale Staker',         icon: 'fas fa-whale' },
+  { id: 47,  name: 'Reward Harvester',     icon: 'fas fa-gift' },
+  { id: 48,  name: 'stMOLT Transferrer',   icon: 'fas fa-share' },
+  // Bridge (51-56)
+  { id: 51,  name: 'Bridge Pioneer',       icon: 'fas fa-bridge' },
+  { id: 52,  name: 'Bridge Out',           icon: 'fas fa-sign-out-alt' },
+  { id: 53,  name: 'Bridge User',          icon: 'fas fa-exchange-alt' },
+  { id: 54,  name: 'Wrapper',              icon: 'fas fa-box' },
+  { id: 55,  name: 'Unwrapper',            icon: 'fas fa-box-open' },
+  { id: 56,  name: 'Cross-chain Trader',   icon: 'fas fa-globe' },
+  // Shield/Privacy (57-60)
+  { id: 57,  name: 'Privacy Pioneer',      icon: 'fas fa-user-secret' },
+  { id: 58,  name: 'Unshielded',           icon: 'fas fa-eye' },
+  { id: 59,  name: 'Shadow Sender',        icon: 'fas fa-mask' },
+  { id: 60,  name: 'ZK Privacy User',      icon: 'fas fa-user-shield' },
+  // NFT (63-70)
+  { id: 63,  name: 'Collection Creator',   icon: 'fas fa-palette' },
+  { id: 64,  name: 'First Mint',           icon: 'fas fa-stamp' },
+  { id: 65,  name: 'NFT Trader',           icon: 'fas fa-store' },
+  { id: 66,  name: 'First Listing',        icon: 'fas fa-tag' },
+  { id: 67,  name: 'First Purchase',       icon: 'fas fa-shopping-cart' },
+  { id: 68,  name: 'Bidder',               icon: 'fas fa-gavel' },
+  { id: 69,  name: 'Deal Maker',           icon: 'fas fa-handshake' },
+  { id: 70,  name: 'Punk Collector',       icon: 'fas fa-robot' },
+  // Governance (71-73)
+  { id: 71,  name: 'Proposal Creator',     icon: 'fas fa-scroll' },
+  { id: 72,  name: 'First Vote',           icon: 'fas fa-ballot-check' },
+  { id: 73,  name: 'Delegator',            icon: 'fas fa-people-arrows' },
+  // Oracle (81-82)
+  { id: 81,  name: 'Oracle Reporter',      icon: 'fas fa-satellite-dish' },
+  { id: 82,  name: 'Oracle User',          icon: 'fas fa-broadcast-tower' },
+  // Storage (86-88)
+  { id: 86,  name: 'File Uploader',        icon: 'fas fa-cloud-upload-alt' },
+  { id: 87,  name: 'Data Retriever',       icon: 'fas fa-cloud-download-alt' },
+  { id: 88,  name: 'Storage User',         icon: 'fas fa-database' },
+  // Marketplace/Auction (91-93)
+  { id: 91,  name: 'Auctioneer',           icon: 'fas fa-bullhorn' },
+  { id: 92,  name: 'Auction Bidder',       icon: 'fas fa-hand-paper' },
+  { id: 93,  name: 'Auction Winner',       icon: 'fas fa-trophy' },
+  // Bounty (96-98)
+  { id: 96,  name: 'Bounty Poster',        icon: 'fas fa-clipboard-list' },
+  { id: 97,  name: 'Bounty Hunter',        icon: 'fas fa-crosshairs' },
+  { id: 98,  name: 'Bounty Judge',         icon: 'fas fa-balance-scale' },
+  // Prediction (101-104)
+  { id: 101, name: 'Market Maker',         icon: 'fas fa-chart-area' },
+  { id: 102, name: 'First Prediction',     icon: 'fas fa-dice' },
+  { id: 103, name: 'Oracle Resolver',      icon: 'fas fa-check-double' },
+  { id: 104, name: 'Prediction Winner',    icon: 'fas fa-star' },
+  // General milestones (106-124)
+  { id: 106, name: 'Big Spender',          icon: 'fas fa-money-bill-wave' },
+  { id: 107, name: 'Whale Transfer',       icon: 'fas fa-whale' },
+  { id: 108, name: 'EVM Connected',        icon: 'fas fa-link' },
+  { id: 109, name: 'Identity Created',     icon: 'fas fa-id-badge' },
+  { id: 110, name: 'Profile Customizer',   icon: 'fas fa-paint-brush' },
+  { id: 111, name: 'Voucher',              icon: 'fas fa-thumbs-up' },
+  { id: 112, name: 'Agent Creator',        icon: 'fas fa-robot' },
+  { id: 113, name: 'Compute Provider',     icon: 'fas fa-server' },
+  { id: 114, name: 'Compute Consumer',     icon: 'fas fa-microchip' },
+  { id: 115, name: 'Payment Creator',      icon: 'fas fa-file-invoice' },
+  { id: 116, name: 'First Payment',        icon: 'fas fa-credit-card' },
+  { id: 117, name: 'Subscription Creator', icon: 'fas fa-calendar-check' },
+  { id: 118, name: 'Token Launcher',       icon: 'fas fa-rocket' },
+  { id: 119, name: 'Early Buyer',          icon: 'fas fa-bolt' },
+  { id: 120, name: 'Token Seller',         icon: 'fas fa-cash-register' },
+  { id: 121, name: 'Vault Depositor',      icon: 'fas fa-piggy-bank' },
+  { id: 122, name: 'Vault Withdrawer',     icon: 'fas fa-wallet' },
+  { id: 123, name: 'Token Contract User',  icon: 'fas fa-coins' },
+  { id: 124, name: 'Contract Interactor',  icon: 'fas fa-cog' },
 ];
 
 function getTrustTier(score) {
@@ -665,7 +759,7 @@ async function loadStakingTab() {
     const isLocked = lockUntil > 0 && lockUntil > currentSlot;
     const remainingDays = isLocked ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
 
-    const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
+    const tierNames = ['Flexible', '30-Day', '180-Day', '365-Day'];
     const tierMultipliers = ['1.0x', '1.1x', '1.25x', '1.5x'];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];
@@ -805,7 +899,7 @@ async function showStakeModal() {
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
         <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
         <option value="1">30-Day Lock — 1.1x rewards</option>
-        <option value="2">90-Day Lock — 1.25x rewards</option>
+        <option value="2">180-Day Lock — 1.25x rewards</option>
         <option value="3">365-Day Lock — 1.5x rewards</option>
       </select>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
@@ -908,18 +1002,27 @@ async function showUnstakeModal() {
 async function handleFullClaim() {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const password = prompt('Enter wallet password to claim unstake:');
-  if (!password) return;
-  try {
-    await claimReefStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
-    alert('Claim successful!');
-    loadStakingTab();
-  } catch (err) {
-    alert('Claim failed: ' + err.message);
-  }
-}
 
-  if (!wallet) return;
+  // Balance guard: verify there is a claimable unstake and enough for fee
+  try {
+    const queue = await rpc().call('getUnstakingQueue', [wallet.address]);
+    const pending = queue?.pending_requests || [];
+    const currentSlot = Math.floor(Date.now() / 400);
+    const claimable = pending.filter(r => r.claimable_at <= currentSlot);
+    if (claimable.length === 0) {
+      alert('No matured unstakes to claim');
+      return;
+    }
+  } catch (e) { /* let RPC reject */ }
+  try {
+    const balResult = await rpc().call('getBalance', [wallet.address]);
+    const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
+    if (spendable < 0.001) {
+      alert('Insufficient MOLT for transaction fee (need 0.001 MOLT)');
+      return;
+    }
+  } catch (e) { /* let RPC reject */ }
+
   const password = prompt('Enter wallet password to claim unstake:');
   if (!password) return;
   try {
@@ -1106,6 +1209,23 @@ function showShieldModal(type) {
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
     if (!password) { statusEl.textContent = 'Password required'; return; }
     if (type !== 'shield' && !recipient) { statusEl.textContent = 'Recipient required'; return; }
+
+    // Balance guard
+    try {
+      const wallet = getActiveWallet();
+      if (type === 'shield') {
+        const balResult = await rpc().call('getBalance', [wallet.address]);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
+        const maxShieldable = Math.max(0, spendable - 0.001);
+        if (maxShieldable <= 0) { statusEl.textContent = 'Insufficient MOLT balance to shield'; return; }
+        if (amount > maxShieldable) { statusEl.textContent = `Max shieldable: ${maxShieldable.toFixed(4)} MOLT`; return; }
+      } else {
+        // unshield/transfer: check shielded balance
+        const shieldedBal = (_shieldedState.balance || 0) / 1e9;
+        if (shieldedBal <= 0) { statusEl.textContent = 'No shielded balance available'; return; }
+        if (amount > shieldedBal) { statusEl.textContent = `Max available: ${shieldedBal.toFixed(4)} MOLT`; return; }
+      }
+    } catch (e) { /* let RPC reject */ }
 
     statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
     try {

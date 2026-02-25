@@ -102,7 +102,7 @@ impl MerkleTree {
 
         for depth in 0..TREE_DEPTH {
             let mut next_level = Vec::new();
-            let pairs = (current_level.len() + 1) / 2;
+            let pairs = current_level.len().div_ceil(2);
 
             for i in 0..pairs {
                 let left = current_level[i * 2];
@@ -160,7 +160,7 @@ impl MerkleTree {
 
             // Move up: compute next level
             let mut next_level = Vec::new();
-            let pairs = (current_level.len() + 1) / 2;
+            let pairs = current_level.len().div_ceil(2);
             for i in 0..pairs {
                 let left = current_level[i * 2];
                 let right = if i * 2 + 1 < current_level.len() {

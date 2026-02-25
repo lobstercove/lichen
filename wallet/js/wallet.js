@@ -1231,8 +1231,8 @@ async function refreshBalance() {
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
         
-        document.getElementById('totalBalance').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
-        document.getElementById('balanceUsd').textContent = `${fmtToken(molt)} MOLT`;
+        document.getElementById('totalBalance').textContent = `${fmtToken(molt)} MOLT`;
+        document.getElementById('balanceUsd').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
 
         // Balance breakdown — show spendable/staked/locked/reef split when non-trivial
         const breakdownEl = document.getElementById('balanceBreakdown');
@@ -1260,8 +1260,8 @@ async function refreshBalance() {
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
         window.walletBalance = 0;
-        document.getElementById('totalBalance').textContent = `${sym}0.00 ${currency}`;
-        document.getElementById('balanceUsd').textContent = '0.00 MOLT';
+        document.getElementById('totalBalance').textContent = '0.00 MOLT';
+        document.getElementById('balanceUsd').textContent = `${sym}0.00 ${currency}`;
     }
 }
 
@@ -1456,6 +1456,24 @@ async function loadActivity(reset = true) {
                     'GenesisMint': 'Genesis Mint',
                 };
                 type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
+                // Enhance Contract Call labels with function name from RPC
+                if (tx.type === 'Contract' && tx.contract_function) {
+                    const fnMap = {
+                        'register_identity': 'Register Identity',
+                        'register_name': 'Name Registration',
+                        'update_profile': 'Update Profile',
+                        'set_primary_name': 'Set Primary Name',
+                        'add_achievement': 'Achievement',
+                        'grant_reputation': 'Reputation Grant',
+                        'create_agent': 'Create Agent',
+                        'update_agent': 'Update Agent',
+                        'transfer': 'Token Transfer',
+                        'approve': 'Token Approval',
+                        'mint': 'Token Mint',
+                        'burn': 'Token Burn',
+                    };
+                    type = fnMap[tx.contract_function] || `Contract: ${tx.contract_function.replace(/_/g, ' ')}`;
+                }
                 icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
                 color = isSent ? '#ff6b35' : '#4ade80';
                 // Special icons/colors for non-transfer types
@@ -1494,10 +1512,12 @@ async function loadActivity(reset = true) {
             const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
                 || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
                 || tx.type === 'CreateAccount');
+            const isPaidContract = tx.type === 'Contract' && amount !== '0' && parseFloat(amount) > 0;
             const feeShells = tx.fee_shells || tx.fee || 0;
             const feeAmt = fmtToken(feeShells / SHELLS_PER_MOLT);
             const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amount} MOLT`;
             const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
+            const paidTag = isPaidContract ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;vertical-align:middle;">PAID</span>' : '';
             
             return `
                 <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none; color:inherit; display:flex;">
@@ -1510,7 +1530,7 @@ async function loadActivity(reset = true) {
                     </div>
                     <div style="text-align: right; flex-shrink: 0;">
                         <div class="activity-amount" style="color: ${color};">
-                            ${amountStr}${feeTag}
+                            ${amountStr}${feeTag}${paidTag}
                         </div>
                         <div style="font-size: 0.7rem; opacity: 0.5;">${date}</div>
                     </div>
@@ -1826,7 +1846,7 @@ async function loadReefStakePosition(address) {
         // Render tier cards
         const tiersGrid = document.getElementById('tiersGrid');
         if (tiersGrid && poolInfo.tiers) {
-            const tierColorClasses = ['flexible', 'lock30', 'lock90', 'lock365'];
+            const tierColorClasses = ['flexible', 'lock30', 'lock180', 'lock365'];
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
                 const isActive = position.lock_tier === t.id && position.st_molt_amount > 0;
                 const apyStr = (t.apy_percent || 0).toFixed(1);
@@ -1889,7 +1909,7 @@ async function showReefStakeModal() {
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
                 <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
                 <strong>30-Day Lock:</strong> 1.1x rewards<br>
-                <strong>90-Day Lock:</strong> 1.25x rewards<br>
+                <strong>180-Day Lock:</strong> 1.25x rewards<br>
                 <strong>365-Day Lock:</strong> 1.5x rewards
             </div>`,
         icon: 'fas fa-layer-group',
@@ -1900,7 +1920,7 @@ async function showReefStakeModal() {
               options: [
                   { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
                   { value: '1', label: '30-Day Lock — 1.1x rewards' },
-                  { value: '2', label: '90-Day Lock — 1.25x rewards' },
+                  { value: '2', label: '180-Day Lock — 1.25x rewards' },
                   { value: '3', label: '365-Day Lock — 1.5x rewards' },
               ]},
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
@@ -2008,6 +2028,16 @@ async function showReefUnstakeModal() {
         }
     } catch (e) { /* let RPC reject */ }
     
+    // Fee guard: need MOLT for tx fee
+    try {
+        const balResult = await rpc.call('getBalance', [wallet.address]);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
+        if (spendable < BASE_FEE_MOLT) {
+            showToast(`Insufficient MOLT for fee: need ${fmtToken(BASE_FEE_MOLT)} MOLT`);
+            return;
+        }
+    } catch (e) { /* let RPC reject */ }
+    
     try {
         const shells = Math.floor(amount * SHELLS_PER_MOLT);
         const latestBlock = await rpc.getLatestBlock();
@@ -2052,6 +2082,28 @@ async function showReefUnstakeModal() {
 async function claimReefStake() {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
+
+    // Balance guard: verify there is a claimable unstake
+    try {
+        const queue = await rpc.call('getUnstakingQueue', [wallet.address]);
+        const pending = queue?.pending_requests || [];
+        const currentSlot = Math.floor(Date.now() / MS_PER_SLOT);
+        const claimable = pending.filter(r => r.claimable_at <= currentSlot);
+        if (claimable.length === 0) {
+            showToast('No matured unstakes to claim');
+            return;
+        }
+    } catch (e) { /* let RPC reject */ }
+
+    // Fee guard: need at least the base fee in spendable MOLT
+    try {
+        const balResult = await rpc.call('getBalance', [wallet.address]);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
+        if (spendable < BASE_FEE_MOLT) {
+            showToast(`Insufficient MOLT for fee: need ${fmtToken(BASE_FEE_MOLT)} MOLT`);
+            return;
+        }
+    } catch (e) { /* let RPC reject */ }
 
     const values = await showPasswordModal({
         title: 'Claim Unstaked MOLT',
@@ -3984,12 +4036,15 @@ showSettings = function() {
 // Chain Status Bar — live block height poller
 // ═══════════════════════════════════════════════════════════════════════
 (function initChainStatusBar() {
+    // Claim ownership so the shared/utils.js generic poller yields to us
+    window.__chainStatusBarOwned = true;
     const blockEl = document.getElementById('chainBlockHeight');
     const dotEl   = document.getElementById('chainDot');
     const latEl   = document.getElementById('chainLatency');
     if (!blockEl) return;
 
     let currentBlock = 0;
+    let everConnected = false;
 
     function isWsHealthy() {
         return Boolean(
@@ -4008,6 +4063,7 @@ showSettings = function() {
             blockEl.textContent = 'Block #' + currentBlock.toLocaleString();
             if (latEl) latEl.textContent = ms + ' ms';
             if (dotEl) dotEl.classList.add('connected');
+            everConnected = true;
         } catch {
             if (isWsHealthy()) {
                 blockEl.textContent = currentBlock > 0
@@ -4016,7 +4072,7 @@ showSettings = function() {
                 if (latEl) latEl.textContent = '';
                 if (dotEl) dotEl.classList.add('connected');
             } else {
-                blockEl.textContent = 'Reconnecting\u2026';
+                blockEl.textContent = everConnected ? 'Reconnecting\u2026' : 'Connecting\u2026';
                 if (latEl) latEl.textContent = '';
                 if (dotEl) dotEl.classList.remove('connected');
             }

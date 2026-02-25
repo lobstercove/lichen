@@ -939,13 +939,14 @@ async function showRegisterNameModal() {
             const durationInput = modal.querySelector('#duration');
             const preview = modal.querySelector('#nameRegCostPreview');
             const costValue = modal.querySelector('#nameRegCostValue');
-            // Enforce lowercase as user types
+            // Enforce lowercase and strip invalid chars (only a-z, 0-9, hyphens allowed)
             if (nameInput) {
                 nameInput.style.textTransform = 'lowercase';
                 nameInput.addEventListener('input', () => {
                     const pos = nameInput.selectionStart;
-                    nameInput.value = nameInput.value.toLowerCase();
-                    nameInput.setSelectionRange(pos, pos);
+                    // Lowercase, strip dots and anything not a-z 0-9 or hyphen
+                    nameInput.value = nameInput.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                    nameInput.setSelectionRange(Math.min(pos, nameInput.value.length), Math.min(pos, nameInput.value.length));
                 });
             }
             const updateCost = () => {

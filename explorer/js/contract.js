@@ -116,6 +116,30 @@ function formatMetadataValue(value) {
     return escapeHtml(String(value));
 }
 
+function normalizeProfileMetadata(registryMetadata, tokenMetadata) {
+    const reg = registryMetadata && typeof registryMetadata === 'object' ? registryMetadata : {};
+    const token = tokenMetadata && typeof tokenMetadata === 'object' ? tokenMetadata : {};
+
+    const merged = { ...token, ...reg };
+
+    const logoUrl = merged.logo_url || merged.logo || merged.icon || merged.icon_url || merged.image || '';
+    const website = merged.website || merged.homepage || merged.project_url || '';
+    const twitter = merged.twitter || merged.x || merged.x_url || merged.social_urls?.twitter || '';
+    const telegram = merged.telegram || merged.social_urls?.telegram || '';
+    const discord = merged.discord || merged.social_urls?.discord || '';
+    const description = merged.description || merged.desc || '';
+
+    return {
+        ...merged,
+        logo_url: logoUrl,
+        website,
+        twitter,
+        telegram,
+        discord,
+        description,
+    };
+}
+
 // ── Main data loading ────────────────────────────────────────────
 
 async function loadContract() {
@@ -247,8 +271,8 @@ async function loadContract() {
 
     // Contract metadata section (for non-tokens or any contract with extra metadata)
     const PROFILE_KEYS = ['logo_url', 'website', 'twitter', 'telegram', 'discord', 'social_urls', 'description'];
-    if (registry?.metadata && Object.keys(registry.metadata).length > 0) {
-        const regMeta2 = registry.metadata;
+    const regMeta2 = normalizeProfileMetadata(registry?.metadata, info?.token_metadata);
+    if (Object.keys(regMeta2).length > 0) {
 
         // Token profile section (logo, description, social links)
         const hasProfile = PROFILE_KEYS.some(k => regMeta2[k]);

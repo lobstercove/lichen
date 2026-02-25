@@ -46,18 +46,112 @@ const TRUST_TIER_THRESHOLDS = [
 
 // MoltyID achievement definitions (matches RPC moltyid_achievement_name in rpc/src/lib.rs)
 const ACHIEVEMENT_DEFS = [
-    { id: 1, name: 'First Transaction',     icon: 'fa-exchange-alt',   desc: 'Sent your first transaction' },
-    { id: 2, name: 'Governance Voter',       icon: 'fa-vote-yea',      desc: 'Voted on a governance proposal' },
-    { id: 3, name: 'Program Builder',        icon: 'fa-code',          desc: 'Deployed a program to MoltChain' },
-    { id: 4, name: 'Trusted Agent',          icon: 'fa-shield-alt',    desc: 'Reached 500+ reputation' },
-    { id: 5, name: 'Veteran Agent',          icon: 'fa-medal',         desc: 'Reached 1,000+ reputation' },
-    { id: 6, name: 'Legendary Agent',        icon: 'fa-crown',         desc: 'Reached 5,000+ reputation' },
-    { id: 7, name: 'Well Endorsed',          icon: 'fa-handshake',     desc: 'Received 10+ vouches' },
-    { id: 8, name: 'Bootstrap Graduation',   icon: 'fa-graduation-cap', desc: 'Completed bootstrap graduation' },
-    { id: 9, name: 'Name Registrar',         icon: 'fa-at',            desc: 'Registered a .molt name' },
-    { id: 10, name: 'Skill Master',          icon: 'fa-tools',         desc: 'Added 5+ skills to your profile' },
-    { id: 11, name: 'Social Butterfly',      icon: 'fa-users',         desc: 'Received 3+ vouches' },
-    { id: 12, name: 'First Name',            icon: 'fa-id-card',       desc: 'Registered your first .molt name' },
+    // Identity (1-12)
+    { id: 1,   name: 'First Transaction',     icon: 'fa-exchange-alt',     desc: 'Sent your first transaction' },
+    { id: 2,   name: 'Governance Voter',       icon: 'fa-vote-yea',        desc: 'Voted on a governance proposal' },
+    { id: 3,   name: 'Program Builder',        icon: 'fa-code',            desc: 'Deployed a program to MoltChain' },
+    { id: 4,   name: 'Trusted Agent',          icon: 'fa-shield-alt',      desc: 'Reached 500+ reputation' },
+    { id: 5,   name: 'Veteran Agent',          icon: 'fa-medal',           desc: 'Reached 1,000+ reputation' },
+    { id: 6,   name: 'Legendary Agent',        icon: 'fa-crown',           desc: 'Reached 5,000+ reputation' },
+    { id: 7,   name: 'Well Endorsed',          icon: 'fa-handshake',       desc: 'Received 10+ vouches' },
+    { id: 8,   name: 'Bootstrap Graduation',   icon: 'fa-graduation-cap',  desc: 'Completed bootstrap graduation' },
+    { id: 9,   name: 'Name Registrar',         icon: 'fa-at',              desc: 'Registered a .molt name' },
+    { id: 10,  name: 'Skill Master',           icon: 'fa-tools',           desc: 'Added 5+ skills to your profile' },
+    { id: 11,  name: 'Social Butterfly',       icon: 'fa-users',           desc: 'Received 3+ vouches' },
+    { id: 12,  name: 'First Name',             icon: 'fa-id-card',         desc: 'Registered your first .molt name' },
+    // DEX (13-21)
+    { id: 13,  name: 'First Trade',            icon: 'fa-chart-line',      desc: 'Executed your first DEX swap' },
+    { id: 14,  name: 'LP Provider',            icon: 'fa-water',           desc: 'Added liquidity to a pool' },
+    { id: 15,  name: 'LP Withdrawal',          icon: 'fa-faucet',          desc: 'Removed liquidity from a pool' },
+    { id: 16,  name: 'DEX User',               icon: 'fa-random',          desc: 'Used the DEX multiple times' },
+    { id: 17,  name: 'Multi-hop Trader',       icon: 'fa-route',           desc: 'Executed a multi-hop swap via DEX Router' },
+    { id: 18,  name: 'Margin Trader',          icon: 'fa-chart-bar',       desc: 'Opened a margin position' },
+    { id: 19,  name: 'Position Closer',        icon: 'fa-compress-alt',    desc: 'Closed a margin position' },
+    { id: 20,  name: 'Yield Farmer',           icon: 'fa-seedling',        desc: 'Claimed DEX rewards' },
+    { id: 21,  name: 'Analytics Explorer',     icon: 'fa-chart-pie',       desc: 'Used DEX analytics tracking' },
+    // Lending (31-38)
+    { id: 31,  name: 'First Lend',             icon: 'fa-hand-holding-usd', desc: 'Deposited into LobsterLend' },
+    { id: 32,  name: 'First Borrow',           icon: 'fa-file-invoice-dollar', desc: 'Borrowed from LobsterLend' },
+    { id: 33,  name: 'Loan Repaid',            icon: 'fa-check-circle',    desc: 'Repaid a LobsterLend loan' },
+    { id: 34,  name: 'Liquidator',             icon: 'fa-gavel',           desc: 'Liquidated an undercollateralized position' },
+    { id: 35,  name: 'Withdrawal Expert',      icon: 'fa-sign-out-alt',    desc: 'Withdrew from LobsterLend' },
+    { id: 36,  name: 'Stablecoin Minter',      icon: 'fa-coins',           desc: 'Minted MUSD stablecoins' },
+    { id: 37,  name: 'Stablecoin Redeemer',    icon: 'fa-undo',            desc: 'Redeemed MUSD stablecoins' },
+    { id: 38,  name: 'Stable Sender',          icon: 'fa-paper-plane',     desc: 'Transferred MUSD to another user' },
+    // Staking (41-48)
+    { id: 41,  name: 'First Stake',            icon: 'fa-layer-group',     desc: 'Staked MOLT for the first time' },
+    { id: 42,  name: 'Unstaked',               icon: 'fa-unlock',          desc: 'Unstaked MOLT' },
+    { id: 43,  name: 'ReefStake Pioneer',      icon: 'fa-fish',            desc: 'Used ReefStake liquid staking' },
+    { id: 44,  name: 'Locked Staker',          icon: 'fa-lock',            desc: 'Locked stake for a fixed period' },
+    { id: 45,  name: 'Diamond Hands',          icon: 'fa-gem',             desc: 'Locked stake for 365 days' },
+    { id: 46,  name: 'Whale Staker',           icon: 'fa-whale',           desc: 'Staked a large amount' },
+    { id: 47,  name: 'Reward Harvester',       icon: 'fa-gift',            desc: 'Claimed staking rewards' },
+    { id: 48,  name: 'stMOLT Transferrer',     icon: 'fa-share',           desc: 'Transferred stMOLT tokens' },
+    // Bridge (51-56)
+    { id: 51,  name: 'Bridge Pioneer',         icon: 'fa-bridge',          desc: 'Bridged assets to MoltChain' },
+    { id: 52,  name: 'Bridge Out',             icon: 'fa-sign-out-alt',    desc: 'Bridged assets out of MoltChain' },
+    { id: 53,  name: 'Bridge User',            icon: 'fa-exchange-alt',    desc: 'Used the bridge multiple times' },
+    { id: 54,  name: 'Wrapper',                icon: 'fa-box',             desc: 'Wrapped native tokens (WETH/WBNB/WSOL)' },
+    { id: 55,  name: 'Unwrapper',              icon: 'fa-box-open',        desc: 'Unwrapped tokens back to native' },
+    { id: 56,  name: 'Cross-chain Trader',     icon: 'fa-globe',           desc: 'Traded cross-chain assets' },
+    // Shield/Privacy (57-60)
+    { id: 57,  name: 'Privacy Pioneer',        icon: 'fa-user-secret',     desc: 'Shielded assets for privacy' },
+    { id: 58,  name: 'Unshielded',             icon: 'fa-eye',             desc: 'Unshielded private assets' },
+    { id: 59,  name: 'Shadow Sender',          icon: 'fa-mask',            desc: 'Sent a shielded transfer' },
+    { id: 60,  name: 'ZK Privacy User',        icon: 'fa-user-shield',     desc: 'Used privacy features multiple times' },
+    // NFT (63-70)
+    { id: 63,  name: 'Collection Creator',     icon: 'fa-palette',         desc: 'Created an NFT collection' },
+    { id: 64,  name: 'First Mint',             icon: 'fa-stamp',           desc: 'Minted your first NFT' },
+    { id: 65,  name: 'NFT Trader',             icon: 'fa-store',           desc: 'Traded NFTs on the marketplace' },
+    { id: 66,  name: 'First Listing',          icon: 'fa-tag',             desc: 'Listed an NFT for sale' },
+    { id: 67,  name: 'First Purchase',         icon: 'fa-shopping-cart',   desc: 'Purchased an NFT' },
+    { id: 68,  name: 'Bidder',                 icon: 'fa-gavel',           desc: 'Placed a bid on an NFT' },
+    { id: 69,  name: 'Deal Maker',             icon: 'fa-handshake',       desc: 'Accepted an offer on an NFT' },
+    { id: 70,  name: 'Punk Collector',         icon: 'fa-robot',           desc: 'Interacted with MoltPunks' },
+    // Governance (71-73)
+    { id: 71,  name: 'Proposal Creator',       icon: 'fa-scroll',          desc: 'Created a governance proposal' },
+    { id: 72,  name: 'First Vote',             icon: 'fa-ballot-check',    desc: 'Cast your first governance vote' },
+    { id: 73,  name: 'Delegator',              icon: 'fa-people-arrows',   desc: 'Delegated governance voting power' },
+    // Oracle (81-82)
+    { id: 81,  name: 'Oracle Reporter',        icon: 'fa-satellite-dish',  desc: 'Submitted a price feed report' },
+    { id: 82,  name: 'Oracle User',            icon: 'fa-broadcast-tower', desc: 'Consumed oracle price data' },
+    // Storage (86-88)
+    { id: 86,  name: 'File Uploader',          icon: 'fa-cloud-upload-alt', desc: 'Uploaded a file to Reef Storage' },
+    { id: 87,  name: 'Data Retriever',         icon: 'fa-cloud-download-alt', desc: 'Retrieved data from Reef Storage' },
+    { id: 88,  name: 'Storage User',           icon: 'fa-database',        desc: 'Used decentralized storage' },
+    // Marketplace/Auction (91-93)
+    { id: 91,  name: 'Auctioneer',             icon: 'fa-bullhorn',        desc: 'Created an auction' },
+    { id: 92,  name: 'Auction Bidder',         icon: 'fa-hand-paper',      desc: 'Bid on an auction' },
+    { id: 93,  name: 'Auction Winner',         icon: 'fa-trophy',          desc: 'Won an auction' },
+    // Bounty (96-98)
+    { id: 96,  name: 'Bounty Poster',          icon: 'fa-clipboard-list',  desc: 'Posted a bounty' },
+    { id: 97,  name: 'Bounty Hunter',          icon: 'fa-crosshairs',      desc: 'Claimed a bounty reward' },
+    { id: 98,  name: 'Bounty Judge',           icon: 'fa-balance-scale',   desc: 'Judged a bounty submission' },
+    // Prediction (101-104)
+    { id: 101, name: 'Market Maker',           icon: 'fa-chart-area',      desc: 'Created a prediction market' },
+    { id: 102, name: 'First Prediction',       icon: 'fa-dice',            desc: 'Placed your first prediction' },
+    { id: 103, name: 'Oracle Resolver',        icon: 'fa-check-double',    desc: 'Resolved a prediction market' },
+    { id: 104, name: 'Prediction Winner',      icon: 'fa-star',            desc: 'Won a prediction market payout' },
+    // General milestones (106-124)
+    { id: 106, name: 'Big Spender',            icon: 'fa-money-bill-wave', desc: 'Sent a transaction worth 10,000+ MOLT' },
+    { id: 107, name: 'Whale Transfer',         icon: 'fa-whale',           desc: 'Sent a transaction worth 100,000+ MOLT' },
+    { id: 108, name: 'EVM Connected',          icon: 'fa-link',            desc: 'Registered an EVM address' },
+    { id: 109, name: 'Identity Created',       icon: 'fa-id-badge',        desc: 'Created your MoltyID identity' },
+    { id: 110, name: 'Profile Customizer',     icon: 'fa-paint-brush',     desc: 'Customized your MoltyID profile' },
+    { id: 111, name: 'Voucher',                icon: 'fa-thumbs-up',       desc: 'Vouched for another identity' },
+    { id: 112, name: 'Agent Creator',          icon: 'fa-robot',           desc: 'Created a compute agent' },
+    { id: 113, name: 'Compute Provider',       icon: 'fa-server',          desc: 'Provided compute resources' },
+    { id: 114, name: 'Compute Consumer',       icon: 'fa-microchip',       desc: 'Consumed compute resources' },
+    { id: 115, name: 'Payment Creator',        icon: 'fa-file-invoice',    desc: 'Created a ClawPay payment' },
+    { id: 116, name: 'First Payment',          icon: 'fa-credit-card',     desc: 'Claimed a ClawPay payment' },
+    { id: 117, name: 'Subscription Creator',   icon: 'fa-calendar-check',  desc: 'Created a subscription plan' },
+    { id: 118, name: 'Token Launcher',         icon: 'fa-rocket',          desc: 'Launched a token on ClawPump' },
+    { id: 119, name: 'Early Buyer',            icon: 'fa-bolt',            desc: 'Bought tokens on ClawPump early' },
+    { id: 120, name: 'Token Seller',           icon: 'fa-cash-register',   desc: 'Sold tokens on ClawPump' },
+    { id: 121, name: 'Vault Depositor',        icon: 'fa-piggy-bank',      desc: 'Deposited into ClawVault' },
+    { id: 122, name: 'Vault Withdrawer',       icon: 'fa-wallet',          desc: 'Withdrew from ClawVault' },
+    { id: 123, name: 'Token Contract User',    icon: 'fa-coins',           desc: 'Interacted with a MoltCoin token' },
+    { id: 124, name: 'Contract Interactor',    icon: 'fa-cog',             desc: 'Interacted with a smart contract' },
 ];
 
 function getTrustTier(score) {
@@ -228,7 +322,7 @@ function getMoltRpcUrl() {
         if (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) return window.moltMarketConfig.rpcUrl;
         if (window.moltExplorerConfig && window.moltExplorerConfig.rpcUrl) return window.moltExplorerConfig.rpcUrl;
     }
-    return 'http://localhost:9000';
+    return 'http://localhost:8899';
 }
 
 async function moltRpcCall(method, params, rpcUrl) {
@@ -375,6 +469,8 @@ function formatShells(shells) {
 (function initChainStatusBarShared() {
     if (typeof document === 'undefined') return;
     function wire() {
+        // If the page has its own status-bar poller (e.g. wallet.js), yield to it
+        if (window.__chainStatusBarOwned) return;
         var blockEl = document.getElementById('chainBlockHeight');
         if (!blockEl) return; // No status bar on this page
         var dotEl = document.getElementById('chainDot');
@@ -382,6 +478,8 @@ function formatShells(shells) {
         var currentBlock = 0;
 
         function poll() {
+            // Re-check every cycle: wallet.js may have claimed ownership after we started
+            if (window.__chainStatusBarOwned) return;
             var t0 = (typeof performance !== 'undefined') ? performance.now() : Date.now();
             moltRpcCall('getSlot', []).then(function(slot) {
                 var ms = Math.round(((typeof performance !== 'undefined') ? performance.now() : Date.now()) - t0);

@@ -846,6 +846,10 @@ impl TxProcessor {
             }
         }
 
+        // ── Post-execution achievement auto-detection ──────────────────
+        // Best-effort: failures here do NOT prevent the transaction from committing.
+        let _ = self.detect_and_award_achievements(tx);
+
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
             return self.make_result(
@@ -1016,9 +1020,7 @@ impl TxProcessor {
             }
         });
 
-        results_mu
-            .into_inner()
-            .unwrap_or_else(|e| e.into_inner())
+        results_mu.into_inner().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Simulate a transaction (dry run) — validates everything without persisting.
@@ -1483,7 +1485,8 @@ impl TxProcessor {
         let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
-        let community_amount = (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
+        let community_amount =
+            (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount
             .saturating_add(producer_amount)
@@ -1543,7 +1546,8 @@ impl TxProcessor {
         let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
-        let community_amount = (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
+        let community_amount =
+            (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount
             .saturating_add(producer_amount)
@@ -1680,7 +1684,13 @@ impl TxProcessor {
         // Guard: governed wallets (ecosystem_partnerships, reserve_pool) cannot
         // use standard transfers. They require the multi-sig proposal flow
         // (instruction types 21/22).
-        if self.state.get_governed_wallet_config(from).ok().flatten().is_some() {
+        if self
+            .state
+            .get_governed_wallet_config(from)
+            .ok()
+            .flatten()
+            .is_some()
+        {
             return Err(format!(
                 "Transfer from governed wallet {} requires multi-sig proposal (use type 21/22)",
                 from.to_base58()
@@ -1860,7 +1870,9 @@ impl TxProcessor {
     ///   accounts   = [proposer, governed_wallet, recipient]
     fn system_propose_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 3 {
-            return Err("ProposeGovernedTransfer requires [proposer, source, recipient]".to_string());
+            return Err(
+                "ProposeGovernedTransfer requires [proposer, source, recipient]".to_string(),
+            );
         }
         if ix.data.len() < 9 {
             return Err("ProposeGovernedTransfer: missing amount".to_string());
@@ -1885,12 +1897,7 @@ impl TxProcessor {
             .state
             .get_governed_wallet_config(source)
             .map_err(|e| format!("Failed to load governed wallet config: {}", e))?
-            .ok_or_else(|| {
-                format!(
-                    "Account {} is not a governed wallet",
-                    source.to_base58()
-                )
-            })?;
+            .ok_or_else(|| format!("Account {} is not a governed wallet", source.to_base58()))?;
 
         // Proposer must be an authorized signer
         if !config.is_authorized(proposer) {
@@ -1974,7 +1981,10 @@ impl TxProcessor {
             .ok_or_else(|| format!("Governed proposal {} not found", proposal_id))?;
 
         if proposal.executed {
-            return Err(format!("Governed proposal {} already executed", proposal_id));
+            return Err(format!(
+                "Governed proposal {} already executed",
+                proposal_id
+            ));
         }
 
         // Load config for the source wallet
@@ -2120,9 +2130,10 @@ impl TxProcessor {
                 batch.insert_shielded_commitment(index, &commitment)?;
                 pool.commitment_count += 1;
                 pool.shield_count = pool.shield_count.saturating_add(1);
-                pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
-                    "Shield: pool balance overflow".to_string()
-                })?;
+                pool.total_shielded = pool
+                    .total_shielded
+                    .checked_add(amount)
+                    .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
                 // Rebuild merkle root: read existing leaves from disk + add new one
                 let mut leaves = self.state.get_all_shielded_commitments(index)?;
                 leaves.push(commitment);
@@ -2138,11 +2149,14 @@ impl TxProcessor {
                 self.state.insert_shielded_commitment(index, &commitment)?;
                 pool.commitment_count += 1;
                 pool.shield_count = pool.shield_count.saturating_add(1);
-                pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
-                    "Shield: pool balance overflow".to_string()
-                })?;
+                pool.total_shielded = pool
+                    .total_shielded
+                    .checked_add(amount)
+                    .ok_or_else(|| "Shield: pool balance overflow".to_string())?;
                 // Rebuild merkle root from all committed leaves
-                let leaves = self.state.get_all_shielded_commitments(pool.commitment_count)?;
+                let leaves = self
+                    .state
+                    .get_all_shielded_commitments(pool.commitment_count)?;
                 let mut tree = crate::zk::MerkleTree::new();
                 for leaf in &leaves {
                     tree.insert(*leaf);
@@ -2218,8 +2232,9 @@ impl TxProcessor {
         let expected_recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
         let expected_recipient_bytes = fr_to_bytes(&expected_recipient);
         if recipient_fr_bytes != expected_recipient_bytes {
-            return Err("Unshield: recipient public input does not match recipient account"
-                .to_string());
+            return Err(
+                "Unshield: recipient public input does not match recipient account".to_string(),
+            );
         }
 
         // Verify merkle root matches current state
@@ -2289,9 +2304,9 @@ impl TxProcessor {
         }
 
         // Credit recipient
-        let mut recipient_acct = self.b_get_account(recipient_pubkey)?.unwrap_or_else(|| {
-            crate::Account::new(0, crate::SYSTEM_PROGRAM_ID)
-        });
+        let mut recipient_acct = self
+            .b_get_account(recipient_pubkey)?
+            .unwrap_or_else(|| crate::Account::new(0, crate::SYSTEM_PROGRAM_ID));
         recipient_acct.spendable = recipient_acct.spendable.saturating_add(amount);
         recipient_acct.shells = recipient_acct
             .spendable
@@ -3438,6 +3453,554 @@ impl TxProcessor {
                 .map_err(|e| format!("Failed to serialize cross-call target: {}", e))?;
             self.b_put_account(target_addr, &updated_target)?;
         }
+
+        Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACHIEVEMENT AUTO-DETECTION (post-execution hook)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Detect and auto-award achievements after a successful transaction.
+    /// Writes directly to MoltyID's CF_CONTRACT_STORAGE. Best-effort only.
+    fn detect_and_award_achievements(&self, tx: &Transaction) -> Result<(), String> {
+        // Resolve MoltyID contract address from symbol registry
+        let moltyid_addr = match self.state.get_symbol_registry("MOLTYID") {
+            Ok(Some(entry)) => entry.program,
+            _ => return Ok(()), // No MoltyID deployed — skip
+        };
+
+        let first_ix = tx.message.instructions.first();
+        let ix = match first_ix {
+            Some(ix) => ix,
+            None => return Ok(()),
+        };
+        let caller = match ix.accounts.first() {
+            Some(acc) => *acc,
+            None => return Ok(()),
+        };
+
+        // Check if user has a MoltyID identity (required for achievements)
+        let hex = Self::pubkey_to_hex(&caller);
+        let identity_key = format!("identity:{}", hex);
+        if self.state.get_contract_storage(&moltyid_addr, identity_key.as_bytes()).ok().flatten().is_none() {
+            return Ok(()); // No identity — skip
+        }
+
+        let _current_slot = self.b_get_last_slot().unwrap_or(0);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Detect instruction type and award appropriate achievements
+        if ix.program_id == SYSTEM_PROGRAM_ID {
+            let op = ix.data.first().copied().unwrap_or(255);
+            match op {
+                // Transfer
+                0 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
+                    let amount = if ix.data.len() >= 9 {
+                        u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
+                    } else { 0 };
+                    if amount >= 100 * 1_000_000_000 { // 100+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 106, timestamp)?; // Big Spender
+                    }
+                    if amount >= 1_000 * 1_000_000_000 { // 1000+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 107, timestamp)?; // Whale Transfer
+                    }
+                }
+                // Stake
+                6 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 41, timestamp)?; // First Stake
+                }
+                // Unstake
+                7 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 42, timestamp)?; // Unstaked
+                }
+                // ClaimUnstake
+                8 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                }
+                // ReefStakeDeposit
+                13 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 43, timestamp)?; // ReefStake Pioneer
+                    let amount = if ix.data.len() >= 9 {
+                        u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
+                    } else { 0 };
+                    let tier = ix.data.get(9).copied().unwrap_or(0);
+                    if tier >= 1 { self.award_ach(&moltyid_addr, &caller, &hex, 44, timestamp)?; } // Locked Staker
+                    if tier >= 3 { self.award_ach(&moltyid_addr, &caller, &hex, 45, timestamp)?; } // Diamond Hands (365-day)
+                    if amount >= 10_000 * 1_000_000_000 { // 10K+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 46, timestamp)?; // Whale Staker
+                    }
+                }
+                // ReefStakeUnstake
+                14 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                }
+                // ReefStakeClaim
+                15 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 47, timestamp)?; // Reward Harvester
+                }
+                // Shield
+                16 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 57, timestamp)?; // Privacy Pioneer (First Shield)
+                }
+                // Unshield
+                17 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 58, timestamp)?; // Unshielded
+                }
+                // Shielded Transfer
+                18 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 59, timestamp)?; // Shadow Sender
+                }
+                // RegisterEvmAddress
+                9 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?; // EVM Connected
+                }
+                // CreateCollection
+                19 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?; // Collection Creator
+                }
+                // MintNFT
+                20 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?; // First Mint (NFT)
+                }
+                // TransferNFT
+                21 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?; // NFT Trader
+                }
+                // ReefStakeTransfer (stMOLT)
+                23 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?; // stMOLT Transferrer
+                }
+                // Any other instruction
+                _ => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                }
+            }
+        } else if ix.program_id == CONTRACT_PROGRAM_ID {
+            // Contract call — parse function name from JSON payload
+            self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
+            if let Ok(json_str) = std::str::from_utf8(&ix.data) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if val.get("Deploy").is_some() {
+                        self.award_ach(&moltyid_addr, &caller, &hex, 3, timestamp)?; // Program Builder
+                    }
+                    if let Some(call) = val.get("Call") {
+                        let func = call.get("function").and_then(|f| f.as_str()).unwrap_or("");
+                        let contract_addr = ix.accounts.get(1).copied();
+
+                        // Determine contract by looking up its symbol
+                        let contract_symbol = contract_addr.and_then(|addr| {
+                            self.state.get_symbol_registry_by_program(&addr).ok().flatten().map(|e| e.symbol)
+                        });
+                        let sym = contract_symbol.as_deref().unwrap_or("");
+
+                        // ── MoltyID achievements (handled by contract itself, but ensure coverage)
+                        if sym == "MOLTYID" {
+                            match func {
+                                "register_identity" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 109, timestamp)?; // Identity Created
+                                }
+                                "register_name" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 9, timestamp)?;  // Name Registrar
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 12, timestamp)?; // First Name
+                                }
+                                "update_profile" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 110, timestamp)?; // Profile Customizer
+                                }
+                                "vouch" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 111, timestamp)?; // Voucher (gave a vouch)
+                                }
+                                "create_agent" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 112, timestamp)?; // Agent Creator
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── DEX achievements
+                        if sym == "DEX" || sym == "DEX_CORE" || sym == "MOLTSWAP" {
+                            match func {
+                                "swap" | "swap_exact_input" | "swap_exact_output" | "execute_swap" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 13, timestamp)?; // First Trade
+                                }
+                                "add_liquidity" | "provide_liquidity" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 14, timestamp)?; // LP Provider
+                                }
+                                "remove_liquidity" | "withdraw_liquidity" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 15, timestamp)?; // LP Withdrawal
+                                }
+                                _ => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 16, timestamp)?; // DEX User
+                                }
+                            }
+                        }
+
+                        // ── DEX Router
+                        if sym == "DEX_ROUTER" {
+                            self.award_ach(&moltyid_addr, &caller, &hex, 17, timestamp)?; // Multi-hop Trader
+                        }
+
+                        // ── DEX Margin
+                        if sym == "DEX_MARGIN" {
+                            match func {
+                                "open_position" | "open_long" | "open_short" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 18, timestamp)?; // Margin Trader
+                                }
+                                "close_position" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 19, timestamp)?; // Position Closer
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── DEX Governance
+                        if sym == "DEX_GOVERNANCE" || sym == "MOLTDAO" {
+                            match func {
+                                "create_proposal" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 71, timestamp)?; // Proposal Creator
+                                }
+                                "vote" | "cast_vote" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 2, timestamp)?; // Governance Voter
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 72, timestamp)?; // First Vote
+                                }
+                                "delegate" | "delegate_votes" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 73, timestamp)?; // Delegator
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── DEX Rewards
+                        if sym == "DEX_REWARDS" {
+                            match func {
+                                "claim" | "claim_rewards" | "harvest" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 20, timestamp)?; // Yield Farmer
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── DEX Analytics
+                        if sym == "DEX_ANALYTICS" {
+                            self.award_ach(&moltyid_addr, &caller, &hex, 21, timestamp)?; // Analytics Explorer
+                        }
+
+                        // ── Lending (LobsterLend)
+                        if sym == "LOBSTERLEND" {
+                            match func {
+                                "deposit" | "supply" | "lend" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 31, timestamp)?; // First Lend
+                                }
+                                "borrow" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 32, timestamp)?; // First Borrow
+                                }
+                                "repay" | "repay_loan" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 33, timestamp)?; // Loan Repaid
+                                }
+                                "liquidate" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 34, timestamp)?; // Liquidator
+                                }
+                                "withdraw" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 35, timestamp)?; // Withdrawal Expert
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Bridge (MoltBridge)
+                        if sym == "MOLTBRIDGE" {
+                            match func {
+                                "deposit" | "bridge_in" | "lock" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 51, timestamp)?; // Bridge Pioneer (In)
+                                }
+                                "withdraw" | "bridge_out" | "unlock" | "claim" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 52, timestamp)?; // Bridge Out
+                                }
+                                _ => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 53, timestamp)?; // Bridge User
+                                }
+                            }
+                        }
+
+                        // ── Wrapped Assets (WETH, WBNB, WSOL)
+                        if sym == "WETH" || sym == "WBNB" || sym == "WSOL" {
+                            match func {
+                                "wrap" | "deposit" | "mint" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 54, timestamp)?; // Wrapper
+                                }
+                                "unwrap" | "withdraw" | "burn" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 55, timestamp)?; // Unwrapper
+                                }
+                                "transfer" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 56, timestamp)?; // Cross-chain Trader
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Stablecoin (mUSD)
+                        if sym == "MUSD" {
+                            match func {
+                                "mint" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 36, timestamp)?; // Stablecoin Minter
+                                }
+                                "redeem" | "burn" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 37, timestamp)?; // Stablecoin Redeemer
+                                }
+                                "transfer" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 38, timestamp)?; // Stable Sender
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Shielded Pool
+                        if sym == "SHIELDED_POOL" {
+                            self.award_ach(&moltyid_addr, &caller, &hex, 60, timestamp)?; // ZK Privacy User
+                        }
+
+                        // ── NFT Marketplace
+                        if sym == "MOLTMARKET" {
+                            match func {
+                                "list" | "create_listing" | "list_nft" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 66, timestamp)?; // First Listing
+                                }
+                                "buy" | "purchase" | "buy_nft" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 67, timestamp)?; // First Purchase
+                                }
+                                "make_offer" | "bid" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 68, timestamp)?; // Bidder
+                                }
+                                "accept_offer" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 69, timestamp)?; // Deal Maker
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── NFT Collection (MoltPunks)
+                        if sym == "MOLTPUNKS" {
+                            self.award_ach(&moltyid_addr, &caller, &hex, 70, timestamp)?; // Punk Collector
+                        }
+
+                        // ── Auction (MoltAuction)
+                        if sym == "MOLTAUCTION" {
+                            match func {
+                                "create_auction" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 91, timestamp)?; // Auctioneer
+                                }
+                                "place_bid" | "bid" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 92, timestamp)?; // Auction Bidder
+                                }
+                                "claim" | "settle" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 93, timestamp)?; // Auction Winner
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Oracle
+                        if sym == "MOLTORACLE" {
+                            match func {
+                                "submit_price" | "update_price" | "report" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 81, timestamp)?; // Oracle Reporter
+                                }
+                                _ => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 82, timestamp)?; // Oracle User
+                                }
+                            }
+                        }
+
+                        // ── Storage (ReefStorage)
+                        if sym == "REEF_STORAGE" {
+                            match func {
+                                "upload" | "store" | "put" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 86, timestamp)?; // File Uploader
+                                }
+                                "download" | "get" | "retrieve" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 87, timestamp)?; // Data Retriever
+                                }
+                                _ => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 88, timestamp)?; // Storage User
+                                }
+                            }
+                        }
+
+                        // ── Bounty Board
+                        if sym == "BOUNTYBOARD" {
+                            match func {
+                                "create_bounty" | "post_bounty" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 96, timestamp)?; // Bounty Poster
+                                }
+                                "submit_work" | "claim_bounty" | "complete" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 97, timestamp)?; // Bounty Hunter
+                                }
+                                "approve" | "accept_submission" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 98, timestamp)?; // Bounty Judge
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Prediction Market
+                        if sym == "PREDICTION_MARKET" {
+                            match func {
+                                "create_market" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 101, timestamp)?; // Market Maker
+                                }
+                                "predict" | "place_bet" | "buy_shares" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 102, timestamp)?; // First Prediction
+                                }
+                                "resolve" | "settle" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 103, timestamp)?; // Oracle Resolver
+                                }
+                                "claim" | "redeem" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 104, timestamp)?; // Prediction Winner
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── Compute Market
+                        if sym == "COMPUTE_MARKET" {
+                            match func {
+                                "register_provider" | "offer_compute" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 113, timestamp)?; // Compute Provider
+                                }
+                                "request_compute" | "submit_job" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 114, timestamp)?; // Compute Consumer
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── ClawPay
+                        if sym == "CLAWPAY" {
+                            match func {
+                                "create_invoice" | "create_payment" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 115, timestamp)?; // Payment Creator
+                                }
+                                "pay" | "send_payment" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 116, timestamp)?; // First Payment
+                                }
+                                "create_subscription" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 117, timestamp)?; // Subscription Creator
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── ClawPump (Token Launch)
+                        if sym == "CLAWPUMP" {
+                            match func {
+                                "create_token" | "launch" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 118, timestamp)?; // Token Launcher
+                                }
+                                "buy" | "purchase" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 119, timestamp)?; // Early Buyer
+                                }
+                                "sell" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 120, timestamp)?; // Token Seller
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── ClawVault
+                        if sym == "CLAWVAULT" {
+                            match func {
+                                "deposit" | "lock" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 121, timestamp)?; // Vault Depositor
+                                }
+                                "withdraw" | "unlock" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 122, timestamp)?; // Vault Withdrawer
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── MoltCoin (native token contract)
+                        if sym == "MOLTCOIN" {
+                            self.award_ach(&moltyid_addr, &caller, &hex, 123, timestamp)?; // Token Contract User
+                        }
+
+                        // Generic contract interaction
+                        self.award_ach(&moltyid_addr, &caller, &hex, 124, timestamp)?; // Contract Interactor
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert a Pubkey to 64-char lowercase hex string
+    fn pubkey_to_hex(pubkey: &Pubkey) -> String {
+        hex::encode(pubkey.0)
+    }
+
+    /// Award a single achievement if not already earned.
+    /// Writes directly to MoltyID's CF_CONTRACT_STORAGE.
+    fn award_ach(
+        &self,
+        moltyid_addr: &Pubkey,
+        _caller: &Pubkey,
+        hex: &str,
+        achievement_id: u8,
+        timestamp: u64,
+    ) -> Result<(), String> {
+        // Build storage key: ach:{hex_pubkey}:{zero_padded_id}
+        let key = format!("ach:{}:{:02}", hex, achievement_id);
+        let key_bytes = key.as_bytes();
+
+        // Check if already awarded (skip if so)
+        if let Ok(Some(_)) = self.state.get_contract_storage(moltyid_addr, key_bytes) {
+            return Ok(()); // Already earned
+        }
+
+        // Also check the batch for pending writes
+        // (if we're in a batch, the state might not reflect uncommitted writes)
+        // We use a simple dedup: try to read from CF, if not found, write it.
+
+        // Store achievement: [achievement_id(1), timestamp(8)]
+        let mut ach_data = Vec::with_capacity(9);
+        ach_data.push(achievement_id);
+        ach_data.extend_from_slice(&timestamp.to_le_bytes());
+        self.b_put_contract_storage(moltyid_addr, key_bytes, &ach_data)?;
+
+        // Increment achievement count
+        let count_key = format!("ach_count:{}", hex);
+        let count_bytes = count_key.as_bytes();
+        let prev = self
+            .state
+            .get_contract_storage(moltyid_addr, count_bytes)
+            .ok()
+            .flatten()
+            .and_then(|d| {
+                if d.len() >= 8 {
+                    Some(u64::from_le_bytes(d[..8].try_into().unwrap_or([0; 8])))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        self.b_put_contract_storage(moltyid_addr, count_bytes, &(prev + 1).to_le_bytes())?;
 
         Ok(())
     }
@@ -6156,7 +6719,10 @@ mod tests {
             + cfg.fee_voters_percent
             + cfg.fee_treasury_percent
             + cfg.fee_community_percent;
-        assert_eq!(total, 100, "fee split percentages must sum to 100, got {total}");
+        assert_eq!(
+            total, 100,
+            "fee split percentages must sum to 100, got {total}"
+        );
         // Verify individual values match design spec (40/30/10/10/10)
         assert_eq!(cfg.fee_burn_percent, 40);
         assert_eq!(cfg.fee_producer_percent, 30);
@@ -6197,7 +6763,11 @@ mod tests {
             "Standard transfer from governed wallet should be rejected"
         );
         assert!(
-            result.error.as_ref().unwrap().contains("multi-sig proposal"),
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("multi-sig proposal"),
             "Error should mention multi-sig requirement, got: {}",
             result.error.unwrap()
         );
@@ -6218,8 +6788,12 @@ mod tests {
 
         // Fund participants
         let fund = Account::molt_to_shells(1000);
-        state.put_account(&eco, &Account::new(fund, Pubkey([0u8; 32]))).unwrap();
-        state.put_account(&alice, &Account::new(fund, alice)).unwrap();
+        state
+            .put_account(&eco, &Account::new(fund, Pubkey([0u8; 32])))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
         state.put_account(&bob, &Account::new(fund, bob)).unwrap();
 
         // Configure governed wallet (threshold=2, signers=[alice, bob, eco])
@@ -6242,14 +6816,25 @@ mod tests {
         };
         let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
         let result = processor.process_transaction(&propose_tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "Proposal should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Proposal should succeed: {:?}",
+            result.error
+        );
 
         // Verify proposal exists but is NOT executed yet
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
         assert_eq!(proposal.approvals.len(), 1);
         assert_eq!(proposal.approvals[0], alice);
-        assert!(!proposal.executed, "Proposal should not be executed with only 1 approval");
-        assert_eq!(state.get_balance(&recipient).unwrap(), 0, "Recipient should not have funds yet");
+        assert!(
+            !proposal.executed,
+            "Proposal should not be executed with only 1 approval"
+        );
+        assert_eq!(
+            state.get_balance(&recipient).unwrap(),
+            0,
+            "Recipient should not have funds yet"
+        );
 
         // Step 2: Bob approves (type 22) → reaches threshold → auto-executes
         let mut approve_data = vec![22u8];
@@ -6261,11 +6846,18 @@ mod tests {
         };
         let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
         let result = processor.process_transaction(&approve_tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "Approval should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Approval should succeed: {:?}",
+            result.error
+        );
 
         // Verify proposal is now executed
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
-        assert!(proposal.executed, "Proposal should be executed after meeting threshold");
+        assert!(
+            proposal.executed,
+            "Proposal should be executed after meeting threshold"
+        );
         assert_eq!(proposal.approvals.len(), 2);
 
         // Verify transfer happened
@@ -6288,8 +6880,12 @@ mod tests {
 
         // Fund participants
         let fund = Account::molt_to_shells(1000);
-        state.put_account(&reserve, &Account::new(fund, Pubkey([0u8; 32]))).unwrap();
-        state.put_account(&alice, &Account::new(fund, alice)).unwrap();
+        state
+            .put_account(&reserve, &Account::new(fund, Pubkey([0u8; 32])))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(fund, alice))
+            .unwrap();
         state.put_account(&bob, &Account::new(fund, bob)).unwrap();
 
         // Configure reserve_pool as governed wallet (threshold=3 — supermajority)
@@ -6328,7 +6924,10 @@ mod tests {
 
         // Verify NOT executed yet (2 approvals, need 3)
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
-        assert!(!proposal.executed, "Should NOT be executed with only 2/3 approvals");
+        assert!(
+            !proposal.executed,
+            "Should NOT be executed with only 2/3 approvals"
+        );
         assert_eq!(state.get_balance(&recipient).unwrap(), 0);
 
         // Third approval (reserve keypair) → threshold met → auto-execute
@@ -6341,7 +6940,11 @@ mod tests {
         };
         let tx = make_signed_tx(&reserve_kp, ix, genesis_hash);
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "Third approval should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Third approval should succeed: {:?}",
+            result.error
+        );
 
         // Verify executed
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
@@ -6559,11 +7162,7 @@ mod tests {
         // 6. Process transaction
         let alice_balance_before = state.get_balance(&alice).unwrap();
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(
-            result.success,
-            "Shield should succeed: {:?}",
-            result.error
-        );
+        assert!(result.success, "Shield should succeed: {:?}", result.error);
 
         // 7. Verify state changes
         let alice_balance_after = state.get_balance(&alice).unwrap();

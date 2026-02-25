@@ -52,13 +52,12 @@ mod tests {
         assert!(!zk_proof.proof_bytes.is_empty());
 
         // 5. Set public inputs: [amount, commitment]
-        zk_proof.public_inputs = vec![
-            fr_to_bytes(&Fr::from(amount)),
-            fr_to_bytes(&commitment),
-        ];
+        zk_proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), fr_to_bytes(&commitment)];
 
         // 6. Verify
-        let valid = verifier.verify(&zk_proof).expect("verification call failed");
+        let valid = verifier
+            .verify(&zk_proof)
+            .expect("verification call failed");
         assert!(valid, "valid shield proof should verify");
     }
 
@@ -87,7 +86,9 @@ mod tests {
             fr_to_bytes(&commitment),
         ];
 
-        let valid = verifier.verify(&zk_proof).expect("verification call failed");
+        let valid = verifier
+            .verify(&zk_proof)
+            .expect("verification call failed");
         assert!(!valid, "tampered public input should fail verification");
     }
 
@@ -166,10 +167,14 @@ mod tests {
         let ceremony = setup::setup_unshield().unwrap();
 
         let mut prover = Prover::new();
-        prover.load_unshield_key(&ceremony.proving_key_bytes).unwrap();
+        prover
+            .load_unshield_key(&ceremony.proving_key_bytes)
+            .unwrap();
 
         let mut verifier = Verifier::new();
-        verifier.load_unshield_vk(&ceremony.verification_key_bytes).unwrap();
+        verifier
+            .load_unshield_vk(&ceremony.verification_key_bytes)
+            .unwrap();
 
         let amount = 1000u64;
         let blinding = Fr::rand(&mut OsRng);
@@ -185,13 +190,24 @@ mod tests {
         tree.insert(fr_to_bytes(&commitment_fr));
         let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
         let proof_path = tree.proof(0).unwrap();
-        let merkle_path: Vec<Fr> = proof_path.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
+        let merkle_path: Vec<Fr> = proof_path
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
 
         let circuit = UnshieldCircuit::new(
-            merkle_root_fr, nullifier_fr, amount, recipient,
-            amount, blinding, serial, spending_key,
+            merkle_root_fr,
+            nullifier_fr,
+            amount,
+            recipient,
+            amount,
+            blinding,
+            serial,
+            spending_key,
             recipient_preimage,
-            merkle_path, proof_path.path_bits,
+            merkle_path,
+            proof_path.path_bits,
         );
 
         let mut zk_proof = prover.prove_unshield(circuit).unwrap();
@@ -259,8 +275,16 @@ mod tests {
         let proof1 = tree.proof(1).unwrap();
 
         let merkle_paths = [
-            proof0.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect::<Vec<_>>(),
-            proof1.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect::<Vec<_>>(),
+            proof0
+                .siblings
+                .iter()
+                .map(|s| Fr::from_le_bytes_mod_order(s))
+                .collect::<Vec<_>>(),
+            proof1
+                .siblings
+                .iter()
+                .map(|s| Fr::from_le_bytes_mod_order(s))
+                .collect::<Vec<_>>(),
         ];
 
         let circuit = TransferCircuit::new(
@@ -299,10 +323,14 @@ mod tests {
         let ceremony = setup::setup_transfer().unwrap();
 
         let mut prover = Prover::new();
-        prover.load_transfer_key(&ceremony.proving_key_bytes).unwrap();
+        prover
+            .load_transfer_key(&ceremony.proving_key_bytes)
+            .unwrap();
 
         let mut verifier = Verifier::new();
-        verifier.load_transfer_vk(&ceremony.verification_key_bytes).unwrap();
+        verifier
+            .load_transfer_vk(&ceremony.verification_key_bytes)
+            .unwrap();
 
         let in_values = [500u64, 500u64];
         let out_values = [500u64, 500u64];
@@ -333,15 +361,30 @@ mod tests {
         let proof0 = tree.proof(0).unwrap();
         let proof1 = tree.proof(1).unwrap();
         let merkle_paths = [
-            proof0.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect::<Vec<_>>(),
-            proof1.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect::<Vec<_>>(),
+            proof0
+                .siblings
+                .iter()
+                .map(|s| Fr::from_le_bytes_mod_order(s))
+                .collect::<Vec<_>>(),
+            proof1
+                .siblings
+                .iter()
+                .map(|s| Fr::from_le_bytes_mod_order(s))
+                .collect::<Vec<_>>(),
         ];
 
         let circuit = TransferCircuit::new(
-            merkle_root_fr, nullifiers, out_commitments,
-            in_values, in_blindings, in_serials, sks,
-            merkle_paths, [proof0.path_bits, proof1.path_bits],
-            out_values, out_blindings,
+            merkle_root_fr,
+            nullifiers,
+            out_commitments,
+            in_values,
+            in_blindings,
+            in_serials,
+            sks,
+            merkle_paths,
+            [proof0.path_bits, proof1.path_bits],
+            out_values,
+            out_blindings,
         );
 
         let mut zk_proof = prover.prove_transfer(circuit).unwrap();

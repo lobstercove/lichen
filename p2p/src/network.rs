@@ -12,20 +12,15 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 /// Node role determines connection limits and relay behavior for a 500-validator network.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeRole {
     /// Default: connects to 2-3 relays + some peers, max 20 connections
+    #[default]
     Validator,
     /// High-bandwidth: accepts many connections, re-broadcasts gossip messages
     Relay,
     /// Address book: connects to many peers, shares peer lists
     Seed,
-}
-
-impl Default for NodeRole {
-    fn default() -> Self {
-        NodeRole::Validator
-    }
 }
 
 impl NodeRole {
@@ -56,7 +51,10 @@ impl std::str::FromStr for NodeRole {
             "validator" => Ok(NodeRole::Validator),
             "relay" => Ok(NodeRole::Relay),
             "seed" => Ok(NodeRole::Seed),
-            other => Err(format!("Unknown node role '{}': expected 'validator', 'relay', or 'seed'", other)),
+            other => Err(format!(
+                "Unknown node role '{}': expected 'validator', 'relay', or 'seed'",
+                other
+            )),
         }
     }
 }
@@ -97,7 +95,8 @@ impl Default for P2PConfig {
 impl P2PConfig {
     /// Effective max peers: explicit override or role-based default
     pub fn effective_max_peers(&self) -> usize {
-        self.max_peers.unwrap_or_else(|| self.role.default_max_peers())
+        self.max_peers
+            .unwrap_or_else(|| self.role.default_max_peers())
     }
 }
 
@@ -325,19 +324,19 @@ impl P2PNetwork {
     ) -> Result<(), String> {
         // Relay/Seed nodes re-broadcast gossip messages to all peers except sender.
         // The SeenMessageCache in handle_connection already prevents loops.
-        if self.role == NodeRole::Relay || self.role == NodeRole::Seed {
-            if matches!(
+        if (self.role == NodeRole::Relay || self.role == NodeRole::Seed)
+            && matches!(
                 message.msg_type,
                 MessageType::Block(_)
                     | MessageType::Vote(_)
                     | MessageType::Transaction(_)
                     | MessageType::ValidatorAnnounce { .. }
                     | MessageType::SlashingEvidence(_)
-            ) {
-                self.peer_manager
-                    .broadcast_except(&message, &peer_addr)
-                    .await;
-            }
+            )
+        {
+            self.peer_manager
+                .broadcast_except(&message, &peer_addr)
+                .await;
         }
 
         match message.msg_type {
@@ -758,7 +757,10 @@ mod tests {
 
     #[test]
     fn test_node_role_from_str() {
-        assert_eq!("validator".parse::<NodeRole>().unwrap(), NodeRole::Validator);
+        assert_eq!(
+            "validator".parse::<NodeRole>().unwrap(),
+            NodeRole::Validator
+        );
         assert_eq!("relay".parse::<NodeRole>().unwrap(), NodeRole::Relay);
         assert_eq!("seed".parse::<NodeRole>().unwrap(), NodeRole::Seed);
         assert_eq!("RELAY".parse::<NodeRole>().unwrap(), NodeRole::Relay);

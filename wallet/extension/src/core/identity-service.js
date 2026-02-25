@@ -183,9 +183,11 @@ export async function loadIdentitySnapshot(address, network) {
 
   const rep = Number(profile?.reputation?.score || profile?.identity?.reputation || 0);
   const skills = Array.isArray(profile?.skills) ? profile.skills.length : 0;
+  const identityName = profile?.identity?.name || null;
 
   return {
-    name: moltName || profile?.identity?.name || null,
+    name: identityName,
+    moltName: moltName,
     reputation: rep,
     skills,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,
@@ -207,8 +209,11 @@ export async function loadIdentityDetails(address, network) {
     return null;
   }
 
+  const identityName = profile?.identity?.name || null;
+
   return {
-    name: moltName2 || profile?.identity?.name || null,
+    name: identityName,
+    moltName: moltName2,
     reputation: Number(profile?.reputation?.score || profile?.identity?.reputation || 0),
     agentType: profile?.identity?.agent_type ?? null,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,

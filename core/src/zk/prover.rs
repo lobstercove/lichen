@@ -125,6 +125,5 @@ fn serialize_proof(proof: Proof<Bn254>, proof_type: ProofType) -> ZkProof {
 
 /// Deserialize proof bytes back to a Groth16 proof
 pub fn deserialize_proof(bytes: &[u8]) -> Result<Proof<Bn254>, String> {
-    Proof::<Bn254>::deserialize_compressed(bytes)
-        .map_err(|e| format!("invalid proof bytes: {}", e))
+    Proof::<Bn254>::deserialize_compressed(bytes).map_err(|e| format!("invalid proof bytes: {}", e))
 }

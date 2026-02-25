@@ -95,7 +95,8 @@ fn make_shield_tx(
     };
     let msg = transaction::Message::new(vec![ix], env.genesis_hash);
     let mut tx = Transaction::new(msg);
-    tx.signatures.push(env.alice_kp.sign(&tx.message.serialize()));
+    tx.signatures
+        .push(env.alice_kp.sign(&tx.message.serialize()));
     tx
 }
 
@@ -121,7 +122,8 @@ fn make_unshield_tx(
     };
     let msg = transaction::Message::new(vec![ix], env.genesis_hash);
     let mut tx = Transaction::new(msg);
-    tx.signatures.push(env.alice_kp.sign(&tx.message.serialize()));
+    tx.signatures
+        .push(env.alice_kp.sign(&tx.message.serialize()));
     tx
 }
 
@@ -169,7 +171,12 @@ fn test_shield_then_unshield_full_lifecycle() {
     let shield_proof = prover.prove_shield(shield_circuit).expect("prove shield");
 
     let alice_balance_before = env.state.get_balance(&env.alice).unwrap();
-    let shield_tx = make_shield_tx(&env, shield_amount, &commitment_bytes, &shield_proof.proof_bytes);
+    let shield_tx = make_shield_tx(
+        &env,
+        shield_amount,
+        &commitment_bytes,
+        &shield_proof.proof_bytes,
+    );
     let shield_result = env.processor.process_transaction(&shield_tx, &validator);
     assert!(
         shield_result.success,
@@ -237,7 +244,9 @@ fn test_shield_then_unshield_full_lifecycle() {
         merkle_path,
         proof_path.path_bits,
     );
-    let unshield_proof = prover.prove_unshield(unshield_circuit).expect("prove unshield");
+    let unshield_proof = prover
+        .prove_unshield(unshield_circuit)
+        .expect("prove unshield");
 
     let unshield_tx = make_unshield_tx(
         &env,
@@ -311,13 +320,12 @@ fn test_shield_then_unshield_full_lifecycle() {
     };
     let dupe_msg = transaction::Message::new(vec![dupe_ix], block1_hash);
     let mut unshield_tx2 = Transaction::new(dupe_msg);
-    unshield_tx2.signatures.push(env.alice_kp.sign(&unshield_tx2.message.serialize()));
+    unshield_tx2
+        .signatures
+        .push(env.alice_kp.sign(&unshield_tx2.message.serialize()));
 
     let dupe_result = env.processor.process_transaction(&unshield_tx2, &validator);
-    assert!(
-        !dupe_result.success,
-        "Double-spend should fail"
-    );
+    assert!(!dupe_result.success, "Double-spend should fail");
     // The processor may reject for "nullifier already spent" OR "insufficient
     // shielded pool balance" (since the pool is now empty) — both are correct.
     let err_msg = dupe_result.error.as_ref().unwrap();
@@ -366,10 +374,7 @@ fn test_invalid_proof_bytes_rejected() {
     let tx = make_shield_tx(&env, amount, &commitment_bytes, &garbage_proof);
     let result = env.processor.process_transaction(&tx, &validator);
 
-    assert!(
-        !result.success,
-        "Garbage proof should be rejected"
-    );
+    assert!(!result.success, "Garbage proof should be rejected");
     // The error could be proof deserialization or verification failure
     let err = result.error.unwrap();
     assert!(
@@ -440,11 +445,7 @@ fn test_wrong_merkle_root_rejected() {
 
     assert!(!result.success, "Wrong merkle root should be rejected");
     assert!(
-        result
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("merkle root"),
+        result.error.as_ref().unwrap().contains("merkle root"),
         "Error should mention merkle root: {:?}",
         result.error
     );
@@ -495,8 +496,7 @@ fn test_multiple_shields_maintain_consistent_pool_state() {
         assert!(
             result.success,
             "Shield {} should succeed: {:?}",
-            i,
-            result.error
+            i, result.error
         );
 
         expected_tree.insert(commitment_bytes);
@@ -602,16 +602,9 @@ fn test_shield_insufficient_balance_rejected() {
     let tx = make_shield_tx(&env, huge_amount, &commitment_bytes, &proof.proof_bytes);
     let result = env.processor.process_transaction(&tx, &validator);
 
+    assert!(!result.success, "Shield exceeding balance should fail");
     assert!(
-        !result.success,
-        "Shield exceeding balance should fail"
-    );
-    assert!(
-        result
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("insufficient"),
+        result.error.as_ref().unwrap().contains("insufficient"),
         "Error should mention insufficient balance: {:?}",
         result.error
     );
@@ -657,11 +650,7 @@ fn test_shielded_transfer_short_data_rejected() {
     let result = env.processor.process_transaction(&tx, &validator);
     assert!(!result.success);
     assert!(
-        result
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("insufficient data"),
+        result.error.as_ref().unwrap().contains("insufficient data"),
         "Error should mention insufficient data: {:?}",
         result.error
     );

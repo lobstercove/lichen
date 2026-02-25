@@ -1979,6 +1979,99 @@ const ACHIEVEMENT_NAME_REGISTRAR: u8 = 9;  // Registered a .molt name
 const ACHIEVEMENT_SKILL_MASTER: u8 = 10;   // Added 5+ skills
 const ACHIEVEMENT_SOCIAL: u8 = 11;         // Received 3+ vouches
 const ACHIEVEMENT_FIRST_NAME: u8 = 12;     // Registered first .molt name
+// DEX (13-21) - awarded by processor
+const _ACHIEVEMENT_FIRST_TRADE: u8 = 13;
+const _ACHIEVEMENT_LP_PROVIDER: u8 = 14;
+const _ACHIEVEMENT_LP_WITHDRAWAL: u8 = 15;
+const _ACHIEVEMENT_DEX_USER: u8 = 16;
+const _ACHIEVEMENT_MULTI_HOP: u8 = 17;
+const _ACHIEVEMENT_MARGIN_TRADER: u8 = 18;
+const _ACHIEVEMENT_POSITION_CLOSER: u8 = 19;
+const _ACHIEVEMENT_YIELD_FARMER: u8 = 20;
+const _ACHIEVEMENT_ANALYTICS: u8 = 21;
+// Lending (31-38) - awarded by processor
+const _ACHIEVEMENT_FIRST_LEND: u8 = 31;
+const _ACHIEVEMENT_FIRST_BORROW: u8 = 32;
+const _ACHIEVEMENT_LOAN_REPAID: u8 = 33;
+const _ACHIEVEMENT_LIQUIDATOR: u8 = 34;
+const _ACHIEVEMENT_WITHDRAWAL_EXPERT: u8 = 35;
+const _ACHIEVEMENT_STABLECOIN_MINTER: u8 = 36;
+const _ACHIEVEMENT_STABLECOIN_REDEEMER: u8 = 37;
+const _ACHIEVEMENT_STABLE_SENDER: u8 = 38;
+// Staking (41-48) - awarded by processor
+const _ACHIEVEMENT_FIRST_STAKE: u8 = 41;
+const _ACHIEVEMENT_UNSTAKED: u8 = 42;
+const _ACHIEVEMENT_REEFSTAKE: u8 = 43;
+const _ACHIEVEMENT_LOCKED_STAKER: u8 = 44;
+const _ACHIEVEMENT_DIAMOND_HANDS: u8 = 45;
+const _ACHIEVEMENT_WHALE_STAKER: u8 = 46;
+const _ACHIEVEMENT_REWARD_HARVESTER: u8 = 47;
+const _ACHIEVEMENT_STMOLT_TRANSFER: u8 = 48;
+// Bridge (51-56) - awarded by processor
+const _ACHIEVEMENT_BRIDGE_IN: u8 = 51;
+const _ACHIEVEMENT_BRIDGE_OUT: u8 = 52;
+const _ACHIEVEMENT_BRIDGE_USER: u8 = 53;
+const _ACHIEVEMENT_WRAPPER: u8 = 54;
+const _ACHIEVEMENT_UNWRAPPER: u8 = 55;
+const _ACHIEVEMENT_CROSSCHAIN: u8 = 56;
+// Shield/Privacy (57-60) - awarded by processor
+const _ACHIEVEMENT_PRIVACY_PIONEER: u8 = 57;
+const _ACHIEVEMENT_UNSHIELDED: u8 = 58;
+const _ACHIEVEMENT_SHADOW_SENDER: u8 = 59;
+const _ACHIEVEMENT_ZK_USER: u8 = 60;
+// NFT (63-70) - awarded by processor
+const _ACHIEVEMENT_COLLECTION_CREATOR: u8 = 63;
+const _ACHIEVEMENT_FIRST_MINT: u8 = 64;
+const _ACHIEVEMENT_NFT_TRADER: u8 = 65;
+const _ACHIEVEMENT_FIRST_LISTING: u8 = 66;
+const _ACHIEVEMENT_FIRST_PURCHASE: u8 = 67;
+const _ACHIEVEMENT_BIDDER: u8 = 68;
+const _ACHIEVEMENT_DEAL_MAKER: u8 = 69;
+const _ACHIEVEMENT_PUNK_COLLECTOR: u8 = 70;
+// Governance (71-73) - awarded by processor
+const _ACHIEVEMENT_PROPOSAL_CREATOR: u8 = 71;
+const _ACHIEVEMENT_FIRST_VOTE: u8 = 72;
+const _ACHIEVEMENT_DELEGATOR: u8 = 73;
+// Oracle (81-82) - awarded by processor
+const _ACHIEVEMENT_ORACLE_REPORTER: u8 = 81;
+const _ACHIEVEMENT_ORACLE_USER: u8 = 82;
+// Storage (86-88) - awarded by processor
+const _ACHIEVEMENT_FILE_UPLOADER: u8 = 86;
+const _ACHIEVEMENT_DATA_RETRIEVER: u8 = 87;
+const _ACHIEVEMENT_STORAGE_USER: u8 = 88;
+// Marketplace/Auction (91-93) - awarded by processor
+const _ACHIEVEMENT_AUCTIONEER: u8 = 91;
+const _ACHIEVEMENT_AUCTION_BIDDER: u8 = 92;
+const _ACHIEVEMENT_AUCTION_WINNER: u8 = 93;
+// Bounty (96-98) - awarded by processor
+const _ACHIEVEMENT_BOUNTY_POSTER: u8 = 96;
+const _ACHIEVEMENT_BOUNTY_HUNTER: u8 = 97;
+const _ACHIEVEMENT_BOUNTY_JUDGE: u8 = 98;
+// Prediction (101-104) - awarded by processor
+const _ACHIEVEMENT_MARKET_MAKER: u8 = 101;
+const _ACHIEVEMENT_FIRST_PREDICTION: u8 = 102;
+const _ACHIEVEMENT_ORACLE_RESOLVER: u8 = 103;
+const _ACHIEVEMENT_PREDICTION_WINNER: u8 = 104;
+// General milestones (106-124) - awarded by processor
+const _ACHIEVEMENT_BIG_SPENDER: u8 = 106;
+const _ACHIEVEMENT_WHALE_TRANSFER: u8 = 107;
+const _ACHIEVEMENT_EVM_CONNECTED: u8 = 108;
+const _ACHIEVEMENT_IDENTITY_CREATED: u8 = 109;
+const _ACHIEVEMENT_PROFILE_CUSTOMIZER: u8 = 110;
+const _ACHIEVEMENT_VOUCHER: u8 = 111;
+const _ACHIEVEMENT_AGENT_CREATOR: u8 = 112;
+const _ACHIEVEMENT_COMPUTE_PROVIDER: u8 = 113;
+const _ACHIEVEMENT_COMPUTE_CONSUMER: u8 = 114;
+const _ACHIEVEMENT_PAYMENT_CREATOR: u8 = 115;
+const _ACHIEVEMENT_FIRST_PAYMENT: u8 = 116;
+const _ACHIEVEMENT_SUBSCRIPTION_CREATOR: u8 = 117;
+const _ACHIEVEMENT_TOKEN_LAUNCHER: u8 = 118;
+const _ACHIEVEMENT_EARLY_BUYER: u8 = 119;
+const _ACHIEVEMENT_TOKEN_SELLER: u8 = 120;
+const _ACHIEVEMENT_VAULT_DEPOSITOR: u8 = 121;
+const _ACHIEVEMENT_VAULT_WITHDRAWER: u8 = 122;
+const _ACHIEVEMENT_TOKEN_CONTRACT_USER: u8 = 123;
+const _ACHIEVEMENT_CONTRACT_INTERACTOR: u8 = 124;
 
 /// Check and award achievements based on reputation milestones
 fn check_achievements(target: &[u8], reputation: u64) {
@@ -2015,14 +2108,21 @@ fn check_achievements_full(target: &[u8], reputation: u64, skill_count: u8, vouc
     }
 }
 
+/// Build achievement storage key: ach:{hex}:{zero_padded_id}
+/// Uses {:02} formatting to match processor/RPC (2 digits for <100, 3 for 100+)
+fn ach_storage_key(hex: &[u8; 64], achievement_id: u8) -> Vec<u8> {
+    let id_str = alloc::format!("{:02}", achievement_id);
+    let mut key = Vec::with_capacity(5 + 64 + 1 + id_str.len());
+    key.extend_from_slice(b"ach:");
+    key.extend_from_slice(hex);
+    key.push(b':');
+    key.extend_from_slice(id_str.as_bytes());
+    key
+}
+
 /// Award an achievement if not already earned
 fn award_achievement(target: &[u8], hex: &[u8; 64], achievement_id: u8, name: &str) {
-    let mut ach_key = Vec::with_capacity(5 + 64 + 4);
-    ach_key.extend_from_slice(b"ach:");
-    ach_key.extend_from_slice(hex);
-    ach_key.push(b':');
-    ach_key.push(b'0' + (achievement_id / 10));
-    ach_key.push(b'0' + (achievement_id % 10));
+    let ach_key = ach_storage_key(hex, achievement_id);
 
     if storage_get(&ach_key).is_some() {
         return; // Already earned
@@ -2109,13 +2209,8 @@ pub extern "C" fn get_achievements(pubkey_ptr: *const u8) -> u32 {
     result.extend_from_slice(&u64_to_bytes(count));
 
     // Collect all achievements
-    for id in 1..=8u8 {
-        let mut ach_key = Vec::with_capacity(5 + 64 + 4);
-        ach_key.extend_from_slice(b"ach:");
-        ach_key.extend_from_slice(&hex);
-        ach_key.push(b':');
-        ach_key.push(b'0' + (id / 10));
-        ach_key.push(b'0' + (id % 10));
+    for id in 1..=128u8 {
+        let ach_key = ach_storage_key(&hex, id);
 
         if let Some(data) = storage_get(&ach_key) {
             result.extend_from_slice(&data);
