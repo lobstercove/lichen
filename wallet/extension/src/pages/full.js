@@ -491,6 +491,7 @@ function setupDashboardTabs() {
       if (name === 'nfts') loadNftsTab();
       if (name === 'identity') loadIdentityTab();
       if (name === 'staking') loadStakingTab();
+      if (name === 'shield') loadShieldTab();
     });
   });
 }
@@ -665,7 +666,7 @@ async function loadStakingTab() {
     const remainingDays = isLocked ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
 
     const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
-    const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
+    const tierMultipliers = ['1.0x', '1.1x', '1.25x', '1.5x'];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
     const poolTiers = poolInfo?.tiers || [];
 
@@ -700,10 +701,14 @@ async function loadStakingTab() {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.75rem;margin-bottom:1.5rem;">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem;margin-bottom:1.5rem;">
         <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Your Tier</div>
           <div style="font-weight:600;color:#a78bfa;">${lockTier}</div>
+        </div>
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.7rem;color:var(--text-muted);">Multiplier</div>
+          <div style="font-weight:600;color:var(--text);">${multiplier}x</div>
         </div>
         <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Total Pool</div>
@@ -713,12 +718,13 @@ async function loadStakingTab() {
 
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.5rem;" id="fullTiersGrid">
         ${tierNames.map((name, i) => {
-          const isActive = lockTier === name || (i === 0 && lockTier === 'Flexible');
+          const isActive = lockTier === name && stMolt > 0;
           const apyVal = poolTiers[i]?.apy_percent;
           const apyLabel = apyVal != null && apyVal > 0 ? apyVal.toFixed(1) + '% APY' : tierMultipliers[i] + ' rewards';
           return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
             <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${name}</div>
             <div style="font-size:0.72rem;color:var(--text-muted);">${apyLabel}</div>
+            ${isActive ? '<div style="font-size:0.65rem;color:#10b981;margin-top:0.25rem;"><i class="fas fa-check-circle"></i> Active</div>' : ''}
           </div>`;
         }).join('')}
       </div>
@@ -798,9 +804,9 @@ async function showStakeModal() {
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
         <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
-        <option value="1">30-Day Lock — 1.5x rewards</option>
-        <option value="2">90-Day Lock — 2x rewards</option>
-        <option value="3">365-Day Lock — 3x rewards</option>
+        <option value="1">30-Day Lock — 1.1x rewards</option>
+        <option value="2">90-Day Lock — 1.25x rewards</option>
+        <option value="3">365-Day Lock — 1.5x rewards</option>
       </select>
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="stakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
@@ -911,6 +917,215 @@ async function handleFullClaim() {
   } catch (err) {
     alert('Claim failed: ' + err.message);
   }
+}
+
+  if (!wallet) return;
+  const password = prompt('Enter wallet password to claim unstake:');
+  if (!password) return;
+  try {
+    await claimReefStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
+    alert('Claim successful!');
+    loadStakingTab();
+  } catch (err) {
+    alert('Claim failed: ' + err.message);
+  }
+}
+
+// ──────────────────────────────────────────
+// Shield (ZK Privacy) Tab
+// ──────────────────────────────────────────
+let _shieldedState = { balance: 0, address: null, notes: [], poolStats: null };
+
+async function loadShieldTab() {
+  const wallet = getActiveWallet();
+  const container = $('shieldContent');
+  if (!wallet || !container) return;
+
+  const rpcClient = rpc();
+
+  // Fetch pool stats + shielded balance
+  let poolStats = null;
+  try {
+    const res = await rpcClient.call('getShieldedPoolStats', []);
+    poolStats = res || null;
+  } catch (_) {}
+
+  let shieldedBalance = 0;
+  let ownedNotes = [];
+  let shieldedAddress = _shieldedState.address || 'Derived on first shield operation';
+  try {
+    const addr = wallet.address;
+    const notesRes = await rpcClient.call('getShieldedNotes', [addr]);
+    if (Array.isArray(notesRes)) {
+      ownedNotes = notesRes;
+      shieldedBalance = notesRes.filter(n => !n.spent).reduce((s, n) => s + Number(n.value || 0), 0);
+    }
+  } catch (_) {}
+
+  _shieldedState = { balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
+
+  const balMolt = (shieldedBalance / 1_000_000_000).toFixed(4);
+  const poolMolt = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';
+  const commitCount = poolStats ? (poolStats.commitment_count || poolStats.commitmentCount || 0).toLocaleString() : '—';
+  const unspent = ownedNotes.filter(n => !n.spent);
+
+  const notesHtml = unspent.length > 0
+    ? unspent.map(n => `
+        <div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} MOLT</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index || '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
+          </div>
+          <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="fas fa-check-circle"></i> Unspent</span>
+        </div>`).join('')
+    : `<div style="text-align:center;padding:1.5rem;color:var(--text-muted);">
+        <i class="fas fa-shield-alt" style="font-size:1.5rem;opacity:0.4;display:block;margin-bottom:0.5rem;"></i>
+        <p style="margin:0 0 0.25rem;">No shielded notes yet</p>
+        <p style="margin:0;font-size:0.8rem;">Shield MOLT to create your first private note</p>
+      </div>`;
+
+  container.innerHTML = `
+    <div style="background:linear-gradient(135deg,rgba(16,185,129,0.1),rgba(5,150,105,0.08));padding:1.5rem;border-radius:12px;margin-bottom:1.5rem;border:1px solid rgba(16,185,129,0.12);">
+      <h3 style="margin:0 0 0.5rem 0;display:flex;align-items:center;gap:0.5rem;">
+        <i class="fas fa-user-shield" style="color:#10b981;"></i> Zero-Knowledge Privacy
+        <span style="font-size:0.65rem;background:rgba(16,185,129,0.15);color:#10b981;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">Groth16/BN254</span>
+      </h3>
+      <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
+    </div>
+
+    <div style="background:var(--card-bg);padding:1.25rem;border-radius:12px;border:1px solid var(--border);margin-bottom:1.25rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+        <div>
+          <div style="font-size:0.75rem;color:var(--text-muted);">Shielded Balance</div>
+          <div style="font-size:1.4rem;font-weight:700;color:var(--text);">${balMolt} MOLT</div>
+          <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} shells</div>
+        </div>
+        <div style="display:flex;gap:0.5rem;">
+          <button class="btn btn-small btn-primary" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
+          <button class="btn btn-small btn-secondary" id="extUnshieldBtn"><i class="fas fa-arrow-up"></i> Unshield</button>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="extPrivateTransferBtn" style="width:100%;padding:0.75rem;">
+        <i class="fas fa-paper-plane"></i> Private Transfer
+      </button>
+    </div>
+
+    <div style="background:var(--card-bg);padding:1rem;border-radius:12px;border:1px solid var(--border);margin-bottom:1.25rem;">
+      <h4 style="margin:0 0 0.75rem;font-size:0.9rem;"><i class="fas fa-key" style="color:var(--text-muted);"></i> Shielded Keys</h4>
+      <div style="margin-bottom:0.5rem;">
+        <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:0.15rem;">Shielded Address</div>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <code style="font-size:0.75rem;word-break:break-all;flex:1;" id="extShieldedAddr">${escapeHtmlExt(String(shieldedAddress))}</code>
+          <button class="btn-icon" id="extCopyShieldAddr" title="Copy"><i class="fas fa-copy"></i></button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:0.15rem;">Viewing Key</div>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <code style="font-size:0.75rem;flex:1;">Share with auditors for selective disclosure</code>
+          <button class="btn-icon" id="extCopyViewKey" title="Copy"><i class="fas fa-eye"></i></button>
+        </div>
+      </div>
+      <div style="margin-top:0.75rem;padding:0.6rem;background:rgba(59,130,246,0.06);border-radius:8px;font-size:0.75rem;color:var(--text-muted);">
+        <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
+        Your spending key never leaves this device. Viewing key enables auditors to see your shielded activity without spending.
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1.25rem;">
+      <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+        <div style="font-size:0.7rem;color:var(--text-muted);">Total Shielded</div>
+        <div style="font-weight:600;color:var(--text);">${poolMolt} MOLT</div>
+      </div>
+      <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+        <div style="font-size:0.7rem;color:var(--text-muted);">Commitments</div>
+        <div style="font-weight:600;color:var(--text);">${commitCount}</div>
+      </div>
+    </div>
+
+    <div style="background:var(--card-bg);padding:1rem;border-radius:12px;border:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+        <h4 style="margin:0;font-size:0.9rem;"><i class="fas fa-file-invoice" style="color:var(--text-muted);"></i> Shielded Notes</h4>
+        <span style="font-size:0.75rem;color:var(--text-muted);">${unspent.length} unspent / ${ownedNotes.length} total</span>
+      </div>
+      ${notesHtml}
+    </div>
+  `;
+
+  // Wire buttons
+  $('extShieldBtn')?.addEventListener('click', () => showShieldModal('shield'));
+  $('extUnshieldBtn')?.addEventListener('click', () => showShieldModal('unshield'));
+  $('extPrivateTransferBtn')?.addEventListener('click', () => showShieldModal('transfer'));
+  $('extCopyShieldAddr')?.addEventListener('click', () => {
+    if (_shieldedState.address) { navigator.clipboard.writeText(_shieldedState.address); showToast('Shielded address copied', 'success'); }
+  });
+  $('extCopyViewKey')?.addEventListener('click', () => {
+    showToast('Viewing key will be available after first shield operation', 'info');
+  });
+}
+
+function showShieldModal(type) {
+  const titles = { shield: 'Shield MOLT', unshield: 'Unshield MOLT', transfer: 'Private Transfer' };
+  const icons = { shield: 'fa-arrow-down', unshield: 'fa-arrow-up', transfer: 'fa-paper-plane' };
+
+  const extraField = type === 'unshield'
+    ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Address</label>
+       <input type="text" id="shieldModalRecipient" placeholder="Base58 address" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+    : type === 'transfer'
+    ? `<label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Recipient Viewing Key</label>
+       <input type="text" id="shieldModalRecipient" placeholder="64-char hex viewing key" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">`
+    : '';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;';
+  overlay.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
+      <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (MOLT)</label>
+      <input type="number" id="shieldModalAmount" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      ${extraField}
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
+      <input type="password" id="shieldModalPassword" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
+      <div style="display:flex;gap:0.75rem;">
+        <button id="shieldModalConfirm" class="btn btn-primary" style="flex:1;padding:0.75rem;">${titles[type]}</button>
+        <button id="shieldModalCancel" class="btn btn-secondary" style="flex:1;padding:0.75rem;">Cancel</button>
+      </div>
+      <div id="shieldModalStatus" style="margin-top:0.75rem;font-size:0.85rem;text-align:center;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#shieldModalCancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#shieldModalConfirm').addEventListener('click', async () => {
+    const amount = parseFloat(overlay.querySelector('#shieldModalAmount').value);
+    const password = overlay.querySelector('#shieldModalPassword').value;
+    const recipient = overlay.querySelector('#shieldModalRecipient')?.value?.trim() || '';
+    const statusEl = overlay.querySelector('#shieldModalStatus');
+
+    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    if (!password) { statusEl.textContent = 'Password required'; return; }
+    if (type !== 'shield' && !recipient) { statusEl.textContent = 'Recipient required'; return; }
+
+    statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting...';
+    try {
+      const wallet = getActiveWallet();
+      const net = state.network?.selected || 'local-testnet';
+      const txType = type === 'shield' ? 16 : type === 'unshield' ? 17 : 18;
+      // Build shielded transaction via RPC
+      const result = await rpc().call('sendShieldedTransaction', [{
+        type: txType,
+        from: wallet.address,
+        amount: Math.round(amount * 1e9),
+        recipient: recipient || undefined,
+        password
+      }]);
+      statusEl.innerHTML = '<i class="fas fa-check-circle" style="color:#10b981;"></i> ' + (result?.message || 'Transaction submitted');
+      setTimeout(() => { overlay.remove(); loadShieldTab(); }, 1500);
+    } catch (err) {
+      statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color:#ef4444;"></i> ' + escapeHtmlExt(err.message);
+    }
+  });
 }
 
 async function loadIdentityTab() {
@@ -1464,6 +1679,16 @@ async function loadActivity(reset = true) {
         'Reward': 'Reward',
         'GenesisTransfer': 'Genesis Transfer',
         'GenesisMint': 'Genesis Mint',
+        'ReefStakeDeposit': 'Staked (ReefStake)',
+        'ReefStakeUnstake': 'Unstake Requested',
+        'ReefStakeClaim': 'Claimed Unstake',
+        'ReefStakeTransfer': 'ReefStake Transfer',
+        'DeployContract': 'Deploy Contract',
+        'SetContractABI': 'Set Contract ABI',
+        'FaucetAirdrop': 'Faucet Airdrop',
+        'RegisterSymbol': 'Register Symbol',
+        'CreateAccount': 'Create Account',
+        'GrantRepay': 'Grant Repay',
       };
       const type = typeMap[tx.type] || (isSend ? 'Sent' : 'Received');
 
@@ -1472,16 +1697,18 @@ async function loadActivity(reset = true) {
       let color = isSend ? '#ff6b35' : '#4ade80';
       let sign = isSend ? '-' : '+';
 
-      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake' || tx.type === 'ReefStakeDeposit' || tx.type === 'ReefStakeUnstake' || tx.type === 'ReefStakeClaim' || tx.type === 'ReefStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
-      } else if (tx.type === 'RegisterEvmAddress') {
+      } else if (tx.type === 'RegisterEvmAddress' || tx.type === 'RegisterSymbol' || tx.type === 'SetContractABI') {
         icon = 'fa-link'; color = '#94a3b8';
-      } else if (tx.type === 'Contract') {
+      } else if (tx.type === 'Contract' || tx.type === 'DeployContract') {
         icon = 'fa-file-code'; color = '#f59e0b';
-      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
+      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint' || tx.type === 'GrantRepay') {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
-      } else if (tx.type === 'Airdrop') {
-        icon = 'fa-parachute-box'; color = '#60a5fa';
+      } else if (tx.type === 'Airdrop' || tx.type === 'FaucetAirdrop') {
+        icon = 'fa-parachute-box'; color = '#60a5fa'; sign = '+';
+      } else if (tx.type === 'CreateAccount') {
+        icon = 'fa-user-plus'; color = '#94a3b8';
       }
 
       const address = isSend ? (tx.to || '') : (tx.from || '');

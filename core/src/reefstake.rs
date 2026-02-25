@@ -170,9 +170,9 @@ impl StMoltToken {
 pub enum LockTier {
     #[default]
     Flexible = 0, // No lock, 7-day unstake cooldown, 1.0x multiplier
-    Lock30 = 1,  // 30-day lock, 1.5x multiplier
-    Lock90 = 2,  // 90-day lock, 2.0x multiplier
-    Lock365 = 3, // 365-day lock, 3.0x multiplier
+    Lock30 = 1,  // 30-day lock, 1.1x multiplier
+    Lock90 = 2,  // 90-day lock, 1.25x multiplier
+    Lock365 = 3, // 365-day lock, 1.5x multiplier
 }
 
 impl LockTier {
@@ -190,9 +190,9 @@ impl LockTier {
     pub fn reward_multiplier_bp(&self) -> u64 {
         match self {
             Self::Flexible => 10_000, // 1.0x
-            Self::Lock30 => 15_000,   // 1.5x
-            Self::Lock90 => 20_000,   // 2.0x
-            Self::Lock365 => 30_000,  // 3.0x
+            Self::Lock30 => 11_000,   // 1.1x
+            Self::Lock90 => 12_500,   // 1.25x
+            Self::Lock365 => 15_000,  // 1.5x
         }
     }
 

@@ -738,7 +738,7 @@ function renderAchievementsSection(achievements, achievedIds) {
     }).join('');
 
     return `
-        <div class="id-section">
+        <div class="id-section id-section-full">
             <div class="id-section-head">
                 <span><i class="fas fa-award"></i> Achievements</span>
                 <span class="id-section-counter">${achievements.length}/${ACHIEVEMENT_DEFS.length}</span>
@@ -802,20 +802,25 @@ async function getCurrentSlot() {
 }
 
 function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
-    const SLOTS_PER_SEC = 2;
-    if (!currentSlot || currentSlot <= 0) {
-        // Fallback: just show relative years from registration
-        const totalSlots = expirySlot - (registeredSlot || 0);
-        const years = Math.max(1, Math.round(totalSlots / 63_072_000));
-        return `~${years}yr from registration`;
+    const slot = Number(expirySlot || 0);
+    if (!slot) return 'Unknown';
+
+    const regSlot = Number(registeredSlot || 0);
+    const durationSlots = slot - regSlot;
+    const durationYears = Math.max(1, Math.round(durationSlots / SLOTS_PER_YEAR));
+
+    // Use chain's current slot for accurate date calculation
+    const curSlot = currentSlot || _cachedCurrentSlot;
+    if (curSlot && curSlot > 0) {
+        const remainingSlots = slot - curSlot;
+        const remainingMs = remainingSlots * MS_PER_SLOT;
+        const approxDate = new Date(Date.now() + remainingMs);
+        const dateStr = approxDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+        return `${dateStr} (~${durationYears}yr)`;
     }
-    const secsUntil = (expirySlot - currentSlot) / SLOTS_PER_SEC;
-    const now = Date.now() / 1000;
-    const expiryDate = new Date((now + secsUntil) * 1000);
-    const monthYear = expiryDate.toLocaleString(undefined, { month: 'short', year: 'numeric' });
-    const totalSlots = expirySlot - (registeredSlot || 0);
-    const years = Math.max(1, Math.round(totalSlots / 63_072_000));
-    return `${monthYear} (~${years}yr)`;
+
+    // Fallback: show relative duration only
+    return `~${durationYears}yr from registration`;
 }
 
 // ============================================================================
