@@ -364,6 +364,9 @@
                     <button class="dashboard-tab" data-tab="staking">
                         <i class="fas fa-layer-group"></i> Staking
                     </button>
+                    <button class="dashboard-tab" data-tab="shield">
+                        <i class="fas fa-shield-alt"></i> Shield
+                    </button>
                     <button class="dashboard-tab" data-tab="identity">
                         <i class="fas fa-fingerprint"></i> Identity
                     </button>
@@ -381,7 +384,7 @@
                 <div class="tab-content" data-tab="nfts">
                     <div class="nft-banner" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(147, 51, 234, 0.06)); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; border: 1px solid rgba(168, 85, 247, 0.12);">
                         <h3 style="margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem;">
-                            <i class="fas fa-gem" style="color: #a855f7;"></i></i>
+                            <i class="fas fa-gem" style="color: #a855f7;"></i>
                             NFT Collection
                         </h3>
                         <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Collect, trade, and showcase your digital collectibles on MoltChain.</p>
@@ -412,6 +415,12 @@
 
                 <div class="tab-content" data-tab="staking">
                     <div id="stakingValidatorInfo" style="display: none;"></div>
+                </div>
+
+                <div class="tab-content" data-tab="shield">
+                    <div id="shieldContent">
+                        <!-- ZK Shield loaded dynamically -->
+                    </div>
                 </div>
 
                 <div class="tab-content" data-tab="identity">

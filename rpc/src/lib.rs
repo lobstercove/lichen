@@ -9228,9 +9228,9 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         "total_stakers": pool.positions.len(),
         "tiers": [
             { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": apy_percent },
-            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.5, "apy_percent": apy_percent * 1.5 },
-            { "id": 2, "name": "90-Day Lock", "lock_days": 90, "multiplier": 2.0, "apy_percent": apy_percent * 2.0 },
-            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 3.0, "apy_percent": apy_percent * 3.0 },
+            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.1, "apy_percent": apy_percent * 1.1 },
+            { "id": 2, "name": "90-Day Lock", "lock_days": 90, "multiplier": 1.25, "apy_percent": apy_percent * 1.25 },
+            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 1.5, "apy_percent": apy_percent * 1.5 },
         ],
         "cooldown_days": 7
     }))

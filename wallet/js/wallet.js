@@ -1830,16 +1830,13 @@ async function loadReefStakePosition(address) {
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
                 const isActive = position.lock_tier === t.id && position.st_molt_amount > 0;
                 const apyStr = (t.apy_percent || 0).toFixed(1);
-                const apyDisplay = poolInfo.total_molt_staked > 0
-                    ? `${apyStr}%`
-                    : `~${[5.0, 7.5, 10.0, 15.0][i]}%`;
-                const apyNote = poolInfo.total_molt_staked > 0
-                    ? ''
-                    : ' <span class="staking-tier-est">(est.)</span>';
+                const apyDisplay = poolInfo.total_molt_staked > 0 && t.apy_percent > 0
+                    ? `${apyStr}% APY`
+                    : `${t.multiplier}x rewards`;
                 return `
                     <div class="staking-tier-card ${tierColorClasses[i]} ${isActive ? 'staking-tier-active' : ''}">
                         <div class="staking-tier-name">${t.name}</div>
-                        <div class="staking-tier-apy">${apyDisplay}${apyNote} <span class="staking-tier-apy-label">APY</span></div>
+                        <div class="staking-tier-apy">${apyDisplay}</div>
                         <div class="staking-tier-meta">
                             ${t.lock_days > 0 ? t.lock_days + '-day lock' : '7-day cooldown'}
                             &middot; ${t.multiplier}x rewards
@@ -1891,9 +1888,9 @@ async function showReefStakeModal() {
         message: `Enter the amount of MOLT to stake, choose a lock tier, and sign with your password.
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
                 <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
-                <strong>30-Day Lock:</strong> 1.5x rewards<br>
-                <strong>90-Day Lock:</strong> 2x rewards<br>
-                <strong>365-Day Lock:</strong> 3x rewards
+                <strong>30-Day Lock:</strong> 1.1x rewards<br>
+                <strong>90-Day Lock:</strong> 1.25x rewards<br>
+                <strong>365-Day Lock:</strong> 1.5x rewards
             </div>`,
         icon: 'fas fa-layer-group',
         confirmText: 'Stake MOLT',
@@ -1902,9 +1899,9 @@ async function showReefStakeModal() {
             { id: 'lockTier', label: 'Lock Tier', type: 'select',
               options: [
                   { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
-                  { value: '1', label: '30-Day Lock — 1.5x rewards' },
-                  { value: '2', label: '90-Day Lock — 2x rewards' },
-                  { value: '3', label: '365-Day Lock — 3x rewards' },
+                  { value: '1', label: '30-Day Lock — 1.1x rewards' },
+                  { value: '2', label: '90-Day Lock — 1.25x rewards' },
+                  { value: '3', label: '365-Day Lock — 1.5x rewards' },
               ]},
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
@@ -3994,6 +3991,14 @@ showSettings = function() {
 
     let currentBlock = 0;
 
+    function isWsHealthy() {
+        return Boolean(
+            balanceWs &&
+            balanceWs.readyState === WebSocket.OPEN &&
+            balanceWsSubId !== null
+        );
+    }
+
     async function pollBlock() {
         const t0 = performance.now();
         try {
@@ -4004,9 +4009,17 @@ showSettings = function() {
             if (latEl) latEl.textContent = ms + ' ms';
             if (dotEl) dotEl.classList.add('connected');
         } catch {
-            blockEl.textContent = 'Reconnecting\u2026';
-            if (latEl) latEl.textContent = '';
-            if (dotEl) dotEl.classList.remove('connected');
+            if (isWsHealthy()) {
+                blockEl.textContent = currentBlock > 0
+                    ? 'Block #' + currentBlock.toLocaleString() + ' (WS live)'
+                    : 'Connected (WS live)';
+                if (latEl) latEl.textContent = '';
+                if (dotEl) dotEl.classList.add('connected');
+            } else {
+                blockEl.textContent = 'Reconnecting\u2026';
+                if (latEl) latEl.textContent = '';
+                if (dotEl) dotEl.classList.remove('connected');
+            }
         }
     }
 
