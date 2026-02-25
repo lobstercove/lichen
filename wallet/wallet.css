@@ -1564,13 +1564,13 @@
 .tab-banner.staking .tab-banner-icon { background: rgba(59, 130, 246, 0.15); }
 .tab-banner.staking .tab-banner-icon i { color: #3b82f6; }
 
-.tab-banner.validator { background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(79, 70, 229, 0.10)); border-color: rgba(139, 92, 246, 0.18); }
-.tab-banner.validator .tab-banner-icon { background: rgba(139, 92, 246, 0.15); }
-.tab-banner.validator .tab-banner-icon i { color: var(--accent, #f77f00); }
+.tab-banner.validator { background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(217, 119, 6, 0.10)); border-color: rgba(245, 158, 11, 0.18); }
+.tab-banner.validator .tab-banner-icon { background: rgba(245, 158, 11, 0.15); }
+.tab-banner.validator .tab-banner-icon i { color: #f59e0b; }
 
-.tab-banner.shield  { background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12)); border-color: rgba(168, 85, 247, 0.2); }
-.tab-banner.shield .tab-banner-icon { background: rgba(168, 85, 247, 0.15); }
-.tab-banner.shield .tab-banner-icon i { color: #a855f7; }
+.tab-banner.shield  { background: linear-gradient(135deg, rgba(20, 184, 166, 0.12), rgba(13, 148, 136, 0.10)); border-color: rgba(20, 184, 166, 0.18); }
+.tab-banner.shield .tab-banner-icon { background: rgba(20, 184, 166, 0.15); }
+.tab-banner.shield .tab-banner-icon i { color: #14b8a6; }
 
 /* ── Staking UI Classes ── */
 .staking-stats-grid {

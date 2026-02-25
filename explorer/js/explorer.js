@@ -136,38 +136,43 @@ class MoltChainWS {
         this.url = url;
         this.ws = null;
         this.reconnectDelay = 1000;
+        this.reconnectTimer = null;
+        this.keepaliveTimer = null;
         this.nextId = 1;
         this.pending = new Map();
         this.subscriptions = new Map();
         this.desired = [];
         this.openHandlers = [];
         this.closeHandlers = [];
+        this._closing = false;
     }
     
     connect() {
+        if (this._closing) return;
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
             return;
         }
 
-        // Clear any existing keepalive interval
-        if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
 
         try {
             this.ws = new WebSocket(this.url);
 
             this.ws.onopen = () => {
-                // console.log('WebSocket connected');
                 this.reconnectDelay = 1000;
                 this.subscriptions.clear();
                 this.resubscribeAll();
                 this.openHandlers.forEach((handler) => handler());
-                // Client-side keepalive: send a tiny message every 20s
-                // to prevent idle-timeout disconnects
-                this._keepalive = setInterval(() => {
+                // Client-side keepalive ping every 25s
+                if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+                this.keepaliveTimer = setInterval(() => {
                     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                        try { this.ws.send('{"method":"ping"}'); } catch(_) {}
+                        this.ws.send(JSON.stringify({ method: 'ping' }));
                     }
-                }, 20000);
+                }, 25000);
             };
 
             this.ws.onmessage = (event) => {
@@ -204,15 +209,24 @@ class MoltChainWS {
             };
 
             this.ws.onclose = () => {
-                // console.log('WebSocket closed, reconnecting...');
-                if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
+                this.ws = null;
+                if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
                 this.closeHandlers.forEach((handler) => handler());
-                setTimeout(() => this.connect(), this.reconnectDelay);
-                this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 5000);
+                if (this._closing) return;
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, this.reconnectDelay);
+                this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
             };
         } catch (error) {
             console.error('WebSocket connection failed:', error);
-            setTimeout(() => this.connect(), this.reconnectDelay);
+            if (!this._closing) {
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, this.reconnectDelay);
+            }
         }
     }
     
@@ -276,6 +290,23 @@ class MoltChainWS {
 
         return Promise.resolve(null);
     }
+
+    close() {
+        this._closing = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.close();
+            this.ws = null;
+        }
+        this.pending.forEach(({ reject }) => reject(new Error('WebSocket closed')));
+        this.pending.clear();
+        this.subscriptions.clear();
+        this.desired = [];
+    }
 }
 
 let ws;
@@ -300,6 +331,9 @@ function setExplorerNetwork(name, options = {}) {
     RPC_URL = config.rpc;
     WS_URL = config.ws;
     rpc = new MoltChainRPC(RPC_URL);
+    if (ws && typeof ws.close === 'function') {
+        ws.close();
+    }
     ws = WS_URL ? new MoltChainWS(WS_URL) : undefined;
 
     if (reload) {
@@ -424,16 +458,27 @@ async function navigateExplorerSearch(query) {
     const value = String(query || '').trim();
     if (!value) return;
 
+    const encoded = encodeURIComponent(value);
+
     if (/^\d+$/.test(value)) {
-        window.location.href = `block.html?slot=${value}`;
+        window.location.href = `block.html?slot=${encoded}`;
         return;
     }
     if (/^[0-9a-fA-F]{64}$/.test(value)) {
-        window.location.href = `transaction.html?sig=${value}`;
+        window.location.href = `transaction.html?sig=${encoded}`;
         return;
     }
-    if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/i.test(value)) {
-        window.location.href = `address.html?address=${value}`;
+    const isAddressLike = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/i.test(value);
+    if (isAddressLike) {
+        try {
+            const contractInfo = await rpc.getContractInfo(value);
+            if (contractInfo) {
+                window.location.href = `contract.html?address=${encoded}`;
+                return;
+            }
+        } catch (_) { /* fallback below */ }
+
+        window.location.href = `address.html?address=${encoded}`;
         return;
     }
 
@@ -445,7 +490,7 @@ async function navigateExplorerSearch(query) {
                 const resolved = await rpc.call('resolveMoltName', [label]);
                 const owner = resolved?.owner || resolved?.address || null;
                 if (owner) {
-                    window.location.href = `address.html?address=${owner}`;
+                    window.location.href = `address.html?address=${encodeURIComponent(owner)}`;
                     return;
                 }
             } catch (_) { /* fallback below */ }
@@ -455,12 +500,12 @@ async function navigateExplorerSearch(query) {
     try {
         const symbol = await rpc.call('getSymbolRegistry', [value.toUpperCase()]);
         if (symbol && symbol.program) {
-            window.location.href = `address.html?address=${symbol.program}`;
+            window.location.href = `contract.html?address=${encodeURIComponent(symbol.program)}`;
             return;
         }
     } catch (_) { /* fallback below */ }
 
-    window.location.href = `address.html?address=${value}`;
+    window.location.href = `address.html?address=${encoded}`;
 }
 
 window.navigateExplorerSearch = navigateExplorerSearch;
@@ -835,7 +880,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateDashboardStats();
                     updateLatestTransactions();
                     // Force-close so onclose fires and triggers reconnect + resubscribe
-                    try { ws.ws.close(); } catch (_) {}
+                    try { if (ws && ws.ws) ws.ws.close(); } catch (_) {}
                 }
             }
         }, WS_STALE_THRESHOLD);
