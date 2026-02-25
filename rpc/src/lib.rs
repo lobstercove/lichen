@@ -87,7 +87,9 @@ fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Err
         ))),
     }
 }
-use moltchain_core::consensus::{decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
+use moltchain_core::consensus::{
+    decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -1324,6 +1326,7 @@ async fn handle_rpc(
         "searchMoltNames" => handle_search_molt_names(&state, req.params).await,
         "getMoltyIdAgentDirectory" => handle_get_moltyid_agent_directory(&state, req.params).await,
         "getMoltyIdStats" => handle_get_moltyid_stats(&state).await,
+        "getNameAuction" => handle_get_name_auction(&state, req.params).await,
 
         // EVM address registry
         "getEvmRegistration" => handle_get_evm_registration(&state, req.params).await,
@@ -1394,11 +1397,19 @@ async fn handle_rpc(
         "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
 
         // ── Shielded Pool (ZK Privacy) ──────────────────────────────
-        "getShieldedPoolState" => shielded::handle_get_shielded_pool_state(&state, req.params).await,
-        "getShieldedMerkleRoot" => shielded::handle_get_shielded_merkle_root(&state, req.params).await,
-        "getShieldedMerklePath" => shielded::handle_get_shielded_merkle_path(&state, req.params).await,
+        "getShieldedPoolState" => {
+            shielded::handle_get_shielded_pool_state(&state, req.params).await
+        }
+        "getShieldedMerkleRoot" => {
+            shielded::handle_get_shielded_merkle_root(&state, req.params).await
+        }
+        "getShieldedMerklePath" => {
+            shielded::handle_get_shielded_merkle_path(&state, req.params).await
+        }
         "isNullifierSpent" => shielded::handle_is_nullifier_spent(&state, req.params).await,
-        "getShieldedCommitments" => shielded::handle_get_shielded_commitments(&state, req.params).await,
+        "getShieldedCommitments" => {
+            shielded::handle_get_shielded_commitments(&state, req.params).await
+        }
 
         _ => Err(RpcError {
             code: -32601,
@@ -2921,11 +2932,12 @@ fn decode_solana_transaction(
 
     // Route by first-byte heuristic to avoid bincode panicking on JSON
     if tx_bytes.first() == Some(&b'{') {
-        parse_json_transaction(&tx_bytes)
-            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e: bincode::Error| RpcError {
+        parse_json_transaction(&tx_bytes).or_else(|_| {
+            bounded_bincode_deserialize(&tx_bytes).map_err(|e: bincode::Error| RpcError {
                 code: -32602,
                 message: format!("Invalid transaction: {}", e),
-            }))
+            })
+        })
     } else {
         bounded_bincode_deserialize(&tx_bytes)
             .or_else(|_| parse_json_transaction(&tx_bytes))
@@ -3141,15 +3153,15 @@ async fn handle_send_transaction(
     // can trigger panics in bincode 1.x, so we route by heuristic first.
     let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
         // Looks like JSON — try JSON first, fall back to bincode
-        parse_json_transaction(&tx_bytes)
-            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+        parse_json_transaction(&tx_bytes).or_else(|_| {
+            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                 code: -32602,
                 message: format!("Invalid transaction: {}", e),
-            }))?
+            })
+        })?
     } else {
         // Looks like binary — try bincode first, fall back to JSON
-        bounded_bincode_deserialize(&tx_bytes)
-            .or_else(|_| parse_json_transaction(&tx_bytes))?
+        bounded_bincode_deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?
     };
 
     // ── Pre-mempool validation ──────────────────────────────────
@@ -3323,11 +3335,12 @@ async fn handle_simulate_transaction(
 
     // Deserialize transaction — same heuristic as sendTransaction
     let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-        parse_json_transaction(&tx_bytes)
-            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+        parse_json_transaction(&tx_bytes).or_else(|_| {
+            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                 code: -32602,
                 message: format!("Invalid transaction: {}", e),
-            }))?
+            })
+        })?
     } else {
         bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
             code: -32602,
@@ -4203,7 +4216,9 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
     };
 
     // Fee config for burn percentage display
-    let fee_config = state.state.get_fee_config()
+    let fee_config = state
+        .state
+        .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
     let slot_duration_ms = state.state.get_slot_duration_ms();
 
@@ -4690,11 +4705,12 @@ async fn handle_stake(
             })?;
 
         let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-            parse_json_transaction(&tx_bytes)
-                .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+            parse_json_transaction(&tx_bytes).or_else(|_| {
+                bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                     code: -32602,
                     message: format!("Invalid transaction: {}", e),
-                }))?
+                })
+            })?
         } else {
             bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                 code: -32602,
@@ -4757,11 +4773,12 @@ async fn handle_unstake(
             })?;
 
         let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-            parse_json_transaction(&tx_bytes)
-                .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+            parse_json_transaction(&tx_bytes).or_else(|_| {
+                bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                     code: -32602,
                     message: format!("Invalid transaction: {}", e),
-                }))?
+                })
+            })?
         } else {
             bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
                 code: -32602,
@@ -6807,29 +6824,28 @@ fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRe
 }
 
 /// CF-based MoltyID identity read — no full account deserialization.
-fn get_moltyid_identity(
-    state: &RpcState,
-    pubkey: &Pubkey,
-) -> Option<MoltyIdIdentityRecord> {
-    state.state
+fn get_moltyid_identity(state: &RpcState, pubkey: &Pubkey) -> Option<MoltyIdIdentityRecord> {
+    state
+        .state
         .get_program_storage(MOLTYID_SYMBOL, &moltyid_identity_key(pubkey))
         .and_then(|value| parse_moltyid_identity_record(&value))
 }
 
 fn get_moltyid_reputation(state: &RpcState, pubkey: &Pubkey) -> Option<u64> {
-    state.state
+    state
+        .state
         .get_program_storage(MOLTYID_SYMBOL, &moltyid_reputation_key(pubkey))
         .and_then(|value| read_u64_le(&value, 0))
 }
 
-fn get_moltyid_name(
-    state: &RpcState,
-    pubkey: &Pubkey,
-    current_slot: u64,
-) -> Option<String> {
-    let raw_name = state.state.get_program_storage(MOLTYID_SYMBOL, &moltyid_reverse_name_key(pubkey))?;
+fn get_moltyid_name(state: &RpcState, pubkey: &Pubkey, current_slot: u64) -> Option<String> {
+    let raw_name = state
+        .state
+        .get_program_storage(MOLTYID_SYMBOL, &moltyid_reverse_name_key(pubkey))?;
     let label = String::from_utf8(raw_name).ok()?;
-    let record = state.state.get_program_storage(MOLTYID_SYMBOL, &format!("name:{}", label).into_bytes())?;
+    let record = state
+        .state
+        .get_program_storage(MOLTYID_SYMBOL, &format!("name:{}", label).into_bytes())?;
     if record.len() < 48 {
         return None;
     }
@@ -6912,9 +6928,10 @@ async fn handle_get_moltyid_skills(
     for index in 0..identity.skill_count {
         if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
             if let Some(skill) = parse_moltyid_skill_record(&raw) {
-                let attestations = moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
-                    .and_then(|value| read_u64_le(&value, 0))
-                    .unwrap_or(0);
+                let attestations =
+                    moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                        .and_then(|value| read_u64_le(&value, 0))
+                        .unwrap_or(0);
 
                 skills.push(serde_json::json!({
                     "index": index,
@@ -6971,7 +6988,10 @@ async fn handle_get_moltyid_vouches(
     // Backward compatibility for pre-indexed historical data — scan CF entries.
     if given.is_empty() {
         let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
-        let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
+        let entries = state
+            .state
+            .get_contract_storage_entries(&program, 10_000, None)
+            .unwrap_or_default();
         for (key, value) in &entries {
             if !key.starts_with(b"id:") {
                 continue;
@@ -6980,7 +7000,9 @@ async fn handle_get_moltyid_vouches(
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
-                if let Some(raw_vouch) = moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                if let Some(raw_vouch) =
+                    moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index))
+                {
                     if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given.push(serde_json::json!({
@@ -7013,7 +7035,8 @@ async fn handle_get_moltyid_achievements(
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=8u8 {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id)) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
+        {
             if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
@@ -7047,9 +7070,10 @@ async fn handle_get_moltyid_profile(
     for index in 0..identity.skill_count {
         if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
             if let Some(skill) = parse_moltyid_skill_record(&raw) {
-                let attestations = moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
-                    .and_then(|value| read_u64_le(&value, 0))
-                    .unwrap_or(0);
+                let attestations =
+                    moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                        .and_then(|value| read_u64_le(&value, 0))
+                        .unwrap_or(0);
 
                 skills.push(serde_json::json!({
                     "index": index,
@@ -7090,7 +7114,10 @@ async fn handle_get_moltyid_profile(
 
     if given_vouches.is_empty() {
         let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
-        let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
+        let entries = state
+            .state
+            .get_contract_storage_entries(&program, 10_000, None)
+            .unwrap_or_default();
         for (key, value) in &entries {
             if !key.starts_with(b"id:") {
                 continue;
@@ -7099,7 +7126,9 @@ async fn handle_get_moltyid_profile(
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
-                if let Some(raw_vouch) = moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                if let Some(raw_vouch) =
+                    moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index))
+                {
                     if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given_vouches.push(serde_json::json!({
@@ -7116,7 +7145,8 @@ async fn handle_get_moltyid_profile(
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=8u8 {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id)) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
+        {
             if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
@@ -7127,18 +7157,27 @@ async fn handle_get_moltyid_profile(
         }
     }
 
-    let endpoint = moltyid_cf_get(state, &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| String::from_utf8(raw).ok());
+    let endpoint = moltyid_cf_get(
+        state,
+        &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes(),
+    )
+    .and_then(|raw| String::from_utf8(raw).ok());
 
-    let metadata = moltyid_cf_get(state, &format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .map(|text| {
-            serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!(text))
-        });
+    let metadata = moltyid_cf_get(
+        state,
+        &format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes(),
+    )
+    .and_then(|raw| String::from_utf8(raw).ok())
+    .map(|text| {
+        serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!(text))
+    });
 
-    let availability = moltyid_cf_get(state, &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| raw.first().copied())
-        .unwrap_or(0);
+    let availability = moltyid_cf_get(
+        state,
+        &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes(),
+    )
+    .and_then(|raw| raw.first().copied())
+    .unwrap_or(0);
 
     let availability_name = match availability {
         1 => "available",
@@ -7146,9 +7185,12 @@ async fn handle_get_moltyid_profile(
         _ => "offline",
     };
 
-    let rate = moltyid_cf_get(state, &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| read_u64_le(&raw, 0))
-        .unwrap_or(0);
+    let rate = moltyid_cf_get(
+        state,
+        &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes(),
+    )
+    .and_then(|raw| read_u64_le(&raw, 0))
+    .unwrap_or(0);
 
     let mut contributions = serde_json::Map::new();
     let labels = [
@@ -7301,7 +7343,10 @@ async fn handle_search_molt_names(
     let prefix = normalize_molt_label(&prefix_raw);
     let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let entries = state.state.get_contract_storage_entries(&program, 100_000, None).unwrap_or_default();
+    let entries = state
+        .state
+        .get_contract_storage_entries(&program, 100_000, None)
+        .unwrap_or_default();
 
     let mut names = Vec::new();
     for (key, value) in &entries {
@@ -7368,7 +7413,10 @@ async fn handle_get_moltyid_agent_directory(
         }
     }
 
-    let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
+    let entries = state
+        .state
+        .get_contract_storage_entries(&program, 10_000, None)
+        .unwrap_or_default();
     let mut agents = Vec::new();
     for (key, value) in &entries {
         if !key.starts_with(b"id:") {
@@ -7394,9 +7442,12 @@ async fn handle_get_moltyid_agent_directory(
             }
         }
 
-        let availability = moltyid_cf_get(state, &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
-            .and_then(|raw| raw.first().copied())
-            .unwrap_or(0);
+        let availability = moltyid_cf_get(
+            state,
+            &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes(),
+        )
+        .and_then(|raw| raw.first().copied())
+        .unwrap_or(0);
         let is_available = availability == 1;
         if let Some(required_available) = filter_available {
             if required_available != is_available {
@@ -7404,12 +7455,18 @@ async fn handle_get_moltyid_agent_directory(
             }
         }
 
-        let rate = moltyid_cf_get(state, &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
-            .and_then(|raw| read_u64_le(&raw, 0))
-            .unwrap_or(0);
+        let rate = moltyid_cf_get(
+            state,
+            &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes(),
+        )
+        .and_then(|raw| read_u64_le(&raw, 0))
+        .unwrap_or(0);
 
-        let endpoint = moltyid_cf_get(state, &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
-            .and_then(|raw| String::from_utf8(raw).ok());
+        let endpoint = moltyid_cf_get(
+            state,
+            &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes(),
+        )
+        .and_then(|raw| String::from_utf8(raw).ok());
 
         let tier = moltyid_trust_tier(reputation);
 
@@ -7506,6 +7563,58 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
             "elite": tier_distribution[4],
             "legendary": tier_distribution[5],
         },
+    }))
+}
+
+/// getNameAuction — Query auction state for a .molt name
+async fn handle_get_name_auction(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let name = params
+        .as_ref()
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Expected [name] parameter".to_string(),
+        })?;
+
+    // Normalize: strip .molt suffix
+    let normalized = name.to_lowercase().trim_end_matches(".molt").to_string();
+
+    // Build the auction key: "name_auc:" + name bytes
+    let mut key = Vec::with_capacity(9 + normalized.len());
+    key.extend_from_slice(b"name_auc:");
+    key.extend_from_slice(normalized.as_bytes());
+
+    let data = match moltyid_cf_get(state, &key) {
+        Some(d) if d.len() >= 65 => d,
+        _ => return Ok(serde_json::Value::Null),
+    };
+
+    let active = data[0] == 1;
+    let start_slot = read_u64_le(&data, 1).unwrap_or(0);
+    let end_slot = read_u64_le(&data, 9).unwrap_or(0);
+    let reserve_bid = read_u64_le(&data, 17).unwrap_or(0);
+    let highest_bid = read_u64_le(&data, 25).unwrap_or(0);
+
+    let mut highest_bidder = [0u8; 32];
+    highest_bidder.copy_from_slice(&data[33..65]);
+    let bidder_pubkey = Pubkey(highest_bidder);
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "name": normalized,
+        "active": active,
+        "start_slot": start_slot,
+        "end_slot": end_slot,
+        "reserve_bid": reserve_bid,
+        "highest_bid": highest_bid,
+        "highest_bidder": bidder_pubkey.to_base58(),
+        "current_slot": current_slot,
+        "ended": current_slot >= end_slot,
     }))
 }
 
@@ -9176,9 +9285,8 @@ async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
     use moltchain_core::consensus::{
-        decayed_reward, ANNUAL_REWARD_DECAY_BPS, BOOTSTRAP_GRANT_AMOUNT,
-        HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR,
-        TRANSACTION_BLOCK_REWARD,
+        decayed_reward, ANNUAL_REWARD_DECAY_BPS, BOOTSTRAP_GRANT_AMOUNT, HEARTBEAT_BLOCK_REWARD,
+        MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD,
     };
 
     let stake_pool_arc = state.stake_pool.as_ref().ok_or_else(|| RpcError {
@@ -9209,9 +9317,13 @@ async fn handle_get_reward_adjustment_info(
     let wallet_info = |role: &str| -> serde_json::Value {
         let (pubkey_str, balance) = match state.state.get_wallet_pubkey(role) {
             Ok(Some(pk)) => {
-                let bal = state.state.get_account(&pk)
-                    .ok().flatten()
-                    .map(|a| a.shells).unwrap_or(0);
+                let bal = state
+                    .state
+                    .get_account(&pk)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.shells)
+                    .unwrap_or(0);
                 (pk.to_base58(), bal)
             }
             _ => ("unknown".to_string(), 0),
@@ -9732,7 +9844,9 @@ async fn handle_get_prediction_markets(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let total = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
+    let total = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
 
     // Parse optional filter params
     let (cat_filter, status_filter, limit, offset) = match &params {
@@ -9780,7 +9894,10 @@ async fn handle_get_prediction_markets(
     let mut markets = Vec::new();
     for id in 1..=total {
         let key = format!("pm_m_{}", id);
-        let data = match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
+        let data = match state
+            .state
+            .get_program_storage(PREDICT_SYMBOL, key.as_bytes())
+        {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -9799,7 +9916,8 @@ async fn handle_get_prediction_markets(
         }
 
         let q_key = format!("pm_q_{}", id);
-        let question = state.state
+        let question = state
+            .state
             .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_default();
@@ -9857,10 +9975,13 @@ async fn handle_get_prediction_market(
     };
 
     let key = format!("pm_m_{}", market_id);
-    let data = state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()).ok_or(RpcError {
-        code: -32001,
-        message: format!("Market {} not found", market_id),
-    })?;
+    let data = state
+        .state
+        .get_program_storage(PREDICT_SYMBOL, key.as_bytes())
+        .ok_or(RpcError {
+            code: -32001,
+            message: format!("Market {} not found", market_id),
+        })?;
 
     if data.len() < 192 {
         return Err(RpcError {
@@ -9895,7 +10016,8 @@ async fn handle_get_prediction_market(
     };
 
     let q_key = format!("pm_q_{}", market_id);
-    let question = state.state
+    let question = state
+        .state
         .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
@@ -9906,12 +10028,14 @@ async fn handle_get_prediction_market(
         let o_key = format!("pm_o_{}_{}", market_id, oi);
         let on_key = format!("pm_on_{}_{}", market_id, oi);
 
-        let name = state.state
+        let name = state
+            .state
             .get_program_storage(PREDICT_SYMBOL, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_else(|| if oi == 0 { "Yes".into() } else { "No".into() });
 
-        let (pool_y, pool_n) = state.state
+        let (pool_y, pool_n) = state
+            .state
             .get_program_storage(PREDICT_SYMBOL, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
@@ -9980,18 +10104,26 @@ async fn handle_get_prediction_positions(
     };
 
     let count_key = format!("pm_userc_{}", address);
-    let count = state.state.get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
+    let count = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
 
     let mut positions = Vec::new();
     for idx in 0..count {
         let um_key = format!("pm_user_{}_{}", address, idx);
-        let market_id = match state.state.get_program_storage(PREDICT_SYMBOL, um_key.as_bytes()) {
+        let market_id = match state
+            .state
+            .get_program_storage(PREDICT_SYMBOL, um_key.as_bytes())
+        {
             Some(d) if d.len() >= 8 => pm_u64(&d, 0),
             _ => continue,
         };
 
         let mkt_key = format!("pm_m_{}", market_id);
-        let mkt_data = match state.state.get_program_storage(PREDICT_SYMBOL, mkt_key.as_bytes()) {
+        let mkt_data = match state
+            .state
+            .get_program_storage(PREDICT_SYMBOL, mkt_key.as_bytes())
+        {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -9999,7 +10131,10 @@ async fn handle_get_prediction_positions(
 
         for oi in 0..outcome_count {
             let pos_key = format!("pm_p_{}_{}_{}", market_id, address, oi);
-            if let Some(pd) = state.state.get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes()) {
+            if let Some(pd) = state
+                .state
+                .get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes())
+            {
                 if pd.len() >= 16 {
                     let shares = pm_u64(&pd, 0);
                     let cost = pm_u64(&pd, 8);
@@ -10041,7 +10176,10 @@ async fn handle_get_prediction_trader_stats(
     };
 
     let key = format!("pm_ts_{}", address);
-    match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
+    match state
+        .state
+        .get_program_storage(PREDICT_SYMBOL, key.as_bytes())
+    {
         Some(d) if d.len() >= 24 => Ok(serde_json::json!({
             "address": address,
             "total_volume": pm_u64(&d, 0) as f64 / PM_PRICE_SCALE,
@@ -10070,17 +10208,25 @@ async fn handle_get_prediction_leaderboard(
     };
     let limit = limit.min(50);
 
-    let total_traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_total_traders");
+    let total_traders = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, b"pm_total_traders");
     let scan_max = (total_traders as usize).min(500);
 
     let mut entries: Vec<(String, u64, u64)> = Vec::with_capacity(scan_max);
     for i in 0..scan_max as u64 {
         let lk = format!("pm_tl_{}", i);
-        if let Some(addr_data) = state.state.get_program_storage(PREDICT_SYMBOL, lk.as_bytes()) {
+        if let Some(addr_data) = state
+            .state
+            .get_program_storage(PREDICT_SYMBOL, lk.as_bytes())
+        {
             if addr_data.len() >= 32 {
                 let addr_hex = hex::encode(&addr_data[..32]);
                 let tk = format!("pm_ts_{}", addr_hex);
-                if let Some(sd) = state.state.get_program_storage(PREDICT_SYMBOL, tk.as_bytes()) {
+                if let Some(sd) = state
+                    .state
+                    .get_program_storage(PREDICT_SYMBOL, tk.as_bytes())
+                {
                     if sd.len() >= 24 {
                         let vol = pm_u64(&sd, 0);
                         let trades = pm_u64(&sd, 8);
@@ -10115,7 +10261,9 @@ async fn handle_get_prediction_leaderboard(
 
 /// getPredictionTrending — Active markets ranked by 24h volume
 async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let total = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
+    let total = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
 
     let cat_map = |c: u8| -> &'static str {
         match c {
@@ -10133,7 +10281,10 @@ async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::
     let mut markets = Vec::new();
     for id in 1..=total {
         let key = format!("pm_m_{}", id);
-        let data = match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
+        let data = match state
+            .state
+            .get_program_storage(PREDICT_SYMBOL, key.as_bytes())
+        {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -10142,16 +10293,21 @@ async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::
         } // only active
 
         let q_key = format!("pm_q_{}", id);
-        let question = state.state
+        let question = state
+            .state
             .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_default();
 
         let vol24_key = format!("pm_mv24_{}", id);
-        let vol24 = state.state.get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
+        let vol24 = state
+            .state
+            .get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
 
         let tc_key = format!("pm_mtc_{}", id);
-        let traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
+        let traders = state
+            .state
+            .get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
 
         markets.push((
             id,
@@ -10212,9 +10368,13 @@ async fn handle_get_prediction_market_analytics(
     };
 
     let tc_key = format!("pm_mtc_{}", market_id);
-    let traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
+    let traders = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
     let vol24_key = format!("pm_mv24_{}", market_id);
-    let vol24 = state.state.get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
+    let vol24 = state
+        .state
+        .get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
 
     Ok(serde_json::json!({
         "market_id": market_id,
@@ -10345,8 +10505,7 @@ async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::
         if key.starts_with(b"ana_cc_") {
             if value.len() >= 8 {
                 total_candles += u64::from_le_bytes([
-                    value[0], value[1], value[2], value[3],
-                    value[4], value[5], value[6], value[7],
+                    value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
                 ]);
             }
             if let Some(pair_part) = key.get(7..) {

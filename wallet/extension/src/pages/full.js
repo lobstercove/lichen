@@ -921,33 +921,14 @@ async function loadIdentityTab() {
     if (!data) {
       // No identity — show onboarding with Register step
       container.innerHTML = `
-        <div class="id-banner" style="text-align:center;padding:1.5rem;">
-          <div style="font-size:2rem;margin-bottom:0.75rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-          <h3 style="margin-bottom:0.25rem;">MoltyID — On-Chain Identity</h3>
-          <p style="color:var(--text-muted);font-size:0.85rem;">Your portable reputation, .molt name, skills, and agent profile — all on MoltChain.</p>
-        </div>
-        <div class="id-onboard" style="display:flex;flex-direction:column;gap:0.5rem;padding:0 1rem 1rem;">
+        <div class="id-onboard" style="display:flex;flex-direction:column;gap:0.5rem;padding:1rem;">
           <div class="id-onboard-step" id="idRegisterStep" style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--primary);border-radius:12px;cursor:pointer;transition:background 0.2s;">
-            <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;">1</div>
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-fingerprint"></i></div>
             <div style="flex:1;">
-              <div style="font-weight:600;">Register Identity</div>
-              <div style="font-size:0.82rem;color:var(--text-muted);">Choose a display name and agent type. Free — only the 0.0001 MOLT tx fee.</div>
+              <div style="font-weight:600;">Register Your MoltyID</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 MOLT tx fee.</div>
             </div>
             <i class="fas fa-chevron-right" style="color:var(--primary);"></i>
-          </div>
-          <div style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;opacity:0.5;">
-            <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-tertiary);color:var(--text-muted);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
-            <div style="flex:1;">
-              <div style="font-weight:600;">Claim a .molt Name</div>
-              <div style="font-size:0.82rem;color:var(--text-muted);">Register a human-readable name (5+ chars, 20 MOLT/year).</div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;opacity:0.5;">
-            <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-tertiary);color:var(--text-muted);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
-            <div style="flex:1;">
-              <div style="font-weight:600;">Build Reputation</div>
-              <div style="font-size:0.82rem;color:var(--text-muted);">Earn rep through transactions, governance, vouches. Unlock trust tiers.</div>
-            </div>
           </div>
           <div style="text-align:center;padding:0.5rem 0;">
             <button class="btn btn-small btn-secondary" id="idRefreshBtn" style="font-size:0.78rem;"><i class="fas fa-sync-alt"></i> Refresh</button>
@@ -1060,7 +1041,9 @@ async function loadIdentityTab() {
           ` : `
             <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.5rem;">No name registered</div>
             <small style="color:var(--text-muted);">5+ chars from 20 MOLT/yr</small>
-            <button class="btn btn-small btn-primary" id="idRegisterNameBtn" style="margin-top:0.5rem;"><i class="fas fa-plus"></i> Register</button>
+            <div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--border);">
+              <button class="btn btn-small btn-primary" id="idRegisterNameBtn"><i class="fas fa-plus"></i> Register</button>
+            </div>
           `}
         </div>
 
@@ -1131,7 +1114,7 @@ async function loadIdentityTab() {
 
 /* ── Identity Action Modals ── */
 
-function showIdentityPrompt(title, fields, onSubmit) {
+function showIdentityPrompt(title, fields, onSubmit, onRender) {
   // Create a simple modal for identity actions
   const overlay = document.createElement('div');
   overlay.className = 'modal show';
@@ -1148,7 +1131,10 @@ function showIdentityPrompt(title, fields, onSubmit) {
     if (f.type === 'info') {
       return `<div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-tertiary);border-radius:8px;">${f.html}</div>`;
     }
-    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}" style="width:100%;"></div>`;
+    const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
+    const maxAttr = f.max !== undefined ? ` max="${f.max}"` : '';
+    const stepAttr = f.step !== undefined ? ` step="${f.step}"` : '';
+    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}"${minAttr}${maxAttr}${stepAttr} style="width:100%;"></div>`;
   }).join('');
 
   card.innerHTML = `
@@ -1162,6 +1148,11 @@ function showIdentityPrompt(title, fields, onSubmit) {
 
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+
+  // Call onRender callback for dynamic behavior (e.g. cost previews)
+  if (typeof onRender === 'function') {
+    try { onRender(card); } catch (_) {}
+  }
 
   overlay.addEventListener('click', e => { if (e.target === overlay) { overlay.remove(); } });
   card.querySelector('#idModalCancel').addEventListener('click', () => overlay.remove());
@@ -1181,7 +1172,14 @@ function showIdentityPrompt(title, fields, onSubmit) {
       await onSubmit(values);
       overlay.remove();
       showToast('Success!', 'success');
-      await loadIdentityTab();
+      // Retry loading with delay — tx may need 1-3 blocks to be indexed
+      const container = $('identityContent');
+      if (container) container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Updating...</div>';
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise(r => setTimeout(r, 1500));
+        await loadIdentityTab();
+        break;
+      }
     } catch (err) {
       showToast(err.message, 'error');
       confirmBtn.disabled = false;
@@ -1228,7 +1226,7 @@ async function showIdentityAddSkillModal() {
 
   showIdentityPrompt('Add Skill', [
     { id: 'skillName', label: 'Skill Name', type: 'text', placeholder: 'e.g. Rust, Trading, Security' },
-    { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50' },
+    { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50', min: 1, max: 100, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
     await addIdentitySkill({
@@ -1259,15 +1257,34 @@ async function showIdentityRegisterNameModal() {
   if (!wallet) return;
 
   showIdentityPrompt('Register .molt Name', [
-    { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 MOLT/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 MOLT/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 MOLT/year (auction only)</div></div><small>Names: lowercase, 3-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small>' },
-    { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname' },
-    { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', value: '1' },
+    { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 MOLT/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 MOLT/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 MOLT/year (auction only)</div></div><small>Names: lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small><div id="extNameCostPreview" style="margin-top:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-card);border-radius:6px;font-size:0.82rem;display:none;"><span style="opacity:0.7;">Total cost:</span> <strong id="extNameCostValue">—</strong></div>' },
+    { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname (5+ characters)' },
+    { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
     await registerMoltName({
       wallet, password: values.password, network: state.network?.selected,
       name: values.name, durationYears: values.duration
     });
+  }, (card) => {
+    const nameInput = card.querySelector('#idModal_name');
+    const durationInput = card.querySelector('#idModal_duration');
+    const preview = card.querySelector('#extNameCostPreview');
+    const costValue = card.querySelector('#extNameCostValue');
+    const updateCost = () => {
+      const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
+      const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
+      if (n.length >= 5) {
+        const costPerYear = n.length <= 3 ? 500 : n.length === 4 ? 100 : 20;
+        const total = costPerYear * d;
+        if (costValue) costValue.textContent = `${total} MOLT (${costPerYear} MOLT × ${d} yr)`;
+        if (preview) preview.style.display = 'block';
+      } else {
+        if (preview) preview.style.display = 'none';
+      }
+    };
+    if (nameInput) nameInput.addEventListener('input', updateCost);
+    if (durationInput) durationInput.addEventListener('input', updateCost);
   });
 }
 
@@ -1277,7 +1294,7 @@ async function showIdentityRenewNameModal(currentName) {
   const name = (currentName || '').replace(/\.molt$/, '');
 
   showIdentityPrompt(`Renew ${name}.molt`, [
-    { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', value: '1' },
+    { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
     await renewMoltName({
