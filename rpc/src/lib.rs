@@ -69,13 +69,23 @@ const MAX_TX_BINCODE_SIZE: u64 = 4 * 1024 * 1024;
 /// P9-RPC-02: Bounded bincode deserialization for Transaction.
 /// Uses `bincode::options().with_limit()` to reject payloads that
 /// exceed `MAX_TX_BINCODE_SIZE` before allocating memory.
+/// Wrapped in `catch_unwind` because bincode 1.x can panic on
+/// adversarial inputs (e.g. JSON bytes interpreted as huge Vec lengths).
 fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Error> {
     use bincode::Options;
-    bincode::options()
-        .with_limit(MAX_TX_BINCODE_SIZE)
-        .with_fixint_encoding()
-        .allow_trailing_bytes()
-        .deserialize(bytes)
+    // catch_unwind prevents a rogue payload from killing the HTTP handler task.
+    match std::panic::catch_unwind(|| {
+        bincode::options()
+            .with_limit(MAX_TX_BINCODE_SIZE)
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .deserialize(bytes)
+    }) {
+        Ok(result) => result,
+        Err(_) => Err(Box::new(bincode::ErrorKind::Custom(
+            "bincode panicked during deserialization".to_string(),
+        ))),
+    }
 }
 use moltchain_core::consensus::{decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
 use serde::{Deserialize, Serialize};
@@ -2909,9 +2919,18 @@ fn decode_solana_transaction(
         }
     };
 
-    bounded_bincode_deserialize(&tx_bytes)
-        .or_else(|_| parse_json_transaction(&tx_bytes))
-        .map_err(|e: RpcError| e)
+    // Route by first-byte heuristic to avoid bincode panicking on JSON
+    if tx_bytes.first() == Some(&b'{') {
+        parse_json_transaction(&tx_bytes)
+            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e: bincode::Error| RpcError {
+                code: -32602,
+                message: format!("Invalid transaction: {}", e),
+            }))
+    } else {
+        bounded_bincode_deserialize(&tx_bytes)
+            .or_else(|_| parse_json_transaction(&tx_bytes))
+            .map_err(|e: RpcError| e)
+    }
 }
 
 /// Parse a JSON-format transaction from the wallet into a native Transaction.
@@ -2968,10 +2987,12 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
         message: "Missing message".into(),
     })?;
 
-    // Blockhash — wallet sends "blockhash" (hex string), Rust expects "recent_blockhash"
+    // Blockhash — accept multiple naming conventions:
+    // "blockhash" (wallet), "recent_blockhash" (Rust), "recentBlockhash" (SDK camelCase)
     let blockhash_str = msg_val
         .get("blockhash")
         .or_else(|| msg_val.get("recent_blockhash"))
+        .or_else(|| msg_val.get("recentBlockhash"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
@@ -2992,7 +3013,9 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
         })?;
     let mut instructions = Vec::new();
     for ix_val in ixs_raw {
-        let program_id = if let Some(arr) = ix_val.get("program_id").and_then(|p| p.as_array()) {
+        // Accept both snake_case "program_id" and camelCase "programId"
+        let pid_val = ix_val.get("program_id").or_else(|| ix_val.get("programId"));
+        let program_id = if let Some(arr) = pid_val.and_then(|p| p.as_array()) {
             let bytes: Vec<u8> = arr
                 .iter()
                 .filter_map(|b| b.as_u64().map(|n| n as u8))
@@ -3006,7 +3029,7 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
             let mut pk = [0u8; 32];
             pk.copy_from_slice(&bytes);
             Pubkey(pk)
-        } else if let Some(s) = ix_val.get("program_id").and_then(|p| p.as_str()) {
+        } else if let Some(s) = pid_val.and_then(|p| p.as_str()) {
             Pubkey::from_base58(s).map_err(|e| RpcError {
                 code: -32602,
                 message: format!("Invalid program_id: {}", e),
@@ -3112,9 +3135,22 @@ async fn handle_send_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // Deserialize transaction — try bincode first, then JSON (wallet sends JSON)
-    let tx: Transaction =
-        bounded_bincode_deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?;
+    // Deserialize transaction — detect format by first byte.
+    // JSON payloads (from wallet/SDK JSON mode) start with '{';
+    // bincode payloads are raw binary.  Trying bincode on JSON bytes
+    // can trigger panics in bincode 1.x, so we route by heuristic first.
+    let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
+        // Looks like JSON — try JSON first, fall back to bincode
+        parse_json_transaction(&tx_bytes)
+            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid transaction: {}", e),
+            }))?
+    } else {
+        // Looks like binary — try bincode first, fall back to JSON
+        bounded_bincode_deserialize(&tx_bytes)
+            .or_else(|_| parse_json_transaction(&tx_bytes))?
+    };
 
     // ── Pre-mempool validation ──────────────────────────────────
     // Reject structurally invalid transactions BEFORE entering mempool.
@@ -3285,11 +3321,19 @@ async fn handle_simulate_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // Deserialize transaction
-    let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid transaction: {}", e),
-    })?;
+    // Deserialize transaction — same heuristic as sendTransaction
+    let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
+        parse_json_transaction(&tx_bytes)
+            .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid transaction: {}", e),
+            }))?
+    } else {
+        bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid transaction: {}", e),
+        })?
+    };
 
     let processor = TxProcessor::new(state.state.clone());
     let result = processor.simulate_transaction(&tx);
@@ -4645,10 +4689,18 @@ async fn handle_stake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid transaction: {}", e),
-        })?;
+        let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
+            parse_json_transaction(&tx_bytes)
+                .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                    code: -32602,
+                    message: format!("Invalid transaction: {}", e),
+                }))?
+        } else {
+            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid transaction: {}", e),
+            })?
+        };
 
         let instruction = tx.message.instructions.first().ok_or_else(|| RpcError {
             code: -32602,
@@ -4704,10 +4756,18 @@ async fn handle_unstake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid transaction: {}", e),
-        })?;
+        let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
+            parse_json_transaction(&tx_bytes)
+                .or_else(|_| bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                    code: -32602,
+                    message: format!("Invalid transaction: {}", e),
+                }))?
+        } else {
+            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid transaction: {}", e),
+            })?
+        };
 
         let instruction = tx.message.instructions.first().ok_or_else(|| RpcError {
             code: -32602,
