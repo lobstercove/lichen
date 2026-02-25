@@ -3277,43 +3277,37 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 /* ═══════════════ Shield Tab ═══════════════ */
 
 .shield-status-msg { display: none; margin-bottom: 1rem; }
-
-/* Shield Banner */
-.shield-banner {
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12));
-    padding: 1.25rem 1.5rem;
+.shield-status-msg .shield-status-inner {
+    padding: 0.75rem 1rem;
     border-radius: 12px;
-    margin-bottom: 1.25rem;
-    border: 1px solid rgba(168, 85, 247, 0.2);
-}
-.shield-banner h3 {
+    font-size: 0.9rem;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin: 0 0 0.5rem 0;
-    font-size: 1.05rem;
+    gap: 0.5rem;
 }
-.shield-banner h3 i { font-size: 1.25rem; color: #a855f7; }
-.shield-banner p {
-    margin: 0;
-    font-size: 0.85rem;
-    color: var(--text-muted);
-}
+.shield-status-inner.pending  { background: rgba(255, 107, 53, 0.08); border: 1px solid rgba(255, 107, 53, 0.2); }
+.shield-status-inner.error    { background: rgba(244, 63, 94, 0.08); border: 1px solid rgba(244, 63, 94, 0.2); }
+.shield-status-inner.success  { background: rgba(6, 214, 160, 0.08); border: 1px solid rgba(6, 214, 160, 0.2); }
+.shield-status-inner.pending i { color: var(--primary); }
+.shield-status-inner.error i   { color: #f43f5e; }
+.shield-status-inner.success i { color: var(--success); }
+
+/* Shield Badge (Groth16 label) */
 .shield-badge {
-    background: rgba(6, 214, 160, 0.2);
-    color: #06d6a0;
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary);
     font-size: 0.7rem;
     padding: 2px 8px;
     border-radius: 10px;
     font-weight: 600;
 }
 
-/* Shield Cards */
+/* Shield Cards — match staking-stat-card / asset-item pattern */
 .shield-card {
-    background: var(--bg-darker, var(--card-bg, rgba(30, 30, 40, 0.7)));
+    background: var(--bg-card);
     border-radius: 12px;
     padding: 1.25rem 1.5rem;
-    margin-bottom: 1.25rem;
+    margin-bottom: 1rem;
     border: 1px solid var(--border);
 }
 
@@ -3335,6 +3329,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     font-size: 1.5rem;
     font-weight: 700;
     font-family: 'JetBrains Mono', monospace;
+    color: var(--text-primary);
 }
 .shield-balance-sub {
     font-size: 0.8rem;
@@ -3353,11 +3348,14 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 /* Shield Keys */
 .shield-section-title {
     margin: 0 0 0.75rem 0;
-    font-size: 0.9rem;
+    font-size: 0.95rem;
+    font-weight: 600;
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    color: var(--text-primary);
 }
+.shield-section-title i { color: var(--accent); }
 .shield-key-row {
     margin-bottom: 0.75rem;
 }
@@ -3366,16 +3364,19 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     font-size: 0.75rem;
     color: var(--text-muted);
     text-transform: uppercase;
-    margin-bottom: 0.25rem;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.3rem;
 }
 .shield-key-value {
     flex: 1;
-    font-size: 0.8rem;
-    background: var(--bg-dark, rgba(0,0,0,0.2));
-    padding: 0.5rem 0.75rem;
-    border-radius: 6px;
+    font-size: 0.82rem;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.65rem 0.85rem;
+    border-radius: 12px;
     word-break: break-all;
     border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
 }
 .address-display {
     display: flex;
@@ -3383,36 +3384,38 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     gap: 0.5rem;
 }
 .shield-info-box {
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     color: var(--text-muted);
-    background: rgba(168, 85, 247, 0.08);
-    padding: 0.5rem 0.75rem;
-    border-radius: 6px;
+    background: rgba(255, 107, 53, 0.06);
+    padding: 0.65rem 0.85rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 107, 53, 0.12);
+    margin-top: 0.5rem;
 }
-.shield-info-box i { color: #a855f7; margin-right: 0.25rem; }
+.shield-info-box i { color: var(--primary); margin-right: 0.35rem; }
 
-/* Shield Stats */
+/* Shield Stats — match staking-stats-grid */
 .shield-stats-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.75rem;
+    gap: 1rem;
 }
 .shield-stat-item {
-    background: var(--bg-dark, rgba(0,0,0,0.2));
-    padding: 0.75rem;
-    border-radius: 8px;
-    text-align: center;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
 }
 .shield-stat-label {
-    font-size: 0.7rem;
+    font-size: 0.85rem;
     color: var(--text-muted);
-    text-transform: uppercase;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.5rem;
 }
 .shield-stat-value {
-    font-size: 1rem;
+    font-size: 1.3rem;
     font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
+    color: var(--text-primary);
 }
 
 /* Shield Notes */
@@ -3441,34 +3444,78 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 .shield-empty-state p { margin: 0 0 0.25rem 0; }
 .shield-empty-sub { font-size: 0.85rem; }
 
+/* Shield Note Item — match asset-item pattern */
+.shield-note-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.9rem 1rem;
+    background: var(--bg-card);
+    border-radius: 12px;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--border);
+    transition: all 0.25s ease;
+}
+.shield-note-item:hover {
+    border-color: rgba(255, 107, 53, 0.25);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+.shield-note-amount {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+.shield-note-amount i {
+    color: var(--accent);
+    margin-right: 0.25rem;
+}
+.shield-note-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+}
+.shield-note-badge {
+    background: rgba(6, 214, 160, 0.15);
+    color: var(--success);
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 8px;
+    font-weight: 600;
+}
+
 /* Shield Modal Info Boxes */
 .shield-modal-info {
-    background: rgba(168, 85, 247, 0.08);
+    background: rgba(255, 107, 53, 0.06);
     padding: 0.75rem 1rem;
-    border-radius: 8px;
+    border-radius: 12px;
     margin-bottom: 1rem;
     font-size: 0.85rem;
     color: var(--text-secondary);
+    border: 1px solid rgba(255, 107, 53, 0.12);
 }
-.shield-modal-info i { margin-right: 0.25rem; }
+.shield-modal-info i { margin-right: 0.3rem; color: var(--primary); }
 .shield-modal-info.unshield {
-    background: rgba(6, 214, 160, 0.08);
+    background: rgba(6, 214, 160, 0.06);
+    border-color: rgba(6, 214, 160, 0.12);
 }
-.shield-modal-info.unshield i { color: #06d6a0; }
+.shield-modal-info.unshield i { color: var(--success); }
 .btn-shield {
-    background: linear-gradient(135deg, #a855f7, #6366f1);
+    background: var(--gradient-1);
     color: #fff;
+    border: none;
 }
 .btn-shield:hover {
-    background: linear-gradient(135deg, #9333ea, #4f46e5);
+    filter: brightness(1.1);
     color: #fff;
 }
 .btn-unshield {
-    background: linear-gradient(135deg, #06d6a0, #34d399);
+    background: var(--gradient-3);
     color: #fff;
+    border: none;
 }
 .btn-unshield:hover {
-    background: linear-gradient(135deg, #05c090, #2dd38a);
+    filter: brightness(1.1);
     color: #fff;
 }
 .shield-vk-input {
@@ -3480,6 +3527,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     color: var(--text-muted);
     margin-top: 0.25rem;
 }
+.shield-vk-hint i { color: var(--primary); }
 
 /* ────────────────────────────────────────────────────────────
    Chain Status Bar
