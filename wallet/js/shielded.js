@@ -10,7 +10,7 @@
 // - Client-side proof generation (Groth16/BN254 via WASM)
 
 // ===== Constants =====
-const SHELLS_PER_MOLT = 1_000_000_000;
+// SHELLS_PER_MOLT provided by shared/utils.js (loaded before this file)
 const SHIELDED_POOL_PROGRAM_ID = 'ShieldPool11111111111111111111111111111111';
 const MERKLE_TREE_DEPTH = 32;
 
@@ -87,19 +87,18 @@ async function initShielded(walletSeed) {
 async function syncShieldedState() {
     if (!shieldedState.initialized) return;
 
-    const endpoint = getRpcEndpoint();
     try {
         // Fetch pool stats
-        const statsResp = await rpcCall(endpoint, 'getShieldedPoolStats');
+        const statsResp = await rpc.call('getShieldedPoolStats').catch(() => null);
         if (statsResp) {
             shieldedState.poolStats = statsResp;
             shieldedState.merkleRoot = statsResp.merkle_root;
         }
 
         // Fetch new commitments since last sync
-        const commitsResp = await rpcCall(endpoint, 'getShieldedCommitments', [{
+        const commitsResp = await rpc.call('getShieldedCommitments', [{
             from_index: shieldedState.lastSyncedIndex,
-        }]);
+        }]).catch(() => null);
 
         if (commitsResp && Array.isArray(commitsResp)) {
             for (const entry of commitsResp) {
@@ -125,7 +124,7 @@ async function syncShieldedState() {
         for (const note of shieldedState.ownedNotes) {
             if (note.spent) continue;
             const nullifier = await computeNullifier(note.serial);
-            const isSpent = await rpcCall(endpoint, 'checkNullifier', [nullifier]);
+            const isSpent = await rpc.call('checkNullifier', [nullifier]).catch(() => null);
             if (isSpent && isSpent.spent) {
                 note.spent = true;
             }
@@ -205,13 +204,13 @@ async function tryDecryptNote(entry) {
  */
 async function shieldMolt(amountMolt) {
     if (!shieldedState.initialized) {
-        showNotification('Shielded wallet not initialized', 'error');
+        showToast('Shielded wallet not initialized');
         return;
     }
 
     const amountShells = Math.floor(amountMolt * SHELLS_PER_MOLT);
     if (amountShells <= 0) {
-        showNotification('Amount must be positive', 'error');
+        showToast('Amount must be positive');
         return;
     }
 
@@ -251,8 +250,7 @@ async function shieldMolt(amountMolt) {
         showShieldedStatus('Submitting transaction...', 'pending');
 
         // Submit shield transaction
-        const endpoint = getRpcEndpoint();
-        const result = await rpcCall(endpoint, 'submitShieldTransaction', [{
+        const result = await rpc.call('submitShieldTransaction', [{
             amount: amountShells,
             commitment: commitment,
             proof: bytesToHex(proof),
@@ -275,14 +273,14 @@ async function shieldMolt(amountMolt) {
             updateShieldedUI();
 
             showShieldedStatus('', 'idle');
-            showNotification(`Shielded ${amountMolt} MOLT successfully!`, 'success');
+            showToast(`Shielded ${amountMolt} MOLT successfully!`);
             closeModal('shieldModal');
         } else {
             throw new Error(result?.error || 'Shield transaction failed');
         }
     } catch (err) {
         showShieldedStatus('', 'idle');
-        showNotification('Shield failed: ' + err.message, 'error');
+        showToast('Shield failed: ' + err.message);
     }
 }
 
@@ -293,7 +291,7 @@ async function shieldMolt(amountMolt) {
  */
 async function unshieldMolt(amountMolt, recipientAddress) {
     if (!shieldedState.initialized) {
-        showNotification('Shielded wallet not initialized', 'error');
+        showToast('Shielded wallet not initialized');
         return;
     }
 
@@ -304,7 +302,7 @@ async function unshieldMolt(amountMolt, recipientAddress) {
     const totalAvailable = unspentNotes.reduce((sum, n) => sum + n.value, 0);
 
     if (amountShells > totalAvailable) {
-        showNotification(`Insufficient shielded balance. Available: ${(totalAvailable / SHELLS_PER_MOLT).toFixed(4)} MOLT`, 'error');
+        showToast(`Insufficient shielded balance. Available: ${(totalAvailable / SHELLS_PER_MOLT).toFixed(4)} MOLT`);
         return;
     }
 
@@ -336,8 +334,7 @@ async function unshieldMolt(amountMolt, recipientAddress) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const endpoint = getRpcEndpoint();
-        const result = await rpcCall(endpoint, 'submitUnshieldTransaction', [{
+        const result = await rpc.call('submitUnshieldTransaction', [{
             nullifiers: nullifiers,
             amount: amountShells,
             recipient: recipientAddress,
@@ -357,14 +354,14 @@ async function unshieldMolt(amountMolt, recipientAddress) {
             updateShieldedUI();
 
             showShieldedStatus('', 'idle');
-            showNotification(`Unshielded ${amountMolt} MOLT to ${recipientAddress.slice(0, 8)}...`, 'success');
+            showToast(`Unshielded ${amountMolt} MOLT to ${recipientAddress.slice(0, 8)}...`);
             closeModal('unshieldModal');
         } else {
             throw new Error(result?.error || 'Unshield transaction failed');
         }
     } catch (err) {
         showShieldedStatus('', 'idle');
-        showNotification('Unshield failed: ' + err.message, 'error');
+        showToast('Unshield failed: ' + err.message);
     }
 }
 
@@ -376,7 +373,7 @@ async function unshieldMolt(amountMolt, recipientAddress) {
  */
 async function shieldedTransfer(amountMolt, recipientViewingKey) {
     if (!shieldedState.initialized) {
-        showNotification('Shielded wallet not initialized', 'error');
+        showToast('Shielded wallet not initialized');
         return;
     }
 
@@ -385,7 +382,7 @@ async function shieldedTransfer(amountMolt, recipientViewingKey) {
     const totalAvailable = unspentNotes.reduce((sum, n) => sum + n.value, 0);
 
     if (amountShells > totalAvailable) {
-        showNotification(`Insufficient shielded balance`, 'error');
+        showToast('Insufficient shielded balance');
         return;
     }
 
@@ -458,8 +455,7 @@ async function shieldedTransfer(amountMolt, recipientViewingKey) {
 
         showShieldedStatus('Submitting transaction...', 'pending');
 
-        const endpoint = getRpcEndpoint();
-        const result = await rpcCall(endpoint, 'submitShieldedTransfer', [{
+        const result = await rpc.call('submitShieldedTransfer', [{
             nullifiers: nullifiers,
             output_commitments: outputCommitments,
             merkle_root: shieldedState.merkleRoot,
@@ -479,14 +475,14 @@ async function shieldedTransfer(amountMolt, recipientViewingKey) {
             updateShieldedUI();
 
             showShieldedStatus('', 'idle');
-            showNotification(`Transferred ${amountMolt} MOLT privately`, 'success');
+            showToast(`Transferred ${amountMolt} MOLT privately`);
             closeModal('shieldedTransferModal');
         } else {
             throw new Error(result?.error || 'Shielded transfer failed');
         }
     } catch (err) {
         showShieldedStatus('', 'idle');
-        showNotification('Transfer failed: ' + err.message, 'error');
+        showToast('Transfer failed: ' + err.message);
     }
 }
 
@@ -750,42 +746,42 @@ function bytesToHex(bytes) {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ===== RPC Helper =====
-
-async function rpcCall(endpoint, method, params = []) {
-    try {
-        const resp = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
-        });
-        const data = await resp.json();
-        return data.result || null;
-    } catch {
-        return null;
-    }
+// ===== Fee Display Helper =====
+function zkFeeDisplay(type) {
+    const baseFee = typeof BASE_FEE_SHELLS !== 'undefined' ? BASE_FEE_SHELLS : 1_000_000;
+    const zkFees = typeof ZK_COMPUTE_FEE !== 'undefined' ? ZK_COMPUTE_FEE : { shield: 100_000, unshield: 150_000, transfer: 200_000 };
+    const spm = typeof SHELLS_PER_MOLT !== 'undefined' ? SHELLS_PER_MOLT : 1_000_000_000;
+    const total = (baseFee + (zkFees[type] || 0)) / spm;
+    return total.toFixed(4) + ' MOLT (base + ZK compute)';
 }
 
 // ===== Modal Handlers (called from wallet UI) =====
 
 function openShieldModal() {
-    document.getElementById('shieldModal').style.display = 'flex';
+    const el = document.getElementById('shieldFeeDisplay');
+    if (el) el.textContent = zkFeeDisplay('shield');
+    document.getElementById('shieldModal').classList.add('show');
 }
 
 function openUnshieldModal() {
-    document.getElementById('unshieldModal').style.display = 'flex';
+    const el = document.getElementById('unshieldFeeDisplay');
+    if (el) el.textContent = zkFeeDisplay('unshield');
+    document.getElementById('unshieldModal').classList.add('show');
 }
 
 function openShieldedTransferModal() {
-    document.getElementById('shieldedTransferModal').style.display = 'flex';
+    const el = document.getElementById('transferFeeDisplay');
+    if (el) el.textContent = zkFeeDisplay('transfer');
+    document.getElementById('shieldedTransferModal').classList.add('show');
 }
 
 function confirmShield() {
     const amount = parseFloat(document.getElementById('shieldAmount').value);
     if (isNaN(amount) || amount <= 0) {
-        showNotification('Enter a valid amount', 'error');
+        showToast('Enter a valid amount');
         return;
     }
+    closeModal('shieldModal');
     shieldMolt(amount);
 }
 
@@ -793,13 +789,14 @@ function confirmUnshield() {
     const amount = parseFloat(document.getElementById('unshieldAmount').value);
     const recipient = document.getElementById('unshieldRecipient').value.trim();
     if (isNaN(amount) || amount <= 0) {
-        showNotification('Enter a valid amount', 'error');
+        showToast('Enter a valid amount');
         return;
     }
     if (!recipient) {
-        showNotification('Enter a recipient address', 'error');
+        showToast('Enter a recipient address');
         return;
     }
+    closeModal('unshieldModal');
     unshieldMolt(amount, recipient);
 }
 
@@ -807,28 +804,29 @@ function confirmShieldedTransfer() {
     const amount = parseFloat(document.getElementById('shieldedTransferAmount').value);
     const viewingKey = document.getElementById('shieldedTransferRecipientVK').value.trim();
     if (isNaN(amount) || amount <= 0) {
-        showNotification('Enter a valid amount', 'error');
+        showToast('Enter a valid amount');
         return;
     }
     if (!viewingKey || viewingKey.length !== 64) {
-        showNotification('Enter a valid recipient viewing key (64 hex chars)', 'error');
+        showToast('Enter a valid recipient viewing key (64 hex chars)');
         return;
     }
+    closeModal('shieldedTransferModal');
     shieldedTransfer(amount, viewingKey);
 }
 
 function copyShieldedAddress() {
     if (shieldedState.shieldedAddress) {
         navigator.clipboard.writeText(shieldedState.shieldedAddress);
-        showNotification('Shielded address copied!', 'success');
+        showToast('Shielded address copied!');
     }
 }
 
 function copyViewingKey() {
     if (shieldedState.viewingKey) {
         navigator.clipboard.writeText(bytesToHex(shieldedState.viewingKey));
-        showNotification('Viewing key copied! Share with auditors for selective disclosure.', 'info');
+        showToast('Viewing key copied! Share with auditors for selective disclosure.');
     }
 }
 
-console.log('Shielded wallet module loaded (Groth16/BN254)');
+
