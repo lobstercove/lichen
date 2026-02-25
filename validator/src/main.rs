@@ -3037,19 +3037,19 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["burnable"] = serde_json::json!(true);
                 // Logo and description per wrapped asset
                 let (desc, logo) = match symbol {
-                    "mUSD" => (
+                    "MUSD" | "mUSD" => (
                         "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
                         "fas fa-dollar-sign",
                     ),
-                    "wSOL" => (
+                    "WSOL" | "wSOL" => (
                         "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
                         "fab fa-solana",
                     ),
-                    "wETH" => (
+                    "WETH" | "wETH" => (
                         "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
                         "fab fa-ethereum",
                     ),
-                    "wBNB" => (
+                    "WBNB" | "wBNB" => (
                         "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
                         "fas fa-coins",
                     ),
@@ -3234,6 +3234,7 @@ fn genesis_exec_contract(
 }
 
 /// Like `genesis_exec_contract` but allows attaching a value (e.g. mUSD fee).
+#[allow(dead_code)]
 fn genesis_exec_contract_with_value(
     state: &StateStore,
     program_pubkey: &Pubkey,
