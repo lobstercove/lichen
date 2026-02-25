@@ -2,12 +2,15 @@
 // Full RPC integration, wallet management, and UI controls
 
 // ── Number formatting helpers ──
-function fmtToken(value) {
-    return Number(value).toLocaleString(undefined, { maximumFractionDigits: 9 });
+function fmtToken(value, maxDecimals) {
+    const d = maxDecimals !== undefined ? maxDecimals : (walletState?.settings?.decimals || 9);
+    return Number(value).toLocaleString(undefined, { maximumFractionDigits: d });
 }
 function fmtUsd(value, sym = '$') {
     return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
+
+const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
 
 // Network configuration
 const NETWORKS = {
@@ -1069,6 +1072,19 @@ function setupDashboardTabs() {
             if (tabName === 'identity' && typeof loadIdentity === 'function') {
                 loadIdentity();
             }
+            if (tabName === 'shield' && typeof initShielded === 'function') {
+                const wallet = getActiveWallet();
+                if (wallet && wallet.encryptedKey && !shieldedState?.initialized) {
+                    // Derive shielded seed from wallet's encrypted key
+                    // initShielded needs a seed — derive from address as a deterministic source
+                    // Full ZK key derivation requires password; use address-based init for viewing
+                    const encoder = new TextEncoder();
+                    const seedBytes = encoder.encode(wallet.address + ':shielded');
+                    initShielded(seedBytes);
+                } else if (typeof syncShieldedState === 'function') {
+                    syncShieldedState();
+                }
+            }
         });
     });
 }
@@ -1135,12 +1151,12 @@ async function refreshBalance() {
     try {
         const balance = await rpc.getBalance(wallet.address);
         const molt = parseFloat(balance.molt) || 0;
+        window.walletBalance = molt;
         
         // Fetch all token balances in parallel
         const tokenBalances = await getAllTokenBalances(wallet.address);
         
         // Calculate total USD value (using mock prices)
-        const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
         let totalUsd = molt * MOCK_PRICES.MOLT;
         for (const [symbol, bal] of Object.entries(tokenBalances)) {
             totalUsd += bal * (MOCK_PRICES[symbol] || 0);
@@ -1181,6 +1197,7 @@ async function refreshBalance() {
         const currency = settings.currency || 'USD';
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
+        window.walletBalance = 0;
         document.getElementById('totalBalance').textContent = `${sym}0.00 ${currency}`;
         document.getElementById('balanceUsd').textContent = '0.00 MOLT';
     }
@@ -1197,8 +1214,7 @@ async function loadAssets() {
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
     
-    // Mock prices for display
-    const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
+    // Mock prices for display (using module-level MOCK_PRICES)
     const settings = walletState.settings || {};
     const decimals = settings.decimals || 6;
     const currency = settings.currency || 'USD';
@@ -2402,11 +2418,7 @@ function formatMolt(shells) {
     return fmtToken(shells / SHELLS_PER_MOLT) + ' MOLT';
 }
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
+// escapeHtml provided by shared/utils.js (loaded before this file)
 
 // AUDIT-FIX W-5: Best-effort zeroing of sensitive byte arrays after use
 function zeroBytes(arr) {
@@ -2816,10 +2828,12 @@ function logoutWallet() {
         
         // K-3: Only remove wallet-prefixed keys to avoid wiping other app data on shared origins
         Object.keys(localStorage).filter(function(k) {
-            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_');
+            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
+                || k.startsWith('moltWallet') || k.startsWith('moltchain_') || k.startsWith('moltEvmRegistered');
         }).forEach(function(k) { localStorage.removeItem(k); });
         Object.keys(sessionStorage).filter(function(k) {
-            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_');
+            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
+                || k.startsWith('moltWallet') || k.startsWith('moltchain_') || k.startsWith('moltEvmRegistered');
         }).forEach(function(k) { sessionStorage.removeItem(k); });
         
         // Reset state completely (isLocked false — no wallet exists to lock)
@@ -2914,12 +2928,16 @@ function showPasswordModal(options) {
         modal.className = 'password-modal';
         
         const fields = options.fields || [{ id: 'password', label: 'Password', type: 'password' }];
-        const fieldsHTML = fields.map(field => `
-            <div class="form-group">
-                <label>${field.label}</label>
-                <input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}">
-            </div>
-        `).join('');
+        const fieldsHTML = fields.map(field => {
+            if (field.type === 'select' && Array.isArray(field.options)) {
+                const optionsHTML = field.options.map(opt =>
+                    `<option value="${escapeHtml(String(opt.value))}"${opt.selected ? ' selected' : ''}>${escapeHtml(opt.label)}</option>`
+                ).join('');
+                return `<div class="form-group"><label>${field.label}</label><select id="${field.id}" class="form-input">${optionsHTML}</select></div>`;
+            }
+            const val = field.value !== undefined ? ` value="${escapeHtml(String(field.value))}"` : '';
+            return `<div class="form-group"><label>${field.label}</label><input type="${field.type}" id="${field.id}" class="form-input" placeholder="${field.placeholder || ''}"${val}></div>`;
+        }).join('');
         
         modal.innerHTML = `
             <div class="password-modal-content">
