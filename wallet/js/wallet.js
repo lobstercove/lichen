@@ -397,10 +397,10 @@ const rpc = new MoltChainRPC(getRpcEndpoint());
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
 const TOKEN_REGISTRY = {
-    mUSD: { symbol: 'mUSD', name: 'Molt USD',     decimals: 6, icon: '💵', address: null, color: '#4ade80' },
-    wSOL: { symbol: 'wSOL', name: 'Wrapped SOL',  decimals: 9, icon: '◎',  address: null, color: '#9945FF' },
-    wETH: { symbol: 'wETH', name: 'Wrapped ETH',  decimals: 9, icon: '⟠',  address: null, color: '#627EEA' },
-    REEF: { symbol: 'REEF', name: 'Reef Token',    decimals: 9, icon: '🪸', address: null, color: '#a855f7' },
+    mUSD: { symbol: 'mUSD', name: 'Molt USD',     decimals: 6, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80' },
+    wSOL: { symbol: 'wSOL', name: 'Wrapped SOL',  decimals: 9, icon: 'fab fa-solana',       address: null, color: '#9945FF' },
+    wETH: { symbol: 'wETH', name: 'Wrapped ETH',  decimals: 9, icon: 'fab fa-ethereum',     address: null, color: '#627EEA' },
+    REEF: { symbol: 'REEF', name: 'Reef Token',    decimals: 9, icon: 'fas fa-water',        address: null, color: '#a855f7' },
 };
 
 // Load deploy manifest to get token contract addresses
@@ -418,7 +418,6 @@ async function loadTokenRegistry() {
                     }
                 }
                 // console.log('Token registry loaded from manifest');
-                return;
             }
         }
     } catch (e) {
@@ -439,6 +438,27 @@ async function loadTokenRegistry() {
         }
     } catch (e) {
         console.warn('Could not load stored token addresses:', e);
+    }
+
+    // Enrich from on-chain symbol registry (icon_class, logo_url, metadata)
+    try {
+        const symbols = Object.keys(TOKEN_REGISTRY);
+        const results = await Promise.allSettled(
+            symbols.map(s => rpc.call('getSymbolRegistry', [s]))
+        );
+        results.forEach((res, i) => {
+            if (res.status === 'fulfilled' && res.value) {
+                const entry = res.value;
+                const token = TOKEN_REGISTRY[symbols[i]];
+                if (!token.address && entry.program) token.address = entry.program;
+                if (entry.metadata) {
+                    if (entry.metadata.icon_class) token.icon = entry.metadata.icon_class;
+                    if (entry.metadata.logo_url) token.logoUrl = entry.metadata.logo_url;
+                }
+            }
+        });
+    } catch (e) {
+        // Symbol registry unavailable — use defaults
     }
 }
 
@@ -1044,6 +1064,7 @@ async function showDashboard() {
     await loadAssets();
     await loadActivity();
     await loadStaking();
+    refreshNFTs();
     connectBalanceWebSocket();
     startBalancePolling();
 }
@@ -1228,7 +1249,7 @@ async function loadAssets() {
     const moltUsd = molt * MOCK_PRICES.MOLT;
     html += `
         <div class="asset-item" style="cursor: default;">
-            <div class="asset-icon">🦞</div>
+            <div class="asset-icon asset-icon-molt"><i class="fas fa-fire"></i></div>
             <div class="asset-info">
                 <div class="asset-name">MoltChain</div>
                 <div class="asset-symbol">MOLT</div>
@@ -1249,7 +1270,7 @@ async function loadAssets() {
         if (bal > 0 || token.address) {
             html += `
                 <div class="asset-item" style="cursor: default; ${bal === 0 ? 'opacity: 0.5;' : ''}">
-                    <div class="asset-icon" style="color: ${token.color};">${token.icon}</div>
+                    <div class="asset-icon" style="color: ${token.color};"><i class="${token.icon}"></i></div>
                     <div class="asset-info">
                         <div class="asset-name">${token.name}</div>
                         <div class="asset-symbol">${token.symbol}</div>
@@ -1493,70 +1514,70 @@ async function loadStaking() {
             if (validatorSection) {
                 validatorSection.style.display = 'block';
                 validatorSection.innerHTML = `
-                    <div class="reefstake-header" style="background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(37, 99, 235, 0.1)); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                        <h3 style="margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem;">
-                            <i class="fas fa-water" style="color: #3b82f6;"></i>
-                            ReefStake - Liquid Staking
-                        </h3>
-                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
+                    <div class="tab-banner staking">
+                        <div class="tab-banner-icon"><i class="fas fa-water"></i></div>
+                        <div class="tab-banner-text">
+                            <h3>ReefStake — Liquid Staking</h3>
+                            <p>Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
+                        </div>
                     </div>
 
-                    <div class="reefstake-stats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Your stMOLT</div>
-                            <div id="userStMolt" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">0</div>
+                    <div class="staking-stats-grid">
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Your stMOLT</div>
+                            <div class="staking-stat-value" id="userStMolt">0</div>
                         </div>
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Current Value</div>
-                            <div id="userStakeValue" style="font-size: 1.5rem; font-weight: 600; color: #10b981;">0 MOLT</div>
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Current Value</div>
+                            <div class="staking-stat-value green" id="userStakeValue">0 MOLT</div>
                         </div>
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Rewards Earned</div>
-                            <div id="userRewardsEarned" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;">0 MOLT</div>
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Rewards Earned</div>
+                            <div class="staking-stat-value amber" id="userRewardsEarned">0 MOLT</div>
                         </div>
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Your Tier</div>
-                            <div id="userLockTier" style="font-size: 1.2rem; font-weight: 600; color: #a78bfa;">—</div>
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Your Tier</div>
+                            <div class="staking-stat-value purple" id="userLockTier">—</div>
                         </div>
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Reward Multiplier</div>
-                            <div id="userMultiplier" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">1.0x</div>
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Reward Multiplier</div>
+                            <div class="staking-stat-value" id="userMultiplier">1.0x</div>
                         </div>
-                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Total Staked (Pool)</div>
-                            <div id="totalPoolStaked" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">0 MOLT</div>
+                        <div class="staking-stat-card">
+                            <div class="staking-stat-label">Total Staked (Pool)</div>
+                            <div class="staking-stat-value" id="totalPoolStaked">0 MOLT</div>
                         </div>
                     </div>
 
                     <div id="reefstakeTiers" style="margin-bottom: 1.5rem;">
-                        <h4 style="margin-bottom: 0.75rem; color: var(--text);">
-                            <i class="fas fa-layer-group" style="color: #a78bfa;"></i> Staking Tiers & APY
+                        <h4 class="staking-tiers-heading">
+                            <i class="fas fa-layer-group"></i> Staking Tiers & APY
                         </h4>
-                        <div id="tiersGrid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;"></div>
+                        <div id="tiersGrid" class="staking-tiers-grid"></div>
                     </div>
 
-                    <div style="background: var(--card-bg); padding: 1rem; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 1.5rem; font-size: 0.85rem; color: var(--text-muted);">
-                        <i class="fas fa-info-circle" style="color: #3b82f6;"></i>
+                    <div class="staking-info-box">
+                        <i class="fas fa-info-circle"></i>
                         <strong>How it works:</strong> Stake MOLT to receive stMOLT (liquid receipt). Rewards auto-compound — your stMOLT value grows over time.
                         <strong>Flexible tier</strong> has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
                         After a lock expires, you can unstake with the standard 7-day cooldown.
                     </div>
 
-                    <div class="reefstake-actions" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <button onclick="showReefStakeModal()" class="btn btn-primary" style="width: 100%; padding: 1rem;">
+                    <div class="staking-actions">
+                        <button onclick="showReefStakeModal()" class="btn btn-primary">
                             <i class="fas fa-arrow-down"></i> Stake MOLT
                         </button>
-                        <button id="reefUnstakeBtn" onclick="showReefUnstakeModal()" class="btn btn-secondary" style="width: 100%; padding: 1rem;">
+                        <button id="reefUnstakeBtn" onclick="showReefUnstakeModal()" class="btn btn-secondary">
                             <i class="fas fa-arrow-up"></i> Unstake stMOLT
                         </button>
                     </div>
 
-                    <div id="lockStatus" style="margin-top: 1rem; display: none; padding: 0.75rem 1rem; background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.3); border-radius: 8px; font-size: 0.85rem; color: #f97316;">
+                    <div id="lockStatus" class="staking-lock-status" style="display: none;">
                         <i class="fas fa-lock"></i> <span id="lockStatusText"></span>
                     </div>
 
-                    <div id="pendingUnstakes" style="margin-top: 1.5rem; display: none;">
-                        <h4 style="margin-bottom: 1rem;">Pending Unstakes (7-day cooldown)</h4>
+                    <div id="pendingUnstakes" class="staking-pending" style="display: none;">
+                        <h4>Pending Unstakes (7-day cooldown)</h4>
                         <div id="unstakesList"></div>
                     </div>
                 `;
@@ -1574,52 +1595,49 @@ async function loadStaking() {
             
             // Generate staking UI dynamically
             validatorSection.innerHTML = `
-                <div class="staking-header" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(79, 70, 229, 0.1)); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                    <h3 style="margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem;">
-                        <i class="fas fa-award" style="color: var(--accent);"></i>
-                        Validator Status
-                    </h3>
-                    <div id="validatorStatus" style="font-size: 0.95rem; color: var(--text-muted);"></div>
-                </div>
-
-                <div class="staking-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-                    <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                        <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Total Stake</div>
-                        <div id="totalStake" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">Loading...</div>
-                    </div>
-
-                    <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                        <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Bootstrap Grant</div>
-                        <div style="font-size: 1.5rem; font-weight: 600; color: var(--text);">1,000 MOLT</div>
-                    </div>
-
-                    <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                        <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Debt Remaining</div>
-                        <div id="debtRemaining" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;">Loading...</div>
-                    </div>
-
-                    <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                        <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Earned / Vested</div>
-                        <div id="earnedAmount" style="font-size: 1.5rem; font-weight: 600; color: #10b981;">Loading...</div>
+                <div class="tab-banner validator">
+                    <div class="tab-banner-icon"><i class="fas fa-award"></i></div>
+                    <div class="tab-banner-text">
+                        <h3>Validator Status</h3>
+                        <div id="validatorStatus" class="tab-banner-sub"></div>
                     </div>
                 </div>
 
-                <div class="vesting-progress" style="background: var(--card-bg); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border);">
+                <div class="staking-stats-grid">
+                    <div class="staking-stat-card">
+                        <div class="staking-stat-label">Total Stake</div>
+                        <div class="staking-stat-value" id="totalStake">Loading...</div>
+                    </div>
+                    <div class="staking-stat-card">
+                        <div class="staking-stat-label">Bootstrap Grant</div>
+                        <div class="staking-stat-value">1,000 MOLT</div>
+                    </div>
+                    <div class="staking-stat-card">
+                        <div class="staking-stat-label">Debt Remaining</div>
+                        <div class="staking-stat-value amber" id="debtRemaining">Loading...</div>
+                    </div>
+                    <div class="staking-stat-card">
+                        <div class="staking-stat-label">Earned / Vested</div>
+                        <div class="staking-stat-value green" id="earnedAmount">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="staking-stat-card" style="margin-bottom: 1.5rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                        <div style="color: var(--text-muted); font-size: 0.9rem;">Vesting Progress</div>
+                        <div class="staking-stat-label" style="margin-bottom:0;">Vesting Progress</div>
                         <div id="vestingPercent" style="font-weight: 600; color: var(--text);">0%</div>
                     </div>
-                    <div style="height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden;">
+                    <div style="height: 8px; background: var(--bg-darker, #060812); border-radius: 4px; overflow: hidden;">
                         <div id="vestingProgressBar" style="height: 100%; background: linear-gradient(90deg, var(--accent), #10b981); width: 0%; transition: width 0.3s ease;"></div>
                     </div>
                     <div id="vestingInfo" style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-muted);"></div>
                 </div>
 
-                <div id="graduationInfo" style="margin-top: 1.5rem; padding: 1.25rem; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(5, 150, 105, 0.1)); border-radius: 12px; border: 1px solid rgba(16, 185, 129, 0.3); display: none;">
+                <div id="graduationInfo" class="staking-info-box" style="display: none; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(5, 150, 105, 0.1)); border-color: rgba(16, 185, 129, 0.3);">
                     <div style="display: flex; align-items: center; gap: 0.75rem;">
                         <i class="fas fa-graduation-cap" style="font-size: 1.5rem; color: #10b981;"></i>
                         <div>
-                            <div style="font-weight: 600; margin-bottom: 0.25rem; color: var(--text);">Graduated! 🎉</div>
+                            <div style="font-weight: 600; margin-bottom: 0.25rem; color: var(--text);">Graduated!</div>
                             <div id="graduationSlot" style="font-size: 0.9rem; color: var(--text-muted);"></div>
                         </div>
                     </div>
@@ -1753,13 +1771,11 @@ async function loadReefStakePosition(address) {
             const posLocked = position.lock_until > 0 && position.lock_until > currentSlot;
             if (posLocked) {
                 unstakeBtn.disabled = true;
-                unstakeBtn.style.opacity = '0.5';
-                unstakeBtn.style.cursor = 'not-allowed';
+                unstakeBtn.classList.add('btn-disabled');
                 unstakeBtn.title = `Locked until slot ${position.lock_until.toLocaleString()}`;
             } else {
                 unstakeBtn.disabled = false;
-                unstakeBtn.style.opacity = '1';
-                unstakeBtn.style.cursor = 'pointer';
+                unstakeBtn.classList.remove('btn-disabled');
                 unstakeBtn.title = '';
             }
         }
@@ -1767,19 +1783,25 @@ async function loadReefStakePosition(address) {
         // Render tier cards
         const tiersGrid = document.getElementById('tiersGrid');
         if (tiersGrid && poolInfo.tiers) {
-            const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
+            const tierColorClasses = ['flexible', 'lock30', 'lock90', 'lock365'];
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
                 const isActive = position.lock_tier === t.id && position.st_molt_amount > 0;
                 const apyStr = (t.apy_percent || 0).toFixed(1);
+                const apyDisplay = poolInfo.total_molt_staked > 0
+                    ? `${apyStr}%`
+                    : `~${[5.0, 7.5, 10.0, 15.0][i]}%`;
+                const apyNote = poolInfo.total_molt_staked > 0
+                    ? ''
+                    : ' <span class="staking-tier-est">(est.)</span>';
                 return `
-                    <div style="background: var(--card-bg); padding: 1rem; border-radius: 10px; border: 2px solid ${isActive ? tierColors[i] : 'var(--border)'}; ${isActive ? 'box-shadow: 0 0 12px ' + tierColors[i] + '33;' : ''}">
-                        <div style="font-weight: 600; font-size: 0.95rem; color: ${tierColors[i]}; margin-bottom: 0.35rem;">${t.name}</div>
-                        <div style="font-size: 1.4rem; font-weight: 700; color: var(--text);">${apyStr}% <span style="font-size:0.7rem;color:var(--text-muted);">APY</span></div>
-                        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
+                    <div class="staking-tier-card ${tierColorClasses[i]} ${isActive ? 'staking-tier-active' : ''}">
+                        <div class="staking-tier-name">${t.name}</div>
+                        <div class="staking-tier-apy">${apyDisplay}${apyNote} <span class="staking-tier-apy-label">APY</span></div>
+                        <div class="staking-tier-meta">
                             ${t.lock_days > 0 ? t.lock_days + '-day lock' : '7-day cooldown'}
                             &middot; ${t.multiplier}x rewards
                         </div>
-                        ${isActive ? '<div style="font-size:0.7rem;color:' + tierColors[i] + ';margin-top:0.4rem;font-weight:600;"><i class="fas fa-check-circle"></i> Active</div>' : ''}
+                        ${isActive ? '<div class="staking-tier-badge"><i class="fas fa-check-circle"></i> Active</div>' : ''}
                     </div>
                 `;
             }).join('');
@@ -1795,18 +1817,16 @@ async function loadReefStakePosition(address) {
                 const remainSlots = Math.max(0, req.claimable_at - currentSlot);
                 const remainDays = (remainSlots / SLOTS_PER_DAY).toFixed(1);
                 return `
-                    <div style="padding: 1rem; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-weight: 600;">${fmtToken(req.molt_to_receive / SHELLS_PER_MOLT)} MOLT</span>
-                            <span style="display: flex; align-items: center; gap: 0.5rem;">
-                                ${isClaimable
-                                    ? `<button onclick="claimReefStake()" class="btn btn-small" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">
+                    <div class="staking-unstake-item">
+                        <span class="staking-unstake-amount">${fmtToken(req.molt_to_receive / SHELLS_PER_MOLT)} MOLT</span>
+                        <span class="staking-unstake-status">
+                            ${isClaimable
+                                ? `<button onclick="claimReefStake()" class="btn btn-small btn-claim">
                                         <i class="fas fa-check-circle"></i> Claim
-                                       </button>`
-                                    : `<span style="color:var(--text-muted);font-size:0.85rem;"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
-                                }
-                            </span>
-                        </div>
+                                   </button>`
+                                : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
+                            }
+                        </span>
                     </div>
                 `;
             }).join('');
@@ -2356,6 +2376,11 @@ async function refreshNFTs() {
     const grid = document.getElementById('nftsGrid');
     const empty = document.getElementById('nftsEmpty');
     const countEl = document.getElementById('nftCount');
+    
+    // Show loading state
+    grid.style.display = 'none';
+    empty.style.display = 'none';
+    countEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
     
     try {
         // Try to fetch NFTs from RPC (getNFTsByOwner)

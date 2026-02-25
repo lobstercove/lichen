@@ -1170,6 +1170,7 @@
     border-radius: 50%;
     object-fit: cover;
 }
+.asset-icon-molt { color: var(--accent, #ff6b35); }
 
 .asset-info {
     flex: 1;
@@ -1523,6 +1524,200 @@
    7a. NFT GALLERY
    ──────────────────────────────────────────────────────────── */
 
+/* ── Shared Banner Base (all tabs use this pattern) ── */
+.tab-banner {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.10));
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: 14px;
+    padding: 1.25rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1.15rem;
+    margin-bottom: 1rem;
+}
+.tab-banner-icon {
+    width: 46px; height: 46px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.tab-banner-icon i { font-size: 1.35rem; }
+.tab-banner-text h3 {
+    margin: 0 0 0.2rem 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.tab-banner-text p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
+/* Per-tab banner colors */
+.tab-banner.nft     { background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(236, 72, 153, 0.10)); border-color: rgba(168, 85, 247, 0.18); }
+.tab-banner.nft .tab-banner-icon { background: rgba(168, 85, 247, 0.15); }
+.tab-banner.nft .tab-banner-icon i { color: #a855f7; }
+
+.tab-banner.staking { background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(37, 99, 235, 0.10)); border-color: rgba(59, 130, 246, 0.18); }
+.tab-banner.staking .tab-banner-icon { background: rgba(59, 130, 246, 0.15); }
+.tab-banner.staking .tab-banner-icon i { color: #3b82f6; }
+
+.tab-banner.validator { background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(79, 70, 229, 0.10)); border-color: rgba(139, 92, 246, 0.18); }
+.tab-banner.validator .tab-banner-icon { background: rgba(139, 92, 246, 0.15); }
+.tab-banner.validator .tab-banner-icon i { color: var(--accent, #f77f00); }
+
+.tab-banner.shield  { background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12)); border-color: rgba(168, 85, 247, 0.2); }
+.tab-banner.shield .tab-banner-icon { background: rgba(168, 85, 247, 0.15); }
+.tab-banner.shield .tab-banner-icon i { color: #a855f7; }
+
+/* ── Staking UI Classes ── */
+.staking-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+.staking-stat-card {
+    background: var(--card-bg, var(--bg-card));
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+}
+.staking-stat-label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+.staking-stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.staking-stat-value.green  { color: #10b981; }
+.staking-stat-value.amber  { color: #f59e0b; }
+.staking-stat-value.purple { color: #a78bfa; }
+.staking-tiers-heading {
+    margin-bottom: 0.75rem;
+    color: var(--text);
+}
+.staking-tiers-heading i { color: #a78bfa; }
+.staking-tiers-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+}
+.staking-tier-card {
+    background: var(--card-bg, var(--bg-card));
+    padding: 1rem;
+    border-radius: 10px;
+    border: 2px solid var(--border);
+}
+.staking-tier-card.active {
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.2);
+}
+.staking-tier-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 0.35rem;
+}
+.staking-tier-apy {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text);
+}
+.staking-tier-apy span {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+.staking-tier-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+.staking-tier-active {
+    font-size: 0.7rem;
+    margin-top: 0.4rem;
+    font-weight: 600;
+}
+/* Tier color variants */
+.staking-tier-card.flexible .staking-tier-name { color: #94a3b8; }
+.staking-tier-card.flexible.staking-tier-active { border-color: #94a3b8; box-shadow: 0 0 12px rgba(148, 163, 184, 0.2); }
+.staking-tier-card.flexible .staking-tier-badge { color: #94a3b8; }
+.staking-tier-card.lock30 .staking-tier-name { color: #60a5fa; }
+.staking-tier-card.lock30.staking-tier-active { border-color: #60a5fa; box-shadow: 0 0 12px rgba(96, 165, 250, 0.2); }
+.staking-tier-card.lock30 .staking-tier-badge { color: #60a5fa; }
+.staking-tier-card.lock90 .staking-tier-name { color: #a78bfa; }
+.staking-tier-card.lock90.staking-tier-active { border-color: #a78bfa; box-shadow: 0 0 12px rgba(167, 139, 250, 0.2); }
+.staking-tier-card.lock90 .staking-tier-badge { color: #a78bfa; }
+.staking-tier-card.lock365 .staking-tier-name { color: #f59e0b; }
+.staking-tier-card.lock365.staking-tier-active { border-color: #f59e0b; box-shadow: 0 0 12px rgba(245, 158, 11, 0.2); }
+.staking-tier-card.lock365 .staking-tier-badge { color: #f59e0b; }
+/* Fix: when used as class on the card div itself, override to behave as modifier */
+div.staking-tier-card.staking-tier-active { font-size: inherit; }
+.staking-tier-badge { font-size: 0.7rem; margin-top: 0.4rem; font-weight: 600; }
+.staking-tier-apy-label { font-size: 0.7rem; color: var(--text-muted); }
+.staking-tier-est { font-size: 0.65rem; color: var(--text-muted); font-weight: 400; }
+/* Unstake item sub-elements */
+.staking-unstake-amount { font-weight: 600; }
+.staking-unstake-status { display: flex; align-items: center; gap: 0.5rem; }
+.staking-unstake-timer { color: var(--text-muted); font-size: 0.85rem; }
+.btn-claim {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+    background: #10b981;
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+}
+.btn-claim:hover { background: #059669; }
+.btn-disabled { opacity: 0.5; cursor: not-allowed !important; }
+/* Tab banner sub-text element */
+.tab-banner-sub { font-size: 0.95rem; color: var(--text-muted); }
+.staking-info-box {
+    background: var(--card-bg, var(--bg-card));
+    padding: 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+.staking-info-box i { color: #3b82f6; }
+.staking-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+.staking-actions .btn { width: 100%; padding: 1rem; }
+.staking-lock-status {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background: rgba(249, 115, 22, 0.1);
+    border: 1px solid rgba(249, 115, 22, 0.3);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: #f97316;
+}
+.staking-pending {
+    margin-top: 1.5rem;
+}
+.staking-pending h4 { margin-bottom: 1rem; }
+.staking-unstake-item {
+    padding: 1rem;
+    background: var(--card-bg, var(--bg-card));
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-bottom: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* ── Legacy banner aliases (kept for backwards compat) ── */
 .nft-banner {
     background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(236, 72, 153, 0.1));
     padding: 1.5rem;
@@ -3262,15 +3457,19 @@
 .shield-modal-info.unshield i { color: #06d6a0; }
 .btn-shield {
     background: linear-gradient(135deg, #a855f7, #6366f1);
+    color: #fff;
 }
 .btn-shield:hover {
     background: linear-gradient(135deg, #9333ea, #4f46e5);
+    color: #fff;
 }
 .btn-unshield {
     background: linear-gradient(135deg, #06d6a0, #34d399);
+    color: #fff;
 }
 .btn-unshield:hover {
     background: linear-gradient(135deg, #05c090, #2dd38a);
+    color: #fff;
 }
 .shield-vk-input {
     font-family: 'JetBrains Mono', monospace;

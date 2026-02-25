@@ -437,12 +437,12 @@
                 </div>
 
                 <div class="tab-content" data-tab="nfts">
-                    <div class="nft-banner">
-                        <h3>
-                            <i class="fas fa-gem" style="color: #a855f7;"></i>
-                            NFT Collection
-                        </h3>
-                        <p>Collect, trade, and showcase MTS-721 and MTS-1155 tokens on MoltChain.</p>
+                    <div class="tab-banner nft">
+                        <div class="tab-banner-icon"><i class="fas fa-gem"></i></div>
+                        <div class="tab-banner-text">
+                            <h3>NFT Collection</h3>
+                            <p>Collect, trade, and showcase MTS-721 and MTS-1155 tokens on MoltChain.</p>
+                        </div>
                     </div>
 
                     <div class="nfts-header">
@@ -493,13 +493,12 @@
                     <div id="shieldedStatusMsg" class="shield-status-msg"></div>
 
                     <!-- ZK Privacy Banner -->
-                    <div class="shield-banner">
-                        <h3>
-                            <i class="fas fa-user-shield"></i>
-                            Zero-Knowledge Privacy
-                            <span class="shield-badge">Groth16/BN254</span>
-                        </h3>
-                        <p>Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
+                    <div class="tab-banner shield">
+                        <div class="tab-banner-icon"><i class="fas fa-user-shield"></i></div>
+                        <div class="tab-banner-text">
+                            <h3>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></h3>
+                            <p>Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
+                        </div>
                     </div>
 
                     <!-- Shielded Balance Card -->
@@ -995,7 +994,7 @@
     <div id="shieldModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-arrow-down" style="color: #a855f7;"></i> Shield MOLT</h3>
+                <h3><i class="fas fa-arrow-down"></i> Shield MOLT</h3>
                 <button class="modal-close" onclick="closeModal('shieldModal')">
                     <i class="fas fa-times"></i>
                 </button>
@@ -1031,7 +1030,7 @@
     <div id="unshieldModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-arrow-up" style="color: #06d6a0;"></i> Unshield MOLT</h3>
+                <h3><i class="fas fa-arrow-up"></i> Unshield MOLT</h3>
                 <button class="modal-close" onclick="closeModal('unshieldModal')">
                     <i class="fas fa-times"></i>
                 </button>
@@ -1070,7 +1069,7 @@
     <div id="shieldedTransferModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-paper-plane" style="color: #a855f7;"></i> Private Transfer</h3>
+                <h3><i class="fas fa-paper-plane"></i> Private Transfer</h3>
                 <button class="modal-close" onclick="closeModal('shieldedTransferModal')">
                     <i class="fas fa-times"></i>
                 </button>

@@ -4932,7 +4932,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderLaunchpadEmptyState(grid, title, subtitle = '') {
         if (!grid) return;
-        grid.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:220px;width:100%;text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;"><div><i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>${title}</p>${subtitle ? `<p style="font-size:0.8rem;margin-top:8px;">${subtitle}</p>` : ''}</div></div>`;
+        grid.innerHTML = `<div class="launch-empty-state" style="display:flex;align-items:center;justify-content:center;min-height:220px;width:100%;text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;"><div><i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>${title}</p>${subtitle ? `<p style="font-size:0.8rem;margin-top:8px;">${subtitle}</p>` : ''}</div></div>`;
     }
 
     async function loadLaunchpadStats() {

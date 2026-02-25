@@ -230,6 +230,29 @@ function encodeMoltyIdArgs(callerPubkey, functionName, params) {
                 new Uint8Array([(params.status || 0) & 0xFF]),
             ]);
         }
+        case 'attest_skill': {
+            // attest_skill(attester_ptr:I32, identity_ptr:I32, skill_name_ptr:I32, skill_name_len:I32(u32), level:I32(u8))
+            const identityBytes = bs58.decode(params.identity);
+            const skillNameBytes = te.encode(params.skill_name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x20, 0x04, 0x01], [
+                callerPubkey,
+                identityBytes,
+                padBytes(skillNameBytes, 32),
+                u32LE(skillNameBytes.length),
+                new Uint8Array([(params.level || 50) & 0xFF]),
+            ]);
+        }
+        case 'revoke_attestation': {
+            // revoke_attestation(revoker_ptr:I32, identity_ptr:I32, skill_name_ptr:I32, skill_name_len:I32(u32))
+            const identityBytes = bs58.decode(params.identity);
+            const skillNameBytes = te.encode(params.skill_name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x20, 0x04], [
+                callerPubkey,
+                identityBytes,
+                padBytes(skillNameBytes, 32),
+                u32LE(skillNameBytes.length),
+            ]);
+        }
         default:
             // Fallback: JSON-encode (legacy — will likely fail for ptr-param functions)
             return new TextEncoder().encode(JSON.stringify(params));

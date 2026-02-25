@@ -322,6 +322,11 @@ impl ReefStakePool {
             }
             position.st_molt_amount += st_molt_to_mint;
             position.molt_deposited += molt_amount;
+            // Extend lock to the later of current lock or new deposit lock
+            // This prevents the exploit of depositing large amounts right before unlock
+            if lock_until > position.lock_until {
+                position.lock_until = lock_until;
+            }
         } else {
             self.positions.insert(
                 user,

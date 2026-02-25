@@ -3024,6 +3024,7 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 );
                 meta["website"] = serde_json::json!("https://moltchain.network");
                 meta["logo_url"] = serde_json::json!("https://moltchain.network/assets/MoltChain_Logo_256.png");
+                meta["icon_class"] = serde_json::json!("fas fa-fire");
                 meta["twitter"] = serde_json::json!("https://x.com/MoltChainHQ");
                 meta["telegram"] = serde_json::json!("https://t.me/moltchainhq");
                 meta["discord"] = serde_json::json!("https://discord.gg/gkQmsHXRXp");
@@ -3034,15 +3035,28 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["decimals"] = serde_json::json!(9);
                 meta["mintable"] = serde_json::json!(true);
                 meta["burnable"] = serde_json::json!(true);
-                // Cosmetic description per wrapped asset
-                let desc = match symbol {
-                    "mUSD" => "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
-                    "wSOL" => "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
-                    "wETH" => "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
-                    "wBNB" => "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
-                    _ => "Wrapped asset on MoltChain.",
+                // Logo and description per wrapped asset
+                let (desc, logo) = match symbol {
+                    "mUSD" => (
+                        "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
+                        "fas fa-dollar-sign",
+                    ),
+                    "wSOL" => (
+                        "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
+                        "fab fa-solana",
+                    ),
+                    "wETH" => (
+                        "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
+                        "fab fa-ethereum",
+                    ),
+                    "wBNB" => (
+                        "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
+                        "fas fa-coins",
+                    ),
+                    _ => ("Wrapped asset on MoltChain.", "fas fa-coins"),
                 };
                 meta["description"] = serde_json::json!(desc);
+                meta["icon_class"] = serde_json::json!(logo);
             }
             _ => {}
         }
@@ -3614,99 +3628,6 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         } else {
             skipped += 1;
         }
-    }
-
-    // ── Prediction Market: seed initial markets BEFORE wiring MoltyID ──
-    // (MoltyID address is still zero at this point, so reputation check is skipped.)
-    if let Some(predict_pk) = address_map.get("prediction_market") {
-        let creation_fee: u64 = 10_000_000; // 10 mUSD anti-spam fee
-        let initial_liq: u64 = 100_000_000; // 100 mUSD per market
-        let close_slot: u64 = 63_072_000;   // ~1 year at 1 slot/sec
-
-        struct MarketSeed {
-            question: &'static str,
-            category: u8,
-            outcomes: u8,
-        }
-        let markets: &[MarketSeed] = &[
-            MarketSeed {
-                question: "Will Bitcoin exceed $200,000 by end of 2025?",
-                category: 0, // crypto
-                outcomes: 2,
-            },
-            MarketSeed {
-                question: "Will global AI regulation pass in a G7 country in 2025?",
-                category: 3, // tech
-                outcomes: 2,
-            },
-            MarketSeed {
-                question: "Will MoltChain reach 10,000 active validators?",
-                category: 0, // crypto
-                outcomes: 2,
-            },
-            MarketSeed {
-                question: "Which sector will lead crypto market cap growth in Q4 2025?",
-                category: 6, // economics
-                outcomes: 4, // DeFi, L1s, AI tokens, Memecoins
-            },
-            MarketSeed {
-                question: "Will Ethereum implement full danksharding in 2025?",
-                category: 3, // tech
-                outcomes: 2,
-            },
-        ];
-
-        let mut seeded = 0u32;
-        for m in markets {
-            let q_bytes = m.question.as_bytes();
-            // SHA-256 of question text
-            let q_hash: [u8; 32] = {
-                let mut hasher = Sha256::new();
-                hasher.update(q_bytes);
-                let digest = hasher.finalize();
-                let mut h = [0u8; 32];
-                h.copy_from_slice(&digest[..32]);
-                h
-            };
-            // Build create_market args: [1][creator 32B][cat 1B][close_slot 8B][outcomes 1B][hash 32B][q_len 4B][q_bytes...]
-            let mut args = Vec::with_capacity(79 + q_bytes.len());
-            args.push(1u8); // opcode: create_market
-            args.extend_from_slice(&admin);
-            args.push(m.category);
-            args.extend_from_slice(&close_slot.to_le_bytes());
-            args.push(m.outcomes);
-            args.extend_from_slice(&q_hash);
-            args.extend_from_slice(&(q_bytes.len() as u32).to_le_bytes());
-            args.extend_from_slice(q_bytes);
-
-            let label = format!("prediction_market(create:{})", seeded + 1);
-            if genesis_exec_contract_with_value(
-                state, predict_pk, deployer_pubkey, "call", &args, creation_fee, &label,
-            ) {
-                let market_id = seeded as u64 + 1;
-                // Add initial liquidity (opcode 2) to activate the market
-                // [2][provider 32B][market_id 8B][amount 8B]
-                let mut liq_args = Vec::with_capacity(49);
-                liq_args.push(2u8); // opcode: add_initial_liquidity
-                liq_args.extend_from_slice(&admin);
-                liq_args.extend_from_slice(&market_id.to_le_bytes());
-                liq_args.extend_from_slice(&initial_liq.to_le_bytes());
-
-                let liq_label = format!("prediction_market(liquidity:{})", market_id);
-                if genesis_exec_contract_with_value(
-                    state, predict_pk, deployer_pubkey, "call", &liq_args, initial_liq, &liq_label,
-                ) {
-                    seeded += 1;
-                    info!("  SEED prediction market #{}: {}", market_id, m.question);
-                } else {
-                    warn!("  WARN: created market #{} but failed to add liquidity", market_id);
-                    seeded += 1; // Market still exists, just in PENDING state
-                }
-            } else {
-                warn!("  WARN: failed to create prediction market: {}", m.question);
-            }
-        }
-        info!("  Seeded {} prediction markets", seeded);
     }
 
     // ── Prediction Market: wire up cross-contract addresses ──
