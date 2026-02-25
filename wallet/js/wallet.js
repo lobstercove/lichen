@@ -10,7 +10,7 @@ function fmtUsd(value, sym = '$') {
     return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
-const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
+const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
 
 // Network configuration
 const NETWORKS = {
@@ -397,11 +397,13 @@ const rpc = new MoltChainRPC(getRpcEndpoint());
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
 const TOKEN_REGISTRY = {
-    mUSD: { symbol: 'mUSD', name: 'Molt USD',     decimals: 6, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80' },
-    wSOL: { symbol: 'wSOL', name: 'Wrapped SOL',  decimals: 9, icon: 'fab fa-solana',       address: null, color: '#9945FF' },
-    wETH: { symbol: 'wETH', name: 'Wrapped ETH',  decimals: 9, icon: 'fab fa-ethereum',     address: null, color: '#627EEA' },
-    REEF: { symbol: 'REEF', name: 'Reef Token',    decimals: 9, icon: 'fas fa-water',        address: null, color: '#a855f7' },
+    mUSD: { symbol: 'mUSD', name: 'Molt USD',     decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://moltchain.network/assets/img/coins/128x128/musd.png' },
+    wSOL: { symbol: 'wSOL', name: 'Wrapped SOL',  decimals: 9, icon: 'fab fa-solana',       address: null, color: '#9945FF', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png' },
+    wETH: { symbol: 'wETH', name: 'Wrapped ETH',  decimals: 9, icon: 'fab fa-ethereum',     address: null, color: '#627EEA', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png' },
+    wBNB: { symbol: 'wBNB', name: 'Wrapped BNB',  decimals: 9, icon: 'fas fa-coins',        address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },
 };
+
+const MOLT_LOGO_URL = 'https://moltchain.network/assets/img/coins/128x128/molt.png';
 
 // Load deploy manifest to get token contract addresses
 async function loadTokenRegistry() {
@@ -1249,7 +1251,7 @@ async function loadAssets() {
     const moltUsd = molt * MOCK_PRICES.MOLT;
     html += `
         <div class="asset-item" style="cursor: default;">
-            <div class="asset-icon asset-icon-molt"><i class="fas fa-fire"></i></div>
+            <div class="asset-icon asset-icon-molt"><img src="${MOLT_LOGO_URL}" alt="MOLT" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
             <div class="asset-info">
                 <div class="asset-name">MoltChain</div>
                 <div class="asset-symbol">MOLT</div>
@@ -1261,16 +1263,18 @@ async function loadAssets() {
         </div>
     `;
     
-    // Wrapped tokens
+    // Wrapped tokens (only show when balance > 0)
     for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
         const bal = tokenBalances[symbol] || 0;
         const usdVal = bal * (MOCK_PRICES[symbol] || 0);
         
-        // Show token if it has a balance or a known contract address
-        if (bal > 0 || token.address) {
+        if (bal > 0) {
+            const tokenIcon = token.logoUrl
+                ? `<img src="${token.logoUrl}" alt="${token.symbol}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">`
+                : `<i class="${token.icon}"></i>`;
             html += `
-                <div class="asset-item" style="cursor: default; ${bal === 0 ? 'opacity: 0.5;' : ''}">
-                    <div class="asset-icon" style="color: ${token.color};"><i class="${token.icon}"></i></div>
+                <div class="asset-item" style="cursor: default;">
+                    <div class="asset-icon" style="color: ${token.color};">${tokenIcon}</div>
                     <div class="asset-info">
                         <div class="asset-name">${token.name}</div>
                         <div class="asset-symbol">${token.symbol}</div>
@@ -1868,9 +1872,24 @@ async function showReefStakeModal() {
     });
     
     if (!values) return;
-    const amount = parseFloat(values.stakeAmount);
+    let amount = parseFloat(values.stakeAmount);
     if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
     if (!values.password) { showToast('Password required'); return; }
+    
+    // Balance guard: check spendable MOLT and auto-correct
+    try {
+        const balResult = await rpc.call('getBalance', [wallet.address]);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
+        const maxStakable = Math.max(0, spendable - BASE_FEE_MOLT);
+        if (maxStakable <= 0) {
+            showToast('Insufficient MOLT balance for staking');
+            return;
+        }
+        if (amount > maxStakable) {
+            amount = parseFloat(maxStakable.toFixed(6));
+            showToast(`Stake amount adjusted to available balance: ${fmtToken(amount)} MOLT`);
+        }
+    } catch (e) { /* let RPC reject */ }
     
     try {
         const shells = Math.floor(amount * SHELLS_PER_MOLT);
@@ -1935,9 +1954,23 @@ async function showReefUnstakeModal() {
     });
     
     if (!values) return;
-    const amount = parseFloat(values.unstakeAmount);
+    let amount = parseFloat(values.unstakeAmount);
     if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
     if (!values.password) { showToast('Password required'); return; }
+    
+    // Balance guard: check stMOLT position and auto-correct
+    try {
+        const position = await rpc.call('getStakingPosition', [wallet.address]);
+        const stMolt = (position?.st_molt_amount || 0) / SHELLS_PER_MOLT;
+        if (stMolt <= 0) {
+            showToast('No stMOLT balance to unstake');
+            return;
+        }
+        if (amount > stMolt) {
+            amount = parseFloat(stMolt.toFixed(6));
+            showToast(`Unstake amount adjusted to stMOLT balance: ${fmtToken(amount)} stMOLT`);
+        }
+    } catch (e) { /* let RPC reject */ }
     
     try {
         const shells = Math.floor(amount * SHELLS_PER_MOLT);
@@ -2134,8 +2167,9 @@ async function showDepositInfo(chain) {
     if (!wallet) return;
     
     const chainInfo = {
-        SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', tokens: ['USDC', 'USDT'] },
-        ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', tokens: ['USDC', 'USDT'] }
+        SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['USDC', 'USDT'] },
+        ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['USDC', 'USDT'] },
+        BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['USDC', 'USDT'] }
     };
     const info = chainInfo[chain];
     if (!info) return;
@@ -2161,6 +2195,7 @@ async function showDepositInfo(chain) {
             </p>
         </div>`,
         icon: info.icon,
+        iconImage: info.iconImage,
         confirmText: 'Close',
         cancelText: 'Cancel'
     });
@@ -2171,7 +2206,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     if (!wallet) return;
     
     // AUDIT-FIX W-H1: Validate inputs before sending to custody
-    const validChains = ['solana', 'ethereum'];
+    const validChains = ['solana', 'ethereum', 'bnb'];
     const validAssets = ['usdc', 'usdt'];
     if (!validChains.includes(chain)) {
         showToast('Invalid chain selected', 'error');
@@ -2472,13 +2507,23 @@ function closeSettingsModal() {
     closeModal('settingsModal');
 }
 
-function copyAddress(type = 'native') {
-    const address = type === 'evm' 
+function pulseCopyButton(buttonEl) {
+    if (!buttonEl) return;
+    const icon = buttonEl.querySelector('i');
+    if (!icon) return;
+    const originalClass = icon.className;
+    icon.className = 'fas fa-check';
+    setTimeout(() => { icon.className = originalClass; }, 1200);
+}
+
+function copyAddress(type = 'native', triggerEl = null) {
+    const address = type === 'evm'
         ? document.getElementById('walletAddressEVM').value
         : document.getElementById('walletAddress').value;
     const label = type === 'evm' ? 'EVM address' : 'Native address';
-    
+
     navigator.clipboard.writeText(address).then(() => {
+        pulseCopyButton(triggerEl);
         showToast(`✅ ${label} copied to clipboard!`);
     }).catch(() => {
         showToast('❌ Failed to copy');
@@ -2654,7 +2699,7 @@ async function updateSendTokenUI() {
 
 async function confirmSend() {
     const to = document.getElementById('sendTo').value.trim();
-    const amount = parseFloat(document.getElementById('sendAmount').value);
+    let amount = parseFloat(document.getElementById('sendAmount').value);
     const selectedToken = document.getElementById('sendToken')?.value || 'MOLT';
     
     if (!MoltCrypto.isValidAddress(to)) {
@@ -2670,15 +2715,44 @@ async function confirmSend() {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
-    // Pre-flight balance check: ensure enough MOLT for fees (and transfer if MOLT)
+    // Pre-flight balance check with auto-correction
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
         const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
         const baseFee = BASE_FEE_MOLT;
-        const totalNeeded = selectedToken === 'MOLT' ? amount + baseFee : baseFee;
-        if (spendable < totalNeeded) {
-            showToast(`Insufficient MOLT balance: need ${fmtToken(totalNeeded)} MOLT (${selectedToken === 'MOLT' ? 'transfer + fee' : 'fee'}), have ${fmtToken(spendable)} spendable`);
-            return;
+
+        if (selectedToken === 'MOLT') {
+            const maxSendable = Math.max(0, spendable - baseFee);
+            if (maxSendable <= 0) {
+                showToast('Insufficient MOLT balance (not enough to cover fee)');
+                document.getElementById('sendAmount').value = '0';
+                return;
+            }
+            if (amount > maxSendable) {
+                amount = parseFloat(maxSendable.toFixed(6));
+                document.getElementById('sendAmount').value = amount;
+                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} MOLT`);
+                return; // Let user review the adjusted amount
+            }
+        } else {
+            // Check fee coverage for non-MOLT tokens
+            if (spendable < baseFee) {
+                showToast(`Insufficient MOLT for fee: need ${fmtToken(baseFee)} MOLT, have ${fmtToken(spendable)}`);
+                return;
+            }
+            // Check token balance
+            const tokenBal = await getTokenBalanceFormatted(selectedToken, wallet.address);
+            if (tokenBal <= 0) {
+                showToast(`No ${selectedToken} balance available`);
+                document.getElementById('sendAmount').value = '0';
+                return;
+            }
+            if (amount > tokenBal) {
+                amount = parseFloat(tokenBal.toFixed(6));
+                document.getElementById('sendAmount').value = amount;
+                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} ${selectedToken}`);
+                return; // Let user review the adjusted amount
+            }
         }
     } catch (e) {
         // Non-blocking: let the RPC reject it if balance is insufficient
@@ -3044,11 +3118,14 @@ function showConfirmModal(options) {
     return new Promise((resolve) => {
         const modal = document.createElement('div');
         modal.className = 'password-modal';
+        const iconHtml = options.iconImage
+            ? `<img src="${escapeHtml(options.iconImage)}" alt="" style="width:18px;height:18px;border-radius:50%;object-fit:cover;vertical-align:middle;">`
+            : `<i class="${options.icon || 'fas fa-question-circle'}"></i>`;
         
         modal.innerHTML = `
             <div class="password-modal-content">
                 <div class="password-modal-header">
-                    <h3><i class="${options.icon || 'fas fa-question-circle'}"></i> ${options.title}</h3>
+                    <h3>${iconHtml} ${options.title}</h3>
                     <button class="modal-close password-modal-close-btn">
                         <i class="fas fa-times"></i>
                     </button>
@@ -3195,8 +3272,11 @@ async function exportPrivateKeyWithPassword(password) {
         modal.querySelector('#exportPkValue').value = privateKeyHex;
         const dismissModal = () => { modal.classList.remove('show'); setTimeout(() => modal.remove(), 300); };
         modal.querySelector('#exportPkClose').addEventListener('click', dismissModal);
-        modal.querySelector('#exportPkCopy').addEventListener('click', () => {
-            navigator.clipboard.writeText(privateKeyHex).then(() => showToast('✅ Private key copied!'));
+        modal.querySelector('#exportPkCopy').addEventListener('click', (e) => {
+            navigator.clipboard.writeText(privateKeyHex).then(() => {
+                pulseCopyButton(e.currentTarget);
+                showToast('✅ Private key copied!');
+            });
             dismissModal();
         });
         modal.querySelector('#exportPkDownload').addEventListener('click', () => {
@@ -3387,8 +3467,11 @@ async function exportMnemonicWithPassword(password) {
         document.body.appendChild(modal);
         const dismissSeedModal = () => { modal.classList.remove('show'); setTimeout(() => modal.remove(), 300); };
         modal.querySelector('#seedExportClose').addEventListener('click', dismissSeedModal);
-        modal.querySelector('#seedExportCopy').addEventListener('click', () => {
-            navigator.clipboard.writeText(mnemonic).then(() => showToast('✅ Seed phrase copied!'));
+        modal.querySelector('#seedExportCopy').addEventListener('click', (e) => {
+            navigator.clipboard.writeText(mnemonic).then(() => {
+                pulseCopyButton(e.currentTarget);
+                showToast('✅ Seed phrase copied!');
+            });
             dismissSeedModal();
         });
         modal.querySelector('#seedExportDownload').addEventListener('click', () => {

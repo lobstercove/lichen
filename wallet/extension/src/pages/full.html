@@ -3,102 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="MoltWallet">
-    <title>MoltWallet - Your Gateway to MoltChain</title>
-    <meta name="description" content="Secure, fast, and agent-friendly wallet for MoltChain. Create, import, send, and receive MOLT tokens.">
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
-    <link rel="stylesheet" href="wallet.css">
+    <title>MoltWallet — Full View</title>
+    <link rel="stylesheet" href="../styles/shared-base-styles.css">
+    <link rel="stylesheet" href="../styles/shared-theme.css">
+    <link rel="stylesheet" href="../styles/wallet.css">
+    <link rel="stylesheet" href="full.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#FF6B35">
-    <script src="../shared/utils.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
-    <script>
-        // Native Base58 implementation (Bitcoin alphabet, compatible with Rust bs58 crate)
-        const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-        
-        const bs58 = {
-            encode: function(buffer) {
-                if (!buffer || buffer.length === 0) return '';
-                
-                const digits = [0];
-                for (let i = 0; i < buffer.length; i++) {
-                    let carry = buffer[i];
-                    for (let j = 0; j < digits.length; j++) {
-                        carry += digits[j] << 8;
-                        digits[j] = carry % 58;
-                        carry = (carry / 58) | 0;
-                    }
-                    while (carry > 0) {
-                        digits.push(carry % 58);
-                        carry = (carry / 58) | 0;
-                    }
-                }
-                
-                let output = '';
-                // Leading zeros
-                for (let i = 0; buffer[i] === 0 && i < buffer.length - 1; i++) {
-                    output += BASE58_ALPHABET[0];
-                }
-                // Encode digits
-                for (let i = digits.length - 1; i >= 0; i--) {
-                    output += BASE58_ALPHABET[digits[i]];
-                }
-                
-                return output;
-            },
-            
-            decode: function(string) {
-                if (!string || string.length === 0) return new Uint8Array(0);
-                
-                const bytes = [0];
-                for (let i = 0; i < string.length; i++) {
-                    const value = BASE58_ALPHABET.indexOf(string[i]);
-                    if (value === -1) {
-                        throw new Error(`Invalid base58 character: ${string[i]}`);
-                    }
-                    
-                    let carry = value;
-                    for (let j = 0; j < bytes.length; j++) {
-                        carry += bytes[j] * 58;
-                        bytes[j] = carry & 0xff;
-                        carry >>= 8;
-                    }
-                    while (carry > 0) {
-                        bytes.push(carry & 0xff);
-                        carry >>= 8;
-                    }
-                }
-                
-                // Leading zeros
-                for (let i = 0; string[i] === BASE58_ALPHABET[0] && i < string.length - 1; i++) {
-                    bytes.push(0);
-                }
-                
-                return new Uint8Array(bytes.reverse());
-            }
-        };
-        
-        // Base58 implementation loaded (compatible with Rust bs58 crate)
-    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
 <body class="wallet-body">
     <!-- Welcome Screen (First Visit) -->
     <div id="welcomeScreen" class="wallet-screen welcome-screen">
         <div class="wallet-container welcome-container">
             <div class="welcome-logo">
-                <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
+                <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
                 <h1>MoltWallet</h1>
             </div>
             <p class="welcome-subtitle">Your gateway to the MoltChain ecosystem</p>
-            
+
             <div class="welcome-carousel">
                 <div class="carousel-track">
                     <div class="carousel-slide active">
@@ -126,7 +48,7 @@
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
                             <h3>MoltyID Identity</h3>
-                            <p>.molt naming, skill attestations, 0–100K reputation score</p>
+                            <p>.molt naming, skill attestations, 0–10K reputation score</p>
                         </div>
                     </div>
                     <div class="carousel-slide">
@@ -147,12 +69,37 @@
             </div>
 
             <div class="welcome-actions">
-                <button class="btn btn-primary btn-large" onclick="showCreateWallet()">
+                <button class="btn btn-primary btn-large" id="btnCreateWallet">
                     <i class="fas fa-plus"></i> Create New Wallet
                 </button>
-                <button class="btn btn-secondary btn-large" onclick="showImportWallet()">
+                <button class="btn btn-secondary btn-large" id="btnImportWallet">
                     <i class="fas fa-download"></i> Import Existing Wallet
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unlock Screen -->
+    <div id="unlockScreen" class="wallet-screen" style="display: none;">
+        <div class="wallet-container" style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+            <div class="unlock-card">
+                <div class="welcome-logo">
+                    <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet" style="width:64px;height:64px;">
+                    <h1>MoltWallet</h1>
+                </div>
+                <p class="unlock-greeting">Welcome back!</p>
+                <div class="unlock-form">
+                    <label class="unlock-label">Enter your password to unlock</label>
+                    <input type="password" id="unlockPassword" class="form-input unlock-input" placeholder="Password">
+                </div>
+                <button class="btn btn-primary unlock-btn" id="unlockSubmit">
+                    <i class="fas fa-lock-open"></i> Unlock
+                </button>
+                <div class="unlock-logout" style="margin-top: 1.2rem;">
+                    <button class="btn btn-danger btn-small" id="logoutBtn" style="opacity:0.75;font-size:0.78rem;">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -184,18 +131,18 @@
                 <div class="create-step active" data-step="1">
                     <h3>Set a Password</h3>
                     <p class="step-description">This password encrypts your wallet on this device.</p>
-                    
+
                     <div class="form-group">
                         <label>Password</label>
                         <input type="password" id="createPassword" class="form-input" placeholder="Enter password">
                     </div>
-                    
+
                     <div class="form-group">
                         <label>Confirm Password</label>
                         <input type="password" id="confirmPassword" class="form-input" placeholder="Confirm password">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="createWalletStep2()">
+                    <button class="btn btn-primary btn-large" id="createStep2Btn">
                         Continue <i class="fas fa-arrow-right"></i>
                     </button>
                 </div>
@@ -204,13 +151,15 @@
                 <div class="create-step" data-step="2">
                     <h3>Your Recovery Phrase</h3>
                     <p class="step-description">Write down these 12 words in order. Keep them safe and secret!</p>
-                    
+
                     <div class="seed-phrase" id="seedPhraseDisplay">
                         <!-- Generated seed words -->
                     </div>
 
                     <div class="seed-phrase-actions" id="seedPhraseActions">
-                        <!-- Copy/Download buttons -->
+                        <button class="btn btn-secondary btn-small" id="copySeedBtn">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
                     </div>
 
                     <div class="warning-box">
@@ -221,7 +170,7 @@
                         </div>
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="createWalletStep3()">
+                    <button class="btn btn-primary btn-large" id="createStep3Btn">
                         I've Written It Down <i class="fas fa-check"></i>
                     </button>
                 </div>
@@ -230,19 +179,24 @@
                 <div class="create-step" data-step="3">
                     <h3>Confirm Your Phrase</h3>
                     <p class="step-description">Select the words in the correct order to verify.</p>
-                    
-                    <div class="seed-confirm" id="seedConfirm">
-                        <!-- Confirm interface -->
+
+                    <div class="seed-confirm">
+                        <div class="confirm-section">
+                            <div id="confirmSlotsGrid" class="confirm-slots-grid"></div>
+                        </div>
+                        <div class="confirm-section">
+                            <div id="confirmWordPool" class="seed-word-pool"></div>
+                        </div>
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="finishCreateWallet()" id="confirmBtn" disabled>
+                    <button class="btn btn-primary btn-large" id="finishCreateBtn" disabled>
                         Create Wallet <i class="fas fa-check-circle"></i>
                     </button>
                 </div>
             </div>
 
             <div class="wallet-footer">
-                <a href="#" onclick="showWelcome(); return false;"><i class="fas fa-arrow-left"></i> Back</a>
+                <a href="#" id="backFromCreate"><i class="fas fa-arrow-left"></i> Back</a>
             </div>
         </div>
     </div>
@@ -271,15 +225,15 @@
                 <div class="import-method active" data-method="seed">
                     <h3>Enter Your Seed Phrase</h3>
                     <p class="step-description">Enter your 12-word recovery phrase.</p>
-                    
+
                     <textarea id="importSeed" class="form-textarea" rows="4" placeholder="word1 word2 word3 ..."></textarea>
 
                     <div class="form-group">
                         <label>Set Password</label>
-                        <input type="password" id="importPassword" class="form-input" placeholder="Encrypt wallet">
+                        <input type="password" id="importPasswordSeed" class="form-input" placeholder="Encrypt wallet">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletSeed()">
+                    <button class="btn btn-primary btn-large" id="importSeedBtn">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
@@ -288,15 +242,15 @@
                 <div class="import-method" data-method="private">
                     <h3>Enter Private Key</h3>
                     <p class="step-description">Import using your private key (hex format).</p>
-                    
-                    <input type="text" id="importPrivateKey" class="form-input" placeholder="0x...">
 
-                    <div class="form-group">
+                    <input type="text" id="importPrivKey" class="form-input" placeholder="0x...">
+
+                    <div class="form-group" style="margin-top: 1rem;">
                         <label>Set Password</label>
-                        <input type="password" id="importPasswordPrivate" class="form-input" placeholder="Encrypt wallet">
+                        <input type="password" id="importPasswordPriv" class="form-input" placeholder="Encrypt wallet">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletPrivateKey()">
+                    <button class="btn btn-primary btn-large" id="importPrivBtn">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
@@ -305,10 +259,10 @@
                 <div class="import-method" data-method="json">
                     <h3>Upload Keystore File</h3>
                     <p class="step-description">Import from a JSON keystore file.</p>
-                    
-                    <div class="file-upload">
+
+                    <div class="file-upload" id="fileUploadArea">
                         <input type="file" id="importJsonFile" accept=".json" style="display: none;">
-                        <button class="btn btn-secondary btn-large" onclick="document.getElementById('importJsonFile').click()">
+                        <button class="btn btn-secondary btn-large" id="chooseFileBtn">
                             <i class="fas fa-upload"></i> Choose File
                         </button>
                         <span id="fileName" class="file-name"></span>
@@ -319,14 +273,14 @@
                         <input type="password" id="importPasswordJson" class="form-input" placeholder="Decrypt keystore">
                     </div>
 
-                    <button class="btn btn-primary btn-large" onclick="importWalletJson()">
+                    <button class="btn btn-primary btn-large" id="importJsonBtn">
                         Import Wallet <i class="fas fa-download"></i>
                     </button>
                 </div>
             </div>
 
             <div class="wallet-footer">
-                <a href="#" onclick="showWelcome(); return false;"><i class="fas fa-arrow-left"></i> Back</a>
+                <a href="#" id="backFromImport"><i class="fas fa-arrow-left"></i> Back</a>
             </div>
         </div>
     </div>
@@ -337,33 +291,29 @@
         <nav class="wallet-nav">
             <div class="nav-container">
                 <div class="nav-logo">
-                    <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
+                    <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
                     <span class="logo-text">MoltWallet</span>
                 </div>
-                
+
                 <div class="nav-selectors">
-                    <!-- Wallet Selector -->
-                    <div class="wallet-selector">
+                    <div class="wallet-selector" id="walletSelectorWrap">
                         <button class="wallet-selector-btn" id="walletSelectorBtn">
                             <i class="fas fa-wallet"></i>
                             <span id="currentWalletName">Wallet 1</span>
                             <i class="fas fa-chevron-down"></i>
                         </button>
-                        <div class="wallet-dropdown" id="walletDropdown">
-                            <!-- Populated dynamically -->
-                        </div>
+                        <div class="wallet-dropdown" id="walletDropdown"></div>
                     </div>
-
                 </div>
 
                 <div class="nav-actions">
-                    <button class="btn btn-small btn-secondary" onclick="showSettings()">
+                    <button class="btn btn-small btn-secondary" id="navSettingsBtn">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <button class="btn btn-small btn-primary" onclick="lockWallet()">
+                    <button class="btn btn-small btn-primary" id="navLockBtn">
                         <i class="fas fa-lock"></i> <span>Lock</span>
                     </button>
-                    <button class="btn btn-small btn-danger" onclick="logoutWallet()">
+                    <button class="btn btn-small btn-danger" id="navLogoutBtn">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
                 </div>
@@ -377,31 +327,30 @@
                 <div class="balance-card">
                     <div class="balance-header">
                         <span class="balance-label">Total Balance</span>
-                        <button class="btn-icon" onclick="refreshBalance()">
+                        <button class="btn-icon" id="refreshBalanceBtn">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
                     <div class="balance-amount" id="totalBalance">0.00 MOLT</div>
                     <div class="balance-usd" id="balanceUsd">$0.00 USD</div>
-                    <div id="balanceBreakdown" class="balance-breakdown"></div>
-                    
+
                     <div class="balance-actions">
-                        <button class="action-btn" onclick="showSend()">
+                        <button class="action-btn" id="showSendBtn">
                             <i class="fas fa-arrow-up"></i>
                             <span>Send</span>
                         </button>
-                        <button class="action-btn" onclick="showReceive()">
+                        <button class="action-btn" id="showReceiveBtn">
                             <i class="fas fa-arrow-down"></i>
                             <span>Receive</span>
                         </button>
-                        <button class="action-btn" onclick="showReceive('deposit')">
+                        <button class="action-btn" id="showDepositBtn">
                             <i class="fas fa-plus-circle"></i>
                             <span>Deposit</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Tabs: Assets | Activity | NFTs | Staking | Identity -->
+                <!-- Tabs -->
                 <div class="dashboard-tabs">
                     <button class="dashboard-tab active" data-tab="assets">
                         <i class="fas fa-coins"></i> Assets
@@ -418,31 +367,24 @@
                     <button class="dashboard-tab" data-tab="identity">
                         <i class="fas fa-fingerprint"></i> Identity
                     </button>
-                    <button class="dashboard-tab" data-tab="shield">
-                        <i class="fas fa-shield-alt"></i> Shield
-                    </button>
                 </div>
 
                 <!-- Tab Content -->
                 <div class="tab-content active" data-tab="assets">
-                    <div class="assets-list" id="assetsList">
-                        <!-- Asset tokens -->
-                    </div>
+                    <div class="assets-list" id="assetsList"></div>
                 </div>
 
                 <div class="tab-content" data-tab="activity">
-                    <div class="activity-list" id="activityList">
-                        <!-- Transaction history -->
-                    </div>
+                    <div class="activity-list" id="activityList"></div>
                 </div>
 
                 <div class="tab-content" data-tab="nfts">
-                    <div class="tab-banner nft">
-                        <div class="tab-banner-icon"><i class="fas fa-gem"></i></div>
-                        <div class="tab-banner-text">
-                            <h3>NFT Collection</h3>
-                            <p>Collect, trade, and showcase your digital collectibles on MoltChain.</p>
-                        </div>
+                    <div class="nft-banner" style="background: linear-gradient(135deg, rgba(255, 107, 53, 0.08), rgba(247, 127, 0, 0.06)); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; border: 1px solid rgba(255, 107, 53, 0.12);">
+                        <h3 style="margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-gem" style="color: var(--primary, #FF6B35);"></i>
+                            NFT Collection
+                        </h3>
+                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Collect, trade, and showcase your digital collectibles on MoltChain.</p>
                     </div>
 
                     <div class="nfts-header">
@@ -450,14 +392,10 @@
                             <span id="nftCount">0 NFTs</span>
                         </div>
                         <div class="nfts-header-right">
-                            <button class="btn-icon" onclick="refreshNFTs()">
-                                <i class="fas fa-sync-alt"></i>
-                            </button>
+                            <button class="btn-icon" id="refreshNftsBtn"><i class="fas fa-sync-alt"></i></button>
                         </div>
                     </div>
-                    <div class="nfts-grid" id="nftsGrid">
-                        <!-- NFT items loaded dynamically -->
-                    </div>
+                    <div class="nfts-grid" id="nftsGrid"></div>
                     <div class="nfts-empty" id="nftsEmpty">
                         <div class="nfts-empty-icon">
                             <i class="fas fa-gem"></i>
@@ -465,7 +403,7 @@
                         <h3>No NFTs Yet</h3>
                         <p>Your collection will appear here once you mint or receive NFTs.</p>
                         <div class="nfts-empty-actions">
-                            <a href="#" class="btn btn-small btn-primary" onclick="openMarketplace(); return false;">
+                            <a href="#" class="btn btn-small btn-primary" id="browseMarketplaceBtn">
                                 <i class="fas fa-store"></i> Browse Marketplace
                             </a>
                         </div>
@@ -473,8 +411,6 @@
                 </div>
 
                 <div class="tab-content" data-tab="staking">
-                    <!-- Content loaded dynamically via JavaScript -->
-                    <!-- Only shows if wallet is a validator -->
                     <div id="stakingValidatorInfo" style="display: none;"></div>
                 </div>
 
@@ -484,131 +420,22 @@
                     </div>
                 </div>
 
-                <!-- Shield (ZKP) tab content -->
-                <div class="tab-content" data-tab="shield">
-                    <div id="shieldedStatusMsg" class="shield-status-msg"></div>
-
-                    <!-- ZK Privacy Banner -->
-                    <div class="tab-banner shield">
-                        <div class="tab-banner-icon"><i class="fas fa-user-shield"></i></div>
-                        <div class="tab-banner-text">
-                            <h3>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></h3>
-                            <p>Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
-                        </div>
-                    </div>
-
-                    <!-- Shielded Balance Card -->
-                    <div class="shield-card">
-                        <div class="shield-balance-row">
-                            <div>
-                                <div class="shield-label">Shielded Balance</div>
-                                <div class="shield-balance-value" id="shieldedBalanceValue">0.0000 MOLT</div>
-                                <div class="shield-balance-sub" id="shieldedBalanceShellsValue">0 shells</div>
-                            </div>
-                            <div class="shield-balance-actions">
-                                <button class="btn btn-shield btn-small" onclick="openShieldModal()">
-                                    <i class="fas fa-arrow-down"></i> Shield
-                                </button>
-                                <button class="btn btn-unshield btn-small" onclick="openUnshieldModal()">
-                                    <i class="fas fa-arrow-up"></i> Unshield
-                                </button>
-                            </div>
-                        </div>
-                        <button class="btn btn-primary shield-transfer-btn" onclick="openShieldedTransferModal()">
-                            <i class="fas fa-paper-plane"></i> Private Transfer
-                        </button>
-                    </div>
-
-                    <!-- Shielded Address & Keys -->
-                    <div class="shield-card">
-                        <h4 class="shield-section-title">
-                            <i class="fas fa-key"></i> Shielded Keys
-                        </h4>
-                        <div class="shield-key-row">
-                            <label class="shield-key-label">Shielded Address</label>
-                            <div class="address-display">
-                                <code id="shieldedAddressDisplay" class="shield-key-value">Not initialized</code>
-                                <button class="btn-icon" onclick="copyShieldedAddress()" title="Copy shielded address">
-                                    <i class="fas fa-copy"></i>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="shield-key-row">
-                            <label class="shield-key-label">Viewing Key</label>
-                            <div class="address-display">
-                                <code class="shield-key-value">Share with auditors for selective disclosure</code>
-                                <button class="btn-icon" onclick="copyViewingKey()" title="Copy viewing key">
-                                    <i class="fas fa-eye"></i>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="shield-info-box">
-                            <i class="fas fa-info-circle"></i>
-                            Your spending key never leaves this device. Viewing key enables auditors to see your shielded activity without spending.
-                        </div>
-                    </div>
-
-                    <!-- Pool Statistics -->
-                    <div class="shield-card">
-                        <h4 class="shield-section-title">
-                            <i class="fas fa-chart-pie"></i> Pool Statistics
-                        </h4>
-                        <div class="shield-stats-grid">
-                            <div class="shield-stat-item">
-                                <div class="shield-stat-label">Total Shielded</div>
-                                <div class="shield-stat-value" id="poolTotalShielded">&mdash;</div>
-                            </div>
-                            <div class="shield-stat-item">
-                                <div class="shield-stat-label">Commitments</div>
-                                <div class="shield-stat-value" id="poolCommitmentCount">&mdash;</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Owned Notes List -->
-                    <div class="shield-card">
-                        <div class="shield-notes-header">
-                            <h4 class="shield-section-title">
-                                <i class="fas fa-file-invoice"></i> Shielded Notes
-                            </h4>
-                            <span class="shield-note-count" id="ownedNoteCount">0 unspent / 0 total</span>
-                        </div>
-                        <div id="shieldedNotesList">
-                            <div class="shield-empty-state">
-                                <i class="fas fa-shield-alt"></i>
-                                <p>No shielded notes yet</p>
-                                <p class="shield-empty-sub">Shield MOLT to create your first private note</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
 
             </div>
         </div>
     </div>
 
-    <!-- Chain Status Bar -->
-    <div class="chain-status-bar" id="chainStatusBar">
-        <span class="chain-status-dot" id="chainDot"></span>
-        <span id="chainBlockHeight">Connecting...</span>
-        <span class="chain-status-sep">|</span>
-        <span id="chainLatency"></span>
-    </div>
-
-    <!-- Modals -->
+    <!-- Send Modal -->
     <div id="sendModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-up"></i> Send</h3>
-                <button class="modal-close" onclick="closeModal('sendModal')">
-                    <i class="fas fa-times"></i>
-                </button>
+                <button class="modal-close" id="closeSendModal"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label>Token</label>
-                    <select id="sendToken" class="form-input" onchange="updateSendTokenUI()">
+                    <select id="sendToken" class="form-input">
  <option value="MOLT"> MOLT</option>
  <option value="mUSD"> mUSD</option>
                         <option value="wSOL">◎ wSOL</option>
@@ -623,9 +450,13 @@
                     <label>Amount</label>
                     <div class="amount-input">
                         <input type="number" id="sendAmount" class="form-input" placeholder="0.00">
-                        <span class="amount-max" onclick="setMaxAmount()">MAX</span>
+                        <span class="amount-max" id="sendMaxBtn">MAX</span>
                     </div>
-                    <div id="sendAvailableBalance" class="send-available-balance"></div>
+                    <div id="sendAvailableBalance" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;"></div>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="sendPassword" class="form-input" placeholder="Unlock to sign">
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>
@@ -633,27 +464,26 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('sendModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="confirmSend()">Send</button>
+                <button class="btn btn-secondary" id="cancelSendBtn">Cancel</button>
+                <button class="btn btn-primary" id="confirmSendBtn">Send</button>
             </div>
         </div>
     </div>
 
+    <!-- Receive Modal -->
     <div id="receiveModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-arrow-down"></i> Receive Assets</h3>
-                <button class="modal-close" onclick="closeModal('receiveModal')">
-                    <i class="fas fa-times"></i>
-                </button>
+                <button class="modal-close" id="closeReceiveModal"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body receive-modal">
                 <!-- Tabs: Receive | Deposit -->
                 <div class="receive-tabs" id="receiveTabs">
-                    <button class="receive-tab active" data-tab="receive" onclick="switchReceiveTab('receive')">
+                    <button class="receive-tab active" data-tab="receive" id="receiveTabBtn">
                         <i class="fas fa-qrcode"></i> Receive
                     </button>
-                    <button class="receive-tab" data-tab="deposit" onclick="switchReceiveTab('deposit')">
+                    <button class="receive-tab" data-tab="deposit" id="depositTabBtn">
                         <i class="fas fa-plus-circle"></i> Deposit
                     </button>
                 </div>
@@ -663,11 +493,9 @@
                     <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.5rem; font-size: 0.95rem;">
                         Receive MOLT and all MoltChain tokens
                     </p>
-                    
-                    <div class="qr-code" id="qrCode">
-                        <!-- QR code generated here -->
-                    </div>
-                    
+
+                    <div class="qr-code" id="qrCode"></div>
+
                     <!-- Native Address (Base58) -->
                     <div style="margin-bottom: 1rem;">
                         <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
@@ -675,12 +503,12 @@
                         </label>
                         <div class="address-display">
                             <input type="text" id="walletAddress" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('native', this)" title="Copy native address">
+                            <button class="btn-circle" id="copyNativeAddr" title="Copy native address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
-                    
+
                     <!-- EVM Address (0x) -->
                     <div style="margin-bottom: 1rem;">
                         <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
@@ -688,12 +516,12 @@
                         </label>
                         <div class="address-display">
                             <input type="text" id="walletAddressEVM" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('evm', this)" title="Copy EVM address">
+                            <button class="btn-circle" id="copyEvmAddr" title="Copy EVM address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
-                    
+
                     <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
                         <i class="fas fa-info-circle" style="color: #4ade80;"></i>
                         Both addresses work! Use Base58 for MoltChain/Solana wallets, 0x for MetaMask/Ethereum wallets
@@ -707,9 +535,9 @@
                     </p>
 
                     <div class="deposit-options">
-                        <div class="deposit-card" onclick="showDepositInfo('SOL')">
+                        <div class="deposit-card" id="depositSOL">
                             <div class="deposit-card-icon" style="background: rgba(153, 69, 255, 0.12); color: #9945FF;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" alt="Solana" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                                <i class="fas fa-sun"></i>
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Solana</strong>
@@ -718,9 +546,9 @@
                             <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
                         </div>
 
-                        <div class="deposit-card" onclick="showDepositInfo('ETH')">
+                        <div class="deposit-card" id="depositETH">
                             <div class="deposit-card-icon" style="background: rgba(98, 126, 234, 0.12); color: #627EEA;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" alt="Ethereum" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                                <i class="fab fa-ethereum"></i>
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Ethereum</strong>
@@ -729,9 +557,9 @@
                             <i class="fas fa-chevron-right" style="color: var(--text-muted);"></i>
                         </div>
 
-                        <div class="deposit-card" onclick="showDepositInfo('BNB')">
-                            <div class="deposit-card-icon" style="background: rgba(240, 185, 11, 0.12); color: #F0B90B;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" alt="BNB" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                        <div class="deposit-card" id="depositBNB">
+                            <div class="deposit-card-icon" style="background: rgba(243, 186, 47, 0.12); color: #F3BA2F;">
+                                <i class="fas fa-coins"></i>
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from BNB Chain</strong>
@@ -761,53 +589,40 @@
         </div>
     </div>
 
+    <!-- Settings Modal -->
     <div id="settingsModal" class="modal">
         <div class="modal-content settings-modal-content">
             <div class="modal-header">
                 <h3><i class="fas fa-cog"></i> Settings</h3>
-                <button class="modal-close" onclick="closeSettingsModal()">
-                    <i class="fas fa-times"></i>
-                </button>
+                <button class="modal-close" id="closeSettingsModal"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body settings-modal-body">
-                
+
                 <!-- Export & Backup -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-download"></i>
-                            <h4>Export & Backup</h4>
-                        </div>
+                        <div><i class="fas fa-download"></i><h4>Export & Backup</h4></div>
                         <p>Backup your wallet securely</p>
                     </div>
                     <div class="settings-card-body">
-                        <button class="settings-btn" onclick="showExportPrivateKey()">
+                        <button class="settings-btn" id="exportPrivKeyBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-key"></i>
-                                <div>
-                                    <strong>Export Private Key</strong>
-                                    <span>Raw hex format</span>
-                                </div>
+                                <div><strong>Export Private Key</strong><span>Raw hex format</span></div>
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="showExportJSON()">
+                        <button class="settings-btn" id="exportJsonBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-file-code"></i>
-                                <div>
-                                    <strong>Export JSON Keystore</strong>
-                                    <span>Encrypted file format</span>
-                                </div>
+                                <div><strong>Export JSON Keystore</strong><span>Encrypted file format</span></div>
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="showExportMnemonic()">
+                        <button class="settings-btn" id="exportSeedBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-list-ol"></i>
-                                <div>
-                                    <strong>View Seed Phrase</strong>
-                                    <span>12-word recovery phrase</span>
-                                </div>
+                                <div><strong>View Seed Phrase</strong><span>12-word recovery phrase</span></div>
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
@@ -821,16 +636,13 @@
                 <!-- Network Configuration -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-network-wired"></i>
-                            <h4>Network</h4>
-                        </div>
+                        <div><i class="fas fa-network-wired"></i><h4>Network</h4></div>
                         <p>Configure RPC endpoints</p>
                     </div>
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Active Network</label>
-                            <select id="networkSelect" class="form-input" onchange="switchNetwork(this.value)">
+                            <select id="networkSelect" class="form-input">
                                 <option value="mainnet">Mainnet</option>
                                 <option value="testnet">Testnet</option>
                                 <option value="local-testnet">Local Testnet</option>
@@ -839,15 +651,13 @@
                         </div>
                         <div class="form-group">
                             <label>Mainnet RPC</label>
-                            <input type="text" id="mainnetRPC" class="form-input" 
-                                   placeholder="http://localhost:8899">
+                            <input type="text" id="mainnetRPC" class="form-input" placeholder="http://localhost:8899">
                         </div>
                         <div class="form-group">
                             <label>Testnet RPC</label>
-                            <input type="text" id="testnetRPC" class="form-input" 
-                                   placeholder="http://localhost:8899">
+                            <input type="text" id="testnetRPC" class="form-input" placeholder="http://localhost:8899">
                         </div>
-                        <button class="btn btn-primary" onclick="saveNetworkSettings()">
+                        <button class="btn btn-primary" id="saveNetworkBtn">
                             <i class="fas fa-save"></i> Save Changes
                         </button>
                     </div>
@@ -856,16 +666,13 @@
                 <!-- Security -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-shield-alt"></i>
-                            <h4>Security</h4>
-                        </div>
+                        <div><i class="fas fa-shield-alt"></i><h4>Security</h4></div>
                         <p>Protect your wallet</p>
                     </div>
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Auto-Lock Timer</label>
-                            <select id="autoLockTimer" class="form-input" onchange="saveAutoLockTimer()">
+                            <select id="autoLockTimer" class="form-input">
                                 <option value="0">Never</option>
                                 <option value="5">5 minutes</option>
                                 <option value="15" selected>15 minutes</option>
@@ -873,7 +680,7 @@
                                 <option value="60">1 hour</option>
                             </select>
                         </div>
-                        <button class="settings-btn" onclick="showChangePassword()">
+                        <button class="settings-btn" id="changePasswordBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-lock"></i>
                                 <div>
@@ -889,16 +696,13 @@
                 <!-- Display -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-palette"></i>
-                            <h4>Display</h4>
-                        </div>
+                        <div><i class="fas fa-palette"></i><h4>Display</h4></div>
                         <p>Customize appearance</p>
                     </div>
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Currency Display</label>
-                            <select id="currencyDisplay" class="form-input" onchange="saveCurrencyDisplay()">
+                            <select id="currencyDisplay" class="form-input">
                                 <option value="USD" selected>USD ($)</option>
                                 <option value="EUR">EUR (€)</option>
                                 <option value="GBP">GBP (£)</option>
@@ -910,7 +714,7 @@
                                 Display Decimals
                                 <span class="tooltip-icon" title="MoltChain uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i class="fas fa-info-circle"></i></span>
                             </label>
-                            <select id="decimalPlaces" class="form-input" onchange="saveDecimalPlaces()">
+                            <select id="decimalPlaces" class="form-input">
                                 <option value="2">2 decimals (0.00)</option>
                                 <option value="4">4 decimals (0.0000)</option>
                                 <option value="6" selected>6 decimals (0.000000)</option>
@@ -924,14 +728,11 @@
                 <!-- Wallet Management -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-wallet"></i>
-                            <h4>Wallet Management</h4>
-                        </div>
+                        <div><i class="fas fa-wallet"></i><h4>Wallet Management</h4></div>
                         <p>Manage current wallet</p>
                     </div>
                     <div class="settings-card-body">
-                        <button class="settings-btn" onclick="showRenameWallet()">
+                        <button class="settings-btn" id="renameWalletBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-edit"></i>
                                 <div>
@@ -941,7 +742,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn" onclick="clearTransactionHistory()">
+                        <button class="settings-btn" id="clearHistoryBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-eraser"></i>
                                 <div>
@@ -951,7 +752,7 @@
                             </div>
                             <i class="fas fa-chevron-right"></i>
                         </button>
-                        <button class="settings-btn danger" onclick="showDeleteWallet()">
+                        <button class="settings-btn danger" id="deleteWalletBtn">
                             <div class="settings-btn-content">
                                 <i class="fas fa-trash"></i>
                                 <div>
@@ -967,196 +768,27 @@
                 <!-- About -->
                 <div class="settings-card">
                     <div class="settings-card-header">
-                        <div>
-                            <i class="fas fa-info-circle"></i>
-                            <h4>About</h4>
-                        </div>
+                        <div><i class="fas fa-info-circle"></i><h4>About</h4></div>
                     </div>
                     <div class="settings-card-body">
                         <div class="settings-info-list">
-                            <div class="settings-info-item">
-                                <span>Version</span>
-                                <strong>1.0.0</strong>
-                            </div>
-                            <div class="settings-info-item">
-                                <span>Network</span>
-                                <strong>MoltChain</strong>
-                            </div>
-                            <div class="settings-info-item">
-                                <span>License</span>
-                                <strong>MIT</strong>
-                            </div>
+                            <div class="settings-info-item"><span>Version</span><strong>1.0.0</strong></div>
+                            <div class="settings-info-item"><span>Network</span><strong>MoltChain</strong></div>
+                            <div class="settings-info-item"><span>License</span><strong>MIT</strong></div>
                         </div>
-                        <a href="https://github.com/moltchain/moltchain" target="_blank" class="settings-link">
+                        <a href="https://github.com/moltchain/moltwallet" target="_blank" class="settings-link">
                             <i class="fas fa-external-link-alt"></i> View on GitHub
                         </a>
                     </div>
                 </div>
-
             </div>
         </div>
     </div>
 
-    <!-- Shield Modal -->
-    <div id="shieldModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3><i class="fas fa-arrow-down"></i> Shield MOLT</h3>
-                <button class="modal-close" onclick="closeModal('shieldModal')">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-            <div class="modal-body">
-                <div class="shield-modal-info">
-                    <i class="fas fa-lock"></i>
-                    Move MOLT from your transparent balance into the shielded pool.
-                    A ZK proof is generated client-side to protect your privacy.
-                </div>
-                <div class="form-group">
-                    <label>Amount (MOLT)</label>
-                    <div class="amount-input">
-                        <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
-                        <span class="amount-max" onclick="document.getElementById('shieldAmount').value = (window.walletBalance || 0).toFixed(4)">MAX</span>
-                    </div>
-                </div>
-                <div class="fee-estimate">
-                    <span>Network Fee</span>
-                    <span id="shieldFeeDisplay">Loading...</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('shieldModal')">Cancel</button>
-                <button class="btn btn-shield" onclick="confirmShield()">
-                    <i class="fas fa-shield-alt"></i> Shield
-                </button>
-            </div>
-        </div>
-    </div>
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
 
-    <!-- Unshield Modal -->
-    <div id="unshieldModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3><i class="fas fa-arrow-up"></i> Unshield MOLT</h3>
-                <button class="modal-close" onclick="closeModal('unshieldModal')">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-            <div class="modal-body">
-                <div class="shield-modal-info unshield">
-                    <i class="fas fa-unlock"></i>
-                    Withdraw MOLT from the shielded pool to a transparent address.
-                    Requires a ZK proof verifying note ownership.
-                </div>
-                <div class="form-group">
-                    <label>Amount (MOLT)</label>
-                    <div class="amount-input">
-                        <input type="number" id="unshieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Recipient Address</label>
-                    <input type="text" id="unshieldRecipient" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)">
-                </div>
-                <div class="fee-estimate">
-                    <span>Network Fee</span>
-                    <span id="unshieldFeeDisplay">Loading...</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('unshieldModal')">Cancel</button>
-                <button class="btn btn-unshield" onclick="confirmUnshield()">
-                    <i class="fas fa-unlock"></i> Unshield
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Shielded Transfer Modal -->
-    <div id="shieldedTransferModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3><i class="fas fa-paper-plane"></i> Private Transfer</h3>
-                <button class="modal-close" onclick="closeModal('shieldedTransferModal')">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-            <div class="modal-body">
-                <div class="shield-modal-info">
-                    <i class="fas fa-user-shield"></i>
-                    Send MOLT privately. Neither the amount, sender, nor recipient is revealed on-chain.
-                    Both parties maintain full privacy.
-                </div>
-                <div class="form-group">
-                    <label>Amount (MOLT)</label>
-                    <div class="amount-input">
-                        <input type="number" id="shieldedTransferAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Recipient Viewing Key (hex)</label>
-                    <input type="text" id="shieldedTransferRecipientVK" class="form-input shield-vk-input" placeholder="64-character hex viewing key" maxlength="64">
-                    <div class="shield-vk-hint">
-                        <i class="fas fa-info-circle"></i> Ask the recipient for their viewing key (not their spending key)
-                    </div>
-                </div>
-                <div class="fee-estimate">
-                    <span>Network Fee</span>
-                    <span id="transferFeeDisplay">Loading...</span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('shieldedTransferModal')">Cancel</button>
-                <button class="btn btn-shield" onclick="confirmShieldedTransfer()">
-                    <i class="fas fa-paper-plane"></i> Send Privately
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script src="shared-config.js"></script>
-    <script src="js/wallet.js"></script>
-    <script src="js/identity.js"></script>
-    <script src="js/crypto.js"></script>
-    <script src="js/shielded.js"></script>
-    <script>
-    /* Welcome carousel */
-    (function() {
-        const slides = document.querySelectorAll('.carousel-slide');
-        const dots   = document.querySelectorAll('.carousel-dot');
-        if (!slides.length) return;
-
-        let current  = 0;
-        let timer    = null;
-        const INTERVAL = 4000;
-
-        function goTo(idx) {
-            slides[current].classList.remove('active');
-            dots[current].classList.remove('active');
-            current = (idx + slides.length) % slides.length;
-            slides[current].classList.add('active');
-            dots[current].classList.add('active');
-        }
-
-        function startAuto() { timer = setInterval(function() { goTo(current + 1); }, INTERVAL); }
-        function stopAuto()  { clearInterval(timer); }
-
-        dots.forEach(function(dot) {
-            dot.addEventListener('click', function() {
-                stopAuto();
-                goTo(Number(this.dataset.slide));
-                startAuto();
-            });
-        });
-
-        var track = document.querySelector('.carousel-track');
-        if (track) {
-            track.addEventListener('mouseenter', stopAuto);
-            track.addEventListener('mouseleave', startAuto);
-        }
-
-        startAuto();
-    })();
-    </script>
+    <script src="../../../../shared/utils.js"></script>
+    <script type="module" src="full.js"></script>
 </body>
 </html>
