@@ -1668,7 +1668,11 @@ function switchReceiveTab(tab) {
 /* ──────────────────────────────────────────
    Bridge Deposit — wired to custody service
    ────────────────────────────────────────── */
-const BRIDGE_ASSETS_EXT = ['usdc', 'usdt'];
+const BRIDGE_CHAINS_EXT = {
+  solana:   { label: 'Solana',     assets: ['sol', 'usdc', 'usdt'] },
+  ethereum: { label: 'Ethereum',   assets: ['eth', 'usdc', 'usdt'] },
+  bsc:      { label: 'BNB Chain',  assets: ['bnb', 'usdc', 'usdt'] }
+};
 let extDepositPollTimer = null;
 let extActiveDepositId = null;
 const EXT_DEPOSIT_MAX_POLL = 24 * 60 * 60 * 1000; // 24h
@@ -1692,12 +1696,13 @@ async function startExtensionDeposit(chain) {
 
   const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain' };
   const chainLabel = chainLabels[chain] || chain;
+  const chainAssets = (BRIDGE_CHAINS_EXT[chain] || { assets: ['usdc', 'usdt'] }).assets;
 
   // Show asset picker inline in depositTabContent
   const container = $('depositTabContent');
   if (!container) return;
 
-  const tokenButtons = BRIDGE_ASSETS_EXT.map(a =>
+  const tokenButtons = chainAssets.map(a =>
     `<button class="btn btn-secondary" data-bridge-asset="${a}" style="margin:0.25rem;padding:0.5rem 1.25rem;">${a.toUpperCase()}</button>`
   ).join(' ');
 
@@ -1810,17 +1815,17 @@ function restoreDepositTab(container) {
     <div class="deposit-options">
       <div class="deposit-card" id="depositSOL">
         <div class="deposit-card-icon" style="background:rgba(153,69,255,0.12);color:#9945FF;"><i class="fas fa-sun"></i></div>
-        <div class="deposit-card-info"><strong>Bridge from Solana</strong><span>USDC, USDT</span></div>
+        <div class="deposit-card-info"><strong>Bridge from Solana</strong><span>SOL, USDC, USDT</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card" id="depositETH">
         <div class="deposit-card-icon" style="background:rgba(98,126,234,0.12);color:#627EEA;"><i class="fab fa-ethereum"></i></div>
-        <div class="deposit-card-info"><strong>Bridge from Ethereum</strong><span>USDC, USDT</span></div>
+        <div class="deposit-card-info"><strong>Bridge from Ethereum</strong><span>ETH, USDC, USDT</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card" id="depositBNB">
         <div class="deposit-card-icon" style="background:rgba(243,186,47,0.12);color:#F3BA2F;"><i class="fas fa-coins"></i></div>
-        <div class="deposit-card-info"><strong>Bridge from BNB Chain</strong><span>USDC, USDT</span></div>
+        <div class="deposit-card-info"><strong>Bridge from BNB Chain</strong><span>BNB, USDC, USDT</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card disabled">
@@ -1855,6 +1860,33 @@ function deriveEvmAddress(pubKeyHex) {
 /* ──────────────────────────────────────────
    Send — available balance display
    ────────────────────────────────────────── */
+async function populateSendTokenDropdown() {
+  const select = $('sendToken');
+  if (!select) return;
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  select.innerHTML = '<option value="MOLT">MOLT</option>';
+  try {
+    const accounts = await rpc().call('getTokenAccounts', [wallet.address]);
+    if (Array.isArray(accounts)) {
+      for (const acct of accounts) {
+        const sym = acct.symbol || acct.token_symbol || '';
+        const bal = Number(acct.balance || acct.amount || 0);
+        if (sym && bal > 0) {
+          select.innerHTML += `<option value="${sym}">${sym}</option>`;
+        }
+      }
+    }
+  } catch { /* fallback: only MOLT */ }
+  // Add stMOLT if user has a staking position
+  try {
+    const pos = await rpc().call('getStakingPosition', [wallet.address]);
+    if (pos && pos.st_molt_amount > 0) {
+      select.innerHTML += '<option value="stMOLT">stMOLT</option>';
+    }
+  } catch { /* no staking position */ }
+}
+
 async function updateSendAvailableBalance() {
   const el = $('sendAvailableBalance');
   if (!el) return;
@@ -2027,7 +2059,11 @@ function wireEvents() {
   });
 
   // Send modal
-  $('showSendBtn')?.addEventListener('click', () => { openModal('sendModal'); updateSendAvailableBalance(); });
+  $('showSendBtn')?.addEventListener('click', async () => {
+    openModal('sendModal');
+    await populateSendTokenDropdown();
+    updateSendAvailableBalance();
+  });
   $('closeSendModal')?.addEventListener('click', () => closeModal('sendModal'));
   $('cancelSendBtn')?.addEventListener('click', () => closeModal('sendModal'));
   $('confirmSendBtn')?.addEventListener('click', handleSend);

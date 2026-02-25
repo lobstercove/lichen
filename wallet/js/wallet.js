@@ -2069,28 +2069,43 @@ async function showSend() {
     const wallet = getActiveWallet();
     if (!wallet) return;
     
-    // Dynamically populate token dropdown - always show MOLT, only tokens with balance or address
+    // Dynamically populate token dropdown from on-chain data — only show tokens with balance
     const select = document.getElementById('sendToken');
     if (select) {
         select.innerHTML = '<option value="MOLT">MOLT</option>';
         
         try {
-            const tokenBalances = await getAllTokenBalances(wallet.address);
-            for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
-                const bal = tokenBalances[symbol] || 0;
-                if (bal > 0 || token.address) {
-                    select.innerHTML += `<option value="${symbol}">${token.icon} ${symbol}</option>`;
+            // Fetch all token accounts for this address from the chain
+            const tokenAccounts = await rpc.call('getTokenAccounts', [wallet.address]);
+            if (Array.isArray(tokenAccounts)) {
+                const seen = new Set();
+                for (const acct of tokenAccounts) {
+                    const sym = acct.symbol || acct.token_symbol || '';
+                    const bal = Number(acct.balance || acct.amount || 0);
+                    if (sym && bal > 0 && !seen.has(sym)) {
+                        seen.add(sym);
+                        select.innerHTML += `<option value="${sym}">${sym}</option>`;
+                    }
                 }
             }
         } catch (e) {
-            // If token balance fetch fails, still show MOLT
+            // Fallback: check TOKEN_REGISTRY balances
+            try {
+                const tokenBalances = await getAllTokenBalances(wallet.address);
+                for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
+                    const bal = tokenBalances[symbol] || 0;
+                    if (bal > 0) {
+                        select.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+                    }
+                }
+            } catch (e2) { /* still show MOLT */ }
         }
 
         // Add stMOLT if user has a staking position
         try {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
             if (position && position.st_molt_amount > 0) {
-                select.innerHTML += `<option value="stMOLT">&#x1f30a; stMOLT</option>`;
+                select.innerHTML += `<option value="stMOLT">stMOLT</option>`;
             }
         } catch (e) {
             // No staking position
@@ -2167,9 +2182,9 @@ async function showDepositInfo(chain) {
     if (!wallet) return;
     
     const chainInfo = {
-        SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['USDC', 'USDT'] },
-        ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['USDC', 'USDT'] },
-        BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['USDC', 'USDT'] }
+        SOL: { name: 'Solana', chain: 'solana', color: '#9945FF', icon: 'fas fa-sun', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png', tokens: ['SOL', 'USDC', 'USDT'] },
+        ETH: { name: 'Ethereum', chain: 'ethereum', color: '#627EEA', icon: 'fab fa-ethereum', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png', tokens: ['ETH', 'USDC', 'USDT'] },
+        BNB: { name: 'BNB Chain', chain: 'bnb', color: '#F0B90B', icon: 'fas fa-coins', iconImage: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png', tokens: ['BNB', 'USDC', 'USDT'] }
     };
     const info = chainInfo[chain];
     if (!info) return;
@@ -2197,7 +2212,7 @@ async function showDepositInfo(chain) {
         icon: info.icon,
         iconImage: info.iconImage,
         confirmText: 'Close',
-        cancelText: 'Cancel'
+        cancelText: null
     });
 }
 
@@ -2207,7 +2222,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     
     // AUDIT-FIX W-H1: Validate inputs before sending to custody
     const validChains = ['solana', 'ethereum', 'bnb'];
-    const validAssets = ['usdc', 'usdt'];
+    const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb'];
     if (!validChains.includes(chain)) {
         showToast('Invalid chain selected', 'error');
         return;
@@ -3139,9 +3154,9 @@ function showConfirmModal(options) {
                         </div>
                     ` : ''}
                     <div class="password-modal-actions">
-                        <button class="btn btn-secondary confirm-modal-cancel-btn">
+                        ${options.cancelText !== null ? `<button class="btn btn-secondary confirm-modal-cancel-btn">
                             <i class="fas fa-times"></i> ${options.cancelText || 'Cancel'}
-                        </button>
+                        </button>` : ''}
                         <button class="btn ${options.danger ? 'btn-danger' : 'btn-primary'}" id="confirmModalBtn">
                             <i class="fas fa-check"></i> ${options.confirmText || 'Confirm'}
                         </button>
@@ -3179,7 +3194,8 @@ function showConfirmModal(options) {
         
         confirmBtn.onclick = handleConfirm;
         modal.querySelector('.password-modal-close-btn').onclick = dismiss;
-        modal.querySelector('.confirm-modal-cancel-btn').onclick = dismiss;
+        const cancelBtn = modal.querySelector('.confirm-modal-cancel-btn');
+        if (cancelBtn) cancelBtn.onclick = dismiss;
         
         if (options.requireInput) {
             modal.querySelector('#confirmInput').onkeypress = (e) => {
