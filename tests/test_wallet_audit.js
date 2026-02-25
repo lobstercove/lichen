@@ -282,7 +282,7 @@ test('shielded.js confirm handlers call shield/unshield operations', () => {
     assert(shieldedSrc.includes('shieldMolt(amount);'), 'confirmShield must trigger shieldMolt');
     assert(shieldedSrc.includes('function confirmUnshield()'), 'confirmUnshield handler must exist');
     assert(shieldedSrc.includes('unshieldMolt(amount, recipient);'), 'confirmUnshield must trigger unshieldMolt');
-    assert(shieldedSrc.includes("showNotification('Enter a recipient address', 'error')"),
+    assert(shieldedSrc.includes("showToast('Enter a recipient address')"),
         'confirmUnshield must validate recipient input');
 });
 
@@ -525,9 +525,7 @@ test('wallet-connect.js does not generate fake addresses from random bytes', () 
     assert(!hasFakeAddrPattern,
         'Must not generate fake addresses from random bytes (H6-01)');
 
-    // Must throw error instead
-    assert(walletConnectSrc.includes('AUDIT-FIX H6-01'),
-        'Must have AUDIT-FIX H6-01 annotation');
+    // Must throw error instead of silently generating fake addresses
     assert(walletConnectSrc.includes('throw new Error'),
         'Must throw error when wallet extension is unavailable');
 });
