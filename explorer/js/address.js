@@ -98,6 +98,8 @@ async function loadAddressData() {
         currentAccountData = accountData;
         await applyValidatorType(accountData);
         displayAddressData(accountData);
+        // Pre-fetch current slot for accurate expiry display
+        fetchCurrentSlot().catch(() => {});
         await loadMoltyIdentityData(currentAddress);
 
         // If it's a validator, load staking rewards
@@ -213,7 +215,7 @@ async function loadMoltyIdentityData(address) {
         const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
         const moltName = typeof nameResult === 'string'
             ? nameResult
-            : (nameResult?.name || identity?.name || identity?.molt_name || null);
+            : (nameResult?.name || null);
 
         let nameDetails = null;
         if (moltName) {
@@ -252,11 +254,10 @@ function renderSummaryIdentity(profile) {
 
     const hasIdentity = !!profile?.identity;
     const reputationScore = Number(profile?.reputation?.score || profile?.reputation?.reputation || profile?.identity?.reputation || 0);
-    const name = profile?.moltName || profile?.identity?.display_name || profile?.identity?.name;
-    const displayMoltName = name ? (name.endsWith('.molt') ? name : `${name}.molt`) : null;
+    const identityName = profile?.identity?.display_name || profile?.identity?.name || null;
 
     displayNameEl.textContent = hasIdentity
-        ? (displayMoltName || 'Identity Registered')
+        ? (identityName || 'Identity Registered')
         : 'No MoltyID Identity';
 
     if (hasIdentity) {
@@ -309,8 +310,8 @@ function renderIdentityPane(profile) {
     const ladder = trustTierLadder(reputationTier);
     const registeredAt = formatTimestamp(identity.created_at || profile.created_at);
     const updatedAt = formatTimestamp(identity.updated_at || profile.updated_at);
-    const rawName = profile?.moltName || identity?.name || 'Unnamed';
-    const displayName = escapeHtml(rawName.endsWith('.molt') ? rawName : rawName + '.molt');
+    const rawName = identity?.display_name || identity?.name || 'Unnamed';
+    const displayName = escapeHtml(rawName);
     const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
     const availability = escapeHtml(String(profile?.agent?.availability_name || 'offline'));
     const rateMolt = (Number(profile?.agent?.rate || 0) / SHELLS_PER_MOLT).toFixed(6);
@@ -566,36 +567,58 @@ function trustTierLadder(currentTier) {
 
 function formatTimestamp(value) {
     const n = Number(value || 0);
-    if (!n) return 'Genesis';
-    const ms = n > 1_000_000_000_000 ? n : n * 1000;
+    if (!n) return 'Unknown';
+    const ms = n > 1_000_000_000_000
+        ? n
+        : (n > 1_500_000_000 ? n * 1000 : NaN);
+    if (!Number.isFinite(ms) || ms < 1_577_836_800_000) return 'Unknown';
     const date = new Date(ms);
-    if (Number.isNaN(date.getTime())) return 'Genesis';
+    if (Number.isNaN(date.getTime())) return 'Unknown';
     return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 // Convert a slot number to an approximate human-readable expiry date.
 // Uses MS_PER_SLOT and SLOTS_PER_YEAR from shared/utils.js.
-function formatSlotExpiry(expirySlot, registeredSlot) {
+// If currentSlot is provided (from RPC getSlot), use it for accurate calculation.
+let _explorerCurrentSlot = null;
+let _explorerSlotTime = 0;
+
+async function fetchCurrentSlot() {
+    if (_explorerCurrentSlot && Date.now() - _explorerSlotTime < 30000) return _explorerCurrentSlot;
+    try {
+        const res = await fetch(RPC_URL, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSlot', params: [] })
+        });
+        const data = await res.json();
+        if (typeof data.result === 'number' && data.result > 0) {
+            _explorerCurrentSlot = data.result;
+            _explorerSlotTime = Date.now();
+        }
+    } catch (_) {}
+    return _explorerCurrentSlot || 0;
+}
+
+function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
     const slot = Number(expirySlot || 0);
     if (!slot) return 'Unknown';
 
     const regSlot = Number(registeredSlot || 0);
     const durationSlots = slot - regSlot;
-    const durationYears = Math.round(durationSlots / SLOTS_PER_YEAR);
+    const durationYears = Math.max(1, Math.round(durationSlots / SLOTS_PER_YEAR));
 
-    // Estimate the actual expiry date:
-    // Approximate genesis time as (now - currentSlot * 500ms)
-    // Then expiryDate = genesisTime + expirySlot * 500ms
-    // For simplicity, estimate remainingSlots from now:
-    const nowMs = Date.now();
-    // We don't know the current slot precisely, but we can estimate:
-    // remaining time ≈ (expirySlot - regSlot) * MS_PER_SLOT from registration time
-    // For genesis (regSlot=0), expiryDate ≈ genesisTime + slot * 500ms
-    // Assume genesis was very recent → expiryDate ≈ now + slot * 500ms
-    const approxDate = new Date(nowMs + (slot * MS_PER_SLOT) - (regSlot * MS_PER_SLOT));
-    const dateStr = approxDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+    // Use chain's current slot for accurate date calculation
+    const curSlot = currentSlot || _explorerCurrentSlot;
+    if (curSlot && curSlot > 0) {
+        const remainingSlots = slot - curSlot;
+        const remainingMs = remainingSlots * MS_PER_SLOT;
+        const approxDate = new Date(Date.now() + remainingMs);
+        const dateStr = approxDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+        return `${dateStr} (~${durationYears}yr)`;
+    }
 
-    return `${dateStr} (~${durationYears}yr)`;
+    // Fallback: show relative duration only
+    return `~${durationYears}yr from registration`;
 }
 
 function showAddressToast(message, timeout = 3200) {
@@ -1304,7 +1327,7 @@ function setRegistryRowsVisible(visible) {
 }
 function clearRegistryInfo() {
     setRegistryRowsVisible(false);
-    ['registrySymbol','registryName','registryTemplate','registryOwner','registryMetadata'].forEach(id => {
+    ['registrySymbol','registryName','registryTemplate','registryOwner'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.textContent = '-';
     });
@@ -1334,7 +1357,7 @@ async function loadRegistryInfo(programId) {
         setRegistryRowsVisible(true);
         if (!entry) {
             document.getElementById('registrySymbol').textContent = 'Not registered';
-            ['registryName','registryTemplate','registryOwner','registryMetadata'].forEach(id => {
+            ['registryName','registryTemplate','registryOwner'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.textContent = '-';
             });
@@ -1345,8 +1368,6 @@ async function loadRegistryInfo(programId) {
         document.getElementById('registryTemplate').textContent = entry.template || '-';
         document.getElementById('registryOwner').textContent = entry.owner ? formatHash(entry.owner) : '-';
         if (entry.owner) document.getElementById('registryOwner').title = entry.owner;
-        const metaEl = document.getElementById('registryMetadata');
-        if (metaEl) metaEl.textContent = formatRegistryMetadata(entry);
     } catch (error) {
         setRegistryRowsVisible(true);
         document.getElementById('registrySymbol').textContent = 'Unavailable';

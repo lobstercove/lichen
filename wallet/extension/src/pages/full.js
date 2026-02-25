@@ -581,7 +581,8 @@ const AGENT_TYPES = [
   { value: 6, label: 'Governance', desc: 'Voting, proposals, DAO operations' },
   { value: 7, label: 'Oracle', desc: 'External data feeds, price oracles' },
   { value: 8, label: 'Storage', desc: 'Data persistence, archival, backups' },
-  { value: 9, label: 'General', desc: 'Multi-purpose or uncategorized agent' }
+  { value: 9, label: 'General', desc: 'Multi-purpose or uncategorized agent' },
+  { value: 10, label: 'Personal', desc: 'Human user — personal identity' }
 ];
 
 const TRUST_TIERS = [
@@ -601,7 +602,11 @@ const ACHIEVEMENT_DEFS = [
   { id: 5, name: 'Veteran', icon: 'fas fa-medal' },
   { id: 6, name: 'Legend', icon: 'fas fa-crown' },
   { id: 7, name: 'Endorsed', icon: 'fas fa-handshake' },
-  { id: 8, name: 'Graduated', icon: 'fas fa-graduation-cap' }
+  { id: 8, name: 'Graduated', icon: 'fas fa-graduation-cap' },
+  { id: 9, name: 'Name Registrar', icon: 'fas fa-at' },
+  { id: 10, name: 'Skill Master', icon: 'fas fa-tools' },
+  { id: 11, name: 'Social Butterfly', icon: 'fas fa-users' },
+  { id: 12, name: 'First Name', icon: 'fas fa-id-card' }
 ];
 
 function getTrustTier(score) {
@@ -949,7 +954,13 @@ async function loadIdentityTab() {
     const repPct = Math.min(100, (rep / 10000) * 100);
     const agentType = getAgentTypeName(data.agentType);
     const displayName = data.name || 'Unnamed';
-    const moltNameDisplay = data.name && data.name.endsWith('.molt') ? data.name : (data.name ? data.name + '.molt' : '');
+    const moltNameDisplay = data.moltName
+      ? (data.moltName.endsWith('.molt') ? data.moltName : data.moltName + '.molt')
+      : '';
+    // Avoid "name name.molt" duplicate when display name matches molt name
+    const moltBase = data.moltName ? data.moltName.replace(/\.molt$/, '').toLowerCase() : '';
+    const rawDisplayLower = (data.name || '').toLowerCase().replace(/\.molt$/, '');
+    const showDisplayName = !moltNameDisplay || rawDisplayLower !== moltBase;
     const isActive = data.active;
     const skills = data.skills;
     const achievements = data.achievements;
@@ -999,7 +1010,7 @@ async function loadIdentityTab() {
           <i class="fas fa-fingerprint" style="color:${tier.color};font-size:1.25rem;"></i>
         </div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:1.1rem;">${escapeHtmlExt(displayName)}${moltNameDisplay ? ` <span style="color:var(--primary);">${escapeHtmlExt(moltNameDisplay)}</span>` : ''}</div>
+          <div style="font-weight:700;font-size:1.1rem;">${showDisplayName ? escapeHtmlExt(displayName) : ''}${moltNameDisplay ? ` <span style="color:var(--primary);">${escapeHtmlExt(moltNameDisplay)}</span>` : (showDisplayName ? '' : escapeHtmlExt(displayName))}</div>
           <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-top:0.25rem;">
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:${tier.color}18;color:${tier.color};border:1px solid ${tier.color}33;">${tier.name}</span>
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:var(--bg-tertiary);">${agentType}</span>
@@ -1031,8 +1042,8 @@ async function loadIdentityTab() {
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
             <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .molt Name</span>
           </div>
-          ${data.name ? `
-            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.name.endsWith('.molt') ? data.name : data.name + '.molt')}</div>
+          ${data.moltName ? `
+            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.moltName.endsWith('.molt') ? data.moltName : data.moltName + '.molt')}</div>
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
               <button class="btn btn-small btn-secondary" id="idRenewNameBtn"><i class="fas fa-redo"></i> Renew</button>
               <button class="btn btn-small btn-secondary" id="idTransferNameBtn"><i class="fas fa-exchange-alt"></i> Transfer</button>
@@ -1041,7 +1052,7 @@ async function loadIdentityTab() {
           ` : `
             <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.5rem;">No name registered</div>
             <small style="color:var(--text-muted);">5+ chars from 20 MOLT/yr</small>
-            <div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--border);">
+            <div style="margin-top:0.75rem;text-align:center;">
               <button class="btn btn-small btn-primary" id="idRegisterNameBtn"><i class="fas fa-plus"></i> Register</button>
             </div>
           `}
@@ -1102,9 +1113,9 @@ async function loadIdentityTab() {
     $('idAddSkillBtn')?.addEventListener('click', () => showIdentityAddSkillModal());
     $('idVouchBtn')?.addEventListener('click', () => showIdentityVouchModal());
     $('idRegisterNameBtn')?.addEventListener('click', () => showIdentityRegisterNameModal());
-    $('idRenewNameBtn')?.addEventListener('click', () => showIdentityRenewNameModal(data.name));
-    $('idTransferNameBtn')?.addEventListener('click', () => showIdentityTransferNameModal(data.name));
-    $('idReleaseNameBtn')?.addEventListener('click', () => showIdentityReleaseNameModal(data.name));
+    $('idRenewNameBtn')?.addEventListener('click', () => showIdentityRenewNameModal(data.moltName));
+    $('idTransferNameBtn')?.addEventListener('click', () => showIdentityTransferNameModal(data.moltName));
+    $('idReleaseNameBtn')?.addEventListener('click', () => showIdentityReleaseNameModal(data.moltName));
     $('idConfigAgentBtn')?.addEventListener('click', () => showIdentityAgentConfigModal(data));
 
   } catch (e) {
@@ -1271,6 +1282,15 @@ async function showIdentityRegisterNameModal() {
     const durationInput = card.querySelector('#idModal_duration');
     const preview = card.querySelector('#extNameCostPreview');
     const costValue = card.querySelector('#extNameCostValue');
+    // Enforce lowercase as user types
+    if (nameInput) {
+      nameInput.style.textTransform = 'lowercase';
+      nameInput.addEventListener('input', () => {
+        const pos = nameInput.selectionStart;
+        nameInput.value = nameInput.value.toLowerCase();
+        nameInput.setSelectionRange(pos, pos);
+      });
+    }
     const updateCost = () => {
       const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
       const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
