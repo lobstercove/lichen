@@ -3281,3 +3281,38 @@
     color: var(--text-muted);
     margin-top: 0.25rem;
 }
+
+/* ────────────────────────────────────────────────────────────
+   Chain Status Bar
+   ──────────────────────────────────────────────────────────── */
+.chain-status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--bg-secondary, #1a1d2e);
+    border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
+    font-size: 0.75rem;
+    color: var(--text-muted, #8b8ea3);
+    z-index: 1000;
+    font-family: 'JetBrains Mono', monospace;
+}
+.chain-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #e74c3c;
+    transition: background 0.3s;
+}
+.chain-status-dot.connected {
+    background: #06d6a0;
+    box-shadow: 0 0 6px rgba(6, 214, 160, 0.5);
+}
+.chain-status-sep {
+    opacity: 0.3;
+}

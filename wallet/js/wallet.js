@@ -3812,3 +3812,34 @@ showSettings = function() {
 };
 
 // console.log('MoltWallet fully initialized');
+
+// ═══════════════════════════════════════════════════════════════════════
+// Chain Status Bar — live block height poller
+// ═══════════════════════════════════════════════════════════════════════
+(function initChainStatusBar() {
+    const blockEl = document.getElementById('chainBlockHeight');
+    const dotEl   = document.getElementById('chainDot');
+    const latEl   = document.getElementById('chainLatency');
+    if (!blockEl) return;
+
+    let currentBlock = 0;
+
+    async function pollBlock() {
+        const t0 = performance.now();
+        try {
+            const slot = await rpc.call('getSlot', []);
+            const ms = Math.round(performance.now() - t0);
+            if (typeof slot === 'number' && slot > currentBlock) currentBlock = slot;
+            blockEl.textContent = 'Block #' + currentBlock.toLocaleString();
+            if (latEl) latEl.textContent = ms + ' ms';
+            if (dotEl) dotEl.classList.add('connected');
+        } catch {
+            blockEl.textContent = 'Reconnecting\u2026';
+            if (latEl) latEl.textContent = '';
+            if (dotEl) dotEl.classList.remove('connected');
+        }
+    }
+
+    pollBlock();
+    setInterval(pollBlock, 5000);
+})();

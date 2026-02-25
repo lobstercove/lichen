@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoltFaucet - Free MOLT Tokens for Testing</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <meta name="description" content="Get free MOLT testnet tokens for development and testing on MoltChain.">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="faucet.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
+                <span class="logo-text">MoltChain</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="../website/index.html">Home</a></li>
+                <li><a href="../explorer/index.html">Explorer</a></li>
+                <li><a href="../wallet/index.html">Wallet</a></li>
+                <li><a href="index.html" class="active">Faucet</a></li>
+            </ul>
+            <div class="nav-actions">
+                <a href="../wallet/index.html" class="btn btn-primary btn-sm">Connect Wallet</a>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="faucet-hero">
+        <div class="container">
+            <div class="hero-content">
+                <div class="hero-badge">
+                    <i class="fas fa-flask"></i>
+                    Testnet Faucet
+                </div>
+                <h1 class="hero-title">
+                    Get Free <span class="gradient-text">MOLT Tokens</span>
+                </h1>
+                <p class="hero-subtitle">
+                    Request testnet tokens to start building and testing on MoltChain. No registration required.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Faucet Section -->
+    <section class="section">
+        <div class="container container-narrow">
+            <!-- Stats Cards -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-coins"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-label">Per Request</div>
+                        <div class="stat-value">100 MOLT</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-clock"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-label">Cooldown</div>
+                        <div class="stat-value">24 Hours</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-users"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-label">Daily Limit</div>
+                        <div class="stat-value">100 MOLT / IP</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Request Form -->
+            <div class="faucet-card">
+                <div class="card-header">
+                    <h2>Request Testnet Tokens</h2>
+                    <p>Enter your MoltChain address to receive 100 MOLT tokens</p>
+                </div>
+
+                <form id="faucetForm" class="faucet-form">
+                    <div class="form-group">
+                        <label class="form-label" for="address">
+                            <i class="fas fa-wallet"></i>
+                            Wallet Address
+                        </label>
+                        <input 
+                            type="text" 
+                            id="address" 
+                            class="form-input" 
+                            placeholder="4y43skFVWzrpi..." 
+                            required
+                        >
+                        <span class="form-help">Enter a valid MoltChain base58 address</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="captcha">
+                            <i class="fas fa-shield-alt"></i>
+                            Verification
+                        </label>
+                        <div class="captcha-box">
+                            <div class="captcha-question" id="captchaQuestion">
+                                <span id="num1">5</span> + <span id="num2">7</span> = ?
+                            </div>
+                            <input 
+                                type="number" 
+                                id="captcha" 
+                                class="form-input" 
+                                placeholder="Answer" 
+                                required
+                            >
+                        </div>
+                        <span class="form-help">Solve the simple math problem to continue</span>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                        <i class="fas fa-paper-plane"></i>
+                        Request Tokens
+                    </button>
+                </form>
+
+                <!-- Success Message -->
+                <div id="successMessage" class="message message-success hidden">
+                    <i class="fas fa-check-circle"></i>
+                    <div>
+                        <strong>Success!</strong> Tokens sent to your address.
+                    </div>
+                </div>
+
+                <!-- Error Message -->
+                <div id="errorMessage" class="message message-error hidden">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <div id="errorText"></div>
+                </div>
+            </div>
+
+            <!-- Info Cards -->
+            <div class="info-grid">
+                <div class="info-card">
+                    <div class="info-icon"><i class="fas fa-question-circle"></i></div>
+                    <h3>How it Works</h3>
+                    <p>Enter your testnet address, complete the verification, and receive 100 MOLT tokens instantly. Limit: 100 MOLT per IP per day.</p>
+                </div>
+                <div class="info-card">
+                    <div class="info-icon"><i class="fas fa-lightbulb"></i></div>
+                    <h3>Use Cases</h3>
+                    <p>Use testnet tokens to deploy smart contracts, test transactions, interact with programs, and build dApps without spending real money.</p>
+                </div>
+                <div class="info-card">
+                    <div class="info-icon"><i class="fas fa-exclamation-triangle"></i></div>
+                    <h3>Important</h3>
+                    <p>These are testnet tokens with no real value. MoltChain uses the same address format for both testnet and mainnet.</p>
+                </div>
+            </div>
+
+            <!-- Recent Requests -->
+            <div class="recent-section">
+                <h3>Recent Requests</h3>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Address</th>
+                                <th>Amount</th>
+                                <th>Time</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentRequests">
+                            <tr>
+                                <td colspan="4" style="text-align: center; color: var(--text-muted);">
+                                    <i class="fas fa-inbox"></i> No recent requests yet
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
+                        <span class="logo-text">MoltChain</span>
+                    </div>
+                    <p class="footer-desc">
+                        The agent-first blockchain. 400ms finality, $0.0001 fees, WASM + EVM contracts, on-chain identity.
+                    </p>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="../docs/README.md">Documentation</a></li>
+                        <li><a href="../docs/foundation/VISION.md">Vision</a></li>
+                        <li><a href="../docs/foundation/WHITEPAPER.md">Whitepaper</a></li>
+                        <li><a href="../docs/skills/VALIDATOR_SKILL.md">Validator Guide</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Tools</h4>
+                    <ul class="footer-links">
+                        <li><a href="../explorer/index.html">Explorer</a></li>
+                        <li><a href="../wallet/index.html">Wallet</a></li>
+                        <li><a href="index.html">Testnet Faucet</a></li>
+                        <li><a href="https://github.com/moltchain/moltchain">GitHub</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Community</h4>
+                    <ul class="footer-links">
+                        <li><a href="https://discord.gg/moltchain">Discord</a></li>
+                        <li><a href="https://twitter.com/moltchain">Twitter</a></li>
+                        <li><a href="https://t.me/moltchain">Telegram</a></li>
+                        <li><a href="https://github.com/moltchain/moltchain">GitHub</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 MoltChain. Open source under MIT License.</p>
+                <p>Built by agents, for agents. <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></p>
+                <div class="chain-status-bar">
+                    <span class="chain-status-dot" id="chainDot"></span>
+                    <span id="chainBlockHeight">Connecting...</span>
+                    <span class="chain-status-sep">|</span>
+                    <span id="chainLatency"></span>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../shared/utils.js"></script>
+    <script src="../shared-config.js"></script>
+    <script src="faucet.js"></script>
+</body>
+</html>
