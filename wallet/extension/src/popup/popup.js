@@ -1200,7 +1200,7 @@ async function handleCreateFinish() {
 
 async function handleImportSave() {
   const importType = document.getElementById('importType').value;
-  const mnemonic = document.getElementById('importMnemonic').value.trim().toLowerCase();
+  const mnemonic = getImportMnemonicValue();
   const privateKeyRaw = document.getElementById('importPrivateKey').value.trim();
   const keystoreRaw = document.getElementById('importJson').value.trim();
   const password = document.getElementById('importPassword').value.trim();
@@ -1260,6 +1260,43 @@ function updateImportTypeUi() {
     const isActive = tab.dataset.importType === importType;
     tab.classList.toggle('active', isActive);
   });
+}
+
+function initImportMnemonicGrid() {
+  const grid = document.getElementById('importMnemonicGrid');
+  if (!grid || grid.dataset.ready === '1') return;
+
+  for (let i = 0; i < 24; i += 1) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = `Word ${i + 1}`;
+    input.className = 'form-input';
+    input.dataset.wordIdx = String(i);
+    if (i >= 12) input.style.display = 'none';
+    grid.appendChild(input);
+  }
+
+  grid.addEventListener('paste', (event) => {
+    const text = (event.clipboardData || window.clipboardData).getData('text').trim();
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length < 2) return;
+
+    event.preventDefault();
+    const inputs = Array.from(grid.querySelectorAll('input'));
+    if (words.length > 12) inputs.forEach((input) => { input.style.display = ''; });
+    words.slice(0, 24).forEach((word, index) => {
+      if (inputs[index]) inputs[index].value = word.toLowerCase();
+    });
+  });
+
+  grid.dataset.ready = '1';
+}
+
+function getImportMnemonicValue() {
+  const words = Array.from(document.querySelectorAll('#importMnemonicGrid input'))
+    .map((input) => (input.value || '').trim().toLowerCase())
+    .filter(Boolean);
+  return words.join(' ');
 }
 
 async function handleUnlock() {
@@ -1380,6 +1417,7 @@ function wireEvents() {
   document.getElementById('createStep2Continue').addEventListener('click', handleCreateStep2Continue);
   document.getElementById('createFinish').addEventListener('click', handleCreateFinish);
   document.getElementById('importSave').addEventListener('click', handleImportSave);
+  initImportMnemonicGrid();
   document.querySelectorAll('.import-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       const nextType = tab.dataset.importType;

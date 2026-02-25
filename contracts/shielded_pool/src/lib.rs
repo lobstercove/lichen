@@ -11,9 +11,21 @@
 //! - get_merkle_root() — read current root for wallet proof generation
 //! - get_pool_stats() — read pool statistics
 
+#![cfg_attr(target_arch = "wasm32", no_std)]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
+extern crate alloc;
+
+use alloc::collections::BTreeSet;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 
 // ===== Storage Layout =====
 // merkle_root      -> [u8; 32]       Current commitment tree root
@@ -34,7 +46,7 @@ pub struct ShieldedPoolState {
     /// Total shielded balance in shells
     pub pool_balance: u64,
     /// Spent nullifier set
-    pub spent_nullifiers: HashSet<[u8; 32]>,
+    pub spent_nullifiers: BTreeSet<[u8; 32]>,
     /// All commitments (for wallet sync)
     pub commitments: Vec<CommitmentEntry>,
     /// Whether verification keys are initialized
@@ -138,8 +150,8 @@ pub enum ShieldedPoolError {
     PoolOverflow,
 }
 
-impl std::fmt::Display for ShieldedPoolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ShieldedPoolError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidProof(msg) => write!(f, "invalid proof: {}", msg),
             Self::NullifierAlreadySpent(n) => write!(f, "nullifier already spent: {}", n),
@@ -160,7 +172,7 @@ impl ShieldedPoolState {
             merkle_root: empty_merkle_root(),
             commitment_count: 0,
             pool_balance: 0,
-            spent_nullifiers: HashSet::new(),
+            spent_nullifiers: BTreeSet::new(),
             commitments: Vec::new(),
             vk_initialized: false,
         }
@@ -487,6 +499,191 @@ pub enum ShieldedPoolInstruction {
     CheckNullifier { nullifier: [u8; 32] },
     /// Query: get commitments from index (for wallet sync)
     GetCommitments { from_index: u64 },
+}
+
+// ===== WASM Entry Points =====
+//
+// These are compiled only for wasm32 and call through to the pure-Rust
+// ShieldedPoolState methods above. State is persisted as a single JSON
+// blob under the `pool_state` storage key. The native TxProcessor
+// (types 23/24/25) handles the heavy ZK proof verification and writes
+// to CF_SHIELDED_POOL; this contract provides the on-chain WASM
+// bytecode and a query interface.
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_abi {
+    use super::*;
+    use moltchain_sdk::{storage_get, storage_set, log_info, set_return_data, get_slot};
+
+    const STATE_KEY: &[u8] = b"pool_state";
+    const OWNER_KEY: &[u8] = b"owner";
+
+    fn load_state() -> ShieldedPoolState {
+        match storage_get(STATE_KEY) {
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| ShieldedPoolState::new())
+            }
+            None => ShieldedPoolState::new(),
+        }
+    }
+
+    fn save_state(state: &ShieldedPoolState) {
+        if let Ok(bytes) = serde_json::to_vec(state) {
+            storage_set(STATE_KEY, &bytes);
+        }
+    }
+
+    /// Initialize the shielded pool (called once at genesis).
+    /// Sets admin, creates empty pool state with VKs marked ready.
+    #[no_mangle]
+    pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+        // Re-initialization guard
+        if storage_get(OWNER_KEY).is_some() {
+            log_info("ShieldedPool already initialized — ignoring");
+            return 0;
+        }
+        let mut admin = [0u8; 32];
+        unsafe {
+            core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+        }
+        storage_set(OWNER_KEY, &admin);
+
+        let mut state = ShieldedPoolState::new();
+        state.vk_initialized = true; // VK verification done at processor layer
+        save_state(&state);
+
+        log_info("ShieldedPool initialized");
+        0
+    }
+
+    /// Return pool statistics as JSON via set_return_data.
+    #[no_mangle]
+    pub extern "C" fn get_pool_stats() -> u32 {
+        let state = load_state();
+        let stats = state.stats();
+        if let Ok(json) = serde_json::to_vec(&stats) {
+            set_return_data(&json);
+        }
+        0
+    }
+
+    /// Return the current 32-byte Merkle root.
+    #[no_mangle]
+    pub extern "C" fn get_merkle_root() -> u32 {
+        let state = load_state();
+        set_return_data(&state.merkle_root);
+        0
+    }
+
+    /// Check whether a nullifier has been spent (returns [0] or [1]).
+    #[no_mangle]
+    pub extern "C" fn check_nullifier(nullifier_ptr: *const u8) -> u32 {
+        let mut nullifier = [0u8; 32];
+        unsafe {
+            core::ptr::copy_nonoverlapping(nullifier_ptr, nullifier.as_mut_ptr(), 32);
+        }
+        let state = load_state();
+        let spent = if state.is_nullifier_spent(&nullifier) {
+            1u8
+        } else {
+            0u8
+        };
+        set_return_data(&[spent]);
+        0
+    }
+
+    /// Return commitments from a given index as JSON.
+    #[no_mangle]
+    pub extern "C" fn get_commitments(from_index: u64) -> u32 {
+        let state = load_state();
+        let entries = state.get_commitments_from(from_index);
+        if let Ok(json) = serde_json::to_vec(entries) {
+            set_return_data(&json);
+        }
+        0
+    }
+
+    /// Shield (deposit) MOLT into the shielded pool.
+    /// args: JSON-serialized ShieldRequest.
+    #[no_mangle]
+    pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
+        let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+        let request: ShieldRequest = match serde_json::from_slice(slice) {
+            Ok(r) => r,
+            Err(_) => {
+                log_info("shield: invalid request");
+                return 1;
+            }
+        };
+        let slot = get_slot();
+        let mut state = load_state();
+        match state.shield(&request, slot) {
+            Ok(index) => {
+                save_state(&state);
+                set_return_data(&index.to_le_bytes());
+                0
+            }
+            Err(e) => {
+                log_info(&format!("shield failed: {}", e));
+                1
+            }
+        }
+    }
+
+    /// Unshield (withdraw) MOLT from the shielded pool.
+    /// args: JSON-serialized UnshieldRequest.
+    #[no_mangle]
+    pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
+        let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+        let request: UnshieldRequest = match serde_json::from_slice(slice) {
+            Ok(r) => r,
+            Err(_) => {
+                log_info("unshield: invalid request");
+                return 1;
+            }
+        };
+        let mut state = load_state();
+        match state.unshield(&request) {
+            Ok(amount) => {
+                save_state(&state);
+                set_return_data(&amount.to_le_bytes());
+                0
+            }
+            Err(e) => {
+                log_info(&format!("unshield failed: {}", e));
+                1
+            }
+        }
+    }
+
+    /// Shielded transfer between notes.
+    /// args: JSON-serialized TransferRequest.
+    #[no_mangle]
+    pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
+        let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+        let request: TransferRequest = match serde_json::from_slice(slice) {
+            Ok(r) => r,
+            Err(_) => {
+                log_info("transfer: invalid request");
+                return 1;
+            }
+        };
+        let slot = get_slot();
+        let mut state = load_state();
+        match state.transfer(&request, slot) {
+            Ok(indices) => {
+                save_state(&state);
+                if let Ok(json) = serde_json::to_vec(&indices) {
+                    set_return_data(&json);
+                }
+                0
+            }
+            Err(e) => {
+                log_info(&format!("transfer failed: {}", e));
+                1
+            }
+        }
+    }
 }
 
 #[cfg(test)]

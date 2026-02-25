@@ -969,6 +969,11 @@ async function openRegisterIdentityModal() {
                 await signAndSendInstructions(wallet, password, [registerInstruction]);
 
                 if (optionalName) {
+                    // Name cost: 20 MOLT/yr for 5+ chars, 100 for 4, 500 for ≤3
+                    const nameLen = optionalName.length;
+                    const costPerYearMolt = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
+                    const totalCostShells = costPerYearMolt * years * 1_000_000_000;
+
                     const nameInstruction = buildContractCallInstruction({
                         callerAddress: wallet.address,
                         contractAddress: moltyIdAddress,
@@ -977,7 +982,7 @@ async function openRegisterIdentityModal() {
                             name: optionalName,
                             duration_years: years
                         },
-                        value: 0
+                        value: totalCostShells
                     });
                     showAddressToast(`Registering ${optionalName}.molt...`);
                     await signAndSendInstructions(wallet, password, [nameInstruction]);
@@ -1037,6 +1042,11 @@ async function openRegisterNameModal() {
                 const password = await requestWalletPassword(`Register ${label}.molt`);
                 if (!password) return false;
 
+                // Name cost: 20 MOLT/yr for 5+ chars, 100 for 4, 500 for ≤3
+                const nameLen = label.length;
+                const costPerYearMolt = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
+                const totalCostShells = costPerYearMolt * years * 1_000_000_000;
+
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
                     contractAddress: moltyIdAddress,
@@ -1045,7 +1055,7 @@ async function openRegisterNameModal() {
                         name: label,
                         duration_years: years
                     },
-                    value: 0
+                    value: totalCostShells
                 });
 
                 await signAndSendInstructions(wallet, password, [instruction]);

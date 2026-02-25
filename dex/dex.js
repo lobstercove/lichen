@@ -218,9 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let dexWs = null;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Wallet — delegates to MoltWallet extension (no local key storage)
-    // AUDIT-FIX I4-01: Private keys never stored in DEX. All signing
-    // is delegated to the wallet extension or MoltWallet SDK.
+    // Wallet
     // ═══════════════════════════════════════════════════════════════════════
     const wallet = {
         keypair: null, address: null, shortAddr: null, _moltWallet: null,
@@ -248,28 +246,78 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error('Wallet connection failed');
         },
         async connectAddress(addr, options = {}) {
-            const { signingReady = false } = options;
+            const { signingReady = false, localKeypair = null } = options;
             // Connect to a known address (e.g. from saved wallets list) — read-only until extension signs
             this.address = addr;
             this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
             this.signingReady = !!signingReady;
-            this.keypair = this.signingReady ? { connected: true } : null;
+            this.keypair = localKeypair || (this.signingReady ? { connected: true } : null);
             return this;
         },
         /** Import wallet from hex or base58 private key */
-        async fromSecretKey() {
-            throw new Error('Private key import is disabled in DEX. Use MoltChain Wallet extension.');
+        async fromSecretKey(secretInput) {
+            const text = (secretInput || '').trim();
+            if (!text) throw new Error('Private key is required');
+            let bytes;
+            try {
+                const hex = text.startsWith('0x') ? text.slice(2) : text;
+                if (/^[0-9a-fA-F]+$/.test(hex) && (hex.length === 64 || hex.length === 128)) {
+                    bytes = hexToBytes(hex);
+                } else {
+                    bytes = bs58decode(text);
+                }
+            } catch {
+                throw new Error('Invalid private key format (expected hex or base58)');
+            }
+
+            let kp;
+            if (bytes.length === 64) {
+                kp = nacl.sign.keyPair.fromSecretKey(bytes);
+            } else if (bytes.length === 32) {
+                kp = nacl.sign.keyPair.fromSeed(bytes);
+            } else {
+                throw new Error('Private key must be 32-byte seed or 64-byte Ed25519 secret key');
+            }
+
+            this.keypair = kp;
+            this.address = bs58encode(kp.publicKey);
+            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+            this.signingReady = true;
+            return this;
         },
         /** Generate a fresh Ed25519 keypair */
         async generate() {
-            throw new Error('DEX key generation is disabled. Create wallets in MoltChain Wallet extension.');
+            const kp = nacl.sign.keyPair();
+            this.keypair = kp;
+            this.address = bs58encode(kp.publicKey);
+            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+            this.signingReady = true;
+            return this;
         },
         sign(message) {
-            throw new Error('Direct signing removed — use wallet extension');
+            if (!this.keypair || !this.keypair.secretKey) throw new Error('No local keypair available for signing');
+            return nacl.sign.detached(message, this.keypair.secretKey);
         },
         async sendTransaction(instructions) {
             if (!this.address) throw new Error('Wallet not connected');
             if (!this.signingReady) throw new Error('Signing session not active. Reconnect wallet extension to sign.');
+            // Prefer local keypair (import/create)
+            if (this.keypair && this.keypair.secretKey) {
+                const blockhash = await api.rpc('getRecentBlockhash');
+                const normalizedIx = instructions.map(ix => {
+                    const accounts = ix.accounts || [this.address];
+                    const dataBytes = typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data);
+                    return { program_id: ix.program_id, accounts, data: dataBytes };
+                });
+                const msg = encodeTransactionMessage(normalizedIx, blockhash, this.address);
+                const sig = this.sign(msg);
+                const txPayload = {
+                    signatures: [bytesToHex(sig)],
+                    message: { instructions: normalizedIx, blockhash: blockhash },
+                };
+                const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
+                return api.rpc('sendTransaction', [txBase64]);
+            }
             // Delegate signing to wallet extension
             const w = await this._ensureWallet();
             if (w && typeof w.sendTransaction === 'function') {
@@ -1649,9 +1697,74 @@ document.addEventListener('DOMContentLoaded', () => {
         if (priceInput) priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
         updateMarginSltpVisibility();
         if (state.tradeMode === 'margin') updateMarginInfo();
+        updateSubmitBtn();
     }));
 
-    function updateSubmitBtn() { if (!submitBtn) return; const m = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : ''; submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`; submitBtn.textContent = `${state.orderSide === 'buy' ? 'Buy' : 'Sell'}${m} ${state.activePair?.base || ''}`; }
+    function updateOrderSideLabels() {
+        const sideBuy = document.querySelector('.order-tab[data-side="buy"]');
+        const sideSell = document.querySelector('.order-tab[data-side="sell"]');
+        if (!sideBuy || !sideSell) return;
+        if (state.tradeMode === 'margin') {
+            sideBuy.textContent = 'Long';
+            sideSell.textContent = 'Short';
+        } else {
+            sideBuy.textContent = 'Buy';
+            sideSell.textContent = 'Sell';
+        }
+    }
+
+    function updateSubmitBtn() {
+        if (!submitBtn) return;
+        const sideLabel = state.tradeMode === 'margin'
+            ? (state.orderSide === 'buy' ? 'Long' : 'Short')
+            : (state.orderSide === 'buy' ? 'Buy' : 'Sell');
+        const m = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : '';
+        submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`;
+        submitBtn.textContent = `${sideLabel}${m} ${state.activePair?.base || ''}`;
+
+        if (!state.connected || !state.activePair) {
+            submitBtn.disabled = true;
+            submitBtn.title = state.connected ? 'No active pair selected' : 'Connect wallet to trade';
+            return;
+        }
+
+        const amount = Math.max(0, parseFloat(amountInput?.value || '0') || 0);
+        const price = state.orderType === 'market'
+            ? (state.lastPrice || 0)
+            : Math.max(0, parseFloat(priceInput?.value || '0') || 0);
+        const stopPriceInput = document.getElementById('stopPrice');
+        const stopPrice = Math.max(0, parseFloat(stopPriceInput?.value || '0') || 0);
+        const feeRate = 0.0005;
+
+        let disabledReason = '';
+        if (amount <= 0) disabledReason = 'Enter an amount';
+        else if (state.orderType !== 'market' && price <= 0) disabledReason = 'Enter a valid price';
+        else if (state.orderType === 'market' && price <= 0) disabledReason = 'Waiting for market price';
+        else if (state.orderType === 'stop-limit' && stopPrice <= 0) disabledReason = 'Enter stop price';
+        else {
+            const notional = price * amount;
+            if (state.tradeMode === 'margin') {
+                const leverage = Math.max(1, Number(state.leverageValue || 1));
+                const requiredMargin = (notional / leverage) * (1 + feeRate);
+                const quoteSymbol = state.activePair.quote;
+                const availableQuote = balances[quoteSymbol]?.available || 0;
+                if (requiredMargin > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
+            } else if (state.orderSide === 'buy') {
+                const quoteSymbol = state.activePair.quote;
+                const requiredQuote = notional * (1 + feeRate);
+                const availableQuote = balances[quoteSymbol]?.available || 0;
+                if (requiredQuote > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
+            } else {
+                const baseSymbol = state.activePair.base;
+                const requiredBase = amount * (1 + feeRate);
+                const availableBase = balances[baseSymbol]?.available || 0;
+                if (requiredBase > availableBase) disabledReason = `Insufficient ${baseSymbol}`;
+            }
+        }
+
+        submitBtn.disabled = Boolean(disabledReason);
+        submitBtn.title = disabledReason;
+    }
 
     function getAllowedLeverageLevels(maxLeverage) {
         const contractLevels = [2, 3, 5, 10, 25, 50, 100];
@@ -1693,6 +1806,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return false;
         }
         state.tradeMode = mode;
+        updateOrderSideLabels();
         document.querySelectorAll('.trade-mode').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
         const mi = document.getElementById('marginInline');
         if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin');
@@ -1715,7 +1829,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { const maxLev = state.marginType === 'cross' ? Math.min(state.marginMaxLeverage || 100, 3) : (state.marginMaxLeverage || 100); state.leverageValue = snapLeverageToAllowed(parseFloat(inlineLeverage.value), maxLev); inlineLeverage.value = String(state.leverageValue); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
-    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); }));
+    document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; applyLeverageConstraints(); updateMarginInfo(); updateSubmitBtn(); }));
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
     let _routeQuoteTimer = null;
@@ -1730,6 +1844,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (Number.isFinite(rawA) && rawA < 0) amountInput.value = String(a);
         totalInput.value = (p * a).toFixed(4);
         if (state.tradeMode === 'margin') updateMarginInfo();
+        updateSubmitBtn();
         const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
         // Show inline estimate immediately, then refine via API
         if (fe) fe.textContent = `~${(p * a * 0.0005).toFixed(4)} ${state.activePair?.quote || ''}`;
@@ -1769,6 +1884,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (Number.isFinite(rawT) && rawT < 0) totalInput.value = String(t);
         if (p > 0) amountInput.value = (t / p).toFixed(4);
         if (state.tradeMode === 'margin') updateMarginInfo();
+        updateSubmitBtn();
     });
 
     document.querySelectorAll('.preset-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -1776,6 +1892,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!bal || !amountInput || !priceInput) return;
         if (state.orderSide === 'buy') { amountInput.value = ((bal.available * pct) / (parseFloat(priceInput.value) || state.lastPrice)).toFixed(4); } else amountInput.value = (bal.available * pct).toFixed(4);
         calcTotal();
+        updateSubmitBtn();
     }));
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1881,19 +1998,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 5. Tick size alignment — contract enforces, warn before submission
         if (pair && orderType !== 'market') {
-            const tickSize = pair.tickSize || 0.0001;
-            const priceMod = (price * 1e8) % (tickSize * 1e8);
-            if (Math.abs(priceMod) > 0.01) {
-                return { ok: false, error: `Price must be aligned to tick size ${tickSize} (nearest: ${(Math.round(price / tickSize) * tickSize).toFixed(4)})`, code: 'TICK_ALIGN' };
+            const tickRaw = Number(pair.tickSize);
+            const tickSize = Number.isFinite(tickRaw) && tickRaw > 0
+                ? (tickRaw >= 1 ? tickRaw / PRICE_SCALE : tickRaw)
+                : 0.0001;
+            const tickDecimals = (() => {
+                const s = String(tickSize);
+                if (s.includes('e-')) return Math.min(9, parseInt(s.split('e-')[1], 10) || 6);
+                return Math.min(9, (s.split('.')[1] || '').length || 4);
+            })();
+            const scaled = price / tickSize;
+            const nearest = Math.round(scaled) * tickSize;
+            if (Math.abs(scaled - Math.round(scaled)) > 1e-8) {
+                return { ok: false, error: `Price must be aligned to tick size ${tickSize.toFixed(tickDecimals)} (nearest: ${nearest.toFixed(tickDecimals)})`, code: 'TICK_ALIGN' };
             }
         }
 
         // 6. Lot size alignment — contract enforces, warn before submission
         if (pair) {
-            const lotSize = pair.lotSize || 0.01;
-            const amountMod = (amount * 1e8) % (lotSize * 1e8);
-            if (Math.abs(amountMod) > 0.01) {
-                return { ok: false, error: `Amount must be aligned to lot size ${lotSize} (nearest: ${(Math.round(amount / lotSize) * lotSize).toFixed(4)})`, code: 'LOT_ALIGN' };
+            const lotRaw = Number(pair.lotSize);
+            const lotSize = Number.isFinite(lotRaw) && lotRaw > 0
+                ? (lotRaw >= 1 ? lotRaw / PRICE_SCALE : lotRaw)
+                : 0.01;
+            const lotDecimals = (() => {
+                const s = String(lotSize);
+                if (s.includes('e-')) return Math.min(9, parseInt(s.split('e-')[1], 10) || 6);
+                return Math.min(9, (s.split('.')[1] || '').length || 4);
+            })();
+            const scaled = amount / lotSize;
+            const nearest = Math.round(scaled) * lotSize;
+            if (Math.abs(scaled - Math.round(scaled)) > 1e-8) {
+                return { ok: false, error: `Amount must be aligned to lot size ${lotSize.toFixed(lotDecimals)} (nearest: ${nearest.toFixed(lotDecimals)})`, code: 'LOT_ALIGN' };
             }
         }
 
@@ -2223,22 +2358,45 @@ document.addEventListener('DOMContentLoaded', () => {
     const connectBtn = document.getElementById('connectWallet'), walletModal = document.getElementById('walletModal'), closeModalBtn = document.getElementById('closeWalletModal');
     const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
     let savedWallets = JSON.parse(localStorage.getItem('dexWallets') || '[]');
+    const localWalletSessions = new Map();
 
     function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'extension'); } }
     function closeWalletModalFn() { if (walletModal) walletModal.classList.add('hidden'); }
     function switchWmTab(t) { wmTabs.forEach(x => x.classList.toggle('active', x.dataset.wmTab === t)); Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== t); }); }
+    function resetWalletModalInputs() {
+        const privateKeyInput = document.getElementById('wmPrivateKey');
+        if (privateKeyInput) privateKeyInput.value = '';
+
+        const passwordInput = document.getElementById('wmPassword');
+        if (passwordInput) passwordInput.value = '';
+
+        const importTypeButtons = document.querySelectorAll('.wm-import-type');
+        importTypeButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.import === 'key'));
+
+        const importKeyPanel = document.getElementById('wmImportKey');
+        const importMnemonicPanel = document.getElementById('wmImportMnemonic');
+        if (importKeyPanel) importKeyPanel.classList.remove('hidden');
+        if (importMnemonicPanel) importMnemonicPanel.classList.add('hidden');
+
+        const mnemonicInputs = document.querySelectorAll('#mnemonicGrid input');
+        mnemonicInputs.forEach((input, idx) => {
+            input.value = '';
+            input.style.display = idx >= 12 ? 'none' : '';
+        });
+
+        const createdBox = document.getElementById('wmCreatedWallet');
+        const newAddrEl = document.getElementById('wmNewAddress');
+        const newKeyEl = document.getElementById('wmNewKey');
+        if (createdBox) createdBox.classList.add('hidden');
+        if (newAddrEl) newAddrEl.textContent = '';
+        if (newKeyEl) newKeyEl.textContent = '';
+    }
 
     if (connectBtn) connectBtn.addEventListener('click', () => openWalletModal());
     if (closeModalBtn) closeModalBtn.addEventListener('click', closeWalletModalFn);
     if (walletModal) walletModal.addEventListener('click', e => { if (e.target === walletModal) closeWalletModalFn(); });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
-
-    // Security mode: DEX does not accept plaintext private keys or mnemonics.
-    const importTabBtn = document.querySelector('.wm-tab[data-wm-tab="import"]');
-    const createTabBtn = document.querySelector('.wm-tab[data-wm-tab="create"]');
-    if (importTabBtn) importTabBtn.classList.add('hidden');
-    if (createTabBtn) createTabBtn.classList.add('hidden');
 
     // Import-type toggle (Private Key / Mnemonic)
     document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
@@ -2272,8 +2430,35 @@ document.addEventListener('DOMContentLoaded', () => {
     // Import tab — connect from private key or mnemonic
     const wmConnectBtn = document.getElementById('wmConnectBtn');
     if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
-        showNotification('Private key and mnemonic import are disabled in DEX. Use Wallet Extension tab.', 'warning');
-        switchWmTab('extension');
+        try {
+            const activeImport = document.querySelector('.wm-import-type.active')?.dataset.import || 'key';
+            let connectedWallet;
+            if (activeImport === 'mnemonic') {
+                const words = Array.from(document.querySelectorAll('#mnemonicGrid input'))
+                    .map(i => (i.value || '').trim())
+                    .filter(Boolean);
+                if (words.length !== 12 && words.length !== 24) throw new Error('Mnemonic must have 12 or 24 words');
+                const phrase = words.join(' ').toLowerCase();
+                const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(phrase));
+                const seed = new Uint8Array(digest).slice(0, 32);
+                const kp = nacl.sign.keyPair.fromSeed(seed);
+                connectedWallet = await wallet.connectAddress(bs58encode(kp.publicKey), { signingReady: true, localKeypair: kp });
+            } else {
+                const pkInput = document.getElementById('wmPrivateKey')?.value || '';
+                connectedWallet = await wallet.fromSecretKey(pkInput);
+            }
+
+            localWalletSessions.set(connectedWallet.address, connectedWallet.keypair);
+            if (!savedWallets.some(w => w.address === connectedWallet.address)) {
+                savedWallets.push({ address: connectedWallet.address, short: connectedWallet.shortAddr, added: Date.now() });
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            }
+            await connectWalletTo(connectedWallet.address, connectedWallet.shortAddr, { signingReady: true, localKeypair: connectedWallet.keypair });
+            closeWalletModalFn();
+            showNotification('Wallet connected: ' + connectedWallet.shortAddr, 'success');
+        } catch (e) {
+            showNotification(`Import failed: ${e.message}`, 'error');
+        }
     });
 
     // Extension tab — connect via wallet extension
@@ -2292,17 +2477,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // Create tab — generate a new Ed25519 keypair
     const wmCreateBtn = document.getElementById('wmCreateBtn');
     if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
-        showNotification('Wallet creation inside DEX is disabled. Use MoltChain Wallet extension.', 'warning');
-        switchWmTab('extension');
+        try {
+            const generated = await wallet.generate();
+            localWalletSessions.set(generated.address, generated.keypair);
+            if (!savedWallets.some(w => w.address === generated.address)) {
+                savedWallets.push({ address: generated.address, short: generated.shortAddr, added: Date.now() });
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            }
+            const newAddrEl = document.getElementById('wmNewAddress');
+            const newKeyEl = document.getElementById('wmNewKey');
+            const createdBox = document.getElementById('wmCreatedWallet');
+            if (newAddrEl) newAddrEl.textContent = generated.address;
+            if (newKeyEl) newKeyEl.textContent = bytesToHex(generated.keypair.secretKey);
+            if (createdBox) createdBox.classList.remove('hidden');
+            await connectWalletTo(generated.address, generated.shortAddr, { signingReady: true, localKeypair: generated.keypair });
+            showNotification('New wallet created and connected', 'success');
+        } catch (e) {
+            showNotification(`Create wallet failed: ${e.message}`, 'error');
+        }
     });
 
     document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
 
     async function connectWalletTo(address, shortAddr, options = {}) {
-        const { signingReady = false } = options;
+        const { signingReady = false, localKeypair = null } = options;
         state.connected = true; state.walletAddress = address;
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
-        await wallet.connectAddress(address, { signingReady });
+        const resolvedSessionKey = localKeypair || localWalletSessions.get(address) || null;
+        await wallet.connectAddress(address, { signingReady: signingReady || !!resolvedSessionKey, localKeypair: resolvedSessionKey });
         // M16: Resolve .molt name and fetch MoltyID profile for connected trader
         let displayLabel = shortAddr;
         try {
@@ -2330,6 +2532,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(displayLabel)}${repBadge}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
+        resetWalletModalInputs();
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
         renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
@@ -2374,7 +2577,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);
             return `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
         }).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
-        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => { const w = savedWallets[parseInt(btn.dataset.idx)]; if (w) { connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...'); renderWalletList(); } }));
+        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => {
+            const w = savedWallets[parseInt(btn.dataset.idx)];
+            if (w) {
+                const sessionKp = localWalletSessions.get(w.address) || null;
+                connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady: !!sessionKp, localKeypair: sessionKp });
+                renderWalletList();
+            }
+        }));
         list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', () => { const i = parseInt(btn.dataset.idx), r = savedWallets[i]; savedWallets.splice(i, 1); localStorage.setItem('dexWallets', JSON.stringify(savedWallets)); if (state.walletAddress === r?.address) disconnectWallet(); renderWalletList(); showNotification('Wallet removed', 'info'); }));
         const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => { savedWallets = []; localStorage.removeItem('dexWallets'); disconnectWallet(); renderWalletList(); showNotification('All wallets disconnected', 'info'); });
     }
@@ -5618,7 +5828,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadProtocolParams(); // async, non-blocking — populates dynamic UI text
         await loadPairs();
         loadMarginEnabledPairs(); // async, non-blocking
-        renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
+        renderPairList(); renderBalances(); renderOpenOrders(); updateOrderSideLabels(); updateSubmitBtn();
         applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
         loadTradeHistory(); loadMarginStats(); loadMarginPositions();
         if (state.activePair) {

@@ -3674,7 +3674,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     const js = fs.readFileSync(dexJsPath, 'utf8');
     assert(js.includes('must be hexadecimal'), 'P20.14a: hexToBytes validates hex format');
     assert(js.includes('odd number of hex'), 'P20.14b: hexToBytes rejects odd-length hex');
-    assert(js.includes('Private key import is disabled in DEX'), 'P20.14c: fromSecretKey disabled for extension-only security');
+    assert(js.includes('async fromSecretKey('), 'P20.14c: fromSecretKey available for direct import flow');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3942,7 +3942,7 @@ const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/c
 // P22.6: Private key storage — no zero-key fallback (F22.6a)
 {
     const js = fs.readFileSync(dexJsPath, 'utf8');
-    assert(js.includes('DEX key generation is disabled') || js.includes('Wallet creation inside DEX is disabled'), 'P22.6a: generate() disabled in DEX for extension-only security');
+    assert(js.includes('async generate()'), 'P22.6a: generate() enabled for DEX create-wallet flow');
     assert(!js.includes("secretKey: new Uint8Array(64)"), 'P22.6b: no zero secretKey fallback');
     // Keys never persisted to localStorage
     assert(!js.includes("localStorage.setItem('secretKey"), 'P22.6c: secretKey not stored in localStorage');
@@ -5630,10 +5630,10 @@ console.log('\n── Task 9: Wallet Modal Restoration ──');
     assert(dexSource.includes('async fromSecretKey('), 'T9.19: wallet.fromSecretKey() method restored');
     assert(dexSource.includes('async generate()'), 'T9.20: wallet.generate() method restored');
 
-    // JS: import handler enforces extension-only mode
-    assert(!dexSource.includes("getElementById('wmPrivateKey')"), 'T9.21: DEX import handler no longer reads wmPrivateKey');
-    assert(!dexSource.includes('wallet.fromSecretKey(key)'), 'T9.22: DEX import handler does not call wallet.fromSecretKey()');
-    assert(dexSource.includes('Private key and mnemonic import are disabled in DEX'), 'T9.22b: DEX import handler shows security warning');
+    // JS: import handler supports direct private-key/mnemonic import
+    assert(dexSource.includes("getElementById('wmPrivateKey')"), 'T9.21: DEX import handler reads wmPrivateKey');
+    assert(dexSource.includes('wallet.fromSecretKey('), 'T9.22: DEX import handler calls wallet.fromSecretKey()');
+    assert(dexSource.includes("activeImport === 'mnemonic'"), 'T9.22b: DEX import handler supports mnemonic mode');
 
     // JS: mnemonic grid build
     assert(dexSource.includes("getElementById('mnemonicGrid')"), 'T9.23: Mnemonic grid dynamically built');
@@ -5642,10 +5642,10 @@ console.log('\n── Task 9: Wallet Modal Restoration ──');
     // JS: mnemonic paste support
     assert(dexSource.includes('clipboardData') || dexSource.includes('paste'), 'T9.25: Mnemonic paste handler wired');
 
-    // JS: create handler enforces extension-only mode
-    assert(!dexSource.includes('wallet.generate()'), 'T9.26: DEX create handler no longer calls wallet.generate()');
-    assert(!dexSource.includes('bytesToHex(wallet.keypair'), 'T9.27: DEX does not render generated secret key');
-    assert(dexSource.includes('Wallet creation inside DEX is disabled'), 'T9.27b: DEX create handler shows extension-only warning');
+    // JS: create handler generates and shows new wallet credentials
+    assert(dexSource.includes('wallet.generate()'), 'T9.26: DEX create handler calls wallet.generate()');
+    assert(dexSource.includes('bytesToHex(generated.keypair.secretKey)'), 'T9.27: DEX renders generated secret key in create flow');
+    assert(dexSource.includes('New wallet created and connected'), 'T9.27b: DEX create handler shows success message');
 
     // JS: extension handler calls wallet.connect()
     assert(dexSource.includes("getElementById('wmExtensionBtn')"), 'T9.28: Extension button wired');

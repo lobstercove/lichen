@@ -3613,6 +3613,15 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             function: "initialize",
             args: named_init_args(&admin),
         },
+        // ── Layer 5e: Shielded Pool ──
+        // Initializes the on-chain shielded pool WASM contract.
+        // Heavy ZK proof verification runs natively in the processor;
+        // this contract stores pool state and provides query endpoints.
+        InitSpec {
+            dir_name: "shielded_pool",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
     ];
 
     for spec in &specs {

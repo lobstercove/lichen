@@ -933,10 +933,49 @@ function setupImportTabs() {
             document.getElementById('fileName').textContent = file.name;
         }
     });
+
+    buildImportMnemonicGrid();
+}
+
+function buildImportMnemonicGrid() {
+    const grid = document.getElementById('importSeedGrid');
+    if (!grid) return;
+    if (grid.dataset.ready === '1') return;
+
+    for (let i = 0; i < 24; i++) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = `Word ${i + 1}`;
+        input.className = 'form-input';
+        input.dataset.wordIdx = i;
+        if (i >= 12) input.style.display = 'none';
+        grid.appendChild(input);
+    }
+
+    grid.addEventListener('paste', (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData('text').trim();
+        const words = text.split(/\s+/).filter(Boolean);
+        if (words.length < 2) return;
+
+        e.preventDefault();
+        const inputs = Array.from(grid.querySelectorAll('input'));
+        if (words.length > 12) inputs.forEach(inp => { inp.style.display = ''; });
+        words.slice(0, 24).forEach((word, idx) => {
+            if (inputs[idx]) inputs[idx].value = word.toLowerCase();
+        });
+    });
+
+    grid.dataset.ready = '1';
+}
+
+function getImportMnemonicFromGrid() {
+    const inputs = Array.from(document.querySelectorAll('#importSeedGrid input'));
+    const words = inputs.map(i => (i.value || '').trim().toLowerCase()).filter(Boolean);
+    return words.join(' ');
 }
 
 async function importWalletSeed() {
-    const seed = document.getElementById('importSeed').value.trim();
+    const seed = getImportMnemonicFromGrid();
     const password = document.getElementById('importPassword').value;
     
     if (!MoltCrypto.isValidMnemonic(seed)) {

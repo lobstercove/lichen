@@ -49,6 +49,7 @@ CORE_CONTRACTS=(
     bountyboard
     compute_market
     reef_storage
+    shielded_pool
 )
 
 DEX_CONTRACTS=(
