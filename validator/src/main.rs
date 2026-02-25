@@ -3219,6 +3219,105 @@ fn genesis_exec_contract(
     }
 }
 
+/// Like `genesis_exec_contract` but allows attaching a value (e.g. mUSD fee).
+fn genesis_exec_contract_with_value(
+    state: &StateStore,
+    program_pubkey: &Pubkey,
+    deployer_pubkey: &Pubkey,
+    function_name: &str,
+    args: &[u8],
+    value: u64,
+    label: &str,
+) -> bool {
+    let account = match state.get_account(program_pubkey) {
+        Ok(Some(a)) => a,
+        _ => {
+            error!("  FAIL {}: account not found", label);
+            return false;
+        }
+    };
+
+    let mut contract: ContractAccount = match serde_json::from_slice(&account.data) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("  FAIL {}: deserialize ContractAccount: {}", label, e);
+            return false;
+        }
+    };
+
+    let ctx = ContractContext::with_args(
+        *deployer_pubkey,
+        *program_pubkey,
+        value,
+        0,
+        contract.storage.clone(),
+        args.to_vec(),
+    );
+
+    let mut runtime = ContractRuntime::new();
+    match runtime.execute(&contract, function_name, args, ctx) {
+        Ok(result) => {
+            if !result.success {
+                let rc = result.return_code.unwrap_or(1);
+                if rc != 0 {
+                    warn!("  FAIL {}: contract returned error code {} — {:?}", label, rc, result.error);
+                    return false;
+                }
+                warn!("  WARN {}: contract returned !success with rc=0: {:?}", label, result.error);
+            }
+            for (key, val_opt) in &result.storage_changes {
+                match val_opt {
+                    Some(val) => {
+                        contract.set_storage(key.clone(), val.clone());
+                        if let Err(e) = state.put_contract_storage(program_pubkey, key, val) {
+                            warn!("  WARN {}: put_contract_storage: {}", label, e);
+                        }
+                    }
+                    None => {
+                        contract.remove_storage(key);
+                        let _ = state.delete_contract_storage(program_pubkey, key);
+                    }
+                }
+            }
+            let mut updated_account = account;
+            match serde_json::to_vec(&contract) {
+                Ok(data) => updated_account.data = data,
+                Err(e) => {
+                    error!("  FAIL {}: re-serialize: {}", label, e);
+                    return false;
+                }
+            }
+            if let Err(e) = state.put_account(program_pubkey, &updated_account) {
+                error!("  FAIL {}: put_account: {}", label, e);
+                return false;
+            }
+            let seq = GENESIS_ACTIVITY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let activity = ProgramCallActivity {
+                slot: 0,
+                timestamp: 0,
+                program: *program_pubkey,
+                caller: *deployer_pubkey,
+                function: function_name.to_string(),
+                value,
+                tx_signature: Hash([0u8; 32]),
+            };
+            if let Err(e) = state.record_program_call(&activity, seq) {
+                warn!("  WARN {}: failed to record genesis call: {}", label, e);
+            }
+            for event in &result.events {
+                if let Err(e) = state.put_contract_event(program_pubkey, event) {
+                    warn!("  WARN {}: failed to record genesis event: {}", label, e);
+                }
+            }
+            true
+        }
+        Err(e) => {
+            error!("  FAIL {}: WASM execution error: {}", label, e);
+            false
+        }
+    }
+}
+
 fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Initializing all contracts", label);
@@ -3515,6 +3614,99 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         } else {
             skipped += 1;
         }
+    }
+
+    // ── Prediction Market: seed initial markets BEFORE wiring MoltyID ──
+    // (MoltyID address is still zero at this point, so reputation check is skipped.)
+    if let Some(predict_pk) = address_map.get("prediction_market") {
+        let creation_fee: u64 = 10_000_000; // 10 mUSD anti-spam fee
+        let initial_liq: u64 = 100_000_000; // 100 mUSD per market
+        let close_slot: u64 = 63_072_000;   // ~1 year at 1 slot/sec
+
+        struct MarketSeed {
+            question: &'static str,
+            category: u8,
+            outcomes: u8,
+        }
+        let markets: &[MarketSeed] = &[
+            MarketSeed {
+                question: "Will Bitcoin exceed $200,000 by end of 2025?",
+                category: 0, // crypto
+                outcomes: 2,
+            },
+            MarketSeed {
+                question: "Will global AI regulation pass in a G7 country in 2025?",
+                category: 3, // tech
+                outcomes: 2,
+            },
+            MarketSeed {
+                question: "Will MoltChain reach 10,000 active validators?",
+                category: 0, // crypto
+                outcomes: 2,
+            },
+            MarketSeed {
+                question: "Which sector will lead crypto market cap growth in Q4 2025?",
+                category: 6, // economics
+                outcomes: 4, // DeFi, L1s, AI tokens, Memecoins
+            },
+            MarketSeed {
+                question: "Will Ethereum implement full danksharding in 2025?",
+                category: 3, // tech
+                outcomes: 2,
+            },
+        ];
+
+        let mut seeded = 0u32;
+        for m in markets {
+            let q_bytes = m.question.as_bytes();
+            // SHA-256 of question text
+            let q_hash: [u8; 32] = {
+                let mut hasher = Sha256::new();
+                hasher.update(q_bytes);
+                let digest = hasher.finalize();
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&digest[..32]);
+                h
+            };
+            // Build create_market args: [1][creator 32B][cat 1B][close_slot 8B][outcomes 1B][hash 32B][q_len 4B][q_bytes...]
+            let mut args = Vec::with_capacity(79 + q_bytes.len());
+            args.push(1u8); // opcode: create_market
+            args.extend_from_slice(&admin);
+            args.push(m.category);
+            args.extend_from_slice(&close_slot.to_le_bytes());
+            args.push(m.outcomes);
+            args.extend_from_slice(&q_hash);
+            args.extend_from_slice(&(q_bytes.len() as u32).to_le_bytes());
+            args.extend_from_slice(q_bytes);
+
+            let label = format!("prediction_market(create:{})", seeded + 1);
+            if genesis_exec_contract_with_value(
+                state, predict_pk, deployer_pubkey, "call", &args, creation_fee, &label,
+            ) {
+                let market_id = seeded as u64 + 1;
+                // Add initial liquidity (opcode 2) to activate the market
+                // [2][provider 32B][market_id 8B][amount 8B]
+                let mut liq_args = Vec::with_capacity(49);
+                liq_args.push(2u8); // opcode: add_initial_liquidity
+                liq_args.extend_from_slice(&admin);
+                liq_args.extend_from_slice(&market_id.to_le_bytes());
+                liq_args.extend_from_slice(&initial_liq.to_le_bytes());
+
+                let liq_label = format!("prediction_market(liquidity:{})", market_id);
+                if genesis_exec_contract_with_value(
+                    state, predict_pk, deployer_pubkey, "call", &liq_args, initial_liq, &liq_label,
+                ) {
+                    seeded += 1;
+                    info!("  SEED prediction market #{}: {}", market_id, m.question);
+                } else {
+                    warn!("  WARN: created market #{} but failed to add liquidity", market_id);
+                    seeded += 1; // Market still exists, just in PENDING state
+                }
+            } else {
+                warn!("  WARN: failed to create prediction market: {}", m.question);
+            }
+        }
+        info!("  Seeded {} prediction markets", seeded);
     }
 
     // ── Prediction Market: wire up cross-contract addresses ──
