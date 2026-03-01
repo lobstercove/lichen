@@ -1053,7 +1053,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!contracts.prediction_market) contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
         if (!contracts.clawpump) contracts.clawpump = null; // No hardcoded fallback — must come from registry
         if (needsFallback) {
-            console.warn('[DEX] Using fallback contract addresses — symbol registry was unavailable. Transactions may fail if contracts were recompiled.');
+            console.warn('[DEX] ⚠️ FALLBACK ADDRESSES ACTIVE — symbol registry was unavailable. Transactions WILL fail if contracts were recompiled. Set MOLTCHAIN_RPC or check node connectivity.');
         }
     }
 
@@ -1740,8 +1740,11 @@ document.addEventListener('DOMContentLoaded', () => {
             updateFooterStatus(footerBlockHeight, false);
         }
     }
+    // DEX-05: Prefer WS subscription for real-time block height if available,
+    // fall back to polling at reduced interval. WS subscription is set up in
+    // the WebSocket connection handler (subscribeSlot).
     pollBlockHeight();
-    setInterval(pollBlockHeight, 5000);
+    setInterval(pollBlockHeight, 3000);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Footer Links (data-molt-app)
@@ -2622,7 +2625,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const localWalletSessions = new Map();
     let persistedLocalWalletSessions = (() => {
         try {
-            const parsed = JSON.parse(localStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
+            const parsed = JSON.parse(sessionStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
             return parsed && typeof parsed === 'object' ? parsed : {};
         } catch {
             return {};
@@ -2707,13 +2710,16 @@ document.addEventListener('DOMContentLoaded', () => {
         try { sessionStorage.removeItem(getWalletPasswordCacheKey(address)); } catch { }
     }
 
+    // DEX-10: Wallet sessions are AES-encrypted before storage.
+    // Use sessionStorage (cleared on tab close) instead of localStorage
+    // to limit the attack window for XSS-based session theft.
     async function persistLocalWalletSession(address, keypair, password) {
         if (!address || !keypair || !keypair.secretKey) return;
         if (!password) throw new Error('Password is required');
         const seedHex = walletSeedHex(keypair);
         const encrypted = await encryptSeedHex(seedHex, password);
         persistedLocalWalletSessions[address] = { ...encrypted, updatedAt: Date.now() };
-        try { localStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
+        try { sessionStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
         persistSessionStoragePassword(address, password);
     }
 
@@ -2722,12 +2728,12 @@ document.addEventListener('DOMContentLoaded', () => {
         delete persistedLocalWalletSessions[address];
         localWalletSessions.delete(address);
         clearCachedSessionPassword(address);
-        try { localStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
+        try { sessionStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
     }
 
     function restoreLocalWalletSessions() {
         try {
-            const parsed = JSON.parse(localStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
+            const parsed = JSON.parse(sessionStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
             persistedLocalWalletSessions = parsed && typeof parsed === 'object' ? parsed : {};
         } catch {
             persistedLocalWalletSessions = {};
@@ -3094,7 +3100,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch { }
             localStorage.removeItem('dexWallets');
             localStorage.removeItem(ACTIVE_WALLET_KEY);
-            localStorage.removeItem(LOCAL_WALLET_SESSION_KEY);
+            sessionStorage.removeItem(LOCAL_WALLET_SESSION_KEY);
             disconnectWallet();
             renderWalletList();
             showNotification('All wallets disconnected', 'info');
@@ -5326,7 +5332,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!now) return `Slot ${formatNumber(close)}`;
         const remainingSlots = close - now;
         if (remainingSlots <= 0) return 'Closed';
-        const totalSeconds = Math.floor(remainingSlots * 0.5);
+        // DEX-09: MoltChain slot time is 400ms (0.4s), not 500ms
+        const totalSeconds = Math.floor(remainingSlots * 0.4);
         const days = Math.floor(totalSeconds / 86400);
         const hours = Math.floor((totalSeconds % 86400) / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);

@@ -4,7 +4,7 @@
   "functions": [
     {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
     {"name": "create_pair", "opcode": 1, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "base_token", "type": "Pubkey"}, {"name": "quote_token", "type": "Pubkey"}, {"name": "tick_size", "type": "u64"}, {"name": "lot_size", "type": "u64"}, {"name": "min_order", "type": "u64"}]},
-    {"name": "place_order", "opcode": 2, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "side", "type": "u8"}, {"name": "order_type", "type": "u8"}, {"name": "price", "type": "u64"}, {"name": "quantity", "type": "u64"}, {"name": "expiry", "type": "u64"}]},
+    {"name": "place_order", "opcode": 2, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "side", "type": "u8"}, {"name": "order_type", "type": "u8"}, {"name": "price", "type": "u64"}, {"name": "quantity", "type": "u64"}, {"name": "expiry", "type": "u64"}, {"name": "trigger_price", "type": "u64", "optional": true, "description": "Stop-limit trigger price (0 = not a stop order)"}]},
     {"name": "cancel_order", "opcode": 3, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "order_id", "type": "u64"}]},
     {"name": "set_preferred_quote", "opcode": 4, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
     {"name": "get_pair_count", "opcode": 5, "params": []},

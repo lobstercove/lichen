@@ -11,6 +11,14 @@ document.addEventListener('DOMContentLoaded', () => {
     loadPrivacyData();
     // Refresh every 10 seconds
     setInterval(loadPrivacyData, 10000);
+
+    // EX-14: Delegated click handler for copy buttons — no inline onclick (XSS safe)
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.copy-hash-btn');
+        if (btn && btn.dataset.hash) {
+            copyToClipboard(btn.dataset.hash);
+        }
+    });
 });
 
 // ===== Data Loading =====
@@ -195,7 +203,7 @@ function renderShieldedTxs(txs) {
                     </span>
                 </td>
                 <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">
-                    <span title="${escapeHtml(hashDisplay)}" style="cursor: pointer;" onclick="copyToClipboard('${escapeHtml(hashDisplay)}')">
+                    <span title="${escapeHtml(hashDisplay)}" style="cursor: pointer;" class="copy-hash-btn" data-hash="${escapeHtml(hashDisplay)}">
                         ${escapeHtml(truncated)} <i class="fas fa-copy" style="font-size: 0.7rem; opacity: 0.5;"></i>
                     </span>
                 </td>

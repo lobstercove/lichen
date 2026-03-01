@@ -51,7 +51,7 @@ use axum::{
     Json, Router,
 };
 use lru::LruCache;
-use moltchain_core::contract::ContractAccount;
+use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use moltchain_core::{
     decode_evm_transaction, shells_to_u256, simulate_evm_call, Account, FinalityTracker, Hash,
@@ -460,8 +460,17 @@ async fn put_cached_program_list_response(
     guard.insert(key, (Instant::now(), response));
 }
 
-/// Verify admin authorization from params
+/// Verify admin authorization from params or Authorization header
+/// RPC-01: Supports both JSON body `admin_token` (legacy) and `Authorization: Bearer <token>` header
 fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Result<(), RpcError> {
+    verify_admin_auth_with_header(state, params, None)
+}
+
+fn verify_admin_auth_with_header(
+    state: &RpcState,
+    params: &Option<serde_json::Value>,
+    auth_header: Option<&str>,
+) -> Result<(), RpcError> {
     let guard = state.admin_token.read().map_err(|_| RpcError {
         code: -32000,
         message: "Internal error: admin token lock poisoned".to_string(),
@@ -471,7 +480,13 @@ fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Re
         message: "Admin endpoints disabled: no admin_token configured".to_string(),
     })?;
 
-    let token = params
+    // RPC-01: Try Authorization header first (preferred, avoids log leakage)
+    let header_token = auth_header
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|t| t.trim());
+
+    // Legacy: extract from JSON body params
+    let body_token = params
         .as_ref()
         .and_then(|p| p.as_object())
         .and_then(|o| o.get("admin_token"))
@@ -486,6 +501,8 @@ fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Re
                 .and_then(|v| v.as_str())
         });
 
+    let token = header_token.or(body_token);
+
     match token {
         Some(t) if constant_time_eq(t.as_bytes(), required_token.as_bytes()) => Ok(()),
         Some(_) => Err(RpcError {
@@ -494,7 +511,7 @@ fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Re
         }),
         None => Err(RpcError {
             code: -32003,
-            message: "Missing admin_token in params".to_string(),
+            message: "Missing admin_token in params or Authorization header".to_string(),
         }),
     }
 }
@@ -552,9 +569,6 @@ fn classify_method(method: &str) -> MethodTier {
         | "upgradeContract"
         | "stake"
         | "unstake"
-        | "stakeToReefStake"
-        | "unstakeFromReefStake"
-        | "claimUnstakedTokens"
         | "requestAirdrop"
         | "setFeeConfig"
         | "setRentParams"
@@ -565,6 +579,7 @@ fn classify_method(method: &str) -> MethodTier {
         | "getTransactionHistory"
         | "getRecentTransactions"
         | "getBlock"
+        | "callContract"
         | "getTokenHolders"
         | "getTokenTransfers"
         | "getContractEvents"
@@ -1698,6 +1713,17 @@ pub fn build_rpc_router(
                 "explorer.moltchain.io".to_string(),
             ]
         });
+
+    // RPC-05: Refuse to start if mainnet with wildcard CORS — prevents
+    // accidental open-CORS deployment in production.
+    if rpc_state.network_id.contains("mainnet") && allowed_hosts.iter().any(|h| h == "*") {
+        eprintln!(
+            "FATAL: MOLTCHAIN_CORS_ORIGINS contains wildcard '*' on mainnet. \
+             Set explicit origins or remove '*'. Aborting."
+        );
+        std::process::exit(1);
+    }
+
     let allowed_hosts = Arc::new(allowed_hosts);
 
     // T2.7: Restrictive CORS — allow configured origins only
@@ -1815,6 +1841,7 @@ async fn handle_rpc(
         "sendTransaction" => handle_send_transaction(&state, req.params).await,
         "confirmTransaction" => handle_confirm_transaction(&state, req.params).await,
         "simulateTransaction" => handle_simulate_transaction(&state, req.params).await,
+        "callContract" => handle_call_contract(&state, req.params).await,
         "getTotalBurned" => handle_get_total_burned(&state).await,
         "getValidators" => handle_get_validators(&state).await,
         "getMetrics" => handle_get_metrics(&state).await,
@@ -3999,8 +4026,12 @@ async fn handle_send_transaction(
         }
     }
 
-    emit_prediction_events_from_tx(state, &tx);
+    // RPC-04: Emit prediction WS events AFTER mempool acceptance (not before),
+    // so clients never receive events for transactions that fail submission.
+    // Clone the tx for event emission since submit_transaction consumes it.
+    let tx_for_events = tx.clone();
     let signature = submit_transaction(state, tx)?;
+    emit_prediction_events_from_tx(state, &tx_for_events);
 
     Ok(serde_json::json!(signature))
 }
@@ -4067,6 +4098,149 @@ async fn handle_simulate_transaction(
         "returnCode": result.return_code,
         "stateChanges": result.state_changes,
     }))
+}
+
+// ============================================================================
+// GX-01: callContract — read-only contract call (equivalent to eth_call)
+// ============================================================================
+
+/// Execute a read-only contract call without requiring a signed transaction.
+/// Params: { "contract": "<base58_address>", "function": "<fn_name>", "args": [<bytes>] }
+/// or array form: ["<base58_address>", "<fn_name>", "<base64_args_optional>"]
+async fn handle_call_contract(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    // Parse params: either object form or array form
+    let (contract_str, function, args_b64) = if let Some(obj) = params.as_object() {
+        let contract = obj
+            .get("contract")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing 'contract' address".to_string(),
+            })?;
+        let function = obj
+            .get("function")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing 'function' name".to_string(),
+            })?;
+        let args = obj.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        (contract.to_string(), function.to_string(), args.to_string())
+    } else if let Some(arr) = params.as_array() {
+        let contract = arr
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing contract address (first param)".to_string(),
+            })?;
+        let function = arr
+            .get(1)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing function name (second param)".to_string(),
+            })?;
+        let args = arr.get(2).and_then(|v| v.as_str()).unwrap_or("");
+        (contract.to_string(), function.to_string(), args.to_string())
+    } else {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid params: expected object or array".to_string(),
+        });
+    };
+
+    // Decode contract address
+    let contract_pubkey = Pubkey::from_base58(&contract_str).map_err(|_| RpcError {
+        code: -32602,
+        message: format!("Invalid contract address: {}", contract_str),
+    })?;
+
+    // Decode args (base64-encoded bytes, optional)
+    let args: Vec<u8> = if args_b64.is_empty() {
+        Vec::new()
+    } else {
+        use base64::{engine::general_purpose, Engine as _};
+        general_purpose::STANDARD
+            .decode(&args_b64)
+            .map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid base64 args: {}", e),
+            })?
+    };
+
+    // Load the contract account
+    let account = state
+        .state
+        .get_account(&contract_pubkey)
+        .map_err(|_| RpcError {
+            code: -32000,
+            message: "Failed to load contract account".to_string(),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: format!("Contract not found: {}", contract_str),
+        })?;
+
+    if !account.executable {
+        return Err(RpcError {
+            code: -32000,
+            message: format!("Account {} is not an executable contract", contract_str),
+        });
+    }
+
+    let contract: ContractAccount = serde_json::from_slice(&account.data).map_err(|_| RpcError {
+        code: -32000,
+        message: "Failed to deserialize contract account".to_string(),
+    })?;
+
+    // Use a zero caller for read-only calls
+    let caller = Pubkey::new([0u8; 32]);
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let context = ContractContext::with_args(
+        caller,
+        contract_pubkey,
+        0, // no value for read-only calls
+        current_slot,
+        contract.storage.clone(),
+        args.clone(),
+    );
+
+    let mut runtime = ContractRuntime::get_pooled();
+    let exec_result = runtime.execute(&contract, &function, &args, context);
+    runtime.return_to_pool();
+
+    match exec_result {
+        Ok(result) => {
+            let return_data_b64 = if result.return_data.is_empty() {
+                None
+            } else {
+                use base64::{engine::general_purpose, Engine as _};
+                Some(general_purpose::STANDARD.encode(&result.return_data))
+            };
+            Ok(serde_json::json!({
+                "success": result.success,
+                "returnData": return_data_b64,
+                "returnCode": result.return_code,
+                "logs": result.logs,
+                "error": result.error,
+                "computeUsed": result.compute_used,
+            }))
+        }
+        Err(e) => Err(RpcError {
+            code: -32000,
+            message: format!("Contract execution failed: {}", e),
+        }),
+    }
 }
 
 // ============================================================================
@@ -4882,13 +5056,14 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         _ => (0u64, None),
     };
 
-    // Circulating supply = total_supply - genesis_reserve - burned
-    // This is MOLT that has left the genesis wallet and is in the economy
-    // (includes treasury, staked, and free balances)
+    // Circulating supply = total_supply - genesis_reserve - burned - staked
+    // RPC-03: Subtract staked amounts for accurate freely-tradeable supply
+    // Note: unstaking queue amounts are included in circulating as they will be released
     let circulating_supply = metrics
         .total_supply
         .saturating_sub(genesis_balance)
-        .saturating_sub(metrics.total_burned);
+        .saturating_sub(metrics.total_burned)
+        .saturating_sub(total_staked);
 
     // Distribution wallet balances
     let dist_wallets_json = {
@@ -4959,6 +5134,8 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
     let mut result = Vec::new();
 
     // Add genesis wallet itself
+    // RPC-06: amount_molt = original allocation at genesis (constant 1B);
+    // current balance reflects actual holdings after distribution.
     if let Ok(Some(gpk)) = state.state.get_genesis_pubkey() {
         let acc = state.state.get_account(&gpk).ok().flatten();
         let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
@@ -4968,7 +5145,7 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
             "amount_molt": 1_000_000_000u64,
             "percentage": 100,
             "balance": bal,
-            "label": "Genesis Signer",
+            "label": "Genesis Signer (original allocation)",
         }));
     }
 

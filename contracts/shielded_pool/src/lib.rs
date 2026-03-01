@@ -509,6 +509,15 @@ pub enum ShieldedPoolInstruction {
 // (types 23/24/25) handles the heavy ZK proof verification and writes
 // to CF_SHIELDED_POOL; this contract provides the on-chain WASM
 // bytecode and a query interface.
+//
+// CON-12 ARCHITECTURAL NOTE: The single-JSON-blob storage model is a known
+// limitation. At scale (>10k commitments), reads/writes require deserializing
+// the entire pool. A sparse Merkle tree with per-leaf storage keys would be
+// more efficient. For the current MVP phase, the native TxProcessor already
+// handles the critical path (shielding/unshielding); this WASM contract is
+// primarily a query interface and the blob size is bounded by the native
+// rate-limiting on shield operations. Migration to per-leaf storage is
+// planned for v2.
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_abi {
