@@ -2241,9 +2241,9 @@ impl ValidatorSet {
             // Pick the validator with the highest priority (tie-break by index = deterministic)
             proposer_idx = 0;
             let mut max_priority = priorities[0];
-            for i in 1..n {
-                if priorities[i] > max_priority {
-                    max_priority = priorities[i];
+            for (i, &p) in priorities.iter().enumerate().take(n).skip(1) {
+                if p > max_priority {
+                    max_priority = p;
                     proposer_idx = i;
                 }
             }

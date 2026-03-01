@@ -232,12 +232,18 @@ async fn test_rpc_get_shielded_pool_stats_alias_matches_state() {
     let state_result = &state_resp["result"];
     let stats_result = &stats_resp["result"];
 
-    assert_eq!(stats_result["commitmentCount"], state_result["commitmentCount"]);
+    assert_eq!(
+        stats_result["commitmentCount"],
+        state_result["commitmentCount"]
+    );
     assert_eq!(stats_result["totalShielded"], state_result["totalShielded"]);
     assert_eq!(stats_result["merkleRoot"], state_result["merkleRoot"]);
 
     // Wallet compatibility keys
-    assert_eq!(stats_result["commitment_count"], state_result["commitmentCount"]);
+    assert_eq!(
+        stats_result["commitment_count"],
+        state_result["commitmentCount"]
+    );
     assert_eq!(stats_result["pool_balance"], state_result["totalShielded"]);
     assert_eq!(stats_result["merkle_root"], state_result["merkleRoot"]);
 }

@@ -103,9 +103,9 @@ use moltchain_core::consensus::{
     decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -212,6 +212,7 @@ fn jsonrpc_error_response(
         .into_response()
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_rpc_tier_probe(body: &[u8]) -> Result<RpcTierProbe, Response> {
     serde_json::from_slice(body).map_err(|_| {
         jsonrpc_error_response(
@@ -223,10 +224,10 @@ fn parse_rpc_tier_probe(body: &[u8]) -> Result<RpcTierProbe, Response> {
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_rpc_request(body: &[u8], id: serde_json::Value) -> Result<RpcRequest, Response> {
-    serde_json::from_slice(body).map_err(|_| {
-        jsonrpc_error_response(StatusCode::BAD_REQUEST, id, -32600, "Invalid request")
-    })
+    serde_json::from_slice(body)
+        .map_err(|_| jsonrpc_error_response(StatusCode::BAD_REQUEST, id, -32600, "Invalid request"))
 }
 
 fn parse_get_block_slot_param(
@@ -256,7 +257,7 @@ fn parse_get_block_slot_param(
     params_array
         .first()
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| RpcError {
+        .ok_or(RpcError {
             code: -32602,
             message: err_msg,
         })
@@ -608,9 +609,7 @@ fn classify_method(method: &str) -> MethodTier {
 fn classify_solana_method_tier(method: &str) -> MethodTier {
     match method {
         "sendTransaction" => MethodTier::Expensive,
-        "getSignaturesForAddress" | "getSignatureStatuses" | "getBlock" => {
-            MethodTier::Moderate
-        }
+        "getSignaturesForAddress" | "getSignatureStatuses" | "getBlock" => MethodTier::Moderate,
         _ => MethodTier::Cheap,
     }
 }
@@ -694,18 +693,17 @@ impl RateLimiter {
         }
 
         let result = if lock_file.is_some() {
-            let mut counters: HashMap<String, (u64, u64)> = if let Ok(mut file) =
-                OpenOptions::new().read(true).open(shared_file)
-            {
-                let mut content = String::new();
-                if file.read_to_string(&mut content).is_ok() {
-                    serde_json::from_str(&content).unwrap_or_default()
+            let mut counters: HashMap<String, (u64, u64)> =
+                if let Ok(mut file) = OpenOptions::new().read(true).open(shared_file) {
+                    let mut content = String::new();
+                    if file.read_to_string(&mut content).is_ok() {
+                        serde_json::from_str(&content).unwrap_or_default()
+                    } else {
+                        HashMap::new()
+                    }
                 } else {
                     HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
+                };
 
             let now_sec = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -744,34 +742,41 @@ impl RateLimiter {
     }
 
     /// Check if a request from `ip` is within the global rate limit.
+    fn classify_rest_tier(path: &str, method: &Method) -> Option<MethodTier> {
+        if !path.starts_with("/api/v1") {
+            return None;
+        }
 
-fn classify_rest_tier(path: &str, method: &Method) -> Option<MethodTier> {
-    if !path.starts_with("/api/v1") {
-        return None;
+        let is_write =
+            *method == Method::POST || *method == Method::PUT || *method == Method::DELETE;
+        let expensive_paths = [
+            "/orders",
+            "/swap",
+            "/liquidat",
+            "/bridge",
+            "/position",
+            "/mint",
+        ];
+        let moderate_paths = [
+            "/pairs",
+            "/orderbook",
+            "/trades",
+            "/candles",
+            "/history",
+            "/analytics",
+            "/market",
+        ];
+
+        if is_write || expensive_paths.iter().any(|needle| path.contains(needle)) {
+            return Some(MethodTier::Expensive);
+        }
+
+        if moderate_paths.iter().any(|needle| path.contains(needle)) {
+            return Some(MethodTier::Moderate);
+        }
+
+        Some(MethodTier::Cheap)
     }
-
-    let is_write = *method == Method::POST || *method == Method::PUT || *method == Method::DELETE;
-    let expensive_paths = ["/orders", "/swap", "/liquidat", "/bridge", "/position", "/mint"];
-    let moderate_paths = [
-        "/pairs",
-        "/orderbook",
-        "/trades",
-        "/candles",
-        "/history",
-        "/analytics",
-        "/market",
-    ];
-
-    if is_write || expensive_paths.iter().any(|needle| path.contains(needle)) {
-        return Some(MethodTier::Expensive);
-    }
-
-    if moderate_paths.iter().any(|needle| path.contains(needle)) {
-        return Some(MethodTier::Moderate);
-    }
-
-    Some(MethodTier::Cheap)
-}
     /// Returns `true` if allowed, `false` if rate-limited.
     fn check(&self, ip: IpAddr) -> bool {
         let mut map = self.requests.lock().unwrap_or_else(|e| e.into_inner());
@@ -969,7 +974,10 @@ fn parse_contract_function(ix: &Instruction) -> Option<String> {
     if let Ok(json_str) = std::str::from_utf8(&ix.data) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
             if let Some(call) = val.get("Call") {
-                return call.get("function").and_then(|f| f.as_str()).map(|s| s.to_string());
+                return call
+                    .get("function")
+                    .and_then(|f| f.as_str())
+                    .map(|s| s.to_string());
             }
             if val.get("Deploy").is_some() {
                 return Some("deploy".to_string());
@@ -1005,7 +1013,10 @@ fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
     let slot_hint = state.state.get_last_slot().unwrap_or(0).saturating_add(1);
 
     for ix in &tx.message.instructions {
-        if ix.program_id != CONTRACT_PROGRAM_ID || ix.accounts.len() < 2 || ix.accounts[1] != predict_program {
+        if ix.program_id != CONTRACT_PROGRAM_ID
+            || ix.accounts.len() < 2
+            || ix.accounts[1] != predict_program
+        {
             continue;
         }
         let Some(args) = parse_contract_call_args(ix) else {
@@ -1022,34 +1033,54 @@ fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
                     .state
                     .get_program_storage_u64("PREDICT", b"pm_market_count")
                     .saturating_add(1);
-                state
-                    .prediction_broadcaster
-                    .emit_market_created(market_id, "New market", slot_hint);
+                state.prediction_broadcaster.emit_market_created(
+                    market_id,
+                    "New market",
+                    slot_hint,
+                );
             }
             // buy_shares / sell_shares
             4 | 5 if args.len() >= 50 => {
                 let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
                 let outcome = args[41];
                 let amount = u64::from_le_bytes(args[42..50].try_into().unwrap_or([0u8; 8]));
-                let outcome_name = if outcome == 0 { "yes" } else if outcome == 1 { "no" } else { "other" };
-                state
-                    .prediction_broadcaster
-                    .emit_trade(market_id, outcome_name, amount, 0.0, slot_hint);
+                let outcome_name = if outcome == 0 {
+                    "yes"
+                } else if outcome == 1 {
+                    "no"
+                } else {
+                    "other"
+                };
+                state.prediction_broadcaster.emit_trade(
+                    market_id,
+                    outcome_name,
+                    amount,
+                    0.0,
+                    slot_hint,
+                );
             }
             // submit_resolution / finalize_resolution
             8 if args.len() >= 42 => {
                 let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
                 let winning = args[41];
-                let winner = if winning == 0 { "yes" } else if winning == 1 { "no" } else { "other" };
+                let winner = if winning == 0 {
+                    "yes"
+                } else if winning == 1 {
+                    "no"
+                } else {
+                    "other"
+                };
                 state
                     .prediction_broadcaster
                     .emit_market_resolved(market_id, winner, slot_hint);
             }
             10 if args.len() >= 41 => {
                 let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
-                state
-                    .prediction_broadcaster
-                    .emit_market_resolved(market_id, "finalized", slot_hint);
+                state.prediction_broadcaster.emit_market_resolved(
+                    market_id,
+                    "finalized",
+                    slot_hint,
+                );
             }
             _ => {}
         }
@@ -1693,7 +1724,9 @@ pub fn build_rpc_router(
         airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
         orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
         custody_url: std::env::var("CUSTODY_URL").ok().filter(|s| !s.is_empty()),
-        custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN").ok().filter(|s| !s.is_empty()),
+        custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
 
     // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
@@ -1867,7 +1900,7 @@ async fn handle_rpc(
             } else {
                 Ok(serde_json::json!({"status": "ok", "slot": slot}))
             }
-        },
+        }
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
@@ -2006,7 +2039,9 @@ async fn handle_rpc(
         "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
         "createBridgeDeposit" => handle_create_bridge_deposit(&state, req.params).await,
         "getBridgeDeposit" => handle_get_bridge_deposit(&state, req.params).await,
-        "getBridgeDepositsByRecipient" => handle_get_bridge_deposits_by_recipient(&state, req.params).await,
+        "getBridgeDepositsByRecipient" => {
+            handle_get_bridge_deposits_by_recipient(&state, req.params).await
+        }
         "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
         "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
 
@@ -2031,9 +2066,7 @@ async fn handle_rpc(
         "computeShieldCommitment" => {
             shielded::handle_compute_shield_commitment(&state, req.params).await
         }
-        "generateShieldProof" => {
-            shielded::handle_generate_shield_proof(&state, req.params).await
-        }
+        "generateShieldProof" => shielded::handle_generate_shield_proof(&state, req.params).await,
         "generateUnshieldProof" => {
             shielded::handle_generate_unshield_proof(&state, req.params).await
         }
@@ -3150,7 +3183,11 @@ async fn handle_get_transactions_by_address(
             message: format!("Database error: {}", e),
         })?;
     let has_more = indexed.len() > limit;
-    let page_items = if has_more { &indexed[..limit] } else { indexed.as_slice() };
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
@@ -3268,7 +3305,11 @@ async fn handle_get_recent_transactions(
             message: format!("Database error: {}", e),
         })?;
     let has_more = indexed.len() > limit;
-    let page_items = if has_more { &indexed[..limit] } else { indexed.as_slice() };
+    let page_items = if has_more {
+        &indexed[..limit]
+    } else {
+        indexed.as_slice()
+    };
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
@@ -4197,10 +4238,11 @@ async fn handle_call_contract(
         });
     }
 
-    let contract: ContractAccount = serde_json::from_slice(&account.data).map_err(|_| RpcError {
-        code: -32000,
-        message: "Failed to deserialize contract account".to_string(),
-    })?;
+    let contract: ContractAccount =
+        serde_json::from_slice(&account.data).map_err(|_| RpcError {
+            code: -32000,
+            message: "Failed to deserialize contract account".to_string(),
+        })?;
 
     // Use a zero caller for read-only calls
     let caller = Pubkey::new([0u8; 32]);
@@ -6582,18 +6624,21 @@ async fn handle_get_all_contracts(
         .state
         .get_all_programs_paginated(fetch_limit, after.as_ref())
         .map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
     let has_more = programs.len() > limit;
     if has_more {
         programs.truncate(limit);
     }
 
-    let registry_entries = state.state.get_all_symbol_registry(5000).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let registry_entries = state
+        .state
+        .get_all_symbol_registry(5000)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     let registry_by_program: HashMap<Pubkey, (String, Option<String>, String)> = registry_entries
         .into_iter()
@@ -6611,11 +6656,7 @@ async fn handle_get_all_contracts(
             let (symbol, name, owner) = registry_by_program
                 .get(pk)
                 .map(|(symbol, name, owner)| {
-                    (
-                        Some(symbol.clone()),
-                        name.clone(),
-                        Some(owner.clone()),
-                    )
+                    (Some(symbol.clone()), name.clone(), Some(owner.clone()))
                 })
                 .unwrap_or((None, None, None));
             serde_json::json!({
@@ -7351,9 +7392,9 @@ async fn handle_get_programs(
         .state
         .get_programs_paginated(fetch_limit, after.as_ref())
         .map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
     let has_more = programs.len() > limit;
     if has_more {
         programs.truncate(limit);
@@ -8913,10 +8954,13 @@ async fn handle_get_nfts_by_owner(
             message: format!("Database error: {}", e),
         })?;
 
-    let account_map = state.state.get_accounts_batch(&token_pubkeys).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let account_map = state
+        .state
+        .get_accounts_batch(&token_pubkeys)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     let mut items = Vec::new();
     for token_pubkey in token_pubkeys {
@@ -8987,10 +9031,13 @@ async fn handle_get_nfts_by_collection(
             message: format!("Database error: {}", e),
         })?;
 
-    let account_map = state.state.get_accounts_batch(&token_pubkeys).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let account_map = state
+        .state
+        .get_accounts_batch(&token_pubkeys)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
 
     let mut items = Vec::new();
     for token_pubkey in token_pubkeys {
@@ -9117,9 +9164,14 @@ fn parse_market_params_extended(
 
     let Some(params) = params else {
         return Ok(MarketFilterParams {
-            collection: None, limit: limit_default,
-            price_min: None, price_max: None, seller: None,
-            sort_by: None, category: None, rarity: None,
+            collection: None,
+            limit: limit_default,
+            price_min: None,
+            price_max: None,
+            seller: None,
+            sort_by: None,
+            category: None,
+            rarity: None,
         });
     };
 
@@ -9136,12 +9188,17 @@ fn parse_market_params_extended(
                 message: format!("Invalid collection pubkey: {}", e),
             })?;
 
-        let limit = obj.get("limit").and_then(|v| v.as_u64())
-            .unwrap_or(limit_default as u64).min(500) as usize;
+        let limit = obj
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(limit_default as u64)
+            .min(500) as usize;
 
         let price_min = obj.get("price_min").and_then(|v| v.as_u64());
         let price_max = obj.get("price_max").and_then(|v| v.as_u64());
-        let seller = obj.get("seller").and_then(|v| v.as_str())
+        let seller = obj
+            .get("seller")
+            .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(Pubkey::from_base58)
             .transpose()
@@ -9149,48 +9206,79 @@ fn parse_market_params_extended(
                 code: -32602,
                 message: format!("Invalid seller pubkey: {}", e),
             })?;
-        let sort_by = obj.get("sort_by").and_then(|v| v.as_str()).map(String::from);
-        let category = obj.get("category").and_then(|v| v.as_u64()).map(|v| v as u8);
+        let sort_by = obj
+            .get("sort_by")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let category = obj
+            .get("category")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u8);
         let rarity = obj.get("rarity").and_then(|v| v.as_u64()).map(|v| v as u8);
 
         return Ok(MarketFilterParams {
-            collection, limit, price_min, price_max, seller,
-            sort_by, category, rarity,
+            collection,
+            limit,
+            price_min,
+            price_max,
+            seller,
+            sort_by,
+            category,
+            rarity,
         });
     }
 
     // Array-form (legacy): [collection_pubkey?, options?]
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
-        message: "Invalid params: expected [collection_pubkey?, options?] or {collection, limit, ...}"
-            .to_string(),
+        message:
+            "Invalid params: expected [collection_pubkey?, options?] or {collection, limit, ...}"
+                .to_string(),
     })?;
 
     let (collection, limit) = match arr.first() {
         Some(first) if first.is_object() => {
-            let limit = first.get("limit").and_then(|v| v.as_u64())
-                .unwrap_or(limit_default as u64).min(500) as usize;
+            let limit = first
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(limit_default as u64)
+                .min(500) as usize;
             (None, limit)
         }
         _ => {
-            let collection = arr.first().and_then(|v| v.as_str())
-                .map(Pubkey::from_base58).transpose()
+            let collection = arr
+                .first()
+                .and_then(|v| v.as_str())
+                .map(Pubkey::from_base58)
+                .transpose()
                 .map_err(|e| RpcError {
                     code: -32602,
                     message: format!("Invalid collection pubkey: {}", e),
                 })?;
-            let limit = arr.get(1).and_then(|v| {
-                if v.is_object() { v.get("limit").and_then(|val| val.as_u64()) }
-                else { v.as_u64() }
-            }).unwrap_or(limit_default as u64).min(500) as usize;
+            let limit = arr
+                .get(1)
+                .and_then(|v| {
+                    if v.is_object() {
+                        v.get("limit").and_then(|val| val.as_u64())
+                    } else {
+                        v.as_u64()
+                    }
+                })
+                .unwrap_or(limit_default as u64)
+                .min(500) as usize;
             (collection, limit)
         }
     };
 
     Ok(MarketFilterParams {
-        collection, limit,
-        price_min: None, price_max: None, seller: None,
-        sort_by: None, category: None, rarity: None,
+        collection,
+        limit,
+        price_min: None,
+        price_max: None,
+        seller: None,
+        sort_by: None,
+        category: None,
+        rarity: None,
     })
 }
 
@@ -9276,26 +9364,37 @@ async fn handle_get_market_listings(
         })?;
 
     // Apply multi-criteria filters
-    let mut filtered: Vec<&moltchain_core::MarketActivity> = activity.iter().filter(|a| {
-        // Price range filter (in shells)
-        if let Some(min) = filters.price_min {
-            if a.price.unwrap_or(0) < min { return false; }
-        }
-        if let Some(max) = filters.price_max {
-            if a.price.unwrap_or(u64::MAX) > max { return false; }
-        }
-        // Seller filter
-        if let Some(ref seller) = filters.seller {
-            if a.seller.as_ref() != Some(seller) { return false; }
-        }
-        true
-    }).collect();
+    let mut filtered: Vec<&moltchain_core::MarketActivity> = activity
+        .iter()
+        .filter(|a| {
+            // Price range filter (in shells)
+            if let Some(min) = filters.price_min {
+                if a.price.unwrap_or(0) < min {
+                    return false;
+                }
+            }
+            if let Some(max) = filters.price_max {
+                if a.price.unwrap_or(u64::MAX) > max {
+                    return false;
+                }
+            }
+            // Seller filter
+            if let Some(ref seller) = filters.seller {
+                if a.seller.as_ref() != Some(seller) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
 
     // Sort
     if let Some(ref sort_by) = filters.sort_by {
         match sort_by.as_str() {
             "price_asc" => filtered.sort_by_key(|a| a.price.unwrap_or(0)),
-            "price_desc" => filtered.sort_by(|a, b| b.price.unwrap_or(0).cmp(&a.price.unwrap_or(0))),
+            "price_desc" => {
+                filtered.sort_by(|a, b| b.price.unwrap_or(0).cmp(&a.price.unwrap_or(0)))
+            }
             "oldest" => filtered.sort_by_key(|a| a.timestamp),
             _ => {} // newest first (default from DB)
         }
@@ -9304,7 +9403,10 @@ async fn handle_get_market_listings(
     // Apply limit after filtering
     filtered.truncate(effective_limit);
 
-    let items: Vec<serde_json::Value> = filtered.iter().map(|a| market_activity_to_json(a)).collect();
+    let items: Vec<serde_json::Value> = filtered
+        .iter()
+        .map(|a| market_activity_to_json(a))
+        .collect();
 
     Ok(serde_json::json!({
         "collection": filters.collection.map(|c| c.to_base58()),
@@ -9385,7 +9487,11 @@ async fn handle_get_market_offers(
 
     let activity = state
         .state
-        .get_market_activity(collection.as_ref(), Some(MarketActivityKind::Offer), fetch_limit)
+        .get_market_activity(
+            collection.as_ref(),
+            Some(MarketActivityKind::Offer),
+            fetch_limit,
+        )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -9395,7 +9501,11 @@ async fn handle_get_market_offers(
     if include_collection_offers {
         let collection_activity = state
             .state
-            .get_market_activity(collection.as_ref(), Some(MarketActivityKind::CollectionOffer), fetch_limit)
+            .get_market_activity(
+                collection.as_ref(),
+                Some(MarketActivityKind::CollectionOffer),
+                fetch_limit,
+            )
             .map_err(|e| RpcError {
                 code: -32000,
                 message: format!("Database error: {}", e),
@@ -9430,7 +9540,10 @@ async fn handle_get_market_offers(
 
     filtered.truncate(limit);
 
-    let items: Vec<serde_json::Value> = filtered.iter().map(|a| market_activity_to_json(a)).collect();
+    let items: Vec<serde_json::Value> = filtered
+        .iter()
+        .map(|a| market_activity_to_json(a))
+        .collect();
 
     Ok(serde_json::json!({
         "collection": collection.map(|c| c.to_base58()),
@@ -9448,7 +9561,11 @@ async fn handle_get_market_auctions(
 
     let activity = state
         .state
-        .get_market_activity(collection.as_ref(), Some(MarketActivityKind::AuctionCreated), limit)
+        .get_market_activity(
+            collection.as_ref(),
+            Some(MarketActivityKind::AuctionCreated),
+            limit,
+        )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -12072,10 +12189,13 @@ async fn handle_create_bridge_deposit(
         code: -32000,
         message: "Bridge service not configured (CUSTODY_URL)".to_string(),
     })?;
-    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Bridge service auth not configured".to_string(),
-    })?;
+    let auth_token = state
+        .custody_auth_token
+        .as_deref()
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Bridge service auth not configured".to_string(),
+        })?;
 
     let payload = params
         .and_then(|v| {
@@ -12093,26 +12213,41 @@ async fn handle_create_bridge_deposit(
         })?;
 
     // Validate required fields
-    let user_id = payload.get("user_id").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing user_id".to_string(),
-    })?;
-    let chain = payload.get("chain").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing chain".to_string(),
-    })?;
-    let asset = payload.get("asset").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing asset".to_string(),
-    })?;
+    let user_id = payload
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing user_id".to_string(),
+        })?;
+    let chain = payload
+        .get("chain")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing chain".to_string(),
+        })?;
+    let asset = payload
+        .get("asset")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing asset".to_string(),
+        })?;
 
     let valid_chains = ["solana", "ethereum", "bnb", "bsc"];
     let valid_assets = ["sol", "eth", "bnb", "usdc", "usdt"];
     if !valid_chains.contains(&chain) {
-        return Err(RpcError { code: -32602, message: format!("Invalid chain: {}", chain) });
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid chain: {}", chain),
+        });
     }
     if !valid_assets.contains(&asset) {
-        return Err(RpcError { code: -32602, message: format!("Invalid asset: {}", asset) });
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid asset: {}", asset),
+        });
     }
 
     let client = reqwest::Client::new();
@@ -12162,15 +12297,20 @@ async fn handle_get_bridge_deposit(
         code: -32000,
         message: "Bridge service not configured (CUSTODY_URL)".to_string(),
     })?;
-    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Bridge service auth not configured".to_string(),
-    })?;
+    let auth_token = state
+        .custody_auth_token
+        .as_deref()
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Bridge service auth not configured".to_string(),
+        })?;
 
     let deposit_id = params
         .and_then(|v| {
             if v.is_array() {
-                v.as_array().and_then(|a| a.first()).and_then(|v| v.as_str().map(String::from))
+                v.as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_str().map(String::from))
             } else {
                 v.as_str().map(String::from)
             }
@@ -12181,7 +12321,11 @@ async fn handle_get_bridge_deposit(
         })?;
 
     // Basic ID validation — UUIDs are 36 chars (8-4-4-4-12 with hyphens)
-    if deposit_id.len() != 36 || !deposit_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+    if deposit_id.len() != 36
+        || !deposit_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
         return Err(RpcError {
             code: -32602,
             message: "Invalid deposit_id format".to_string(),
@@ -12229,10 +12373,13 @@ async fn handle_get_bridge_deposits_by_recipient(
         code: -32000,
         message: "Bridge service not configured (CUSTODY_URL)".to_string(),
     })?;
-    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Bridge service auth not configured".to_string(),
-    })?;
+    let auth_token = state
+        .custody_auth_token
+        .as_deref()
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Bridge service auth not configured".to_string(),
+        })?;
 
     let arr = params
         .and_then(|v| v.as_array().cloned())
@@ -12247,7 +12394,10 @@ async fn handle_get_bridge_deposits_by_recipient(
         })?;
 
     // Basic address validation (base58, 32-44 chars)
-    if address.len() < 32 || address.len() > 44 || !address.chars().all(|c| c.is_ascii_alphanumeric()) {
+    if address.len() < 32
+        || address.len() > 44
+        || !address.chars().all(|c| c.is_ascii_alphanumeric())
+    {
         return Err(RpcError {
             code: -32602,
             message: "Invalid address format".to_string(),
@@ -12321,11 +12471,9 @@ mod tests {
     use super::{
         classify_method, classify_solana_method_tier, filter_signatures_for_address,
         parse_get_block_slot_param, parse_rpc_request, parse_rpc_tier_probe,
-        validate_incoming_transaction_limits,
-        AirdropCooldowns, MethodTier,
+        validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, AirdropCooldowns, MethodTier,
         AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
-        validate_solana_encoding,
-        validate_solana_transaction_details,
     };
     use moltchain_core::Hash;
     use std::time::{Duration, Instant};
@@ -12459,7 +12607,8 @@ mod tests {
             },
         };
 
-        let err = validate_incoming_transaction_limits(&tx).expect_err("must reject oversized instruction count");
+        let err = validate_incoming_transaction_limits(&tx)
+            .expect_err("must reject oversized instruction count");
         assert_eq!(err.code, -32003);
         assert!(err.message.contains("Too many instructions"));
     }
@@ -12472,10 +12621,7 @@ mod tests {
                 instructions: vec![moltchain_core::Instruction {
                     program_id: moltchain_core::SYSTEM_PROGRAM_ID,
                     accounts: Vec::new(),
-                    data: vec![
-                        0u8;
-                        moltchain_core::transaction::MAX_INSTRUCTION_DATA + 1
-                    ],
+                    data: vec![0u8; moltchain_core::transaction::MAX_INSTRUCTION_DATA + 1],
                 }],
                 recent_blockhash: moltchain_core::Hash([9u8; 32]),
             },

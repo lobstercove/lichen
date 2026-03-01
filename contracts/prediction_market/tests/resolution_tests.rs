@@ -234,7 +234,7 @@ fn test_finalize_resolution_after_dispute_period() {
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
 
     // Advance past DISPUTE_PERIOD (172800 slots)
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(anyone);
     let r = finalize_resolution(anyone.as_ptr(), mid);
     assert_eq!(r, 1, "Should finalize after dispute period");
@@ -323,7 +323,7 @@ fn test_challenge_after_dispute_period_fails() {
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
 
     // Advance past dispute period
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
     moltchain_sdk::test_mock::set_caller(challenger);
@@ -418,7 +418,7 @@ fn test_redeem_winning_shares() {
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
 
     // Finalize
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 
@@ -455,7 +455,7 @@ fn test_redeem_losing_shares() {
     moltchain_sdk::test_mock::set_caller(resolver);
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
 
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 
@@ -487,7 +487,7 @@ fn test_double_redemption_prevented() {
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 
@@ -527,7 +527,7 @@ fn test_redeem_with_no_shares() {
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(anyone);
     finalize_resolution(anyone.as_ptr(), mid);
 
@@ -569,7 +569,7 @@ fn test_multi_outcome_resolution_and_redemption() {
     moltchain_sdk::test_mock::set_value(100_000_000); // DISPUTE_BOND
     assert_eq!(submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), 100_000_000), 1);
 
-    moltchain_sdk::test_mock::set_slot(201_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(201_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 
@@ -630,7 +630,7 @@ fn test_full_lifecycle_binary_resolve_yes() {
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
 
     // Finalize
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(admin);
     finalize_resolution(admin.as_ptr(), mid);
 
@@ -1007,7 +1007,7 @@ fn test_total_collateral_decreases_after_redemption() {
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    moltchain_sdk::test_mock::set_slot(101_001 + 172_801);
+    moltchain_sdk::test_mock::set_slot(101_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 

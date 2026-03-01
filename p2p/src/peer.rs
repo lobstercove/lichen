@@ -257,9 +257,15 @@ impl PeerManager {
         let same_port = peer_addr.port() == self.local_addr.port();
         let same_ip = peer_addr.ip() == self.local_addr.ip();
         let loopback_pair = peer_addr.ip().is_loopback() && self.local_addr.ip().is_loopback();
-        let unspecified_pair = peer_addr.ip().is_unspecified() || self.local_addr.ip().is_unspecified();
-        if peer_addr == self.local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair)) {
-            return Err(format!("Refusing to connect to self endpoint {}", peer_addr));
+        let unspecified_pair =
+            peer_addr.ip().is_unspecified() || self.local_addr.ip().is_unspecified();
+        if peer_addr == self.local_addr
+            || (same_port && (same_ip || loopback_pair || unspecified_pair))
+        {
+            return Err(format!(
+                "Refusing to connect to self endpoint {}",
+                peer_addr
+            ));
         }
 
         if self
@@ -329,7 +335,10 @@ impl PeerManager {
                 if let Some(cert) = certs.first() {
                     let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
                     if fp == self.local_fingerprint {
-                        warn!("P2P: Rejecting self-connection attempt to {} (same node identity)", peer_addr);
+                        warn!(
+                            "P2P: Rejecting self-connection attempt to {} (same node identity)",
+                            peer_addr
+                        );
                         connection.close(quinn::VarInt::from_u32(1), b"self_connection");
                         return Err("Refusing self-connection (same node identity)".to_string());
                     }
@@ -615,9 +624,13 @@ impl PeerManager {
                             let peer_addr = connection.remote_address();
                             let same_port = peer_addr.port() == local_addr.port();
                             let same_ip = peer_addr.ip() == local_addr.ip();
-                            let loopback_pair = peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
-                            let unspecified_pair = peer_addr.ip().is_unspecified() || local_addr.ip().is_unspecified();
-                            if peer_addr == local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair)) {
+                            let loopback_pair =
+                                peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
+                            let unspecified_pair =
+                                peer_addr.ip().is_unspecified() || local_addr.ip().is_unspecified();
+                            if peer_addr == local_addr
+                                || (same_port && (same_ip || loopback_pair || unspecified_pair))
+                            {
                                 warn!("P2P: Rejected self inbound connection from {}", peer_addr);
                                 connection.close(quinn::VarInt::from_u32(1), b"self_connection");
                                 return;
@@ -649,7 +662,10 @@ impl PeerManager {
                                         let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
                                         if fp == local_fingerprint {
                                             warn!("P2P: Rejected inbound self-identity connection from {}", peer_addr);
-                                            connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+                                            connection.close(
+                                                quinn::VarInt::from_u32(1),
+                                                b"self_connection",
+                                            );
                                             return;
                                         }
                                         match fingerprint_store.check_or_store(&peer_addr, &fp) {

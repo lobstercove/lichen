@@ -21,6 +21,8 @@
 //   getShieldedCommitments     — args: [{from, limit}]
 // ═══════════════════════════════════════════════════════════════════════════════
 
+use ark_bn254::Fr;
+use ark_ff::PrimeField;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -28,8 +30,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ark_bn254::Fr;
-use ark_ff::PrimeField;
 use moltchain_core::zk::MerkleTree;
 use moltchain_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
@@ -623,10 +623,13 @@ pub(crate) async fn handle_compute_shield_commitment(
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
     })?;
 
-    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: amount (u64) is required".to_string(),
-    })?;
+    let amount = obj
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: amount (u64) is required".to_string(),
+        })?;
 
     let blinding_hex = obj
         .get("blinding")
@@ -657,10 +660,13 @@ pub(crate) async fn handle_generate_shield_proof(
         message: "Invalid params: expected [{ amount, blinding }]".to_string(),
     })?;
 
-    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: amount (u64) is required".to_string(),
-    })?;
+    let amount = obj
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: amount (u64) is required".to_string(),
+        })?;
 
     let blinding_hex = obj
         .get("blinding")
@@ -687,7 +693,8 @@ pub(crate) async fn handle_generate_shield_proof(
     let mut proof = prover.prove_shield(circuit).map_err(internal_rpc_err)?;
     proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), commitment];
 
-    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk =
+        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = moltchain_core::zk::Verifier::from_vk_shield(vk);
     let valid = verifier
         .verify(&proof)
@@ -719,10 +726,13 @@ pub(crate) async fn handle_generate_unshield_proof(
         message: "Invalid params: expected unshield witness object".to_string(),
     })?;
 
-    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: amount (u64) is required".to_string(),
-    })?;
+    let amount = obj
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: amount (u64) is required".to_string(),
+        })?;
 
     let merkle_root_hex = obj
         .get("merkle_root")
@@ -743,22 +753,18 @@ pub(crate) async fn handle_generate_unshield_proof(
         })?;
     let recipient_bytes = parse_recipient_32(recipient_raw)?;
 
-    let blinding_fr = parse_hex_to_fr(
-        obj.get("blinding")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Invalid params: blinding (hex) is required".to_string(),
-            })?,
-    )?;
-    let serial_fr = parse_hex_to_fr(
-        obj.get("serial")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| RpcError {
-                code: -32602,
-                message: "Invalid params: serial (hex) is required".to_string(),
-            })?,
-    )?;
+    let blinding_fr = parse_hex_to_fr(obj.get("blinding").and_then(|v| v.as_str()).ok_or_else(
+        || RpcError {
+            code: -32602,
+            message: "Invalid params: blinding (hex) is required".to_string(),
+        },
+    )?)?;
+    let serial_fr = parse_hex_to_fr(obj.get("serial").and_then(|v| v.as_str()).ok_or_else(
+        || RpcError {
+            code: -32602,
+            message: "Invalid params: serial (hex) is required".to_string(),
+        },
+    )?)?;
     let spending_key_fr = parse_hex_to_fr(
         obj.get("spending_key")
             .and_then(|v| v.as_str())
@@ -772,7 +778,10 @@ pub(crate) async fn handle_generate_unshield_proof(
         if path_vals.len() != TREE_DEPTH {
             return Err(RpcError {
                 code: -32602,
-                message: format!("Invalid params: merkle_path must contain {} elements", TREE_DEPTH),
+                message: format!(
+                    "Invalid params: merkle_path must contain {} elements",
+                    TREE_DEPTH
+                ),
             });
         }
         let mut out = Vec::with_capacity(TREE_DEPTH);
@@ -792,7 +801,10 @@ pub(crate) async fn handle_generate_unshield_proof(
         if bits_vals.len() != TREE_DEPTH {
             return Err(RpcError {
                 code: -32602,
-                message: format!("Invalid params: path_bits must contain {} elements", TREE_DEPTH),
+                message: format!(
+                    "Invalid params: path_bits must contain {} elements",
+                    TREE_DEPTH
+                ),
             });
         }
         let mut out = Vec::with_capacity(TREE_DEPTH);
@@ -841,7 +853,8 @@ pub(crate) async fn handle_generate_unshield_proof(
         fr_to_bytes(&recipient_hash_fr),
     ];
 
-    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk =
+        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = moltchain_core::zk::Verifier::from_vk_unshield(vk);
     let valid = verifier
         .verify(&proof)
@@ -894,7 +907,10 @@ pub(crate) async fn handle_generate_transfer_proof(
     if inputs.len() != 2 {
         return Err(RpcError {
             code: -32602,
-            message: format!("Invalid params: transfer requires exactly 2 inputs, got {}", inputs.len()),
+            message: format!(
+                "Invalid params: transfer requires exactly 2 inputs, got {}",
+                inputs.len()
+            ),
         });
     }
 
@@ -908,7 +924,10 @@ pub(crate) async fn handle_generate_transfer_proof(
     if outputs.len() != 2 {
         return Err(RpcError {
             code: -32602,
-            message: format!("Invalid params: transfer requires exactly 2 outputs, got {}", outputs.len()),
+            message: format!(
+                "Invalid params: transfer requires exactly 2 outputs, got {}",
+                outputs.len()
+            ),
         });
     }
 
@@ -957,7 +976,10 @@ pub(crate) async fn handle_generate_transfer_proof(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| RpcError {
                     code: -32602,
-                    message: format!("Invalid params: inputs[{}].spending_key (hex) is required", i),
+                    message: format!(
+                        "Invalid params: inputs[{}].spending_key (hex) is required",
+                        i
+                    ),
                 })?,
         )?;
 
@@ -966,7 +988,10 @@ pub(crate) async fn handle_generate_transfer_proof(
             .and_then(|v| v.as_array())
             .ok_or_else(|| RpcError {
                 code: -32602,
-                message: format!("Invalid params: inputs[{}].merkle_path array is required", i),
+                message: format!(
+                    "Invalid params: inputs[{}].merkle_path array is required",
+                    i
+                ),
             })?;
         if merkle_path_vals.len() != TREE_DEPTH {
             return Err(RpcError {
@@ -989,7 +1014,9 @@ pub(crate) async fn handle_generate_transfer_proof(
                             i
                         ),
                     })
-                    .and_then(|hex_str| parse_hex_32(hex_str).map(|b| Fr::from_le_bytes_mod_order(&b)))
+                    .and_then(|hex_str| {
+                        parse_hex_32(hex_str).map(|b| Fr::from_le_bytes_mod_order(&b))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1053,7 +1080,8 @@ pub(crate) async fn handle_generate_transfer_proof(
                 })?,
         )?;
 
-        output_commitments_fr[i] = poseidon_hash_fr(Fr::from(output_values[i]), output_blindings_fr[i]);
+        output_commitments_fr[i] =
+            poseidon_hash_fr(Fr::from(output_values[i]), output_blindings_fr[i]);
         output_commitments_bytes[i] = fr_to_bytes(&output_commitments_fr[i]);
     }
 
@@ -1101,7 +1129,8 @@ pub(crate) async fn handle_generate_transfer_proof(
         output_commitments_bytes[1],
     ];
 
-    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let vk =
+        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
     let verifier = moltchain_core::zk::Verifier::from_vk_transfer(vk);
     let valid = verifier
         .verify(&proof)
@@ -1149,7 +1178,9 @@ fn internal_rpc_err(message: String) -> RpcError {
     }
 }
 
-fn first_param_object(params: Option<&serde_json::Value>) -> Option<&serde_json::Map<String, serde_json::Value>> {
+fn first_param_object(
+    params: Option<&serde_json::Value>,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
     params.and_then(|p| {
         p.as_array()
             .and_then(|arr| arr.first())
@@ -1165,7 +1196,11 @@ fn resolve_zk_key_dir() -> PathBuf {
         .join("zk")
 }
 
-fn load_zk_key_bytes(env_var: &str, key_dir: &PathBuf, default_file: &str) -> Result<Vec<u8>, RpcError> {
+fn load_zk_key_bytes(
+    env_var: &str,
+    key_dir: &std::path::Path,
+    default_file: &str,
+) -> Result<Vec<u8>, RpcError> {
     let path = std::env::var(env_var)
         .ok()
         .map(PathBuf::from)
@@ -1216,12 +1251,18 @@ fn parse_recipient_32(input: &str) -> Result<[u8; 32], RpcError> {
 
     let decoded = bs58::decode(input).into_vec().map_err(|e| RpcError {
         code: -32602,
-        message: format!("Invalid recipient encoding (expected base58 pubkey or 32-byte hex): {}", e),
+        message: format!(
+            "Invalid recipient encoding (expected base58 pubkey or 32-byte hex): {}",
+            e
+        ),
     })?;
     if decoded.len() != 32 {
         return Err(RpcError {
             code: -32602,
-            message: format!("Invalid recipient length: expected 32 bytes, got {}", decoded.len()),
+            message: format!(
+                "Invalid recipient length: expected 32 bytes, got {}",
+                decoded.len()
+            ),
         });
     }
     let mut out = [0u8; 32];

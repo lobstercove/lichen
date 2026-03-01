@@ -350,7 +350,10 @@ impl P2PNetwork {
                 // entire P2P message loop. The sync manager will request
                 // missing blocks via BlockRangeRequest later.
                 if let Err(e) = self.block_tx.try_send(block) {
-                    warn!("P2P: Block channel full, dropping block from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Block channel full, dropping block from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -476,7 +479,10 @@ impl P2PNetwork {
                     block.header.slot, peer_addr
                 );
                 if let Err(e) = self.block_tx.try_send(block) {
-                    warn!("P2P: Block channel full, dropping block response from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Block channel full, dropping block response from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -484,7 +490,10 @@ impl P2PNetwork {
                 debug!("P2P: Received {} blocks from {}", blocks.len(), peer_addr);
                 for block in blocks {
                     if let Err(e) = self.block_tx.try_send(block) {
-                        warn!("P2P: Block channel full during range response from {} ({})", peer_addr, e);
+                        warn!(
+                            "P2P: Block channel full during range response from {} ({})",
+                            peer_addr, e
+                        );
                         break; // Stop sending remaining blocks — will be re-requested
                     }
                 }

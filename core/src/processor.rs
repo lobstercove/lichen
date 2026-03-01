@@ -3335,11 +3335,10 @@ impl TxProcessor {
                     rep_key.push(hex_chars[(b & 0x0f) as usize]);
                 }
                 // Read from MoltyID's storage in CF_CONTRACT_STORAGE
-                match self.state.get_contract_storage(&moltyid_pubkey, &rep_key) {
-                    Ok(Some(rep_data)) => {
-                        context.cross_contract_storage.insert(rep_key, rep_data);
-                    }
-                    Ok(None) | Err(_) => {}
+                if let Ok(Some(rep_data)) =
+                    self.state.get_contract_storage(&moltyid_pubkey, &rep_key)
+                {
+                    context.cross_contract_storage.insert(rep_key, rep_data);
                 }
             }
         }
@@ -3484,7 +3483,13 @@ impl TxProcessor {
         // Check if user has a MoltyID identity (required for achievements)
         let hex = Self::pubkey_to_hex(&caller);
         let identity_key = format!("identity:{}", hex);
-        if self.state.get_contract_storage(&moltyid_addr, identity_key.as_bytes()).ok().flatten().is_none() {
+        if self
+            .state
+            .get_contract_storage(&moltyid_addr, identity_key.as_bytes())
+            .ok()
+            .flatten()
+            .is_none()
+        {
             return Ok(()); // No identity — skip
         }
 
@@ -3503,23 +3508,31 @@ impl TxProcessor {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
                     let amount = if ix.data.len() >= 9 {
                         u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
-                    } else { 0 };
-                    if amount >= 100 * 1_000_000_000 { // 100+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 106, timestamp)?; // Big Spender
+                    } else {
+                        0
+                    };
+                    if amount >= 100 * 1_000_000_000 {
+                        // 100+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 106, timestamp)?;
+                        // Big Spender
                     }
-                    if amount >= 1_000 * 1_000_000_000 { // 1000+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 107, timestamp)?; // Whale Transfer
+                    if amount >= 1_000 * 1_000_000_000 {
+                        // 1000+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 107, timestamp)?;
+                        // Whale Transfer
                     }
                 }
                 // Stake
                 6 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 41, timestamp)?; // First Stake
+                    self.award_ach(&moltyid_addr, &caller, &hex, 41, timestamp)?;
+                    // First Stake
                 }
                 // Unstake
                 7 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 42, timestamp)?; // Unstaked
+                    self.award_ach(&moltyid_addr, &caller, &hex, 42, timestamp)?;
+                    // Unstaked
                 }
                 // ClaimUnstake
                 8 => {
@@ -3531,12 +3544,20 @@ impl TxProcessor {
                     self.award_ach(&moltyid_addr, &caller, &hex, 43, timestamp)?; // ReefStake Pioneer
                     let amount = if ix.data.len() >= 9 {
                         u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let tier = ix.data.get(9).copied().unwrap_or(0);
-                    if tier >= 1 { self.award_ach(&moltyid_addr, &caller, &hex, 44, timestamp)?; } // Locked Staker
-                    if tier >= 3 { self.award_ach(&moltyid_addr, &caller, &hex, 45, timestamp)?; } // Diamond Hands (365-day)
-                    if amount >= 10_000 * 1_000_000_000 { // 10K+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 46, timestamp)?; // Whale Staker
+                    if tier >= 1 {
+                        self.award_ach(&moltyid_addr, &caller, &hex, 44, timestamp)?;
+                    } // Locked Staker
+                    if tier >= 3 {
+                        self.award_ach(&moltyid_addr, &caller, &hex, 45, timestamp)?;
+                    } // Diamond Hands (365-day)
+                    if amount >= 10_000 * 1_000_000_000 {
+                        // 10K+ MOLT
+                        self.award_ach(&moltyid_addr, &caller, &hex, 46, timestamp)?;
+                        // Whale Staker
                     }
                 }
                 // ReefStakeUnstake
@@ -3546,47 +3567,56 @@ impl TxProcessor {
                 // ReefStakeClaim
                 15 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 47, timestamp)?; // Reward Harvester
+                    self.award_ach(&moltyid_addr, &caller, &hex, 47, timestamp)?;
+                    // Reward Harvester
                 }
                 // Shield
                 16 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 57, timestamp)?; // Privacy Pioneer (First Shield)
+                    self.award_ach(&moltyid_addr, &caller, &hex, 57, timestamp)?;
+                    // Privacy Pioneer (First Shield)
                 }
                 // Unshield
                 17 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 58, timestamp)?; // Unshielded
+                    self.award_ach(&moltyid_addr, &caller, &hex, 58, timestamp)?;
+                    // Unshielded
                 }
                 // Shielded Transfer
                 18 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 59, timestamp)?; // Shadow Sender
+                    self.award_ach(&moltyid_addr, &caller, &hex, 59, timestamp)?;
+                    // Shadow Sender
                 }
                 // RegisterEvmAddress
                 9 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?; // EVM Connected
+                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?;
+                    // EVM Connected
                 }
                 // CreateCollection
                 19 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?; // Collection Creator
+                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?;
+                    // Collection Creator
                 }
                 // MintNFT
                 20 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?; // First Mint (NFT)
+                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?;
+                    // First Mint (NFT)
                 }
                 // TransferNFT
                 21 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?; // NFT Trader
+                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?;
+                    // NFT Trader
                 }
                 // ReefStakeTransfer (stMOLT)
                 23 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?; // stMOLT Transferrer
+                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?;
+                    // stMOLT Transferrer
                 }
                 // Any other instruction
                 _ => {
@@ -3599,7 +3629,8 @@ impl TxProcessor {
             if let Ok(json_str) = std::str::from_utf8(&ix.data) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
                     if val.get("Deploy").is_some() {
-                        self.award_ach(&moltyid_addr, &caller, &hex, 3, timestamp)?; // Program Builder
+                        self.award_ach(&moltyid_addr, &caller, &hex, 3, timestamp)?;
+                        // Program Builder
                     }
                     if let Some(call) = val.get("Call") {
                         let func = call.get("function").and_then(|f| f.as_str()).unwrap_or("");
@@ -3607,7 +3638,11 @@ impl TxProcessor {
 
                         // Determine contract by looking up its symbol
                         let contract_symbol = contract_addr.and_then(|addr| {
-                            self.state.get_symbol_registry_by_program(&addr).ok().flatten().map(|e| e.symbol)
+                            self.state
+                                .get_symbol_registry_by_program(&addr)
+                                .ok()
+                                .flatten()
+                                .map(|e| e.symbol)
                         });
                         let sym = contract_symbol.as_deref().unwrap_or("");
 
@@ -3615,20 +3650,25 @@ impl TxProcessor {
                         if sym == "MOLTYID" {
                             match func {
                                 "register_identity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 109, timestamp)?; // Identity Created
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 109, timestamp)?;
+                                    // Identity Created
                                 }
                                 "register_name" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 9, timestamp)?;  // Name Registrar
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 12, timestamp)?; // First Name
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 9, timestamp)?; // Name Registrar
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 12, timestamp)?;
+                                    // First Name
                                 }
                                 "update_profile" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 110, timestamp)?; // Profile Customizer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 110, timestamp)?;
+                                    // Profile Customizer
                                 }
                                 "vouch" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 111, timestamp)?; // Voucher (gave a vouch)
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 111, timestamp)?;
+                                    // Voucher (gave a vouch)
                                 }
                                 "create_agent" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 112, timestamp)?; // Agent Creator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 112, timestamp)?;
+                                    // Agent Creator
                                 }
                                 _ => {}
                             }
@@ -3637,34 +3677,42 @@ impl TxProcessor {
                         // ── DEX achievements
                         if sym == "DEX" || sym == "DEX_CORE" || sym == "MOLTSWAP" {
                             match func {
-                                "swap" | "swap_exact_input" | "swap_exact_output" | "execute_swap" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 13, timestamp)?; // First Trade
+                                "swap" | "swap_exact_input" | "swap_exact_output"
+                                | "execute_swap" => {
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 13, timestamp)?;
+                                    // First Trade
                                 }
                                 "add_liquidity" | "provide_liquidity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 14, timestamp)?; // LP Provider
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 14, timestamp)?;
+                                    // LP Provider
                                 }
                                 "remove_liquidity" | "withdraw_liquidity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 15, timestamp)?; // LP Withdrawal
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 15, timestamp)?;
+                                    // LP Withdrawal
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 16, timestamp)?; // DEX User
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 16, timestamp)?;
+                                    // DEX User
                                 }
                             }
                         }
 
                         // ── DEX Router
                         if sym == "DEX_ROUTER" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 17, timestamp)?; // Multi-hop Trader
+                            self.award_ach(&moltyid_addr, &caller, &hex, 17, timestamp)?;
+                            // Multi-hop Trader
                         }
 
                         // ── DEX Margin
                         if sym == "DEX_MARGIN" {
                             match func {
                                 "open_position" | "open_long" | "open_short" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 18, timestamp)?; // Margin Trader
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 18, timestamp)?;
+                                    // Margin Trader
                                 }
                                 "close_position" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 19, timestamp)?; // Position Closer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 19, timestamp)?;
+                                    // Position Closer
                                 }
                                 _ => {}
                             }
@@ -3674,14 +3722,17 @@ impl TxProcessor {
                         if sym == "DEX_GOVERNANCE" || sym == "MOLTDAO" {
                             match func {
                                 "create_proposal" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 71, timestamp)?; // Proposal Creator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 71, timestamp)?;
+                                    // Proposal Creator
                                 }
                                 "vote" | "cast_vote" => {
                                     self.award_ach(&moltyid_addr, &caller, &hex, 2, timestamp)?; // Governance Voter
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 72, timestamp)?; // First Vote
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 72, timestamp)?;
+                                    // First Vote
                                 }
                                 "delegate" | "delegate_votes" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 73, timestamp)?; // Delegator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 73, timestamp)?;
+                                    // Delegator
                                 }
                                 _ => {}
                             }
@@ -3691,7 +3742,8 @@ impl TxProcessor {
                         if sym == "DEX_REWARDS" {
                             match func {
                                 "claim" | "claim_rewards" | "harvest" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 20, timestamp)?; // Yield Farmer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 20, timestamp)?;
+                                    // Yield Farmer
                                 }
                                 _ => {}
                             }
@@ -3699,26 +3751,32 @@ impl TxProcessor {
 
                         // ── DEX Analytics
                         if sym == "DEX_ANALYTICS" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 21, timestamp)?; // Analytics Explorer
+                            self.award_ach(&moltyid_addr, &caller, &hex, 21, timestamp)?;
+                            // Analytics Explorer
                         }
 
                         // ── Lending (LobsterLend)
                         if sym == "LOBSTERLEND" {
                             match func {
                                 "deposit" | "supply" | "lend" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 31, timestamp)?; // First Lend
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 31, timestamp)?;
+                                    // First Lend
                                 }
                                 "borrow" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 32, timestamp)?; // First Borrow
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 32, timestamp)?;
+                                    // First Borrow
                                 }
                                 "repay" | "repay_loan" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 33, timestamp)?; // Loan Repaid
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 33, timestamp)?;
+                                    // Loan Repaid
                                 }
                                 "liquidate" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 34, timestamp)?; // Liquidator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 34, timestamp)?;
+                                    // Liquidator
                                 }
                                 "withdraw" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 35, timestamp)?; // Withdrawal Expert
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 35, timestamp)?;
+                                    // Withdrawal Expert
                                 }
                                 _ => {}
                             }
@@ -3728,13 +3786,16 @@ impl TxProcessor {
                         if sym == "MOLTBRIDGE" {
                             match func {
                                 "deposit" | "bridge_in" | "lock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 51, timestamp)?; // Bridge Pioneer (In)
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 51, timestamp)?;
+                                    // Bridge Pioneer (In)
                                 }
                                 "withdraw" | "bridge_out" | "unlock" | "claim" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 52, timestamp)?; // Bridge Out
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 52, timestamp)?;
+                                    // Bridge Out
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 53, timestamp)?; // Bridge User
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 53, timestamp)?;
+                                    // Bridge User
                                 }
                             }
                         }
@@ -3743,13 +3804,16 @@ impl TxProcessor {
                         if sym == "WETH" || sym == "WBNB" || sym == "WSOL" {
                             match func {
                                 "wrap" | "deposit" | "mint" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 54, timestamp)?; // Wrapper
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 54, timestamp)?;
+                                    // Wrapper
                                 }
                                 "unwrap" | "withdraw" | "burn" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 55, timestamp)?; // Unwrapper
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 55, timestamp)?;
+                                    // Unwrapper
                                 }
                                 "transfer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 56, timestamp)?; // Cross-chain Trader
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 56, timestamp)?;
+                                    // Cross-chain Trader
                                 }
                                 _ => {}
                             }
@@ -3759,13 +3823,16 @@ impl TxProcessor {
                         if sym == "MUSD" {
                             match func {
                                 "mint" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 36, timestamp)?; // Stablecoin Minter
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 36, timestamp)?;
+                                    // Stablecoin Minter
                                 }
                                 "redeem" | "burn" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 37, timestamp)?; // Stablecoin Redeemer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 37, timestamp)?;
+                                    // Stablecoin Redeemer
                                 }
                                 "transfer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 38, timestamp)?; // Stable Sender
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 38, timestamp)?;
+                                    // Stable Sender
                                 }
                                 _ => {}
                             }
@@ -3773,23 +3840,28 @@ impl TxProcessor {
 
                         // ── Shielded Pool
                         if sym == "SHIELDED_POOL" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 60, timestamp)?; // ZK Privacy User
+                            self.award_ach(&moltyid_addr, &caller, &hex, 60, timestamp)?;
+                            // ZK Privacy User
                         }
 
                         // ── NFT Marketplace
                         if sym == "MOLTMARKET" {
                             match func {
                                 "list" | "create_listing" | "list_nft" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 66, timestamp)?; // First Listing
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 66, timestamp)?;
+                                    // First Listing
                                 }
                                 "buy" | "purchase" | "buy_nft" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 67, timestamp)?; // First Purchase
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 67, timestamp)?;
+                                    // First Purchase
                                 }
                                 "make_offer" | "bid" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 68, timestamp)?; // Bidder
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 68, timestamp)?;
+                                    // Bidder
                                 }
                                 "accept_offer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 69, timestamp)?; // Deal Maker
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 69, timestamp)?;
+                                    // Deal Maker
                                 }
                                 _ => {}
                             }
@@ -3797,20 +3869,24 @@ impl TxProcessor {
 
                         // ── NFT Collection (MoltPunks)
                         if sym == "MOLTPUNKS" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 70, timestamp)?; // Punk Collector
+                            self.award_ach(&moltyid_addr, &caller, &hex, 70, timestamp)?;
+                            // Punk Collector
                         }
 
                         // ── Auction (MoltAuction)
                         if sym == "MOLTAUCTION" {
                             match func {
                                 "create_auction" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 91, timestamp)?; // Auctioneer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 91, timestamp)?;
+                                    // Auctioneer
                                 }
                                 "place_bid" | "bid" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 92, timestamp)?; // Auction Bidder
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 92, timestamp)?;
+                                    // Auction Bidder
                                 }
                                 "claim" | "settle" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 93, timestamp)?; // Auction Winner
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 93, timestamp)?;
+                                    // Auction Winner
                                 }
                                 _ => {}
                             }
@@ -3820,10 +3896,12 @@ impl TxProcessor {
                         if sym == "MOLTORACLE" {
                             match func {
                                 "submit_price" | "update_price" | "report" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 81, timestamp)?; // Oracle Reporter
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 81, timestamp)?;
+                                    // Oracle Reporter
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 82, timestamp)?; // Oracle User
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 82, timestamp)?;
+                                    // Oracle User
                                 }
                             }
                         }
@@ -3832,13 +3910,16 @@ impl TxProcessor {
                         if sym == "REEF_STORAGE" {
                             match func {
                                 "upload" | "store" | "put" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 86, timestamp)?; // File Uploader
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 86, timestamp)?;
+                                    // File Uploader
                                 }
                                 "download" | "get" | "retrieve" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 87, timestamp)?; // Data Retriever
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 87, timestamp)?;
+                                    // Data Retriever
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 88, timestamp)?; // Storage User
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 88, timestamp)?;
+                                    // Storage User
                                 }
                             }
                         }
@@ -3847,13 +3928,16 @@ impl TxProcessor {
                         if sym == "BOUNTYBOARD" {
                             match func {
                                 "create_bounty" | "post_bounty" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 96, timestamp)?; // Bounty Poster
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 96, timestamp)?;
+                                    // Bounty Poster
                                 }
                                 "submit_work" | "claim_bounty" | "complete" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 97, timestamp)?; // Bounty Hunter
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 97, timestamp)?;
+                                    // Bounty Hunter
                                 }
                                 "approve" | "accept_submission" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 98, timestamp)?; // Bounty Judge
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 98, timestamp)?;
+                                    // Bounty Judge
                                 }
                                 _ => {}
                             }
@@ -3863,16 +3947,20 @@ impl TxProcessor {
                         if sym == "PREDICTION_MARKET" {
                             match func {
                                 "create_market" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 101, timestamp)?; // Market Maker
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 101, timestamp)?;
+                                    // Market Maker
                                 }
                                 "predict" | "place_bet" | "buy_shares" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 102, timestamp)?; // First Prediction
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 102, timestamp)?;
+                                    // First Prediction
                                 }
                                 "resolve" | "settle" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 103, timestamp)?; // Oracle Resolver
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 103, timestamp)?;
+                                    // Oracle Resolver
                                 }
                                 "claim" | "redeem" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 104, timestamp)?; // Prediction Winner
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 104, timestamp)?;
+                                    // Prediction Winner
                                 }
                                 _ => {}
                             }
@@ -3882,10 +3970,12 @@ impl TxProcessor {
                         if sym == "COMPUTE_MARKET" {
                             match func {
                                 "register_provider" | "offer_compute" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 113, timestamp)?; // Compute Provider
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 113, timestamp)?;
+                                    // Compute Provider
                                 }
                                 "request_compute" | "submit_job" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 114, timestamp)?; // Compute Consumer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 114, timestamp)?;
+                                    // Compute Consumer
                                 }
                                 _ => {}
                             }
@@ -3895,13 +3985,16 @@ impl TxProcessor {
                         if sym == "CLAWPAY" {
                             match func {
                                 "create_invoice" | "create_payment" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 115, timestamp)?; // Payment Creator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 115, timestamp)?;
+                                    // Payment Creator
                                 }
                                 "pay" | "send_payment" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 116, timestamp)?; // First Payment
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 116, timestamp)?;
+                                    // First Payment
                                 }
                                 "create_subscription" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 117, timestamp)?; // Subscription Creator
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 117, timestamp)?;
+                                    // Subscription Creator
                                 }
                                 _ => {}
                             }
@@ -3911,13 +4004,16 @@ impl TxProcessor {
                         if sym == "CLAWPUMP" {
                             match func {
                                 "create_token" | "launch" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 118, timestamp)?; // Token Launcher
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 118, timestamp)?;
+                                    // Token Launcher
                                 }
                                 "buy" | "purchase" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 119, timestamp)?; // Early Buyer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 119, timestamp)?;
+                                    // Early Buyer
                                 }
                                 "sell" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 120, timestamp)?; // Token Seller
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 120, timestamp)?;
+                                    // Token Seller
                                 }
                                 _ => {}
                             }
@@ -3927,10 +4023,12 @@ impl TxProcessor {
                         if sym == "CLAWVAULT" {
                             match func {
                                 "deposit" | "lock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 121, timestamp)?; // Vault Depositor
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 121, timestamp)?;
+                                    // Vault Depositor
                                 }
                                 "withdraw" | "unlock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 122, timestamp)?; // Vault Withdrawer
+                                    self.award_ach(&moltyid_addr, &caller, &hex, 122, timestamp)?;
+                                    // Vault Withdrawer
                                 }
                                 _ => {}
                             }
@@ -3938,11 +4036,13 @@ impl TxProcessor {
 
                         // ── MoltCoin (native token contract)
                         if sym == "MOLTCOIN" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 123, timestamp)?; // Token Contract User
+                            self.award_ach(&moltyid_addr, &caller, &hex, 123, timestamp)?;
+                            // Token Contract User
                         }
 
                         // Generic contract interaction
-                        self.award_ach(&moltyid_addr, &caller, &hex, 124, timestamp)?; // Contract Interactor
+                        self.award_ach(&moltyid_addr, &caller, &hex, 124, timestamp)?;
+                        // Contract Interactor
                     }
                 }
             }

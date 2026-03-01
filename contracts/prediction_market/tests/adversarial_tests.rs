@@ -128,8 +128,8 @@ fn test_circuit_breaker_expires_after_pause_slots() {
     moltchain_sdk::test_mock::set_caller(t);
     assert_eq!(buy_shares(t.as_ptr(), mid, 1, 500_000), 0);
 
-    // Advance past PRICE_MOVE_PAUSE_SLOTS (120)
-    moltchain_sdk::test_mock::set_slot(1000 + 121);
+    // Advance past PRICE_MOVE_PAUSE_SLOTS (150)
+    moltchain_sdk::test_mock::set_slot(1000 + 151);
     moltchain_sdk::test_mock::set_caller(t);
     let r = buy_shares(t.as_ptr(), mid, 1, 500_000);
     assert!(r > 0, "Buy should succeed after circuit breaker expires");
@@ -411,10 +411,10 @@ fn test_min_duration_boundary() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Duration test";
-    // MIN_DURATION = 7200 slots
+    // MIN_DURATION = 9000 slots
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-    let r = create_market(admin.as_ptr(), 0, 1000 + 7200, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(admin.as_ptr(), 0, 1000 + 9000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
     assert!(r > 0, "Exactly MIN_DURATION should be accepted");
 }
 
@@ -424,7 +424,7 @@ fn test_just_below_min_duration_rejected() {
     let qh = [42u8; 32];
     let q = b"Duration test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 7199, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(admin.as_ptr(), 0, 1000 + 8999, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
     assert_eq!(r, 0, "Just below MIN_DURATION must be rejected");
 }
 

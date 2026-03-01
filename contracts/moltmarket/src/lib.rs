@@ -1802,8 +1802,8 @@ mod tests {
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(offerer);
-        // Make offer
-        assert_eq!(make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 5000, pay.as_ptr()), 1);
+        // Make offer (price >= MIN_OFFER_PRICE = 1_000_000)
+        assert_eq!(make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 1_000_000, pay.as_ptr()), 1);
 
         // Verify offer stored
         let mut key = b"offer:".to_vec();
@@ -1880,7 +1880,7 @@ mod tests {
         let nft = Address([4u8; 32]);
         let nft_owner = [7u8; 32];
         test_mock::set_caller(nft_owner);
-        test_mock::set_nft_owner(nft, 1, Address(nft_owner));
+        test_mock::set_cross_call_response(Some(nft_owner.to_vec()));
 
         // Set rarity=3 (Epic), category=0 (Art), no traits
         let traits: [u8; 0] = [];
@@ -1929,7 +1929,7 @@ mod tests {
         let nft = Address([4u8; 32]);
         let real_owner = [7u8; 32];
         let imposter = [8u8; 32];
-        test_mock::set_nft_owner(nft, 1, Address(real_owner));
+        test_mock::set_cross_call_response(Some(real_owner.to_vec()));
         test_mock::set_caller(imposter);
         let traits: [u8; 0] = [];
         assert_eq!(set_nft_attributes(
@@ -1949,7 +1949,7 @@ mod tests {
         let nft = Address([4u8; 32]);
         let nft_owner = [7u8; 32];
         test_mock::set_caller(nft_owner);
-        test_mock::set_nft_owner(nft, 1, Address(nft_owner));
+        test_mock::set_cross_call_response(Some(nft_owner.to_vec()));
 
         // Trait data: "color" = "red" — key_len(5), "color", val_len(3), "red"
         let trait_data: [u8; 12] = [5, b'c', b'o', b'l', b'o', b'r', 3, b'r', b'e', b'd', 0, 0];

@@ -1786,6 +1786,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
     use moltchain_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
@@ -2269,6 +2270,11 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liq = [3u8; 32];
+        // DEX-L03: Configure moltcoin address so liquidation proceeds
+        let molt_addr = [10u8; 32];
+        test_mock::set_caller(admin);
+        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         test_mock::set_slot(100);
         // 5x tier: required = 1B * 2000/10000 = 200M, maint=1000bps=10%
         test_mock::set_caller(trader);

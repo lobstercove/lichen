@@ -2072,7 +2072,9 @@ async fn test_native_get_block_with_stored_block() {
     assert!(!result.is_null(), "block at slot 1 should exist");
     assert_eq!(result["slot"], 1, "block slot should be 1");
     // Timestamp is set to current time in app_with_rich_state (GX-07 health check fix)
-    let ts = result["timestamp"].as_u64().expect("timestamp should be u64");
+    let ts = result["timestamp"]
+        .as_u64()
+        .expect("timestamp should be u64");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

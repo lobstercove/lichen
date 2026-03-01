@@ -1241,7 +1241,12 @@ async fn handle_subscription_request(
             if let Some(params) = req.params {
                 if let Some(sig) = params
                     .as_str()
-                    .or_else(|| params.as_array().and_then(|arr| arr.first()).and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        params
+                            .as_array()
+                            .and_then(|arr| arr.first())
+                            .and_then(|v| v.as_str())
+                    })
                     .or_else(|| params.get("signature").and_then(|v| v.as_str()))
                 {
                     subscription_manager
@@ -1265,7 +1270,12 @@ async fn handle_subscription_request(
             if let Some(params) = req.params {
                 if let Some(sub_id) = params
                     .as_u64()
-                    .or_else(|| params.as_array().and_then(|arr| arr.first()).and_then(|v| v.as_u64()))
+                    .or_else(|| {
+                        params
+                            .as_array()
+                            .and_then(|arr| arr.first())
+                            .and_then(|v| v.as_u64())
+                    })
                     .or_else(|| params.get("subscription").and_then(|v| v.as_u64()))
                 {
                     Ok(serde_json::json!(

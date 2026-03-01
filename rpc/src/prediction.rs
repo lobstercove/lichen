@@ -129,7 +129,11 @@ fn resolve_predict_program(state: &RpcState) -> Option<Pubkey> {
 
 fn read_bytes(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
     let program = resolve_predict_program(state)?;
-    state.state.get_contract_storage(&program, key).ok().flatten()
+    state
+        .state
+        .get_contract_storage(&program, key)
+        .ok()
+        .flatten()
 }
 
 /// Read u64 from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
@@ -888,8 +892,7 @@ async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeReq
     if effective_status != "active" {
         return api_err(&format!(
             "Market {} is not active (status={})",
-            req.market_id,
-            effective_status
+            req.market_id, effective_status
         ));
     }
 
@@ -1158,10 +1161,11 @@ async fn get_trades(
     };
 
     let scan_limit = (limit * 8).min(1000);
-    let indexed = match state
-        .state
-        .get_account_tx_signatures_paginated(&pubkey, scan_limit, params.before_slot)
-    {
+    let indexed = match state.state.get_account_tx_signatures_paginated(
+        &pubkey,
+        scan_limit,
+        params.before_slot,
+    ) {
         Ok(v) => v,
         Err(e) => return api_err(&format!("database error: {}", e)),
     };
@@ -1199,7 +1203,10 @@ async fn get_trades(
         };
 
         for ix in &tx.message.instructions {
-            if ix.program_id != CONTRACT_PROGRAM_ID || ix.accounts.len() < 2 || ix.accounts[1] != predict_program {
+            if ix.program_id != CONTRACT_PROGRAM_ID
+                || ix.accounts.len() < 2
+                || ix.accounts[1] != predict_program
+            {
                 continue;
             }
             let Some(args) = parse_contract_call_args(ix) else {

@@ -1097,7 +1097,7 @@ mod tests {
         add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
         test_mock::set_caller(feeder);
         submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
-        test_mock::set_timestamp(1000 + 3601); // stale
+        test_mock::set_timestamp(1000 + 9001); // stale (> 9000 slots)
         let mut result = [0u8; 17];
         // AUDIT-FIX M20: stale now returns 2 (distinct from 0 = not found)
         assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 2);
@@ -1194,9 +1194,8 @@ mod tests {
         let requester = [1u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(requester);
-        assert_eq!(request_randomness(requester.as_ptr(), 42), 1);
-        let key = alloc::format!("random_{}", hex_encode(&requester));
-        assert!(moltchain_sdk::storage_get(key.as_bytes()).is_some());
+        // CON-08: request_randomness is deprecated, now returns 0
+        assert_eq!(request_randomness(requester.as_ptr(), 42), 0);
     }
 
     #[test]

@@ -1525,7 +1525,8 @@ mod tests {
 
         // Advance time
         test_mock::set_timestamp(401_000);
-        assert_eq!(harvest(), 0);
+        // CON-10: All yield-producing strategies have missing addresses → returns 2
+        assert_eq!(harvest(), 2);
 
         // G25-02: No simulated fallback — test mode cross-calls return empty → 0 yield
         let total_assets = load_u64(b"cv_total_assets");
@@ -1552,9 +1553,8 @@ mod tests {
         deposit(user.as_ptr(), 1_000_000_000_000);
 
         test_mock::set_timestamp(401_000);
-        assert_eq!(harvest(), 0);
-
-        // G25-02: No simulated fallback → total_assets unchanged
+        // CON-10: All yield-producing strategies have missing addresses → returns 2
+        assert_eq!(harvest(), 2);
         let total_assets = load_u64(b"cv_total_assets");
         assert_eq!(total_assets, 1_000_000_000_000);
     }

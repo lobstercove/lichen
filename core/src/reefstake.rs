@@ -171,7 +171,7 @@ pub enum LockTier {
     #[default]
     Flexible = 0, // No lock, 7-day unstake cooldown, 1.0x multiplier
     Lock30 = 1,  // 30-day lock, 1.1x multiplier
-    Lock180 = 2,  // 180-day lock, 1.25x multiplier
+    Lock180 = 2, // 180-day lock, 1.25x multiplier
     Lock365 = 3, // 365-day lock, 1.5x multiplier
 }
 

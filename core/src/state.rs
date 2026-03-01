@@ -6344,7 +6344,11 @@ impl StateStore {
             .cf_handle(CF_CONTRACT_STORAGE)
             .ok_or_else(|| "Contract storage CF not found".to_string())?;
         let mut count = 0u64;
-        for _ in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start).flatten() {
+        for _ in self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .flatten()
+        {
             count = count.saturating_add(1);
         }
         Ok(count)
@@ -6393,13 +6397,8 @@ impl StateStore {
         let mut advanced = 0u64;
 
         while advanced < pages_to_advance {
-            let page = self.export_cf_page_cursor(
-                cf_name,
-                display_name,
-                cursor.as_deref(),
-                limit,
-                None,
-            )?;
+            let page =
+                self.export_cf_page_cursor(cf_name, display_name, cursor.as_deref(), limit, None)?;
 
             if !page.has_more && page.entries.is_empty() {
                 return Ok(KvPage {
@@ -6467,7 +6466,11 @@ impl StateStore {
             Some(value) => value,
             None => {
                 let mut count = 0u64;
-                for _ in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start).flatten() {
+                for _ in self
+                    .db
+                    .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                    .flatten()
+                {
                     count = count.saturating_add(1);
                 }
                 count
@@ -6475,8 +6478,10 @@ impl StateStore {
         };
 
         let iter = if let Some(after) = after_key {
-            self.db
-                .iterator_cf(&cf, rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward))
+            self.db.iterator_cf(
+                &cf,
+                rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward),
+            )
         } else {
             self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
         };

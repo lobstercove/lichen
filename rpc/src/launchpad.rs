@@ -510,7 +510,7 @@ async fn get_holder_balance(
 /// Build the /api/v1/launchpad/* router.
 pub(crate) fn build_launchpad_router() -> Router<Arc<RpcState>> {
     Router::new()
-    .route("/config", get(get_config))
+        .route("/config", get(get_config))
         .route("/stats", get(get_stats))
         .route("/tokens", get(get_tokens))
         .route("/tokens/:id", get(get_token))

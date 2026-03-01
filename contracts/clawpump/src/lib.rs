@@ -1045,6 +1045,7 @@ pub extern "C" fn get_graduation_info() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
     use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
 
@@ -1158,6 +1159,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        // CON-05: Configure MOLT token so transfer_molt_out succeeds
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1391,6 +1396,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        // CON-05: Configure MOLT token so transfer_molt_out succeeds
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1485,6 +1494,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        // CON-05: Configure MOLT token so transfer_molt_out succeeds
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1871,6 +1884,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        // CON-05: Configure MOLT token so transfer_molt_out succeeds
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1920,6 +1937,10 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        // CON-05: Configure MOLT token so transfer_molt_out succeeds
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
