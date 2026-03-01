@@ -13,8 +13,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <script src="../shared/utils.js"></script>
-    <script src="../shared/wallet-connect.js"></script>
+    <script src="shared/utils.js"></script>
+    <script src="shared/wallet-connect.js"></script>
     <script src="shared-config.js"></script>
 </head>
 <body>
@@ -320,9 +320,10 @@
         <div class="bottom-panel hidden" id="tradeBottomPanel">
             <div class="positions-panel">
                 <div class="positions-tabs">
-                    <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge"></span></button>
-                    <button class="pos-tab" data-target="content-history">Trade History</button>
-                    <button class="pos-tab" data-target="content-positions">Positions <span class="badge margin-badge"></span></button>
+                    <button class="pos-tab active" data-target="content-orders">Spot Orders <span class="badge orders-badge"></span></button>
+                    <button class="pos-tab" data-target="content-history">Spot History</button>
+                    <button class="pos-tab" data-target="content-positions">Margin Positions <span class="badge margin-badge"></span></button>
+                    <button class="pos-tab" data-target="content-margin-history">Margin History</button>
                 </div>
                 <div class="positions-content" id="content-orders">
                     <table class="orders-table">
@@ -357,10 +358,17 @@
                         <span>Available: <strong id="marginAvailable">—</strong></span>
                         <span>Insurance: <strong id="marginInsurance">—</strong></span>
                         <span class="funding-rate-badge" style="background:var(--bg-secondary);border-radius:4px;padding:1px 6px;">Funding: <strong id="marginFundingRate">—</strong></span>
+                        <button class="btn btn-tiny btn-secondary" id="marginLiquidateBtn" title="Liquidate by position ID" style="font-size:0.7rem;padding:2px 8px;">Liquidate</button>
                     </div>
                     <div id="marginPositionsList" style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
                         <i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                         No open positions
+                    </div>
+                </div>
+                <div class="positions-content hidden" id="content-margin-history">
+                    <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
+                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        Connect wallet to view margin history
                     </div>
                 </div>
             </div>
@@ -438,6 +446,7 @@
                         <option value="newest">Sort: Newest</option>
                         <option value="ending">Sort: Ending Soon</option>
                         <option value="liquidity">Sort: Liquidity</option>
+                        <option value="traders">Sort: Traders</option>
                     </select>
                 </div>
             </div>
@@ -495,6 +504,7 @@
                             </div>
 
                             <div class="predict-summary">
+                                <div class="summary-row"><span>Available</span><span class="mono-value" id="predictMusdBalance">Connect wallet</span></div>
                                 <div class="summary-row"><span>Shares received</span><span class="mono-value" id="predictShares">0.00</span></div>
                                 <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">—</span></div>
                                 <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text" id="predictPayout">$0.00</span></div>
@@ -600,7 +610,7 @@
                         </div>
                     </div>
                     <div class="positions-content hidden" id="predict-created">
-                        <table class="predict-created-table" style="width:100%;border-collapse:collapse;">
+                        <table class="orders-table predict-created-table" style="width:100%;border-collapse:collapse;">
                             <thead><tr>
                                 <th>Market</th><th>Category</th><th>Status</th><th>Volume</th><th>Traders</th><th>Close Date</th>
                             </tr></thead>
@@ -828,7 +838,7 @@
                     <div class="reward-card panel-card">
                         <div class="panel-header">
                             <h3><div class="reward-icon-sm"><i class="fas fa-exchange-alt"></i></div> Trading Rewards</h3>
-                            <button class="btn btn-small btn-primary claim-btn">Claim</button>
+                            <button class="btn btn-small btn-primary claim-btn" id="claimTradingBtn">Claim</button>
                         </div>
                         <div class="reward-body">
                             <p class="text-secondary">Fee mining: earn MOLT proportional to fees paid, scaled by tier multiplier.</p>
@@ -852,7 +862,7 @@
                     <div class="reward-card panel-card">
                         <div class="panel-header">
                             <h3><div class="reward-icon-sm"><i class="fas fa-water"></i></div> LP Mining</h3>
-                            <button class="btn btn-small btn-primary claim-btn">Claim</button>
+                            <button class="btn btn-small btn-primary claim-btn" id="claimLpBtn">Claim</button>
                         </div>
                         <div class="reward-body">
                             <p class="text-secondary">Earn MOLT proportional to your in-range concentrated liquidity position.</p>
@@ -1064,8 +1074,6 @@
                             <div class="proposal-type-selector">
                                 <button class="proposal-type-btn active" data-ptype="pair"><i class="fas fa-plus-circle"></i> New Pair</button>
                                 <button class="proposal-type-btn" data-ptype="fee"><i class="fas fa-percentage"></i> Fee Change</button>
-                                <button class="proposal-type-btn" data-ptype="delist"><i class="fas fa-ban"></i> Delist</button>
-                                <button class="proposal-type-btn" data-ptype="param"><i class="fas fa-sliders-h"></i> Parameter</button>
                             </div>
                         </div>
 
@@ -1420,8 +1428,8 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(optional — encrypts local storage)</span></label>
-                    <input type="password" id="wmPassword" placeholder="Set a password to encrypt" class="form-input">
+                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local storage)</span></label>
+                    <input type="password" id="wmPassword" placeholder="Enter wallet password" class="form-input">
                 </div>
                 <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect Wallet</button>
             </div>
@@ -1440,6 +1448,10 @@
                     <i class="fas fa-shield-alt"></i>
                     <h4>Generate New Wallet</h4>
                     <p>Create a fresh MoltChain wallet. Save the private key securely — it will not be shown again.</p>
+                </div>
+                <div class="form-group">
+                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local storage)</span></label>
+                    <input type="password" id="wmCreatePassword" placeholder="Enter wallet password" class="form-input">
                 </div>
                 <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create Wallet</button>
                 <div class="wm-created-wallet hidden" id="wmCreatedWallet">

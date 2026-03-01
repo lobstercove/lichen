@@ -29,6 +29,10 @@ pub struct KvPage {
     pub entries: KvEntries,
     /// Total number of entries in the column family (across all pages).
     pub total: u64,
+    /// Cursor key for the next page (exclusive). None when there are no more pages.
+    pub next_cursor: Option<Vec<u8>>,
+    /// Whether more entries are available after this page.
+    pub has_more: bool,
 }
 
 /// Detect number of CPU cores for RocksDB parallelism
@@ -1237,6 +1241,42 @@ impl StateStore {
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    /// Batch account lookup (single RocksDB multi_get call).
+    /// Returns only accounts that exist and decode successfully.
+    pub fn get_accounts_batch(
+        &self,
+        pubkeys: &[Pubkey],
+    ) -> Result<std::collections::HashMap<Pubkey, Account>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+
+        let raw = self
+            .db
+            .multi_get_cf(pubkeys.iter().map(|pk| (&cf, pk.0.as_ref())));
+
+        let mut out = std::collections::HashMap::with_capacity(pubkeys.len());
+        for (pk, item) in pubkeys.iter().zip(raw.into_iter()) {
+            let maybe_data = item.map_err(|e| format!("Database error: {}", e))?;
+            let Some(data) = maybe_data else {
+                continue;
+            };
+
+            let mut account: Account = if data.first() == Some(&0xBC) {
+                bincode::deserialize(&data[1..])
+                    .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
+            } else {
+                serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize account (json): {}", e))?
+            };
+            account.fixup_legacy();
+            out.insert(*pk, account);
+        }
+
+        Ok(out)
     }
 
     /// Store account
@@ -2702,6 +2742,48 @@ impl StateStore {
         Ok(results)
     }
 
+    pub fn get_programs_paginated(
+        &self,
+        limit: usize,
+        after: Option<&Pubkey>,
+    ) -> Result<Vec<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAMS)
+            .ok_or_else(|| "Programs CF not found".to_string())?;
+
+        let mut results = Vec::new();
+        let iter = if let Some(after_pk) = after {
+            self.db.iterator_cf(
+                &cf,
+                rocksdb::IteratorMode::From(&after_pk.0, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+        };
+
+        for item in iter {
+            let (key, _) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if key.len() != 32 {
+                continue;
+            }
+            if let Some(after_pk) = after {
+                if key.as_ref() == &after_pk.0[..] {
+                    continue;
+                }
+            }
+
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&key);
+            results.push(Pubkey(bytes));
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
     pub fn get_symbol_registry(&self, symbol: &str) -> Result<Option<SymbolRegistryEntry>, String> {
         let normalized = Self::normalize_symbol(symbol)?;
         let cf = self
@@ -2758,6 +2840,54 @@ impl StateStore {
                 break;
             }
             let (_, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            let entry: SymbolRegistryEntry = serde_json::from_slice(&value)
+                .map_err(|e| format!("Failed to decode symbol registry: {}", e))?;
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
+
+    /// List symbol registry entries with cursor pagination.
+    /// `after_symbol` is exclusive: results start strictly after this symbol key.
+    pub fn get_all_symbol_registry_paginated(
+        &self,
+        limit: usize,
+        after_symbol: Option<&str>,
+    ) -> Result<Vec<SymbolRegistryEntry>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SYMBOL_REGISTRY)
+            .ok_or_else(|| "Symbol registry CF not found".to_string())?;
+
+        let normalized_after = if let Some(symbol) = after_symbol {
+            Some(Self::normalize_symbol(symbol)?)
+        } else {
+            None
+        };
+
+        let iter = if let Some(after) = normalized_after.as_ref() {
+            self.db.iterator_cf(
+                &cf,
+                rocksdb::IteratorMode::From(after.as_bytes(), rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+        };
+
+        let mut entries = Vec::new();
+        for item in iter {
+            if entries.len() >= limit {
+                break;
+            }
+            let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+
+            if let Some(after) = normalized_after.as_ref() {
+                if key.as_ref() == after.as_bytes() {
+                    continue;
+                }
+            }
+
             let entry: SymbolRegistryEntry = serde_json::from_slice(&value)
                 .map_err(|e| format!("Failed to decode symbol registry: {}", e))?;
             entries.push(entry);
@@ -5955,6 +6085,49 @@ impl StateStore {
         Ok(programs)
     }
 
+    pub fn get_all_programs_paginated(
+        &self,
+        limit: usize,
+        after: Option<&Pubkey>,
+    ) -> Result<Vec<(Pubkey, Value)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAMS)
+            .ok_or_else(|| "Programs CF not found".to_string())?;
+
+        let iter = if let Some(after_pk) = after {
+            self.db.iterator_cf(
+                &cf,
+                rocksdb::IteratorMode::From(&after_pk.0, rocksdb::Direction::Forward),
+            )
+        } else {
+            self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+        };
+
+        let mut programs = Vec::new();
+        for (key, value) in iter.flatten() {
+            if key.len() != 32 {
+                continue;
+            }
+            if let Some(after_pk) = after {
+                if key.as_ref() == &after_pk.0[..] {
+                    continue;
+                }
+            }
+
+            let mut pk_bytes = [0u8; 32];
+            pk_bytes.copy_from_slice(&key);
+            let pk = Pubkey(pk_bytes);
+            let metadata: Value = serde_json::from_slice(&value).unwrap_or(Value::Null);
+            programs.push((pk, metadata));
+            if programs.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(programs)
+    }
+
     /// Get contract logs (events) for a specific program
     pub fn get_contract_logs(
         &self,
@@ -6129,14 +6302,72 @@ impl StateStore {
         self.export_cf_page(CF_ACCOUNTS, "Accounts", offset, limit)
     }
 
+    /// Export a cursor-paginated page of accounts.
+    pub fn export_accounts_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor(
+            CF_ACCOUNTS,
+            "Accounts",
+            after_key,
+            limit,
+            Some(self.metrics.get_total_accounts()),
+        )
+    }
+
     /// Export a page of contract storage entries as (key_bytes, value_bytes).
     pub fn export_contract_storage_iter(&self, offset: u64, limit: u64) -> Result<KvPage, String> {
         self.export_cf_page(CF_CONTRACT_STORAGE, "Contract storage", offset, limit)
     }
 
+    /// Export a cursor-paginated page of contract storage entries.
+    pub fn export_contract_storage_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor(
+            CF_CONTRACT_STORAGE,
+            "Contract storage",
+            after_key,
+            limit,
+            None,
+        )
+    }
+
+    /// Count total number of contract storage entries.
+    pub fn count_contract_storage_entries(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut count = 0u64;
+        for _ in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start).flatten() {
+            count = count.saturating_add(1);
+        }
+        Ok(count)
+    }
+
     /// Export a page of programs (WASM bytecode) as (pubkey_bytes, program_bytes).
     pub fn export_programs_iter(&self, offset: u64, limit: u64) -> Result<KvPage, String> {
         self.export_cf_page(CF_PROGRAMS, "Programs", offset, limit)
+    }
+
+    /// Export a cursor-paginated page of programs.
+    pub fn export_programs_cursor(
+        &self,
+        after_key: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<KvPage, String> {
+        self.export_cf_page_cursor(
+            CF_PROGRAMS,
+            "Programs",
+            after_key,
+            limit,
+            Some(self.get_program_count()),
+        )
     }
 
     /// Generic helper: read a page of (key, value) pairs from a column family.
@@ -6147,26 +6378,139 @@ impl StateStore {
         offset: u64,
         limit: u64,
     ) -> Result<KvPage, String> {
+        if limit == 0 {
+            return Ok(KvPage {
+                entries: Vec::new(),
+                total: 0,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+
+        let pages_to_advance = offset / limit;
+        let intra_page_skip = (offset % limit) as usize;
+        let mut cursor: Option<Vec<u8>> = None;
+        let mut advanced = 0u64;
+
+        while advanced < pages_to_advance {
+            let page = self.export_cf_page_cursor(
+                cf_name,
+                display_name,
+                cursor.as_deref(),
+                limit,
+                None,
+            )?;
+
+            if !page.has_more && page.entries.is_empty() {
+                return Ok(KvPage {
+                    entries: Vec::new(),
+                    total: page.total,
+                    next_cursor: None,
+                    has_more: false,
+                });
+            }
+
+            cursor = page.next_cursor;
+            advanced = advanced.saturating_add(1);
+
+            if !page.has_more {
+                break;
+            }
+        }
+
+        let mut page = self.export_cf_page_cursor(
+            cf_name,
+            display_name,
+            cursor.as_deref(),
+            limit.saturating_add(intra_page_skip as u64),
+            None,
+        )?;
+
+        if intra_page_skip > 0 {
+            if intra_page_skip >= page.entries.len() {
+                page.entries.clear();
+                page.has_more = false;
+                page.next_cursor = None;
+            } else {
+                page.entries.drain(0..intra_page_skip);
+                if page.entries.len() > limit as usize {
+                    page.entries.truncate(limit as usize);
+                    page.has_more = true;
+                    page.next_cursor = page.entries.last().map(|(key, _)| key.clone());
+                }
+            }
+        }
+
+        if page.entries.len() > limit as usize {
+            page.entries.truncate(limit as usize);
+            page.has_more = true;
+            page.next_cursor = page.entries.last().map(|(key, _)| key.clone());
+        }
+
+        Ok(page)
+    }
+
+    fn export_cf_page_cursor(
+        &self,
+        cf_name: &str,
+        display_name: &str,
+        after_key: Option<&[u8]>,
+        limit: u64,
+        total_hint: Option<u64>,
+    ) -> Result<KvPage, String> {
         let cf = self
             .db
             .cf_handle(cf_name)
             .ok_or_else(|| format!("{} CF not found", display_name))?;
 
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        let total = match total_hint {
+            Some(value) => value,
+            None => {
+                let mut count = 0u64;
+                for _ in self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start).flatten() {
+                    count = count.saturating_add(1);
+                }
+                count
+            }
+        };
+
+        let iter = if let Some(after) = after_key {
+            self.db
+                .iterator_cf(&cf, rocksdb::IteratorMode::From(after, rocksdb::Direction::Forward))
+        } else {
+            self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start)
+        };
 
         let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
-        let mut total: u64 = 0;
+        let mut has_more = false;
 
-        for item in iter.flatten() {
-            if total >= offset && (total - offset) < limit {
-                let (key, value) = item;
-                entries.push((key.to_vec(), value.to_vec()));
+        for (key, value) in iter.flatten() {
+            if let Some(after) = after_key {
+                if key.as_ref() == after {
+                    continue;
+                }
             }
-            total += 1;
-            // Once we have the page and are past skip+take, keep counting for total
+
+            entries.push((key.to_vec(), value.to_vec()));
+            if entries.len() > limit as usize {
+                has_more = true;
+                entries.pop();
+                break;
+            }
         }
 
-        Ok(KvPage { entries, total })
+        let next_cursor = if has_more {
+            entries.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+
+        Ok(KvPage {
+            entries,
+            total,
+            next_cursor,
+            has_more,
+        })
     }
 
     /// Import a batch of accounts into the store (used by joining validators).

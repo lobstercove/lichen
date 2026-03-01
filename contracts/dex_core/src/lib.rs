@@ -103,6 +103,7 @@ const PAIR_COUNT_KEY: &[u8] = b"dex_pair_count";
 const ORDER_COUNT_KEY: &[u8] = b"dex_order_count";
 const TRADE_COUNT_KEY: &[u8] = b"dex_trade_count";
 const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
+const FEE_TREASURY_ADDR_KEY: &[u8] = b"dex_fee_treasury_addr";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
@@ -141,6 +142,18 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
 
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
+}
+
+fn fee_recipient_addr() -> [u8; 32] {
+    let configured = load_addr(FEE_TREASURY_ADDR_KEY);
+    if !is_zero(&configured) {
+        return configured;
+    }
+    let admin = load_addr(ADMIN_KEY);
+    if !is_zero(&admin) {
+        return admin;
+    }
+    [0u8; 32]
 }
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
@@ -644,6 +657,7 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
         return 200;
     }
     storage_set(ADMIN_KEY, &addr);
+    storage_set(FEE_TREASURY_ADDR_KEY, &addr);
     save_u64(PAIR_COUNT_KEY, 0);
     save_u64(ORDER_COUNT_KEY, 0);
     save_u64(TRADE_COUNT_KEY, 0);
@@ -1524,11 +1538,15 @@ fn fill_at_price_level(
                     let mut quote_addr = [0u8; 32];
                     quote_addr.copy_from_slice(&pd_ref[32..64]);
                     if !is_zero(&quote_addr) {
+                        let recipient = fee_recipient_addr();
+                        if is_zero(&recipient) {
+                            continue;
+                        }
                         // Transfer fee from taker to DEX treasury via token contract
                         let mut fee_args = Vec::with_capacity(73);
                         fee_args.push(3u8); // opcode: transfer
                         fee_args.extend_from_slice(taker); // from
-                        fee_args.extend_from_slice(&[0u8; 32]); // to: zero = treasury/burn
+                        fee_args.extend_from_slice(&recipient); // to: configured treasury
                         fee_args.extend_from_slice(&u64_to_bytes(taker_fee));
                         let call = CrossCall::new(Address(quote_addr), "transfer_fee", fee_args)
                             .with_value(0);
@@ -2400,7 +2418,16 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(load_addr(ADMIN_KEY), admin);
+        assert_eq!(fee_recipient_addr(), admin);
         assert_eq!(load_u64(PAIR_COUNT_KEY), 0);
+    }
+
+    #[test]
+    fn test_fee_recipient_prefers_configured_treasury() {
+        let _admin = setup();
+        let treasury = [9u8; 32];
+        storage_set(FEE_TREASURY_ADDR_KEY, &treasury);
+        assert_eq!(fee_recipient_addr(), treasury);
     }
 
     #[test]

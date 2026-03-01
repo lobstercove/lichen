@@ -8,6 +8,15 @@ let cursorStack = [];      // stack of before_slot cursors for prev navigation
 let nextCursor = null;     // cursor for the next page
 let currentFilter = { type: '', status: '' };
 
+function isShieldedType(typeRaw) {
+    return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
+}
+
+function isErrorStatus(statusRaw) {
+    const normalized = String(statusRaw || '').toLowerCase();
+    return normalized === 'error' || normalized === 'failed' || normalized.includes('fail');
+}
+
 async function fetchPage(beforeSlot) {
     const params = { limit: TXS_PER_PAGE };
     if (beforeSlot !== undefined && beforeSlot !== null) {
@@ -62,6 +71,13 @@ async function renderTransactions() {
         });
     }
 
+    if (currentFilter.status) {
+        txs = txs.filter(tx => {
+            const errored = isErrorStatus(tx.status);
+            return currentFilter.status === 'error' ? errored : !errored;
+        });
+    }
+
     if (txs.length === 0) {
         table.innerHTML = '<tr><td colspan="9" style="text-align:center; color: var(--text-muted);">No transactions found</td></tr>';
         return;
@@ -70,6 +86,8 @@ async function renderTransactions() {
     const addresses = [];
     txs.forEach(tx => {
         const instruction = tx.message?.instructions?.[0] || null;
+        const type = resolveTxType(tx, instruction);
+        if (isShieldedType(type)) return;
         const from = tx.from || instruction?.accounts?.[0] || null;
         const to = tx.to || instruction?.accounts?.[1] || null;
         if (from) addresses.push(from);
@@ -83,8 +101,9 @@ async function renderTransactions() {
         const signature = tx.signature || tx.hash || 'unknown';
         const instruction = tx.message?.instructions?.[0] || null;
         const type = resolveTxType(tx, instruction);
-        const from = tx.from || instruction?.accounts?.[0] || 'N/A';
-        const to = tx.to || instruction?.accounts?.[1] || 'N/A';
+        const shieldedTx = isShieldedType(type);
+        const fromAddress = shieldedTx ? null : (tx.from || instruction?.accounts?.[0] || null);
+        const toAddress = shieldedTx ? null : (tx.to || instruction?.accounts?.[1] || null);
         const amountShells = tx.amount_shells !== undefined
             ? tx.amount_shells
             : (tx.amount !== undefined ? Math.round(tx.amount * SHELLS_PER_MOLT) : null);
@@ -95,13 +114,33 @@ async function renderTransactions() {
         const fee = feeShells !== null ? formatMolt(feeShells) : '-';
         const slot = tx.slot;
         const timestamp = tx.timestamp;
+        const statusRaw = tx.status || 'Success';
+        const isError = isErrorStatus(statusRaw);
+        const statusLabel = isError ? 'Error' : 'Success';
+        const statusIcon = isError ? 'times' : 'check';
+        const statusClass = isError ? 'error' : 'success';
 
-        const fromDisplay = typeof formatAddressWithMoltName === 'function'
-            ? formatAddressWithMoltName(from, nameMap[from])
-            : formatAddress(from);
-        const toDisplay = typeof formatAddressWithMoltName === 'function'
-            ? formatAddressWithMoltName(to, nameMap[to])
-            : formatAddress(to);
+        const fromDisplay = shieldedTx
+            ? 'Shielded Note(s) (private)'
+            : (typeof formatAddressWithMoltName === 'function'
+                ? formatAddressWithMoltName(fromAddress, nameMap[fromAddress])
+                : formatAddress(fromAddress));
+        const toDisplay = shieldedTx
+            ? 'Shielded Note(s) (private)'
+            : (typeof formatAddressWithMoltName === 'function'
+                ? formatAddressWithMoltName(toAddress, nameMap[toAddress])
+                : formatAddress(toAddress));
+
+        const fromCell = shieldedTx
+            ? `<span class="hash-short">${fromDisplay}</span>`
+            : (fromAddress
+                ? `<a class="hash-short" href="address.html?address=${encodeURIComponent(fromAddress)}">${fromDisplay}</a>`
+                : '<span class="hash-short">N/A</span>');
+        const toCell = shieldedTx
+            ? `<span class="hash-short">${toDisplay}</span>`
+            : (toAddress
+                ? `<a class="hash-short" href="address.html?address=${encodeURIComponent(toAddress)}">${toDisplay}</a>`
+                : '<span class="hash-short">N/A</span>');
 
         return `
         <tr>
@@ -111,11 +150,11 @@ async function renderTransactions() {
             </td>
             <td><a href="block.html?slot=${slot}">#${formatSlot(slot)}</a></td>
             <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
-            <td><span class="hash-short">${fromDisplay}</span></td>
-            <td><span class="hash-short">${toDisplay}</span></td>
+            <td>${fromCell}</td>
+            <td>${toCell}</td>
             <td>${amount}</td>
             <td>${fee}</td>
-            <td><span class="pill pill-success"><i class="fas fa-check"></i> Success</span></td>
+            <td><span class="pill pill-${statusClass}" title="${escapeHtml(String(statusRaw))}"><i class="fas fa-${statusIcon}"></i> ${statusLabel}</span></td>
             <td>${formatTime(timestamp)}</td>
         </tr>`;
     }).join('');
@@ -176,11 +215,31 @@ function clearFilters() {
 document.addEventListener('DOMContentLoaded', () => {
     loadPage(undefined);
 
+    let wsRefreshTimer = null;
+    let refreshInFlight = false;
+
+    const refreshFirstPage = async () => {
+        if (cursorStack.length !== 0 || refreshInFlight) return;
+        refreshInFlight = true;
+        try {
+            await loadPage(undefined);
+        } finally {
+            refreshInFlight = false;
+        }
+    };
+
+    const scheduleRefresh = (delayMs) => {
+        if (cursorStack.length !== 0 || wsRefreshTimer) return;
+        wsRefreshTimer = setTimeout(async () => {
+            wsRefreshTimer = null;
+            await refreshFirstPage();
+        }, delayMs);
+    };
+
     const startPolling = () => {
         if (txPolling) return;
         txPolling = setInterval(() => {
-            // Only auto-refresh when on first page
-            if (cursorStack.length === 0) loadPage(undefined);
+            refreshFirstPage();
         }, 5000);
     };
 
@@ -188,21 +247,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (txPolling) { clearInterval(txPolling); txPolling = null; }
     };
 
-    let wsRefreshTimer = null;
     let blockSubRegistered = false;
+    let txSubRegistered = false;
 
     const ensureBlockSubscription = () => {
         if (blockSubRegistered) return;
         blockSubRegistered = true;
         ws.subscribe('subscribeBlocks', () => {
-            if (cursorStack.length === 0 && !wsRefreshTimer) {
-                wsRefreshTimer = setTimeout(() => {
-                    wsRefreshTimer = null;
-                    loadPage(undefined);
-                }, 3000);
-            }
+            scheduleRefresh(2000);
         }).catch(() => {
             blockSubRegistered = false;
+        });
+    };
+
+    const ensureTransactionSubscription = () => {
+        if (txSubRegistered) return;
+        txSubRegistered = true;
+        ws.subscribe('subscribeTransactions', () => {
+            scheduleRefresh(800);
+        }).catch(() => {
+            txSubRegistered = false;
         });
     };
 
@@ -210,6 +274,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ws.onOpen(() => {
             stopPolling();
             ensureBlockSubscription();
+            ensureTransactionSubscription();
         });
         ws.onClose(() => startPolling());
         ws.connect();

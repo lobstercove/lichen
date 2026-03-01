@@ -124,6 +124,9 @@ pub struct PeerManager {
     /// AUDIT-FIX C1-01: Raw node private key bytes for client cert auth
     node_key_bytes: Vec<u8>,
 
+    /// Local node certificate fingerprint for self-connection detection
+    local_fingerprint: [u8; 32],
+
     /// AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
     fingerprint_store: Arc<PeerFingerprintStore>,
 
@@ -161,6 +164,7 @@ impl PeerManager {
         // Clone cert chain + key bytes for client connections (mutual TLS)
         let node_cert_chain = vec![identity.cert_der.clone()];
         let node_key_bytes = identity.key_bytes.clone();
+        let local_fingerprint = NodeIdentity::compute_fingerprint(node_cert_chain[0].as_ref());
 
         // AUDIT-FIX C1-01: Server config with mutual TLS
         // Replaces .with_no_client_auth() — server now validates connecting peers'
@@ -226,6 +230,7 @@ impl PeerManager {
             ban_list: Arc::new(Mutex::new(PeerBanList::new(ban_list_path))),
             node_cert_chain,
             node_key_bytes,
+            local_fingerprint,
             fingerprint_store,
             // C2-01: 20K capacity ≈ 640KB — covers ~5 minutes of peak traffic
             seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
@@ -249,6 +254,14 @@ impl PeerManager {
 
     /// Connect to a peer
     pub async fn connect_peer(&self, peer_addr: SocketAddr) -> Result<(), String> {
+        let same_port = peer_addr.port() == self.local_addr.port();
+        let same_ip = peer_addr.ip() == self.local_addr.ip();
+        let loopback_pair = peer_addr.ip().is_loopback() && self.local_addr.ip().is_loopback();
+        let unspecified_pair = peer_addr.ip().is_unspecified() || self.local_addr.ip().is_unspecified();
+        if peer_addr == self.local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair)) {
+            return Err(format!("Refusing to connect to self endpoint {}", peer_addr));
+        }
+
         if self
             .ban_list
             .lock()
@@ -315,6 +328,11 @@ impl PeerManager {
             if let Some(certs) = identity.downcast_ref::<Vec<CertificateDer<'static>>>() {
                 if let Some(cert) = certs.first() {
                     let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
+                    if fp == self.local_fingerprint {
+                        warn!("P2P: Rejecting self-connection attempt to {} (same node identity)", peer_addr);
+                        connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+                        return Err("Refusing self-connection (same node identity)".to_string());
+                    }
                     match self.fingerprint_store.check_or_store(&peer_addr, &fp) {
                         Ok(true) => info!(
                             "P2P TOFU: New peer {} registered (fingerprint: {})",
@@ -579,6 +597,8 @@ impl PeerManager {
         let fingerprint_store = self.fingerprint_store.clone();
         let seen_messages = self.seen_messages.clone();
         let max_peers = self.max_peers;
+        let local_addr = self.local_addr;
+        let local_fingerprint = self.local_fingerprint;
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -593,6 +613,15 @@ impl PeerManager {
                     match connecting.await {
                         Ok(connection) => {
                             let peer_addr = connection.remote_address();
+                            let same_port = peer_addr.port() == local_addr.port();
+                            let same_ip = peer_addr.ip() == local_addr.ip();
+                            let loopback_pair = peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
+                            let unspecified_pair = peer_addr.ip().is_unspecified() || local_addr.ip().is_unspecified();
+                            if peer_addr == local_addr || (same_port && (same_ip || loopback_pair || unspecified_pair)) {
+                                warn!("P2P: Rejected self inbound connection from {}", peer_addr);
+                                connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+                                return;
+                            }
                             if ban_list
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
@@ -618,6 +647,11 @@ impl PeerManager {
                                 {
                                     if let Some(cert) = certs.first() {
                                         let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
+                                        if fp == local_fingerprint {
+                                            warn!("P2P: Rejected inbound self-identity connection from {}", peer_addr);
+                                            connection.close(quinn::VarInt::from_u32(1), b"self_connection");
+                                            return;
+                                        }
                                         match fingerprint_store.check_or_store(&peer_addr, &fp) {
                                             Ok(true) => info!("P2P TOFU: New inbound peer {} registered (fingerprint: {})",
                                                 peer_addr, NodeIdentity::fingerprint_hex(&fp)),

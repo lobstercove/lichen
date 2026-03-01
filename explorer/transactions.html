@@ -4,11 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transactions - Reef Explorer</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="explorer.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" />
 </head>
 <body>
     <!-- Navigation -->
@@ -25,6 +27,7 @@
                 <li><a href="validators.html">Validators</a></li>
                 <li><a href="agents.html">Agents</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
                 <div class="search-container">
@@ -33,8 +36,8 @@
                 </div>
                 <div class="nav-network">
                     <select id="explorerNetworkSelect" class="network-select">
-                        <option value="mainnet" selected>Mainnet</option>
-                        <option value="testnet">Testnet</option>
+                        <option value="mainnet">Mainnet</option>
+                        <option value="testnet" selected>Testnet</option>
                         <option value="local-testnet">Local Testnet</option>
                         <option value="local-mainnet">Local Mainnet</option>
                     </select>
@@ -176,8 +179,8 @@
         </div>
     </footer>
 
-    <script src="../shared/utils.js"></script>
-    <script src="../shared-config.js"></script>
+    <script src="shared/utils.js"></script>
+    <script src="shared-config.js"></script>
     <script src="js/utils.js?v=20260211"></script>
     <script src="js/explorer.js?v=20260211"></script>
     <script src="js/transactions.js?v=20260211"></script>

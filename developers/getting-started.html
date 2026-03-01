@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Getting Started - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -227,7 +227,7 @@ command -v molt</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt wallet new
+                <pre><code>$ molt wallet create
 
 <i class="fa-solid fa-shrimp"></i> Generating new MoltChain keypair...
 
@@ -260,7 +260,7 @@ command -v molt</code></pre>
             <p>You need MOLT tokens to pay for transaction fees and contract deployments. On testnet, you can request free tokens from the faucet.</p>
 
             <h3>Option A: Web Faucet</h3>
-            <p>Visit the <a href="../faucet/index.html">MoltChain Faucet</a> and paste your address. You'll receive 10 MOLT on testnet within seconds.</p>
+            <p>Visit the <a href="#" data-molt-app="faucet">MoltChain Faucet</a> and paste your address. You'll receive 10 MOLT on testnet within seconds.</p>
 
             <h3>Option B: CLI Faucet</h3>
 
@@ -425,7 +425,7 @@ pub struct GreetingAccount {
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Tip</div>
-                Deployment cost is a flat fee of 25 MOLT (CONTRACT_DEPLOY_FEE). Optimize your binary with <code>wasm-opt</code> to reduce size: <code>wasm-opt -Oz -o optimized.wasm hello_world.wasm</code>
+                Deployment cost scales with WASM binary size and runtime pricing parameters (it is not a flat 25 MOLT fee). Optimize your binary with <code>wasm-opt</code> to reduce cost: <code>wasm-opt -Oz -o optimized.wasm hello_world.wasm</code>
             </div>
 
             <!-- ========== 7. NEXT STEPS ========== -->

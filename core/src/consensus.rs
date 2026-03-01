@@ -1969,6 +1969,9 @@ pub struct ValidatorInfo {
     /// Backward-compatible: existing serialized data without this field defaults to 500.
     #[serde(default = "default_commission_rate")]
     pub commission_rate: u64,
+    /// Total transactions processed (included in blocks produced by this validator)
+    #[serde(default)]
+    pub transactions_processed: u64,
 }
 
 fn default_commission_rate() -> u64 {
@@ -1988,6 +1991,7 @@ impl ValidatorInfo {
             joined_slot,
             last_active_slot: joined_slot,
             commission_rate: 500, // 5% default (basis points)
+            transactions_processed: 0,
         }
     }
 
@@ -2121,6 +2125,17 @@ impl ValidatorSet {
     /// Select leader with explicit randomness seed (e.g., previous block hash).
     /// This is the primary entry point for production validators.
     ///
+    /// Uses **Tendermint-style weighted round-robin** (CometBFT proposer
+    /// selection) to guarantee fair, proportional leader rotation:
+    ///   1. Compute each validator's weight from sqrt(stake) * sqrt(reputation).
+    ///   2. Simulate `slot` rounds of the algorithm starting from a
+    ///      deterministic initial state derived from `randomness_seed`.
+    ///   3. Each round: add weight to every priority → pick highest → subtract
+    ///      total weight from the winner.
+    ///
+    /// Over N rounds every validator leads ~(weight/total)*N times, eliminating
+    /// the clustering problem of pure hash-based random selection.
+    ///
     /// Validators below MIN_VALIDATOR_STAKE are EXCLUDED from leader rotation.
     /// This prevents 0-stake (slashed) validators from producing blocks.
     pub fn select_leader_weighted_with_seed(
@@ -2149,15 +2164,18 @@ impl ValidatorSet {
 
         // MIN-STAKE GUARD: If no validators meet minimum stake, the chain
         // halts rather than producing blocks with 0-stake validators.
-        // With GRANT-PROTECT in slashing, this should never happen — but if it
-        // does, halting is the correct safety behavior.
         if eligible.is_empty() {
             eprintln!("🛑 HALT: No validators meet MIN_VALIDATOR_STAKE — chain cannot produce blocks safely");
             return None;
         }
-        let candidates: Vec<&ValidatorInfo> = eligible;
 
-        let weights: Vec<u64> = candidates
+        let n = eligible.len();
+        if n == 1 {
+            return Some(eligible[0].pubkey);
+        }
+
+        // ── Compute weights (same formula as before) ──
+        let weights: Vec<i128> = eligible
             .iter()
             .map(|v| {
                 let stake = stake_pool
@@ -2166,44 +2184,74 @@ impl ValidatorSet {
                     .unwrap_or_else(|| v.stake.min(MAX_VALIDATOR_STAKE));
 
                 let base = integer_sqrt(stake.max(1));
-                // Use sqrt(reputation) instead of linear to flatten leader advantage.
-                // rep=100 → sqrt(100)/10 = 1.0
-                // rep=500 → sqrt(500)/10 ≈ 2.24
-                // rep=1000 → sqrt(1000)/10 ≈ 3.16
                 let rep_sqrt = integer_sqrt(v.reputation.max(100)) as u128;
-                ((base as u128).saturating_mul(rep_sqrt) / 10u128 + 1) as u64
-                // +1 avoids zero weight
+                (((base as u128).saturating_mul(rep_sqrt) / 10u128) + 1) as i128
             })
             .collect();
 
-        let total_weight: u64 = weights.iter().sum();
+        let total_weight: i128 = weights.iter().sum();
         if total_weight == 0 {
             return self.select_leader(slot);
         }
 
-        // A5-01: Mix slot + randomness_seed (previous block hash) for
-        // unpredictable-beyond-one-slot leader selection.  When randomness_seed
-        // is empty, degrades to SHA-256(slot) for backward compatibility.
-        let slot_bytes = slot.to_le_bytes();
-        let mut preimage = Vec::with_capacity(slot_bytes.len() + randomness_seed.len());
-        preimage.extend_from_slice(&slot_bytes);
-        preimage.extend_from_slice(randomness_seed);
-        let hash = Hash::hash(&preimage);
-        let mut seed_bytes = [0u8; 8];
-        seed_bytes.copy_from_slice(&hash.0[..8]);
-        let mut target = u64::from_le_bytes(seed_bytes) % total_weight;
+        // ── Tendermint weighted round-robin ──
+        // Deterministic initial priorities seeded by `randomness_seed` so that
+        // after a view change (where `slot` is remapped) a different validator
+        // may win, preventing permanent stalls when one leader is offline.
+        //
+        // The algorithm is O(n) per simulated round.  We only need to simulate
+        // (slot % (n * EPOCH_LEN)) rounds — the algorithm is periodic with
+        // period = LCM of weights (bounded by n * max_weight).  For small
+        // validator sets (≤ 500) this is fast.  For larger sets the epoch
+        // shortcut keeps it bounded.
+        let epoch_len = (n as u64) * 4; // 4 full rotations per epoch
+        let effective_rounds = (slot % epoch_len.max(1)) as usize;
 
-        for (index, weight) in weights.iter().enumerate() {
-            if *weight == 0 {
-                continue;
+        // Seed initial priorities with a small deterministic offset derived
+        // from the randomness_seed.  This ensures that after a parent-hash
+        // change, the ordering is shuffled while still being deterministic
+        // across all validators who share the same chain tip.
+        let mut priorities: Vec<i128> = if randomness_seed.is_empty() {
+            vec![0i128; n]
+        } else {
+            eligible
+                .iter()
+                .enumerate()
+                .map(|(i, _v)| {
+                    let mut pre = Vec::with_capacity(randomness_seed.len() + 8);
+                    pre.extend_from_slice(randomness_seed);
+                    pre.extend_from_slice(&(i as u64).to_le_bytes());
+                    let h = Hash::hash(&pre);
+                    let mut sb = [0u8; 8];
+                    sb.copy_from_slice(&h.0[..8]);
+                    // Small offset in [-total_weight/2, +total_weight/2]
+                    let raw = i64::from_le_bytes(sb) as i128;
+                    raw % (total_weight / 2 + 1)
+                })
+                .collect()
+        };
+
+        // Simulate `effective_rounds + 1` rounds of the algorithm (round 0 = first slot)
+        let mut proposer_idx = 0;
+        for _ in 0..=effective_rounds {
+            // Add weight to each validator's priority
+            for (i, w) in weights.iter().enumerate() {
+                priorities[i] += *w;
             }
-            if target < *weight {
-                return Some(candidates[index].pubkey);
+            // Pick the validator with the highest priority (tie-break by index = deterministic)
+            proposer_idx = 0;
+            let mut max_priority = priorities[0];
+            for i in 1..n {
+                if priorities[i] > max_priority {
+                    max_priority = priorities[i];
+                    proposer_idx = i;
+                }
             }
-            target -= *weight;
+            // Decrease proposer's priority by total weight
+            priorities[proposer_idx] -= total_weight;
         }
 
-        Some(candidates[0].pubkey)
+        Some(eligible[proposer_idx].pubkey)
     }
 }
 

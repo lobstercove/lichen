@@ -4,6 +4,7 @@
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', () => {
+    ensureDeveloperNavLinks();
     initSidebar();
     initScrollSpy();
     initCodeCopy();
@@ -13,6 +14,30 @@ document.addEventListener('DOMContentLoaded', () => {
     initNavHighlight();
     initMobileNav();
 });
+
+function ensureDeveloperNavLinks() {
+    const requiredLinks = [
+        { href: 'architecture.html', label: 'Architecture' },
+        { href: 'validator.html', label: 'Validator' },
+        { href: 'changelog.html', label: 'Changelog' }
+    ];
+
+    document.querySelectorAll('.nav-menu').forEach((menu) => {
+        requiredLinks.forEach((linkDef) => {
+            const exists = Array.from(menu.querySelectorAll('a')).some(
+                (anchor) => anchor.getAttribute('href') === linkDef.href
+            );
+            if (exists) return;
+
+            const li = document.createElement('li');
+            const anchor = document.createElement('a');
+            anchor.href = linkDef.href;
+            anchor.textContent = linkDef.label;
+            li.appendChild(anchor);
+            menu.appendChild(li);
+        });
+    });
+}
 
 
 // ============================================================
@@ -337,6 +362,36 @@ const SEARCH_INDEX = [
     { title: 'Staking Guide', desc: 'Stake MOLT and earn rewards', url: 'validator.html#staking', category: 'Validators' },
     { title: 'Validator Requirements', desc: 'Hardware and network requirements', url: 'validator.html#requirements', category: 'Validators' },
 
+    // WebSocket / Realtime
+    { title: 'WebSocket Reference', desc: 'Realtime subscriptions and event payloads', url: 'ws-reference.html', category: 'API' },
+    { title: 'subscribeSlots', desc: 'Subscribe to slot updates over WebSocket', url: 'ws-reference.html#subscribeSlots', category: 'API' },
+    { title: 'subscribeBlocks', desc: 'Subscribe to finalized block notifications', url: 'ws-reference.html#subscribeBlocks', category: 'API' },
+    { title: 'subscribeTransactions', desc: 'Subscribe to transaction stream updates', url: 'ws-reference.html#subscribeTransactions', category: 'API' },
+    { title: 'subscribeAccount', desc: 'Subscribe to account state changes', url: 'ws-reference.html#subscribeAccount', category: 'API' },
+    { title: 'subscribeLogs', desc: 'Subscribe to contract/runtime logs', url: 'ws-reference.html#subscribeLogs', category: 'API' },
+    { title: 'subscribeBridgeLocks', desc: 'Subscribe to bridge lock events', url: 'ws-reference.html#subscribeBridgeLocks', category: 'API' },
+    { title: 'subscribeBridgeMints', desc: 'Subscribe to bridge mint events', url: 'ws-reference.html#subscribeBridgeMints', category: 'API' },
+    { title: 'subscribeSignatureStatus', desc: 'Track transaction confirmation status', url: 'ws-reference.html#subscribeSignatureStatus', category: 'API' },
+
+    // Privacy & Identity
+    { title: 'ZK Privacy Guide', desc: 'Shielded transfers, notes, nullifiers, and privacy model', url: 'zk-privacy.html', category: 'Privacy' },
+    { title: 'Shielded Notes', desc: 'How encrypted notes and commitments are formed', url: 'zk-privacy.html#notes', category: 'Privacy' },
+    { title: 'Nullifiers', desc: 'Preventing double-spends in shielded pools', url: 'zk-privacy.html#nullifiers', category: 'Privacy' },
+    { title: 'Merkle Tree', desc: 'Merkle roots and path verification for private spends', url: 'zk-privacy.html#merkle', category: 'Privacy' },
+    { title: 'MoltyID Trust Tiers', desc: 'Identity reputation tiers and network effects', url: 'moltyid.html#trust-tiers', category: 'Identity' },
+    { title: 'MoltyID Name Service', desc: 'Register and resolve .molt names', url: 'moltyid.html#name-service', category: 'Identity' },
+
+    // Governance / Changelog / Ops
+    { title: 'Changelog', desc: 'Release notes and platform changes', url: 'changelog.html', category: 'Ops' },
+    { title: 'Validator Operations', desc: 'Validator setup, config and maintenance', url: 'validator.html#operations', category: 'Validators' },
+    { title: 'Architecture Performance', desc: 'Throughput, finality, and runtime performance model', url: 'architecture.html#performance', category: 'Concepts' },
+
+    // Playground / Contracts
+    { title: 'Programs Playground', desc: 'Interactive browser IDE for contracts', url: 'playground.html#live-playground', category: 'Tools' },
+    { title: 'Contract Reference', desc: 'Production contract catalog and interfaces', url: 'contract-reference.html', category: 'Contracts' },
+    { title: 'MoltBridge Contract', desc: 'Bridge lock/mint program reference', url: 'contract-reference.html#moltbridge', category: 'Contracts' },
+    { title: 'DEX Contracts', desc: 'Core DEX programs, governance and rewards', url: 'contract-reference.html#dex-core', category: 'Contracts' },
+
     // Tools
     { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: '../explorer/index.html', category: 'Tools' },
     { title: 'Faucet', desc: 'Get testnet MOLT tokens', url: '../faucet/index.html', category: 'Tools' },
@@ -347,6 +402,7 @@ function initSearch() {
     const overlay = document.querySelector('.search-overlay');
     const input = document.querySelector('.search-modal-input');
     const resultsContainer = document.querySelector('.search-results');
+    const navInput = document.getElementById('searchInput');
 
     if (!overlay || !input || !resultsContainer) return;
 
@@ -372,6 +428,13 @@ function initSearch() {
         }
     });
 
+    if (navInput) {
+        navInput.addEventListener('focus', () => {
+            openSearch();
+            navInput.blur();
+        });
+    }
+
     // Filter results on input
     input.addEventListener('input', () => {
         const query = input.value.trim().toLowerCase();
@@ -380,9 +443,14 @@ function initSearch() {
             return;
         }
 
+        const queryWords = normalizeSearchText(query).split(/\s+/).filter(Boolean);
         filteredResults = SEARCH_INDEX.filter(item => {
-            const haystack = (item.title + ' ' + item.desc + ' ' + item.category).toLowerCase();
-            return query.split(/\s+/).every(word => haystack.includes(word));
+            const title = item.title || '';
+            const rpcAlias = title.startsWith('molt_')
+                ? ` ${title.replace(/^molt_/, '')} ${title.replace(/^molt_/, 'molt ')}`
+                : '';
+            const haystack = normalizeSearchText(`${title} ${item.desc || ''} ${item.category || ''}${rpcAlias}`);
+            return queryWords.every(word => haystack.includes(word));
         });
 
         selectedIndex = filteredResults.length > 0 ? 0 : -1;
@@ -482,6 +550,10 @@ function initSearch() {
     window.openDevSearch = openSearch;
 }
 
+function normalizeSearchText(text) {
+    return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 
 // ============================================================
 // 6. NETWORK SELECTOR — devnet / testnet / mainnet
@@ -490,65 +562,63 @@ function initSearch() {
 const NETWORK_STORAGE_KEY = 'moltchain_dev_network';
 
 const NETWORK_ENDPOINTS = {
-    devnet:  'http://localhost:8899',
+    'local-testnet': 'http://localhost:8899',
+    'local-mainnet': 'http://localhost:8899',
     testnet: 'https://testnet-rpc.moltchain.io',
-    mainnet: 'https://rpc.moltchain.io'
+    mainnet: 'https://rpc.moltchain.io',
+    devnet: 'http://localhost:8899'
 };
 
 const NETWORK_WS_ENDPOINTS = {
-    devnet:  'ws://localhost:8900',
+    'local-testnet': 'ws://localhost:8900',
+    'local-mainnet': 'ws://localhost:8900',
     testnet: 'wss://testnet-ws.moltchain.io',
-    mainnet: 'wss://ws.moltchain.io'
+    mainnet: 'wss://ws.moltchain.io',
+    devnet: 'ws://localhost:8900'
 };
 
 function initNetworkSelector() {
-    const selector = document.querySelector('.network-selector-dev');
-    if (!selector) return;
+    const select = document.getElementById('devNetworkSelect') || document.querySelector('.network-select');
+    if (!select) return;
 
-    const options = selector.querySelectorAll('.network-option');
-    if (options.length === 0) return;
+    const availableValues = new Set(Array.from(select.options).map(option => option.value));
+    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || select.value || 'local-testnet';
+    const initialNetwork = availableValues.has(savedNetwork) ? savedNetwork : (select.value || 'local-testnet');
 
-    // Restore saved network or default to devnet
-    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || 'devnet';
-    setActiveNetwork(savedNetwork, options);
+    select.value = initialNetwork;
+    setActiveNetwork(initialNetwork);
 
-    options.forEach(option => {
-        option.addEventListener('click', () => {
-            const network = option.getAttribute('data-network');
-            if (!network) return;
-
-            localStorage.setItem(NETWORK_STORAGE_KEY, network);
-            setActiveNetwork(network, options);
-        });
+    select.addEventListener('change', () => {
+        const network = select.value;
+        if (!network) return;
+        localStorage.setItem(NETWORK_STORAGE_KEY, network);
+        setActiveNetwork(network);
     });
 }
 
-function setActiveNetwork(network, options) {
-    // Update button states
-    options.forEach(opt => {
-        opt.classList.toggle('active', opt.getAttribute('data-network') === network);
-    });
+function setActiveNetwork(network) {
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : 'local-testnet';
 
     // Update endpoint displays on the page
     document.querySelectorAll('.endpoint-display[data-type="rpc"]').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[network] || NETWORK_ENDPOINTS.devnet;
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'];
     });
 
     document.querySelectorAll('.endpoint-display[data-type="ws"]').forEach(el => {
-        el.textContent = NETWORK_WS_ENDPOINTS[network] || NETWORK_WS_ENDPOINTS.devnet;
+        el.textContent = NETWORK_WS_ENDPOINTS[resolvedNetwork] || NETWORK_WS_ENDPOINTS['local-testnet'];
     });
 
     // Update any generic endpoint display
     document.querySelectorAll('.endpoint-display:not([data-type])').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[network] || NETWORK_ENDPOINTS.devnet;
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'];
     });
 
     // Dispatch custom event for other scripts to react
     document.dispatchEvent(new CustomEvent('moltchain:networkChange', {
         detail: {
-            network: network,
-            rpcEndpoint: NETWORK_ENDPOINTS[network],
-            wsEndpoint: NETWORK_WS_ENDPOINTS[network]
+            network: resolvedNetwork,
+            rpcEndpoint: NETWORK_ENDPOINTS[resolvedNetwork],
+            wsEndpoint: NETWORK_WS_ENDPOINTS[resolvedNetwork]
         }
     }));
 }
@@ -558,11 +628,12 @@ function setActiveNetwork(network, options) {
  * @returns {{ network: string, rpc: string, ws: string }}
  */
 function getActiveNetwork() {
-    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || 'devnet';
+    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || 'local-testnet';
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : 'local-testnet';
     return {
-        network,
-        rpc: NETWORK_ENDPOINTS[network] || NETWORK_ENDPOINTS.devnet,
-        ws: NETWORK_WS_ENDPOINTS[network] || NETWORK_WS_ENDPOINTS.devnet
+        network: resolvedNetwork,
+        rpc: NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'],
+        ws: NETWORK_WS_ENDPOINTS[resolvedNetwork] || NETWORK_WS_ENDPOINTS['local-testnet']
     };
 }
 

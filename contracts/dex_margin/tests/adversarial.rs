@@ -9,8 +9,10 @@ use dex_margin::*;
 fn setup() -> [u8; 32] {
     moltchain_sdk::test_mock::reset();
     let admin = [1u8; 32];
+    let moltcoin = [9u8; 32];
     moltchain_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
+    assert_eq!(set_moltcoin_address(admin.as_ptr(), moltcoin.as_ptr()), 0);
     // Set mark price for pair 1: 1.0 (1_000_000_000)
     set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
     // Enable margin for pair 1

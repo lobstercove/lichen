@@ -16,7 +16,7 @@ from urllib.error import URLError, HTTPError
 
 RPC_URL = "http://127.0.0.1:8000"
 EXPLORER_URL = "http://127.0.0.1:3007"
-EXPECTED_GENESIS_CONTRACTS = 26
+EXPECTED_GENESIS_CONTRACTS = 29
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

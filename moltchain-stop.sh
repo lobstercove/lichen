@@ -39,7 +39,7 @@ stop_network() {
 
     if [ -f "$pid_file" ]; then
         source "$pid_file"
-        for pid_var in VALIDATOR_PID DEPLOY_PID CUSTODY_PID; do
+        for pid_var in SUPERVISOR_PID VALIDATOR_PID DEPLOY_PID CUSTODY_PID; do
             pid=${!pid_var:-}
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 echo -e "  Stopping $pid_var ($pid)..."
@@ -52,8 +52,8 @@ stop_network() {
         # Fallback: kill by port
         local p2p_port
         case $net in
-            testnet) p2p_port=7001 ;;
-            mainnet) p2p_port=8001 ;;
+            testnet) p2p_port=8000 ;;
+            mainnet) p2p_port=9000 ;;
         esac
         pkill -f "moltchain-validator.*--p2p-port ${p2p_port}" 2>/dev/null || true
         pkill -f "moltchain-custody.*${net}" 2>/dev/null || true

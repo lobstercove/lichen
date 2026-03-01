@@ -9,6 +9,17 @@ pub enum MarketActivityKind {
     Listing,
     Sale,
     Cancel,
+    Offer,
+    OfferAccepted,
+    OfferCancelled,
+    PriceUpdate,
+    AuctionCreated,
+    AuctionBid,
+    AuctionSettled,
+    AuctionCancelled,
+    CollectionOffer,
+    CollectionOfferAccepted,
+    Transfer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

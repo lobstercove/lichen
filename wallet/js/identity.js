@@ -10,6 +10,11 @@ let _moltyidAddress = null;
 let _identityCache = null;
 let _identityLoading = false;
 
+function clearIdentityCache() {
+    _identityCache = null;
+    _identityLoading = false;
+}
+
 const AGENT_TYPES = [
     { value: 0, label: 'Unknown',        desc: 'Unspecified or new identity' },
     { value: 1, label: 'Trading',        desc: 'Market-making, arbitrage, DeFi strategies' },
@@ -454,6 +459,10 @@ async function retryLoadIdentity(maxRetries = 5, delayMs = 1200) {
     await loadIdentity();
 }
 
+if (typeof window !== 'undefined') {
+    window.clearIdentityCache = clearIdentityCache;
+}
+
 // ── MoltyID Intro Banner ──
 function renderIdentityBanner(compact = false) {
     if (compact) {
@@ -829,11 +838,13 @@ function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
 
 // ── Register Identity ──
 async function showRegisterIdentityModal() {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Register MoltyID',
         message: 'Create your on-chain identity. Choose a display name and agent type.<br><small style="color:var(--text-muted);">This is free — only the 0.0001 MOLT transaction fee applies.</small>',
         icon: 'fas fa-fingerprint',
         confirmText: 'Register',
+        requiredMolt: FEE,
         fields: [
             { id: 'displayName', label: 'Display Name', type: 'text', placeholder: 'e.g. CryptoBuilder' },
             { id: 'agentType', label: 'Agent Type', type: 'select',
@@ -883,11 +894,13 @@ async function showRegisterIdentityModal() {
 // ── Edit Profile (Agent Type) ──
 async function showEditProfileModal() {
     const current = _identityCache?.profile?.identity?.agent_type || 9;
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Update Agent Type',
         message: 'Change your agent classification.',
         icon: 'fas fa-id-badge',
         confirmText: 'Update',
+        requiredMolt: FEE,
         fields: [
             { id: 'agentType', label: 'Agent Type', type: 'select',
               options: AGENT_TYPES.map(t => ({ value: t.value, label: `${t.label} — ${t.desc}`, selected: t.value === current })) },
@@ -914,8 +927,10 @@ async function showEditProfileModal() {
 
 // ── Register .molt Name ──
 async function showRegisterNameModal() {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Register .molt Name',
+        requiredMolt: 20 + FEE,
         message: `
             <div class="id-pricing-table">
                 <div class="id-pricing-row"><span>5+ chars</span><span>20 MOLT/year</span></div>
@@ -1011,11 +1026,13 @@ async function showRenewNameModal() {
     const name = currentName.replace(/\.molt$/, '');
     const costPerYear = getNameCostPerYear(name.length);
     
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: `Renew ${name}.molt`,
         message: `Cost: ${costPerYear} MOLT per additional year.`,
         icon: 'fas fa-redo',
         confirmText: 'Renew Name',
+        requiredMolt: costPerYear + FEE,
         fields: [
             { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1052,11 +1069,13 @@ async function showTransferNameModal() {
     
     const name = currentName.replace(/\.molt$/, '');
     
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: `Transfer ${name}.molt`,
         message: 'Transfer ownership to another address. This is irreversible.',
         icon: 'fas fa-exchange-alt',
         confirmText: 'Transfer Name',
+        requiredMolt: FEE,
         fields: [
             { id: 'recipient', label: 'Recipient Address', type: 'text', placeholder: 'Base58 address' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1106,11 +1125,13 @@ async function showReleaseNameModal() {
     });
     if (!confirmed) return;
     
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Confirm Release',
         message: `You are about to release <strong>${escHtml(name)}.molt</strong>.`,
         icon: 'fas fa-trash-alt',
         confirmText: 'Sign & Release',
+        requiredMolt: FEE,
         fields: [
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ]
@@ -1135,11 +1156,13 @@ async function showReleaseNameModal() {
 
 // ── Add Skill ──
 async function showAddSkillModal() {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Add Skill',
         message: 'Add a skill to your identity profile.',
         icon: 'fas fa-tools',
         confirmText: 'Add Skill',
+        requiredMolt: FEE,
         fields: [
             { id: 'skillName', label: 'Skill Name', type: 'text', placeholder: 'e.g. Rust, Trading, Security' },
             { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50', min: 1, max: 100, step: 1 },
@@ -1177,11 +1200,13 @@ async function showAddSkillModal() {
 
 // ── Vouch for Someone ──
 async function showVouchModal() {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Vouch for Identity',
         message: 'Vouch for another MoltyID holder. Both parties must have registered identities.',
         icon: 'fas fa-handshake',
         confirmText: 'Vouch',
+        requiredMolt: FEE,
         fields: [
             { id: 'vouchee', label: 'Address to Vouch For', type: 'text', placeholder: 'Base58 address' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1217,12 +1242,14 @@ async function showEditAgentModal() {
     const currentEndpoint = agent.endpoint || '';
     const currentRate = (Number(agent.rate || 0) / 1_000_000_000).toString();
     const currentAvailability = agent.availability_name || 'offline';
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     
     const values = await showPasswordModal({
         title: 'Agent Service Configuration',
         message: 'Configure how other agents discover and interact with your identity.',
         icon: 'fas fa-satellite-dish',
         confirmText: 'Save Changes',
+        requiredMolt: FEE,
         fields: [
             { id: 'endpoint', label: 'Service Endpoint URL', type: 'text', placeholder: 'https://api.example.com/agent', value: currentEndpoint },
             { id: 'rate', label: 'Rate (MOLT per request)', type: 'number', placeholder: '0.001', value: currentRate },
@@ -1375,11 +1402,13 @@ async function loadAuctionList() {
 }
 
 async function showBidAuctionModal(name) {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: `Bid on ${name}.molt`,
         message: 'Enter your bid amount in MOLT. Must exceed the current highest bid.',
         icon: 'fas fa-gavel',
         confirmText: 'Place Bid',
+        requiredMolt: 1 + FEE,
         fields: [
             { id: 'amount', label: 'Bid Amount (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1395,7 +1424,10 @@ async function showBidAuctionModal(name) {
 
     try {
         showToast(`Placing bid of ${bidAmount} MOLT on ${name}.molt...`);
-        const tx = await buildContractCall('bid_name_auction', { name: name }, values.password, bidAmount);
+        const tx = await buildContractCall('bid_name_auction', {
+            name: name,
+            bid_amount: bidAmount
+        }, values.password, bidAmount);
         const result = await rpc.sendTransaction(tx);
         if (result?.error) {
             showToast('Bid failed: ' + (result.error || 'unknown'));
@@ -1409,11 +1441,13 @@ async function showBidAuctionModal(name) {
 }
 
 async function showCreateAuctionModal() {
+    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
     const values = await showPasswordModal({
         title: 'Create Premium Name Auction',
         message: 'Admin only: create an auction for a premium short name (3-4 chars).',
         icon: 'fas fa-gavel',
         confirmText: 'Create Auction',
+        requiredMolt: FEE,
         fields: [
             { id: 'name', label: 'Name (3-4 chars)', type: 'text', placeholder: 'eth' },
             { id: 'reserve', label: 'Reserve Bid (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },

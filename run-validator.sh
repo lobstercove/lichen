@@ -21,6 +21,7 @@
 
 NETWORK=${1:-testnet}
 VALIDATOR_NUM=${2:-1}
+ORIG_ARGS=("$@")
 
 if [[ "$NETWORK" =~ ^[0-9]+$ ]]; then
 	VALIDATOR_NUM=$NETWORK
@@ -56,12 +57,38 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 cd "$REPO_ROOT" || exit 1
 
+SUPERVISOR_SCRIPT="$REPO_ROOT/scripts/validator-supervisor.sh"
+
 P2P_PORT=$((BASE_P2P + (VALIDATOR_NUM - 1)))
 RPC_PORT=$((BASE_RPC + 2 * (VALIDATOR_NUM - 1)))
 WS_PORT=$((BASE_WS + 2 * (VALIDATOR_NUM - 1)))
 SIGNER_PORT=$((9200 + VALIDATOR_NUM))
 
 DB_PATH="${REPO_ROOT}/data/state-${P2P_PORT}"
+VALIDATOR_HOME="${DB_PATH}/home"
+mkdir -p "$VALIDATOR_HOME"
+
+# Save real user home BEFORE overriding — needed for shared ZK verification keys
+REAL_USER_HOME="${HOME}"
+
+# Ensure each validator has isolated persistent identity/fingerprint stores.
+# Without this, multiple local validators share ~/.moltchain/node_cert.der and
+# can be rejected as banned/duplicate peers.
+export HOME="$VALIDATOR_HOME"
+
+# Point ZK verification keys to the shared cache in the REAL user home.
+# The per-validator HOME override above prevents dirs::home_dir() from finding
+# ~/.moltchain/zk/ — we fix that by setting explicit env vars.
+if [[ -d "${REAL_USER_HOME}/.moltchain/zk" ]]; then
+	export MOLTCHAIN_ZK_SHIELD_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_shield.bin"
+	export MOLTCHAIN_ZK_UNSHIELD_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_unshield.bin"
+	export MOLTCHAIN_ZK_TRANSFER_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_transfer.bin"
+fi
+
+if [[ "${MOLTCHAIN_SUPERVISED:-0}" != "1" && "${MOLTCHAIN_DISABLE_SUPERVISOR:-0}" != "1" && -x "$SUPERVISOR_SCRIPT" ]]; then
+	SUPERVISOR_INSTANCE="${NETWORK}-v${VALIDATOR_NUM}-p${P2P_PORT}"
+	exec "$SUPERVISOR_SCRIPT" "$SUPERVISOR_INSTANCE" -- env MOLTCHAIN_SUPERVISED=1 "$REPO_ROOT/run-validator.sh" "${ORIG_ARGS[@]}"
+fi
 
 BOOTSTRAP=""
 case $VALIDATOR_NUM in
@@ -82,6 +109,7 @@ echo "WS:      ws://localhost:$WS_PORT"
 echo "P2P:     0.0.0.0:$P2P_PORT"
 echo "Signer:  http://localhost:$SIGNER_PORT"
 echo "DB:      $DB_PATH"
+echo "HOME:    $HOME"
 echo ""
 
 if [ "$VALIDATOR_NUM" = "1" ]; then
@@ -124,6 +152,12 @@ for i in $(seq 1 $#); do
 				fi
 		fi
 done
+
+if [[ "${MOLTCHAIN_SUPERVISED:-0}" == "1" ]]; then
+	# External supervisor is active; run validator in direct worker mode to
+	# avoid nested watchdogs and orphaned child processes.
+	EXTRA_FLAGS="$EXTRA_FLAGS --supervised --no-watchdog"
+fi
 
 BIN_PATH="${REPO_ROOT}/target/release/moltchain-validator"
 if [ -x "$BIN_PATH" ]; then

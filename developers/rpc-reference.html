@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JSON-RPC Reference - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -696,15 +696,13 @@
             <!-- stake -->
             <div class="method-card" id="stake">
                 <h3 class="method-name">stake</h3>
-                <p class="method-desc">Delegates MOLT to a validator. Requires a signed transaction with instruction type 9.</p>
+                <p class="method-desc">Submits a signed stake transaction (system instruction opcode 9).</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
                         <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
                         <tbody>
-                            <tr><td>staker</td><td><span class="param-type">string</span></td><td>Yes</td><td>Staker's base58 public key</td></tr>
-                            <tr><td>validator</td><td><span class="param-type">string</span></td><td>Yes</td><td>Validator's base58 public key</td></tr>
-                            <tr><td>amount</td><td><span class="param-type">u64</span></td><td>Yes</td><td>Amount in shells to stake</td></tr>
+                            <tr><td>transaction_base64</td><td><span class="param-type">string</span></td><td>Yes</td><td>Base64-encoded signed transaction payload. Call shape: <code>stake([transaction_base64])</code></td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -717,15 +715,13 @@
             <!-- unstake -->
             <div class="method-card" id="unstake">
                 <h3 class="method-name">unstake</h3>
-                <p class="method-desc">Request to undelegate MOLT from a validator. Uses instruction type 10.</p>
+                <p class="method-desc">Submits a signed unstake transaction (system instruction opcode 10).</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
                         <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
                         <tbody>
-                            <tr><td>staker</td><td><span class="param-type">string</span></td><td>Yes</td><td>Staker's base58 public key</td></tr>
-                            <tr><td>validator</td><td><span class="param-type">string</span></td><td>Yes</td><td>Validator's base58 public key</td></tr>
-                            <tr><td>amount</td><td><span class="param-type">u64</span></td><td>Yes</td><td>Amount in shells to unstake</td></tr>
+                            <tr><td>transaction_base64</td><td><span class="param-type">string</span></td><td>Yes</td><td>Base64-encoded signed transaction payload. Call shape: <code>unstake([transaction_base64])</code></td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1099,6 +1095,44 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Array — Completed sale records.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketOffers">
+                <h3 class="method-name">getMarketOffers</h3>
+                <p class="method-desc">Returns active marketplace offers (bids) optionally filtered by collection or token.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>collectionId</td><td><span class="param-type">string</span></td><td>No</td><td>Filter by collection public key</td></tr>
+                            <tr><td>tokenId</td><td><span class="param-type">u64</span></td><td>No</td><td>Filter by specific token ID</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Active offer records.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketAuctions">
+                <h3 class="method-name">getMarketAuctions</h3>
+                <p class="method-desc">Returns active and recent marketplace auctions with current bid state.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>collectionId</td><td><span class="param-type">string</span></td><td>No</td><td>Filter by collection public key</td></tr>
+                            <tr><td>status</td><td><span class="param-type">string</span></td><td>No</td><td>Filter by auction status (`active`, `ended`, `cancelled`)</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Auction records including reserve, leading bid, and end slot/time.</p>
                 </div>
             </div>
 

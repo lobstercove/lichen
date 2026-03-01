@@ -318,7 +318,7 @@ async function loadContract() {
         const skipKeys = isToken
             ? ['decimals', 'total_supply', 'supply', 'mintable', 'burnable', ...PROFILE_KEYS]
             : [...PROFILE_KEYS];
-        const entries = Object.entries(registry.metadata).filter(([k]) => !skipKeys.includes(k));
+        const entries = Object.entries(registry?.metadata || {}).filter(([k]) => !skipKeys.includes(k));
 
         if (entries.length > 0) {
             metaSection.style.display = '';
@@ -469,9 +469,21 @@ function updateStoragePagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + currentPage + ' of ' + totalPages + ' (' + storageTotal + ' entries)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" onclick="loadStoragePage(' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + ')"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" onclick="loadStoragePage(' + (storageOffset + STORAGE_PAGE_SIZE) + ')"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="prev" data-offset="' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + '"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="next" data-offset="' + (storageOffset + STORAGE_PAGE_SIZE) + '"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
+
+    if (!paginationEl.dataset.bound) {
+        paginationEl.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-page-action]');
+            if (!button || button.disabled) return;
+            const offset = Number(button.dataset.offset);
+            if (Number.isFinite(offset)) {
+                loadStoragePage(offset);
+            }
+        });
+        paginationEl.dataset.bound = '1';
+    }
 }
 
 // ── Calls rendering (paginated) ──────────────────────────────────
@@ -548,9 +560,23 @@ function updateCallsPagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + callsPage + ' of ' + totalPages + ' (' + allCalls.length + ' calls)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" onclick="callsPage=Math.max(1,callsPage-1);renderCallsPage()"' + (callsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" onclick="callsPage=Math.min(' + totalPages + ',callsPage+1);renderCallsPage()"' + (callsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (callsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="next"' + (callsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
+
+    if (!paginationEl.dataset.bound) {
+        paginationEl.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-page-action]');
+            if (!button || button.disabled) return;
+            if (button.dataset.pageAction === 'prev') {
+                callsPage = Math.max(1, callsPage - 1);
+            } else {
+                callsPage = Math.min(totalPages, callsPage + 1);
+            }
+            renderCallsPage();
+        });
+        paginationEl.dataset.bound = '1';
+    }
 }
 
 // ── Events rendering (paginated) ─────────────────────────────────
@@ -615,9 +641,23 @@ function updateEventsPagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + eventsPage + ' of ' + totalPages + ' (' + allEvents.length + ' events)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" onclick="eventsPage=Math.max(1,eventsPage-1);renderEventsPage()"' + (eventsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" onclick="eventsPage=Math.min(' + totalPages + ',eventsPage+1);renderEventsPage()"' + (eventsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (eventsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" data-page-action="next"' + (eventsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
+
+    if (!paginationEl.dataset.bound) {
+        paginationEl.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-page-action]');
+            if (!button || button.disabled) return;
+            if (button.dataset.pageAction === 'prev') {
+                eventsPage = Math.max(1, eventsPage - 1);
+            } else {
+                eventsPage = Math.min(totalPages, eventsPage + 1);
+            }
+            renderEventsPage();
+        });
+        paginationEl.dataset.bound = '1';
+    }
 }
 
 // ── Init ─────────────────────────────────────────────────────────

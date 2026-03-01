@@ -102,7 +102,7 @@ async def main():
     # Test 1: list_nft
     try:
         sig = await call_contract(conn, deployer, marketplace, "list_nft",
-                                  {"token_id": 1, "price": 500})
+                      {"token_id": 1, "price": 5000})
         report("list_nft", True, f"sig={sig}")
     except Exception as e:
         report("list_nft", False, str(e))

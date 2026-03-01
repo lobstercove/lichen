@@ -16,18 +16,28 @@ use axum::{
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::RpcState;
+use moltchain_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PREDICT_PROGRAM: &str = "PREDICT";
+const DEFAULT_PREDICT_PROGRAM_B58: &str = "J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD";
 // F12.10 FIX: Prediction market uses MUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
 const PRICE_SCALE: u64 = 1_000_000;
 const DEFAULT_CLOSE_SLOTS: u64 = 1_512_000; // ~7 days at 400ms/slot
+const MIN_COLLATERAL: u64 = 1_000_000; // 1 mUSD (6 decimals)
+const TRADING_FEE_BPS: u64 = 200; // 2%
+const MIN_REPUTATION_CREATE: u64 = 500;
+const MIN_REPUTATION_RESOLVE: u64 = 1_000;
+const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 mUSD
+const DISPUTE_BOND: u64 = 100_000_000; // 100 mUSD
+const DISPUTE_PERIOD_SLOTS: u64 = 172_800; // 48h at 400ms/slot
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -80,13 +90,54 @@ fn api_404(msg: &str) -> Response {
 
 /// Read raw bytes from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
 /// Avoids deserializing the entire ContractAccount + WASM bytecode.
+fn resolve_predict_program(state: &RpcState) -> Option<Pubkey> {
+    for symbol in [
+        PREDICT_PROGRAM,
+        "PREDICTION",
+        "PREDICTION_MARKET",
+        "PREDICTIONREEF",
+    ] {
+        if let Ok(Some(entry)) = state.state.get_symbol_registry(symbol) {
+            if state
+                .state
+                .get_contract_storage(&entry.program, b"pm_market_count")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return Some(entry.program);
+            }
+        }
+    }
+
+    if let Ok(entries) = state.state.get_all_symbol_registry(512) {
+        for entry in entries {
+            if state
+                .state
+                .get_contract_storage(&entry.program, b"pm_market_count")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return Some(entry.program);
+            }
+        }
+    }
+
+    Pubkey::from_base58(DEFAULT_PREDICT_PROGRAM_B58).ok()
+}
+
 fn read_bytes(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
-    state.state.get_program_storage(PREDICT_PROGRAM, key)
+    let program = resolve_predict_program(state)?;
+    state.state.get_contract_storage(&program, key).ok().flatten()
 }
 
 /// Read u64 from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
 fn read_u64_key(state: &RpcState, key: &[u8]) -> u64 {
-    state.state.get_program_storage_u64(PREDICT_PROGRAM, key)
+    let Some(program) = resolve_predict_program(state) else {
+        return 0;
+    };
+    state.state.get_contract_storage_u64(&program, key)
 }
 
 fn current_slot(state: &RpcState) -> u64 {
@@ -168,6 +219,7 @@ struct MarketJson {
     created_slot: u64,
     close_slot: u64,
     resolve_slot: u64,
+    current_slot: u64,
     unique_traders: u64,
     outcomes: Vec<OutcomeJson>,
 }
@@ -191,6 +243,17 @@ struct PlatformStatsJson {
     total_traders: u64,
     current_slot: u64,
     paused: bool,
+}
+
+#[derive(Serialize)]
+struct PredictionConfigJson {
+    min_reputation: u64,
+    min_reputation_resolve: u64,
+    min_collateral: f64,
+    trading_fee_bps: u64,
+    market_creation_fee: f64,
+    dispute_bond: f64,
+    dispute_period_slots: u64,
 }
 
 #[derive(Serialize)]
@@ -227,6 +290,26 @@ struct UserQuery {
 struct PriceHistoryQuery {
     limit: Option<usize>,
     offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PredictionTradesQuery {
+    address: String,
+    market_id: Option<u64>,
+    limit: Option<usize>,
+    before_slot: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct PredictionTradeJson {
+    signature: String,
+    slot: u64,
+    timestamp: u64,
+    market_id: u64,
+    action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<u8>,
+    amount: f64,
 }
 
 #[derive(Deserialize)]
@@ -294,10 +377,16 @@ fn category_name(cat: u8) -> &'static str {
     }
 }
 
-fn status_name(status: u8) -> &'static str {
+fn status_name(status: u8, close_slot: u64, current_slot: u64) -> &'static str {
     match status {
         0 => "pending",
-        1 => "active",
+        1 => {
+            if close_slot > 0 && current_slot >= close_slot {
+                "closed"
+            } else {
+                "active"
+            }
+        }
         2 => "closed",
         3 => "resolving",
         4 => "resolved",
@@ -314,18 +403,115 @@ fn u64_le(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap_or([0; 8]))
 }
 
+fn parse_pubkey_flexible(input: &str) -> Option<Pubkey> {
+    if let Ok(pk) = Pubkey::from_base58(input) {
+        return Some(pk);
+    }
+    if input.len() == 64 && input.chars().all(|c| c.is_ascii_hexdigit()) {
+        let bytes = hex::decode(input).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        return Some(Pubkey(arr));
+    }
+    None
+}
+
+fn address_aliases(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let trimmed = input.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+    if let Ok(pk) = Pubkey::from_base58(trimmed) {
+        let hex_addr = hex::encode(pk.0);
+        if !out.contains(&hex_addr) {
+            out.push(hex_addr);
+        }
+    }
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        if let Ok(bytes) = hex::decode(trimmed) {
+            if bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                let b58 = Pubkey(arr).to_base58();
+                if !out.contains(&b58) {
+                    out.push(b58);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn parse_contract_call_args(ix: &Instruction) -> Option<Vec<u8>> {
+    if ix.program_id != CONTRACT_PROGRAM_ID {
+        return None;
+    }
+    let json_str = std::str::from_utf8(&ix.data).ok()?;
+    let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let args = val.get("Call")?.get("args")?.as_array()?;
+    let mut out = Vec::with_capacity(args.len());
+    for n in args {
+        let value = n.as_u64()?;
+        if value > 255 {
+            return None;
+        }
+        out.push(value as u8);
+    }
+    Some(out)
+}
+
+fn decode_prediction_trade(args: &[u8]) -> Option<(&'static str, u64, Option<u8>, f64)> {
+    if args.is_empty() {
+        return None;
+    }
+    let op = args[0];
+    match op {
+        // buy_shares [4][trader 32][market 8][outcome 1][amount 8]
+        4 if args.len() >= 50 => {
+            let market_id = u64_le(args, 33);
+            let outcome = args[41];
+            let amount = u64_le(args, 42) as f64 / PRICE_SCALE as f64;
+            Some(("buy", market_id, Some(outcome), amount))
+        }
+        // sell_shares [5][trader 32][market 8][outcome 1][shares 8]
+        5 if args.len() >= 50 => {
+            let market_id = u64_le(args, 33);
+            let outcome = args[41];
+            let amount = u64_le(args, 42) as f64 / PRICE_SCALE as f64;
+            Some(("sell", market_id, Some(outcome), amount))
+        }
+        // mint_complete_set [6][user 32][market 8][amount 8]
+        6 if args.len() >= 49 => {
+            let market_id = u64_le(args, 33);
+            let amount = u64_le(args, 41) as f64 / PRICE_SCALE as f64;
+            Some(("mint_complete_set", market_id, None, amount))
+        }
+        // redeem_complete_set [7][user 32][market 8][amount 8]
+        7 if args.len() >= 49 => {
+            let market_id = u64_le(args, 33);
+            let amount = u64_le(args, 41) as f64 / PRICE_SCALE as f64;
+            Some(("redeem_complete_set", market_id, None, amount))
+        }
+        _ => None,
+    }
+}
+
 /// Decode a 192-byte market record
-fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
+fn decode_market(state: &RpcState, id: u64, current_slot: u64) -> Option<MarketJson> {
     let key = format!("pm_m_{}", id);
-    let data = state
-        .state
-        .get_program_storage(PREDICT_PROGRAM, key.as_bytes())?;
+    let data = read_bytes(state, key.as_bytes())?;
     if data.len() < 192 {
         return None;
     }
 
     let market_id = u64_le(&data, 0);
-    let creator = hex::encode(&data[8..40]);
+    let mut creator_bytes = [0u8; 32];
+    creator_bytes.copy_from_slice(&data[8..40]);
+    let creator = Pubkey(creator_bytes).to_base58();
     let created_slot = u64_le(&data, 40);
     let close_slot = u64_le(&data, 48);
     let resolve_slot = u64_le(&data, 56);
@@ -345,9 +531,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
 
     // Read question text
     let q_key = format!("pm_q_{}", id);
-    let question = state
-        .state
-        .get_program_storage(PREDICT_PROGRAM, q_key.as_bytes())
+    let question = read_bytes(state, q_key.as_bytes())
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
 
@@ -359,9 +543,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         let o_key = format!("pm_o_{}_{}", id, oi);
         let on_key = format!("pm_on_{}_{}", id, oi);
 
-        let name = state
-            .state
-            .get_program_storage(PREDICT_PROGRAM, on_key.as_bytes())
+        let name = read_bytes(state, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_else(|| {
                 if oi == 0 {
@@ -371,9 +553,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
                 }
             });
 
-        let (reserve, shares) = state
-            .state
-            .get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
+        let (reserve, shares) = read_bytes(state, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
                     (u64_le(&d, 0), u64_le(&d, 8))
@@ -426,9 +606,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
 
     // F11.9 FIX: Include unique_traders to eliminate N+1 queries
     let trader_count_key = format!("pm_mtc_{}", id);
-    let unique_traders = state
-        .state
-        .get_program_storage(PREDICT_PROGRAM, trader_count_key.as_bytes())
+    let unique_traders = read_bytes(state, trader_count_key.as_bytes())
         .map(|d| if d.len() >= 8 { u64_le(&d, 0) } else { 0 })
         .unwrap_or(0);
 
@@ -437,7 +615,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         creator,
         question,
         category: category_name(category),
-        status: status_name(status),
+        status: status_name(status, close_slot, current_slot),
         outcome_count,
         winning_outcome,
         total_collateral: total_collateral as f64 / PRICE_SCALE as f64,
@@ -446,6 +624,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         created_slot,
         close_slot,
         resolve_slot,
+        current_slot,
         unique_traders,
         outcomes,
     })
@@ -484,6 +663,24 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> Response {
     .into_response()
 }
 
+/// GET /prediction-market/config — protocol constants for frontend bootstrap UI.
+async fn get_config(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(
+        PredictionConfigJson {
+            min_reputation: MIN_REPUTATION_CREATE,
+            min_reputation_resolve: MIN_REPUTATION_RESOLVE,
+            min_collateral: MIN_COLLATERAL as f64 / PRICE_SCALE as f64,
+            trading_fee_bps: TRADING_FEE_BPS,
+            market_creation_fee: MARKET_CREATION_FEE as f64 / PRICE_SCALE as f64,
+            dispute_bond: DISPUTE_BOND as f64 / PRICE_SCALE as f64,
+            dispute_period_slots: DISPUTE_PERIOD_SLOTS,
+        },
+        slot,
+    )
+    .into_response()
+}
+
 /// GET /prediction-market/markets — List markets (with optional category/status filter)
 async fn get_markets(
     State(state): State<Arc<RpcState>>,
@@ -497,7 +694,7 @@ async fn get_markets(
 
     let mut markets = Vec::new();
     for id in 1..=total_markets {
-        if let Some(mkt) = decode_market(&state, id) {
+        if let Some(mkt) = decode_market(&state, id, slot) {
             // category filter
             if let Some(ref cat) = params.category {
                 if mkt.category != cat.as_str() {
@@ -529,6 +726,7 @@ async fn get_markets(
         total: usize,
         offset: usize,
         limit: usize,
+        current_slot: u64,
     }
 
     ApiResponse::ok(
@@ -537,6 +735,7 @@ async fn get_markets(
             total,
             offset,
             limit,
+            current_slot: slot,
         },
         slot,
     )
@@ -547,7 +746,7 @@ async fn get_markets(
 async fn get_market(State(state): State<Arc<RpcState>>, Path(id): Path<u64>) -> Response {
     let slot = current_slot(&state);
 
-    match decode_market(&state, id) {
+    match decode_market(&state, id, slot) {
         Some(mkt) => ApiResponse::ok(mkt, slot).into_response(),
         None => api_404(&format!("Market {} not found", id)),
     }
@@ -564,42 +763,47 @@ async fn get_positions(
         None => return api_err("address parameter required"),
     };
 
-    // Get user's participation count
-    let count_key = format!("pm_userc_{}", addr);
-    let count = read_u64_key(&state, count_key.as_bytes());
+    let aliases = address_aliases(&addr);
 
     let mut positions = Vec::new();
+    let mut seen = HashSet::new();
 
-    // Iterate user's markets
-    for idx in 0..count {
-        let um_key = format!("pm_user_{}_{}", addr, idx);
-        let market_id = match read_bytes(&state, um_key.as_bytes()) {
-            Some(d) if d.len() >= 8 => u64_le(&d, 0),
-            _ => continue,
-        };
+    for alias in aliases {
+        // Get user's participation count
+        let count_key = format!("pm_userc_{}", alias);
+        let count = read_u64_key(&state, count_key.as_bytes());
 
-        // Get market record to know outcome_count
-        let mkt_key = format!("pm_m_{}", market_id);
-        let mkt_data = match read_bytes(&state, mkt_key.as_bytes()) {
-            Some(d) if d.len() >= 192 => d,
-            _ => continue,
-        };
-        let outcome_count = mkt_data[65];
+        // Iterate user's markets
+        for idx in 0..count {
+            let um_key = format!("pm_user_{}_{}", alias, idx);
+            let market_id = match read_bytes(&state, um_key.as_bytes()) {
+                Some(d) if d.len() >= 8 => u64_le(&d, 0),
+                _ => continue,
+            };
 
-        // Check each outcome for positions
-        for oi in 0..outcome_count {
-            let pos_key = format!("pm_p_{}_{}_{}", market_id, addr, oi);
-            if let Some(pd) = read_bytes(&state, pos_key.as_bytes()) {
-                if pd.len() >= 16 {
-                    let shares = u64_le(&pd, 0);
-                    let cost_basis = u64_le(&pd, 8);
-                    if shares > 0 {
-                        positions.push(PositionJson {
-                            market_id,
-                            outcome: oi,
-                            shares: shares as f64 / PRICE_SCALE as f64,
-                            cost_basis: cost_basis as f64 / PRICE_SCALE as f64,
-                        });
+            // Get market record to know outcome_count
+            let mkt_key = format!("pm_m_{}", market_id);
+            let mkt_data = match read_bytes(&state, mkt_key.as_bytes()) {
+                Some(d) if d.len() >= 192 => d,
+                _ => continue,
+            };
+            let outcome_count = mkt_data[65];
+
+            // Check each outcome for positions
+            for oi in 0..outcome_count {
+                let pos_key = format!("pm_p_{}_{}_{}", market_id, alias, oi);
+                if let Some(pd) = read_bytes(&state, pos_key.as_bytes()) {
+                    if pd.len() >= 16 {
+                        let shares = u64_le(&pd, 0);
+                        let cost_basis = u64_le(&pd, 8);
+                        if shares > 0 && seen.insert((market_id, oi)) {
+                            positions.push(PositionJson {
+                                market_id,
+                                outcome: oi,
+                                shares: shares as f64 / PRICE_SCALE as f64,
+                                cost_basis: cost_basis as f64 / PRICE_SCALE as f64,
+                            });
+                        }
                     }
                 }
             }
@@ -679,11 +883,13 @@ async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeReq
     };
 
     let status = mkt_data[64];
-    if status != 1 {
+    let close_slot = u64_le(&mkt_data, 48);
+    let effective_status = status_name(status, close_slot, slot);
+    if effective_status != "active" {
         return api_err(&format!(
             "Market {} is not active (status={})",
             req.market_id,
-            status_name(status)
+            effective_status
         ));
     }
 
@@ -820,10 +1026,9 @@ async fn post_create_template(
         Err(e) => return api_err(&e),
     };
 
-    let symbol_entry = match state.state.get_symbol_registry(PREDICT_PROGRAM) {
-        Ok(Some(entry)) => entry,
-        Ok(None) => return api_err("prediction market symbol not found in registry"),
-        Err(e) => return api_err(&format!("database error: {}", e)),
+    let prediction_program = match resolve_predict_program(&state) {
+        Some(program) => program,
+        None => return api_err("prediction market program unavailable"),
     };
 
     let args = build_create_market_args(
@@ -846,7 +1051,7 @@ async fn post_create_template(
             "instructions": [
                 {
                     "program_id": moltchain_core::CONTRACT_PROGRAM_ID.to_base58(),
-                    "accounts": [creator.to_base58(), symbol_entry.program.to_base58()],
+                    "accounts": [creator.to_base58(), prediction_program.to_base58()],
                     "data": contract_call,
                 }
             ],
@@ -864,7 +1069,7 @@ async fn post_create_template(
         rpc_method: "sendTransaction",
         unsigned_transaction: tx_json,
         unsigned_transaction_base64: tx_b64,
-        prediction_program: symbol_entry.program.to_base58(),
+        prediction_program: prediction_program.to_base58(),
         next_market_id_hint: read_u64_key(&state, b"pm_market_count").saturating_add(1),
         close_slot,
         outcome_count,
@@ -896,35 +1101,140 @@ async fn get_trader_stats(
     Path(addr): Path<String>,
 ) -> Response {
     let slot = current_slot(&state);
-    let key = format!("pm_ts_{}", addr);
-    let data = read_bytes(&state, key.as_bytes());
-    match data {
-        Some(d) if d.len() >= 24 => {
-            let volume = u64_le(&d, 0);
-            let trades = u64_le(&d, 8);
-            let last_slot = u64_le(&d, 16);
-            ApiResponse::ok(
-                TraderStatsJson {
-                    address: addr,
-                    total_volume: volume as f64 / PRICE_SCALE as f64,
-                    trade_count: trades,
-                    last_trade_slot: last_slot,
-                },
-                slot,
-            )
-            .into_response()
+    let aliases = address_aliases(&addr);
+    let mut best_volume = 0u64;
+    let mut best_trades = 0u64;
+    let mut best_last_slot = 0u64;
+
+    for alias in aliases {
+        let key = format!("pm_ts_{}", alias);
+        if let Some(d) = read_bytes(&state, key.as_bytes()) {
+            if d.len() >= 24 {
+                let volume = u64_le(&d, 0);
+                let trades = u64_le(&d, 8);
+                let last_slot = u64_le(&d, 16);
+                if trades > best_trades || (trades == best_trades && last_slot > best_last_slot) {
+                    best_volume = volume;
+                    best_trades = trades;
+                    best_last_slot = last_slot;
+                }
+            }
         }
-        _ => ApiResponse::ok(
-            TraderStatsJson {
-                address: addr,
-                total_volume: 0.0,
-                trade_count: 0,
-                last_trade_slot: 0,
-            },
-            slot,
-        )
-        .into_response(),
     }
+
+    ApiResponse::ok(
+        TraderStatsJson {
+            address: addr,
+            total_volume: best_volume as f64 / PRICE_SCALE as f64,
+            trade_count: best_trades,
+            last_trade_slot: best_last_slot,
+        },
+        slot,
+    )
+    .into_response()
+}
+
+/// GET /prediction-market/trades?address=...&market_id=... — Per-fill prediction activity from indexed transactions
+async fn get_trades(
+    State(state): State<Arc<RpcState>>,
+    Query(params): Query<PredictionTradesQuery>,
+) -> Response {
+    let slot = current_slot(&state);
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+
+    let address = params.address.trim();
+    if address.is_empty() {
+        return api_err("address parameter required");
+    }
+
+    let pubkey = match parse_pubkey_flexible(address) {
+        Some(pk) => pk,
+        None => return api_err("address must be valid base58 or 64-char hex pubkey"),
+    };
+
+    let predict_program = match resolve_predict_program(&state) {
+        Some(program) => program,
+        None => return api_err("prediction market program unavailable"),
+    };
+
+    let scan_limit = (limit * 8).min(1000);
+    let indexed = match state
+        .state
+        .get_account_tx_signatures_paginated(&pubkey, scan_limit, params.before_slot)
+    {
+        Ok(v) => v,
+        Err(e) => return api_err(&format!("database error: {}", e)),
+    };
+
+    let mut out: Vec<PredictionTradeJson> = Vec::new();
+    let mut slot_ts_cache: HashMap<u64, u64> = HashMap::new();
+
+    for (sig, sig_slot) in indexed {
+        let tx = match state.state.get_transaction(&sig) {
+            Ok(Some(tx)) => tx,
+            _ => {
+                if let Ok(Some(block)) = state.state.get_block_by_slot(sig_slot) {
+                    if let Some(found) = block.transactions.iter().find(|t| t.signature() == sig) {
+                        found.clone()
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+        };
+
+        let timestamp = if let Some(ts) = slot_ts_cache.get(&sig_slot) {
+            *ts
+        } else {
+            let ts = state
+                .state
+                .get_block_by_slot(sig_slot)
+                .ok()
+                .and_then(|b| b.map(|blk| blk.header.timestamp))
+                .unwrap_or(0);
+            slot_ts_cache.insert(sig_slot, ts);
+            ts
+        };
+
+        for ix in &tx.message.instructions {
+            if ix.program_id != CONTRACT_PROGRAM_ID || ix.accounts.len() < 2 || ix.accounts[1] != predict_program {
+                continue;
+            }
+            let Some(args) = parse_contract_call_args(ix) else {
+                continue;
+            };
+            let Some((action, market_id, outcome, amount)) = decode_prediction_trade(&args) else {
+                continue;
+            };
+            if let Some(filter_mid) = params.market_id {
+                if market_id != filter_mid {
+                    continue;
+                }
+            }
+
+            out.push(PredictionTradeJson {
+                signature: bs58::encode(sig.0).into_string(),
+                slot: sig_slot,
+                timestamp,
+                market_id,
+                action,
+                outcome,
+                amount,
+            });
+
+            if out.len() >= limit {
+                break;
+            }
+        }
+
+        if out.len() >= limit {
+            break;
+        }
+    }
+
+    ApiResponse::ok(out, slot).into_response()
 }
 
 #[derive(Serialize)]
@@ -1027,8 +1337,10 @@ async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
         };
 
         let status = mkt_data[64];
+        let close_slot = u64_le(&mkt_data, 48);
+        let effective_status = status_name(status, close_slot, slot);
         // Only include active markets
-        if status != 1 {
+        if effective_status != "active" {
             continue;
         }
 
@@ -1053,7 +1365,7 @@ async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
             volume_24h: vol24 as f64 / PRICE_SCALE as f64,
             unique_traders: traders,
             total_volume: total_volume as f64 / PRICE_SCALE as f64,
-            status: status_name(status),
+            status: effective_status,
         });
     }
 
@@ -1101,12 +1413,14 @@ async fn get_market_analytics(State(state): State<Arc<RpcState>>, Path(id): Path
 /// Build the /api/v1/prediction-market/* router.
 pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
     Router::new()
+        .route("/config", get(get_config))
         .route("/stats", get(get_stats))
         .route("/markets", get(get_markets))
         .route("/markets/:id", get(get_market))
         .route("/markets/:id/price-history", get(get_price_history))
         .route("/markets/:id/analytics", get(get_market_analytics))
         .route("/positions", get(get_positions))
+        .route("/trades", get(get_trades))
         .route("/traders/:addr/stats", get(get_trader_stats))
         .route("/leaderboard", get(get_leaderboard))
         .route("/trending", get(get_trending))

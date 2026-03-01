@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rust SDK - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -642,7 +642,7 @@ async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     // Subscribe to account changes
     let acct = Pubkey::from_base58("YourAccountBase58Here")?;
     let acct_sub = ws.on_account_change(&amp;acct, |account| {
-        println!("Balance changed: {} lamports", account.lamports);
+        println!("Balance changed: {} shells", account.shells);
     }).await?;
 
     // Unsubscribe when done

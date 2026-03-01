@@ -1,0 +1,1966 @@
+
+── F10.8: escapeHtml XSS sanitization ──
+  ✓ Escapes script tags
+  ✓ Escapes double quotes
+  ✓ Escapes single quotes
+  ✓ Escapes &, <, >
+  ✓ Passes safe strings through
+  ✓ Handles empty string
+  ✓ Handles null
+  ✓ Handles undefined
+  ✓ Handles numbers
+
+── F10.10: Base58 encode/decode ──
+  ✓ 216MacD8... decodes to 32 bytes
+  ✓ 216MacD8... round-trips correctly
+  ✓ AANMpDkS... decodes to 32 bytes
+  ✓ AANMpDkS... round-trips correctly
+  ✓ GJkJrM3D... decodes to 32 bytes
+  ✓ GJkJrM3D... round-trips correctly
+  ✓ dPUYAb3L... decodes to 32 bytes
+  ✓ dPUYAb3L... round-trips correctly
+  ✓ GFDF7SdC... decodes to 32 bytes
+  ✓ GFDF7SdC... round-trips correctly
+  ✓ HE5DVQuG... decodes to 32 bytes
+  ✓ HE5DVQuG... round-trips correctly
+  ✓ All-zeros round-trips: length 32
+  ✓ All-zeros round-trips: all zeros
+  ✓ Rejects invalid base58 characters
+
+── F10.9: encodeTransactionMessage bincode format ──
+  ✓ Returns Uint8Array
+  ✓ Non-zero length
+  ✓ Instruction count = 1
+  ✓ program_id matches
+  ✓ Account count = 1
+  ✓ Account matches signer
+  ✓ Instruction data matches
+  ✓ Blockhash matches (hex-decoded)
+  ✓ No trailing bytes
+  ✓ Multi-instruction: count = 2
+  ✓ Second instruction program_id
+  ✓ Second instruction: 2 accounts
+  ✓ Binary data length = 5
+  ✓ Binary data byte 0
+  ✓ Binary data byte 4
+
+── F10.9: sendTransaction wire format ──
+  ✓ Has signatures array
+  ✓ One signature
+  ✓ Signature is 64-byte hex (128 chars)
+  ✓ Has message field
+  ✓ message.instructions is array
+  ✓ One instruction
+  ✓ program_id is base58 string
+  ✓ accounts is array
+  ✓ Account is base58 string
+  ✓ data is byte array
+  ✓ data decodes to JSON
+  ✓ Blockhash is hex string
+  ✓ No camelCase programId (snake_case only)
+  ✓ Uses snake_case program_id
+  ✓ Uses recent_blockhash field
+
+── F10.1-F10.7: Handler wiring structural checks ──
+  ✓ F10.1: Order submit wired to contractIx + dex_core
+  ✓ F10.1: No unsigned api.post to /orders
+  ✓ F10.2: Cancel order uses contractIx + buildCancelOrderArgs
+  ✓ F10.2: No unsigned api.del for cancel
+  ✓ F10.3: Margin open wired to buildOpenPositionArgs
+  ✓ F10.3: Margin close wired to buildClosePositionArgs
+  ✓ F10.3: Uses dex_margin contract
+  ✓ F10.4: Prediction trade wired to buildBuySharesArgs
+  ✓ F10.4: Prediction create wired to buildCreateMarketArgs
+  ✓ F10.4: Uses prediction_market contract
+  ✓ F10.4: No unsigned REST for prediction trade
+  ✓ F10.4: No unsigned REST for prediction create
+  ✓ F10.5: Resolve market handler uses buildResolveMarketArgs
+  ✓ F10.5: Claim winnings handler uses buildRedeemSharesArgs
+  ✓ F10.5: Resolve button rendered
+  ✓ F10.5: Claim button rendered
+  ✓ F10.6: Vote wired to buildVoteArgs
+  ✓ F10.6: Uses dex_governance contract
+  ✓ F10.6: Proposal submit wired to contractIx
+  ✓ F10.6: No unsigned REST for proposals
+  ✓ F10.7: Reward claim wired to buildClaimRewardsArgs
+  ✓ F10.7: Uses dex_rewards contract
+  ✓ F10.7: Claim uses contractIx (not fake GET)
+  ✓ F10.8: escapeHtml called 69 times (>=15 expected)
+  ✓ F10.9: encodeTransactionMessage exists
+  ✓ F10.9: Uses u64 LE length prefixes (bincode)
+  ✓ F10.9: program_id base58-decoded for signing
+  ✓ F10.9: Blockhash hex-decoded (not UTF-8)
+  ✓ F10.10: loadContractAddresses function exists
+  ✓ F10.10: Uses getAllSymbolRegistry RPC
+  ✓ F10.10: Called in init
+  ✓ F10.11: Saved wallet auto-connect uses connectWalletTo
+
+── F10E: Extra pass structural checks ──
+  ✓ F10E.1: applyWalletGateAll function exists
+  ✓ F10E.1: Order form shows wallet-gate button text
+  ✓ F10E.1: Uses wallet-gated-disabled CSS class
+  ✓ F10E.2: Create Market shows wallet-gate text
+  ✓ F10E.2: Quick Trade panel gets wallet-gated-disabled
+  ✓ F10E.2: Create Market panel gets wallet-gated-disabled
+  ✓ F10E.3: Predict bottom panel ID referenced in JS
+  ✓ F10E.3: Pool bottom panel ID referenced in JS
+  ✓ F10E.3: Rewards bottom panel ID referenced in JS
+  ✓ F10E.4: Governance proposal shows wallet-gate text
+  ✓ F10E.4: Proposal form gets wallet-gated-disabled
+  ✓ F10E.5: delistFields element referenced
+  ✓ F10E.5: paramFields element referenced
+  ✓ F10E.5: Delist pair selector exists
+  ✓ F10E.5: Delist reason textarea exists
+  ✓ F10E.5: Parameter name selector exists
+  ✓ F10E.5: Parameter value input exists
+  ✓ F10E.5: Current param value display exists
+  ✓ F10E.5: Parameter description display exists
+  ✓ F10E.5: Delist proposal data construction
+  ✓ F10E.5: Param proposal data construction
+  ✓ F10E.5: Delist sends pair_id + reason
+  ✓ F10E.5: Param sends parameter + proposed_value
+  ✓ F10E.6: MOLT_GENESIS_PRICE constant exists
+  ✓ F10E.6: Genesis price is $0.10
+  ✓ F10E.6: State defaults to genesis price
+  ✓ F10E.6: Genesis pair fallback message
+  ✓ F10E.6: Genesis pair uses MOLT_GENESIS_PRICE
+  ✓ F10E.7: connectBinancePriceFeed function exists
+  ✓ F10E.7: Uses Binance WebSocket endpoint
+  ✓ F10E.7: Subscribes to SOL/USDT
+  ✓ F10E.7: Subscribes to ETH/USDT
+  ✓ F10E.7: BTC streams removed
+  ✓ F10E.7: applyBinanceRealTimeOverlay function exists
+  ✓ F10E.7: externalPrices state object exists
+  ✓ F10E.7: Binance feed documented as real-time overlay
+  ✓ F10E.8: CSS has disabled button styles
+  ✓ F10E.8: CSS has .btn-wallet-gate class
+  ✓ F10E.8: CSS dims inputs in wallet-gated-disabled containers
+  ✓ F10E.9: Margin form gets wallet-gated-disabled
+  ✓ F10E.9: Margin open button shows wallet-gate text
+  ✓ F10E.10: Add Liquidity form gets wallet-gated-disabled
+  ✓ F10E.11: My Pools filter checks connected
+  ✓ F10E.11: My Pools filter references LP positions
+  ✓ F10E.5: Parameter select has change handler
+  ✓ F10E.5: Reads data-current from option
+  ✓ F10E.5: Reads data-desc from option
+  ✓ F10E.5: Reads data-unit from option
+  ✓ F10E: applyWalletGateAll called 9 times (>=4 expected: init, connect, disconnect, auto-connect)
+  ✓ F10E.7: Binance feed connected in init
+
+── F10E: HTML structural checks ──
+  ✓ F10E.3: Predict bottom panel has ID + hidden
+  ✓ F10E.3: Pool bottom panel has ID + hidden
+  ✓ F10E.3: Rewards bottom panel has ID + hidden
+  ✓ F10E.5: delistFields section in HTML
+  ✓ F10E.5: propDelistPair select in HTML
+  ✓ F10E.5: propDelistReason textarea in HTML
+  ✓ F10E.5: Delist impact info box in HTML
+  ✓ F10E.5: paramFields section in HTML
+  ✓ F10E.5: propParamName select in HTML
+  ✓ F10E.5: propParamValue input in HTML
+  ✓ F10E.5: propParamCurrent display in HTML
+  ✓ F10E.5: propParamDesc display in HTML
+  ✓ F10E.5: Max Leverage option has current+unit
+  ✓ F10E.5: Max Leverage option has description
+  ✓ F10E.5: Fee Split Treasury option exists
+  ✓ F10E.5: Prediction Market Fee option exists
+  ✓ F10E.5: Margin Maintenance Ratio option exists
+  ✓ F10E.5: 11 protocol parameter options (>=10 expected)
+  ✓ F10E.5: Delist impact — open orders warning
+  ✓ F10E.5: Delist impact — LP withdrawal warning
+  ✓ F10E.5: Delist impact — margin close warning
+  ✓ F10E.8: Disabled cursor style exists
+  ✓ F10E.8: Disabled pointer-events exists
+  ✓ F10E.5: Delist pair select populated from pairs
+
+── Oracle Price Feed Integration ──
+  ✓ ORACLE: genesis_seed_analytics_prices function exists
+  ✓ ORACLE: spawn_oracle_price_feeder function exists
+  ✓ ORACLE: oracle_update_candle function exists
+  ✓ ORACLE: BinanceTicker struct for REST fallback
+  ✓ ORACLE: wSOL genesis price seeded ($82)
+  ✓ ORACLE: wETH genesis price seeded ($1,979)
+  ✓ ORACLE: BTC removed from oracle feeds
+  ✓ ORACLE: External asset feeder authorization
+  ✓ ORACLE: External asset price submission
+  ✓ ORACLE: Analytics last prices seeded (ana_lp_)
+  ✓ ORACLE: Analytics 24h stats seeded (ana_24h_)
+  ✓ ORACLE: Genesis candles seeded (ana_c_)
+  ✓ ORACLE: Candle counts seeded (ana_cc_)
+  ✓ ORACLE: MOLT/wSOL computed from wsol/molt ratio
+  ✓ ORACLE: MOLT/wETH computed from weth/molt ratio
+  ✓ ORACLE: Binance WebSocket URL constant
+  ✓ ORACLE: Uses aggTrade streams for real-time data
+  ✓ ORACLE: Parses SOL/USDT from WebSocket
+  ✓ ORACLE: Parses ETH/USDT from WebSocket
+  ✓ ORACLE: BTC/USDT removed from price feeds
+  ✓ ORACLE: 1-second storage write interval
+  ✓ ORACLE: WebSocket reader loop with auto-reconnect
+  ✓ ORACLE: WebSocket health flag for fallback
+  ✓ ORACLE: REST fallback URL constant
+  ✓ ORACLE: Exponential backoff for reconnect
+  ✓ ORACLE: Microdollar price encoding
+  ✓ ORACLE: Calls oracle_update_candle for each interval
+  ✓ ORACLE: All 9 candle intervals processed
+  ✓ ORACLE: Candle period calculation
+  ✓ ORACLE: Current candle slot tracking (ana_cur_)
+  ✓ ORACLE: In-place OHLC update
+  ✓ ORACLE: Feeder spawned with state clone
+  ✓ ORACLE: Genesis pubkey resolved from state store
+  ✓ RPC: ORACLE_PROGRAM constant defined
+  ✓ RPC: get_oracle_prices endpoint handler
+  ✓ RPC: Oracle prices route registered
+  ✓ RPC: Oracle active flag in response
+  ✓ RPC: Oracle fallback in get_pairs
+  ✓ RPC: Oracle price variable used
+  ✓ RPC: 8-decimal oracle price conversion
+  ✓ RPC: MOLT oracle read for pair conversion
+  ✓ RPC: Oracle mappings for wSOL and wETH
+  ✓ RPC: Oracle fallback in both get_pairs and get_pair_ticker
+  ✓ RPC: priceOracleActive set to true
+  ✓ RPC: Updated oracle note message
+  ✓ RPC: BTC removed from oracle note
+
+── Frontend Oracle Integration ──
+  ✓ FE: applyBinanceRealTimeOverlay function exists
+  ✓ FE: Old updateExternalPricedPairs removed
+  ✓ FE: Old apiPriceless flag removed
+  ✓ FE: Binance feed documented as real-time overlay
+  ✓ FE: MOLT genesis price constant used in overlay
+  ✓ FE: BTC removed from externalPrices
+  ✓ FE: Real-time overlay updates active pair only
+  ✓ FE: MOLT-quoted pair conversion in overlay
+
+── Genesis Pair Creation ──
+  ✓ GENESIS: wSOL/mUSD pair created
+  ✓ GENESIS: wETH/mUSD pair created
+  ✓ GENESIS: wSOL/MOLT pair created
+  ✓ GENESIS: wETH/MOLT pair created
+  ✓ GENESIS: MOLT/mUSD pair created
+  ✓ GENESIS: wSOL/mUSD pool sqrt_price configured ($82)
+  ✓ GENESIS: wETH/mUSD pool sqrt_price configured ($1,979)
+  ✓ GENESIS: wSOL/MOLT pool sqrt_price configured
+  ✓ GENESIS: wETH/MOLT pool sqrt_price configured
+
+── MoltOracle Contract ──
+  ✓ ORACLE CONTRACT: submit_price function exists
+  ✓ ORACLE CONTRACT: add_price_feeder function exists
+  ✓ ORACLE CONTRACT: get_price function exists
+  ✓ ORACLE CONTRACT: get_aggregated_price function exists
+  ✓ ORACLE CONTRACT: query_oracle function exists
+  ✓ ORACLE CONTRACT: PRICE_FEED_SIZE constant defined
+  ✓ ORACLE CONTRACT: 49-byte price feed size
+  ✓ ORACLE CONTRACT: Pause guard on submit_price
+  ✓ ORACLE CONTRACT: Reentrancy guard
+
+── DEX Analytics Contract ──
+  ✓ ANALYTICS CONTRACT: record_trade function exists
+  ✓ ANALYTICS CONTRACT: update_candle function exists
+  ✓ ANALYTICS CONTRACT: update_24h_stats function exists
+  ✓ ANALYTICS CONTRACT: 1-minute candle interval
+  ✓ ANALYTICS CONTRACT: 1-hour candle interval
+  ✓ ANALYTICS CONTRACT: 1-day candle interval
+  ✓ ANALYTICS CONTRACT: 9 candle intervals defined
+
+── End-to-End Data Flow ──
+  ✓ E2E: WebSocket client for Binance
+  ✓ E2E: Lock-free atomic price storage
+  ✓ E2E: Writes to oracle contract storage
+  ✓ E2E: Writes to analytics contract storage
+  ✓ E2E: RPC reads from contract storage
+  ✓ E2E: RPC reads analytics last price
+  ✓ E2E: RPC reads analytics 24h stats
+  ✓ E2E: RPC reads analytics candles
+  ✓ E2E: Frontend loads pairs from API
+  ✓ E2E: Frontend loads candles from API
+  ✓ E2E: Frontend loads ticker from API
+  ✓ E2E: Oracle prices REST endpoint
+
+── Utility: hexToBytes / bytesToHex ──
+  ✓ hex round-trip
+  ✓ hexToBytes length
+  ✓ bytesToHex
+
+── DEX P1: Contract Address Resolution ──
+  ✓ P1.1: contracts object includes dex_analytics
+  ✓ P1.2: ANALYTICS symbol mapped from registry
+  ✓ P1.3: dex_core hardcoded fallback removed
+  ✓ P1.3: dex_amm hardcoded fallback removed
+  ✓ P1.3: dex_router hardcoded fallback removed
+  ✓ P1.3: prediction_market hardcoded fallback removed
+  ✓ P1.5: Registry miss is explicitly logged
+  ✓ P1.5: needsFallback flag removed
+  ✓ P1.6: loadContractAddresses called before loadPairs in init
+
+── DEX P2: Genesis & First-Boot Deploy ──
+  ✓ P2.1: genesis_exec_contract returns false on non-zero error code
+  ✓ P2.2: MOLT/mUSD AMM sqrt_price = 1_358_187_913 (Q32 for $0.10)
+  ✓ P2.2: Old 1<<32 ($1.00) sqrt_price removed
+  ✓ P2.3: wSOL/mUSD AMM sqrt_price = 38_892_583_020 (Q32 for $82)
+  ✓ P2.4: wETH/mUSD AMM sqrt_price = 191_065_712_575 (Q32 for $1,979)
+  ✓ P2.5: wSOL/MOLT sqrt_price present
+  ✓ P2.5: wETH/MOLT sqrt_price present
+  ✓ P2.6: Genesis creates 7 CLOB pairs (got 7)
+  ✓ P2.6: No REEF pairs in genesis
+  ✓ P2.7: first-boot-deploy.sh pair IDs are 1-indexed (not 0-indexed)
+  ✓ P2.8: first-boot-deploy.sh has 5 pools (got 5)
+  ✓ P2.8: No REEF pools in first-boot-deploy
+  ✓ P2.9: testnet-deploy.sh pair IDs are 1-indexed
+  ✓ P2.9: testnet-deploy.sh has 5 pools (got 5)
+  ✓ P2.10: Startup reconciliation checks for missing ana_lp_1
+  ✓ P2.10: Reconciliation calls genesis_seed_analytics_prices
+  ✓ P2.11: Startup reconciliation checks for missing price_MOLT
+  ✓ P2.11: Reconciliation writes oracle prices directly
+  ✓ P2.12: AMM sqrt_price comment cites correct oracle prices
+  ✓ P2.13: Q32 sqrt_price formula documented in code
+
+── DEX P3: Trade View — Order Book (CLOB) ──
+  ✓ P3.1: dex_core has place_order with 128-byte ORDER_SIZE
+  ✓ P3.2: Matching engine has match_order + fill_at_price_level + add_to_book
+  ✓ P3.3: RPC get_orderbook reads real contract storage via get_program_storage
+  ✓ P3.4: RPC decode_order byte offsets match contract layout (trader, pair_id, side, type, price, order_id)
+  ✓ P3.5: Orderbook sorts bids desc and asks asc
+  ✓ P3.6: Frontend loadOrderBook hits correct API path with null-safe checks
+  ✓ P3.7: renderOrderBook renders depth bars with formatted prices
+  ✓ P3.8-10: Matching engine checks buy vs best_ask, sell vs best_bid
+  ✓ P3.11: Spread is computed as lowest_ask - highest_bid
+  ✓ P3.12: Empty orderbook shows "No asks" / "No bids" placeholders
+  ✓ P3.13: loadRecentTrades hits /pairs/:id/trades API
+  ✓ P3.14: RPC decode_trade byte offsets match contract trade layout (80 bytes)
+  ✓ P3.15: get_trades uses inclusive range ..=trade_count (F3.1 fix: no off-by-one)
+  ✓ P3.16: PRICE_SCALE = 1e9 consistent across frontend, RPC, and contract
+  ✓ P3.17: Pair selector populates from /pairs API with renderPairList
+  ✓ P3.18: selectPair reloads orderbook, trades, and WebSocket subscriptions
+  ✓ P3.F2: TradeJson has side field, inferred from maker order byte 40 (F3.2 fix)
+  ✓ P3.F3: TradeJson has timestamp field, computed from slot delta (F3.3 fix)
+  ✓ P3.F5: Fallback MOLT/mUSD pair uses pairId: 1 (not 0) (F3.5 fix)
+  ✓ P4.1a: Submit handler calls buildPlaceOrderArgs with wallet.address
+  ✓ P4.1c: buildPlaceOrderArgs function defined
+  ✓ P4.1d: buildPlaceOrderArgs body found
+  ✓ P4.1e: PlaceOrder binary layout is 75 bytes (67 + 8 trigger_price)
+  ✓ P4.1f: PlaceOrder scales price
+  ✓ P4.2: Market order type hides price input
+  ✓ P4.3: Stop-limit type shows stop-price group
+  ✓ P4.4: Cancel order uses buildCancelOrderArgs with wallet.address
+  ✓ P4.5a: Percentage preset buttons wire up dataset.pct
+  ✓ P4.5b: Preset buttons calculate from balance.available
+  ✓ P4.6: calcTotal computes price × amount as total
+  ✓ P4.7: Fee estimate uses 0.05% rate (0.0005)
+  ✓ P4.8: Route info shows CLOB Direct or CLOB + AMM Split
+  ✓ P4.9: Route splits at 50000 threshold
+  ✓ P4.10: Open orders section renders with cancel buttons
+  ✓ P4.11: loadTradeHistory sends trader query param
+  ✓ P4.12: Positions tab loads margin positions from /margin/positions API
+  ✓ P4.F3: Client-side balance validation checks neededAmount vs available (F4.3 fix)
+  ✓ P4.F4a: LimitQuery struct has trader: Option<String> field (F4.4 fix)
+  ✓ P4.F4b: get_trades filters trades by trader address when specified (F4.4 fix)
+  ✓ P5.1: Datafeed getBars calls loadCandles which fetches /candles API
+  ✓ P5.2a: loadCandles maps candle data array
+  ✓ P5.2b: loadCandles extracts timestamp, open, high, low, close, volume
+  ✓ P5.3: CandleJson struct includes timestamp field (F5.1 fix)
+  ✓ P5.4a: get_candles uses inclusive range start..=candle_count (F5.2 fix)
+  ✓ P5.4b: get_candles start is 1-based (F5.2 fix)
+  ✓ P5.5: CandleQuery struct has from/to fields for slot range filtering (F5.2 fix)
+  ✓ P5.6: get_candles filters candles by from/to timestamps (F5.2 fix)
+  ✓ P5.7: dex_analytics calculates candle boundaries as (slot/interval)*interval
+  ✓ P5.8: resolutionToSec() maps all standard intervals correctly
+  ✓ P5.9: TradingView fallback shows "unavailable" message with retry (F5.7 fix)
+  ✓ P5.10: Chart updates on pair switch via setSymbol
+  ✓ P5.11: Chart uses dark theme with #0d1117 background
+  ✓ P5.12: getBars returns { noData: true } when no candles exist
+  ✓ P5.13a: streamBarUpdate uses dynamic resolution via activeResolution (F5.11 fix)
+  ✓ P5.13b: subscribeBars stores resolution in activeResolution (F5.11 fix)
+  ✓ P5.13c: No hardcoded 900000ms (15-min) bucketing remains (F5.11 fix)
+  ✓ P5.14: supported_resolutions includes all 9 standard intervals
+  ✓ P6.1: WS URL defaults to ws://localhost:8900 with MOLTCHAIN_WS override
+  ✓ P6.2: DexWS class has connect, subscribe, unsubscribe methods
+  ✓ P6.3: WS reconnect uses exponential backoff capped at 30s
+  ✓ P6.4: orderbook channel subscribes and processes bids/asks
+  ✓ P6.5: trades channel subscribes and calls streamBarUpdate
+  ✓ P6.6: ticker channel uses camelCase d.lastPrice (F6.9 fix)
+  ✓ P6.7: orders channel uses camelCase d.orderId (F6.9 fix)
+  ✓ P6.8: DexEvent enum uses serde rename_all = camelCase (F6.9 fix)
+  ✓ P6.9: orderbook WS callback uses RAF-throttled renderOrderBook (F6.11 fix)
+  ✓ P6.10: DexWS has close() method with _closing flag (F6.12 fix)
+  ✓ P6.11: Page unload calls dexWs.close() (F6.12 fix)
+  ✓ P6.12: Polling fallback runs loadOrderBook on interval
+  ✓ P6.13: subscribePair unsubscribes previous channels before subscribing new
+  ✓ P6.14: emit_dex_events function exists and is called in block production (F6.2 fix)
+  ✓ P6.14: emit_dex_events function exists and is called in block production (F6.2 fix)
+  ✓ P7.1a: decode_pool reads token_a from bytes 0..32
+  ✓ P7.1b: decode_pool reads token_b from bytes 32..64
+  ✓ P7.1c: decode_pool reads pool_id from bytes 64..72
+  ✓ P7.1d: decode_pool reads sqrt_price from bytes 72..80
+  ✓ P7.1e: decode_pool reads tick from bytes 80..84
+  ✓ P7.1f: decode_pool reads liquidity from bytes 84..92
+  ✓ P7.1g: decode_pool reads fee_tier from byte 92
+  ✓ P7.2: decode_pool maps fee_tier byte to bps strings
+  ✓ P7.3a: fee_tier parsed with parseInt (F7.3 fix)
+  ✓ P7.3b: old NaN-producing feeTier / 100 removed
+  ✓ P7.3c: parseInt("30bps") correctly extracts 30
+  ✓ P7.3d: parseInt("1bps") correctly extracts 1
+  ✓ P7.4a: PoolJson struct exists
+  ✓ P7.4b: PoolJson has camelCase serde rename
+  ✓ P7.5: token symbol map function exists in RPC
+  ✓ P7.6a: poolTableBody element exists
+  ✓ P7.6b: Fee Tier column header
+  ✓ P7.6c: TVL column header
+  ✓ P7.7a: fabricated swap_count * 100 removed (F7.7 fix)
+  ✓ P7.7b: TVL uses data.tvl with totalVolume fallback
+  ✓ P7.7c: Volume 24h uses data.volume_24h
+  ✓ P7.7d: Fees uses fees24h with totalFees fallback
+  ✓ P7.8: /stats/amm handler reads amm_pool_count and amm_swap_count from contract storage
+  ✓ P7.9a: poolTableBody click delegation exists (F7.9 fix)
+  ✓ P7.9b: click handler selects pool and scrolls to form
+  ✓ P7.10: empty state placeholder message
+  ✓ P7.11a: LP positions query uses ?owner= (F7.12a fix)
+  ✓ P7.11b: old ?address= param removed
+  ✓ P7.12a: LP position card has both data-position-id and data-pool-id (F7.12b fix)
+  ✓ P7.12b: My Pools filter uses card.dataset.poolId not positionId
+  ✓ P7.13: volume shows — when totalVolume unavailable (F7.15 fix)
+  ✓ P7.14: liqPoolSelect populated from pools (F7.17 fix)
+  ✓ P7.15: current price computed from sqrtPrice (F7.18 fix)
+  ✓ P7.15b: price = sqrtP^2 after Q32.32 conversion
+  ✓ P7.16: pool share estimate calculates deposit / (existing + deposit) (F7.19 fix)
+  ✓ P7.17a: state.selectedFeeTier exists (F7.20 fix)
+  ✓ P7.17b: fee tier click sets from data-fee attribute
+  ✓ P7.18: Add buttons disabled and styled when wallet disconnected
+  ✓ P8.1a: CONTRACT_PROGRAM_ID constant defined
+  ✓ P8.1b: CONTRACT_PROGRAM_ID computed from 32 bytes of 0xFF
+  ✓ P8.2a: contractIx() function defined
+  ✓ P8.2b: contractIx uses CONTRACT_PROGRAM_ID as program_id
+  ✓ P8.2c: contractIx sends [wallet, contract] as accounts
+  ✓ P8.3a: buildContractCall() function defined
+  ✓ P8.3b: buildContractCall wraps in Call envelope
+  ✓ P8.3c: Call has function field
+  ✓ P8.3d: Call has args field
+  ✓ P8.4: buildPlaceOrderArgs() builder exists
+  ✓ P8.4: buildCancelOrderArgs() builder exists
+  ✓ P8.4: buildAddLiquidityArgs() builder exists
+  ✓ P8.4: buildRemoveLiquidityArgs() builder exists
+  ✓ P8.4: buildCollectFeesArgs() builder exists
+  ✓ P8.4: buildOpenPositionArgs() builder exists
+  ✓ P8.4: buildClosePositionArgs() builder exists
+  ✓ P8.4: buildVoteArgs() builder exists
+  ✓ P8.4: buildBuySharesArgs() builder exists
+  ✓ P8.4: buildRedeemSharesArgs() builder exists
+  ✓ P8.4: buildResolveMarketArgs() builder exists
+  ✓ P8.4: buildCreateMarketArgs() builder exists
+  ✓ P8.4: buildClaimRewardsArgs() builder exists
+  ✓ P8.5a: writeU64LE helper
+  ✓ P8.5b: writeI32LE helper
+  ✓ P8.5c: writeU8 helper
+  ✓ P8.5d: writePubkey helper
+  ✓ P8.6a: priceToTick() function
+  ✓ P8.6b: priceToTick uses logarithm
+  ✓ P8.6c: priceToTick divides by log(1.0001)
+  ✓ P8.6d: alignTickToSpacing() function
+  ✓ P8.6e: MIN_TICK = -887272
+  ✓ P8.6f: MAX_TICK = 887272
+  ✓ P8.6g: FEE_TIER_SPACING map
+  ✓ P8.7: No old-format program_id: contracts.X calls remain (found 0)
+  ✓ P8.8: At least 13 contractIx() calls (found 33)
+  ✓ P8.9: place_order uses buildPlaceOrderArgs with wallet.address
+  ✓ P8.10: cancel_order uses buildCancelOrderArgs with wallet.address
+  ✓ P8.11a: add_liquidity uses contractIx + buildAddLiquidityArgs
+  ✓ P8.11b: Add liquidity uses priceToTick()
+  ✓ P8.11c: Add liquidity aligns ticks to spacing
+  ✓ P8.12a: Collect Fees button selector exists
+  ✓ P8.12b: Collect handler builds correct args
+  ✓ P8.13a: Remove button selector exists
+  ✓ P8.13b: Remove handler builds correct args
+  ✓ P8.13c: Remove has confirmation dialog
+  ✓ P8.14a: Add More button selector exists
+  ✓ P8.14b: Add More scrolls to add liquidity form
+  ✓ P8.14c: Add More pre-selects pool
+  ✓ P8.15: Event delegation on pool-positions container
+  ✓ P8.16: buy_shares uses contractIx + buildBuySharesArgs
+  ✓ P8.17: claim winnings uses contractIx + buildRedeemSharesArgs
+  ✓ P8.18: resolve_market uses contractIx + buildResolveMarketArgs
+  ✓ P8.19: create_market uses contractIx + buildCreateMarketArgs
+  ✓ P8.20: rewards claim uses contractIx + buildClaimRewardsArgs
+  ✓ P8.21: margin open uses buildOpenPositionArgs with wallet.address
+  ✓ P8.22: margin close uses buildClosePositionArgs with wallet.address
+  ✓ P8.23: governance vote uses buildVoteArgs with wallet.address
+  ✓ P8.24a: buildPlaceOrderArgs found
+  ✓ P8.24b: PlaceOrder allocates 75 bytes (67 + 8 trigger_price)
+  ✓ P8.24c: PlaceOrder opcode is 2
+  ✓ P8.25a: buildCancelOrderArgs found
+  ✓ P8.25b: CancelOrder allocates 41 bytes
+  ✓ P8.25c: CancelOrder opcode is 3
+  ✓ P8.26a: buildAddLiquidityArgs found
+  ✓ P8.26b: AddLiquidity allocates 65 bytes
+  ✓ P8.26c: AddLiquidity opcode is 3
+  ✓ P8.26d: AddLiquidity writes i32 ticks
+  ✓ P8.27a: buildCollectFeesArgs found
+  ✓ P8.27b: CollectFees allocates 41 bytes
+  ✓ P8.27c: CollectFees opcode is 5
+  ✓ P8.28a: buildRemoveLiquidityArgs found
+  ✓ P8.28b: RemoveLiquidity allocates 49 bytes
+  ✓ P8.28c: RemoveLiquidity opcode is 4
+  ✓ P8.29: Full range toggle uses MIN_TICK/MAX_TICK constants
+  ✓ P8.30: LP position cards include data-pool-id attribute
+  ✓ P9.1a: decode_route function exists
+  ✓ P9.1b: token_in at 0..32
+  ✓ P9.1c: token_out at 32..64
+  ✓ P9.1d: route_id at 64..72
+  ✓ P9.1e: route_type at byte 72
+  ✓ P9.1f: pool_or_pair_id at 73..81
+  ✓ P9.1g: split_percent at byte 89
+  ✓ P9.1h: enabled at byte 90
+  ✓ P9.2a: get_routes handler exists
+  ✓ P9.2b: reads rtr_route_count from storage
+  ✓ P9.2c: iterates rtr_route_{id} keys
+  ✓ P9.3a: post_router_quote handler exists
+  ✓ P9.3b: Response includes minAmountOut field
+  ✓ P9.4a: Split route type handled separately
+  ✓ P9.4b: Both CLOB and AMM quote functions exist
+  ✓ P9.4c: Split route block found
+  ✓ P9.4d: Split divides into CLOB and AMM amounts
+  ✓ P9.4e: Split uses split_percent for division
+  ✓ P9.5: Dead slippage guard removed (best_output < min_out was always false)
+  ✓ P9.6a: calcTotal calls /router/quote API
+  ✓ P9.6b: ROUTE_TYPE_LABELS mapping exists
+  ✓ P9.6c: CLOB route type in labels
+  ✓ P9.6d: AMM route type in labels
+  ✓ P9.6e: Split route type in labels
+  ✓ P9.6f: Multi-hop route type in labels
+  ✓ P9.7a: calcTotal reads feeRate from router response
+  ✓ P9.7b: feeRate converted from bps to decimal
+  ✓ P9.8a: Router response has feeRate field
+  ✓ P9.8b: Router response has estimatedFee field
+  ✓ P9.8c: Router response has splitPercent field
+  ✓ P9.9a: AMM_FEE_BPS constant used for fee lookup
+  ✓ P9.9b: Fee tier read from pool byte 92
+  ✓ P9.10a: Route quote is debounced
+  ✓ P9.10b: Debounce delay is 300ms
+  ✓ P9.10c: Previous timer cleared on new input
+  ✓ P9.11: Fallback heuristic when router API unavailable
+  ✓ P9.12a: /router/swap endpoint registered
+  ✓ P9.12b: /router/quote endpoint registered
+  ✓ P9.12c: /routes endpoint registered
+  ✓ P10.1a: calculate_margin_ratio_with_pnl function exists
+  ✓ P10.1b: PnL-aware ratio takes entry_price parameter
+  ✓ P10.1c: PnL-aware ratio takes mark_price parameter
+  ✓ P10.2a: liquidate() uses PnL-aware ratio
+  ✓ P10.2b: liquidate() reads entry_price for PnL
+  ✓ P10.3: get_margin_ratio() uses PnL-aware ratio
+  ✓ P10.4: remove_margin() uses PnL-aware ratio
+  ✓ P10.5a: close_position writes to realized_pnl bytes [90..98]
+  ✓ P10.5b: PnL stored as biased value
+  ✓ P10.5c: Uses PNL_BIAS (1<<63) for encoding
+  ✓ P10.6a: get_tier_params function exists
+  ✓ P10.6b: Tier returns maintenance margin BPS
+  ✓ P10.6c: Tier <=2x has 2500 maintenance BPS
+  ✓ P10.6d: Tier <=3x has 1700 maintenance BPS
+  ✓ P10.7a: getMaintenanceBps helper exists in dex.js
+  ✓ P10.7b: JS tier <=2x returns 2500
+  ✓ P10.7c: JS tier <=3x returns 1700
+  ✓ P10.7d: JS tier <=5x returns 1000
+  ✓ P10.7e: JS tier <=10x returns 500
+  ✓ P10.7f: JS tier <=25x returns 200
+  ✓ P10.7g: JS tier <=50x returns 100
+  ✓ P10.7h: JS tier >50x returns 50
+  ✓ P10.8a: updateMarginInfo calls getMaintenanceBps
+  ✓ P10.8b: Uses maintenance fraction with reference price in liq formula
+  ✓ P10.8c: Hardcoded 0.9 factor removed
+  ✓ P10.9a: Submit handler checks tradeMode
+  ✓ P10.9b: Margin mode uses dex_margin contract
+  ✓ P10.9c: Margin mode calls buildOpenPositionArgs
+  ✓ P10.10: Margin side correctly derived from buy/sell
+  ✓ P10.11a: Unrealized PnL computed from mark vs entry price
+  ✓ P10.11b: PnL divided by PRICE_SCALE for display
+  ✓ P10.12a: RPC declares PNL_BIAS = 1<<63
+  ✓ P10.12b: Contract writes with same 1<<63 bias
+  ✓ P10.13: Margin nav link exists in HTML
+  ✓ P10.14: Cross margin option present in HTML
+  ✓ P10.15: view-margin section exists
+  ✓ P10.16a: Checks for closed position status
+  ✓ P10.16b: Uses realizedPnl for closed positions
+
+## Trade Bridge + Oracle Integration (Phases A-D)
+
+
+### Phase A: Trade Bridge
+
+  ✓ PA.1: bridge_dex_trades_to_analytics function defined
+  ✓ PA.2: Bridge reads dex_trade_count from DEX
+  ✓ PA.3: Bridge writes ana_lp_ to analytics storage
+  ✓ PA.4: Bridge writes ana_24h_ with trade volume
+  ✓ PA.5: Bridge writes ana_last_trade_ts for oracle fallback
+  ✓ PA.6: Bridge uses all 9 candle intervals
+  ✓ PA.7: bridge_update_candle function defined
+  ✓ PA.8: bridge_update_candle includes real volume
+  ✓ PA.9: Bridge called in post-block processing
+  ✓ PA.10: Bridge has separate trade count cursor
+  ✓ PA.11: Bridge accumulates per-pair volume with saturating_add
+  ✓ PA.12: Bridge resolves ANALYTICS via symbol registry
+
+### Phase B: Oracle Fallback-Only
+
+  ✓ PB.1: Oracle feeder reads ana_last_trade_ts_
+  ✓ PB.2: Oracle feeder uses 60s trade-active window
+  ✓ PB.3: Oracle feeder skips ana_lp_ write for active markets
+  ✓ PB.4: Inactive markets still receive oracle analytics updates
+  ✓ PB.5: Oracle moltoracle writes occur before (not gated by) trade-active check
+
+### Phase C: Oracle Price Bands
+
+  ✓ PC.1: Oracle feeder writes dex_band_ records
+  ✓ PC.2: Oracle feeder resolves DEX via symbol registry
+  ✓ PC.3: Band data contains price + slot (16 bytes)
+  ✓ PC.4: dex_core reads band_key in place_order
+  ✓ PC.5: band_key helper function defined
+  ✓ PC.6: Market orders use 500 bps (5%) band
+  ✓ PC.7: Limit orders use 1000 bps (10%) band
+  ✓ PC.8: Band freshness check uses 300-slot window
+  ✓ PC.9: Returns error code 10 for band violation
+  ✓ PC.10: Band check is conditional — no record means unrestricted
+  ✓ PC.11: Market order without worst-price bound skips band enforcement
+  ✓ PC.12: Band range calculated correctly with basis points
+  ✓ PC.13: Both lower and upper band bounds enforced
+
+### Phase D: Frontend Oracle Index
+
+  ✓ PD.1: fetchOracleRefPrices function exists
+  ✓ PD.2: Fetches oracle prices from API endpoint
+  ✓ PD.3: updateOracleReferenceLine function exists
+  ✓ PD.4: Draws horizontal_line shape on chart
+  ✓ PD.5: Oracle line is gold (#FFD700) and dashed
+  ✓ PD.6: Oracle line label displays price
+  ✓ PD.7: Oracle line updates on pair switch
+  ✓ PD.8: Oracle ref converts for MOLT-quoted pairs
+  ✓ PD.9: Old oracle line entity removed before redraw
+  ✓ PD.10: Oracle prices polled at 5s interval
+
+### Cross-Phase Integration
+
+  ✓ INT.1: Both bridge and oracle use same candle infrastructure
+  ✓ INT.2: ana_last_trade_ts connects bridge (A) and oracle fallback (B)
+  ✓ INT.3: dex_band_ connects oracle feeder to contract price bands
+  ✓ INT.4: RPC oracle/prices endpoint consumed by frontend
+  ✓ INT.5: Trade bridge uses same 1e9 price scale as existing code
+  ✓ INT.6: Genesis analytics seeding function still present
+  ✓ INT.7: emit_dex_events unchanged and still called post-block
+  ✓ INT.8: Separate candle update functions for bridge vs oracle
+  ✓ P11.1a: JS catMap politics=0 matches CATEGORY_POLITICS
+  ✓ P11.1b: JS catMap sports=1 matches CATEGORY_SPORTS
+  ✓ P11.1c: JS catMap crypto=2 matches CATEGORY_CRYPTO
+  ✓ P11.1d: JS catMap science=3 matches CATEGORY_SCIENCE
+  ✓ P11.1e: JS catMap entertainment=4
+  ✓ P11.1f: JS catMap economics=5
+  ✓ P11.1g: JS catMap tech=6
+  ✓ P11.1h: JS catMap custom=7
+  ✓ P11.1i: RPC category_name maps 0→politics
+  ✓ P11.1j: RPC category_name maps 2→crypto
+  ✓ P11.1k: Old wrong "general:0" mapping removed
+  ✓ P11.2a: buildCreateMarketArgs has closeSlot parameter
+  ✓ P11.2b: closeSlot written at offset 34
+  ✓ P11.2c: Caller computes absolute closeSlot
+  ✓ P11.2d: Caller fetches stats to get current_slot
+  ✓ P11.3a: RPC collects all outcome reserves
+  ✓ P11.3b: Binary CPMM formula uses other_r / sum
+  ✓ P11.3c: Binary reads other outcome reserve
+  ✓ P11.3d: Multi-outcome uses reciprocal CPMM
+  ✓ P11.4a: No * 1e9 multiplier in loadPredictionMarkets
+  ✓ P11.4b: No *1e9 multiplier (no space variant)
+  ✓ P11.5a: "ending" sort handler present
+  ✓ P11.5b: "traders" sort handler present
+  ✓ P11.5c: Ending sort uses closes field
+  ✓ P11.5d: Traders sort is descending
+  ✓ P11.6a: filterByRange function defined
+  ✓ P11.6b: 1h range = 3600000ms
+  ✓ P11.6c: 6h range = 21600000ms
+  ✓ P11.6d: 1d range = 86400000ms
+  ✓ P11.6e: 1w range = 604800000ms
+  ✓ P11.6f: 30d range = 2592000000ms
+  ✓ P11.6g: filterByRange called in chart tab handler
+  ✓ P11.7a: closes field mapped from m.close_slot
+  ✓ P11.7b: creator field mapped from m.creator
+  ✓ P11.8-active: statusMap has "active" entry
+  ✓ P11.8-pending: statusMap has "pending" entry
+  ✓ P11.8-closed: statusMap has "closed" entry
+  ✓ P11.8-resolving: statusMap has "resolving" entry
+  ✓ P11.8-resolved: statusMap has "resolved" entry
+  ✓ P11.8-disputed: statusMap has "disputed" entry
+  ✓ P11.8-voided: statusMap has "voided" entry
+  ✓ P11.9a: MarketJson has unique_traders field
+  ✓ P11.9b: RPC reads pm_mtc_ key for trader count
+  ✓ P11.10a: PlatformStatsJson has current_slot
+  ✓ P11.10b: current_slot populated from slot in handler
+  ✓ P11.11a: No per-market analytics HTTP call
+  ✓ P11.11b: No template literal analytics call
+  ✓ P11.12-politics: category_name maps 0→politics
+  ✓ P11.12-sports: category_name maps 1→sports
+  ✓ P11.12-crypto: category_name maps 2→crypto
+  ✓ P11.12-science: category_name maps 3→science
+  ✓ P11.12-entertainment: category_name maps 4→entertainment
+  ✓ P11.12-economics: category_name maps 5→economics
+  ✓ P11.12-tech: category_name maps 6→tech
+  ✓ P11.12-custom: category_name maps 7→custom
+  ✓ P11.13-pending: status_name maps 0→pending
+  ✓ P11.13-active: status_name maps 1→active
+  ✓ P11.13-closed: status_name maps 2→closed
+  ✓ P11.13-resolving: status_name maps 3→resolving
+  ✓ P11.13-resolved: status_name maps 4→resolved
+  ✓ P11.13-disputed: status_name maps 5→disputed
+  ✓ P11.13-voided: status_name maps 6→voided
+  ✓ P11.14a: Binary case checks exactly 2 outcomes
+  ✓ P11.14b: Binary denominator is sum of both reserves
+  ✓ P11.14c: Default price is 0.5 when no liquidity
+  ✓ P11.15: closeSlot not hardcoded to 0
+  ✓ P11.16a: Multi-outcome checks reserves are non-zero
+  ✓ P11.16b: Fallback uniform price when reserves are zero
+  ✓ P12.1a: Buy shares sends amt * 1e6 (MUSD_UNIT)
+  ✓ P12.1b: No amt * 1e9 in prediction trade code
+  ✓ P12.2: RPC PRICE_SCALE = 1_000_000 matching MUSD_UNIT
+  ✓ P12.3a: CPMM formula references selfReserve
+  ✓ P12.3b: CPMM formula references otherReserve
+  ✓ P12.3c: Swap formula uses selfReserve * bSold
+  ✓ P12.3d: Swap denominator is otherReserve + bSold
+  ✓ P12.3e: Fee applied to swap portion (2%)
+  ✓ P12.3f: Average price computed as amt/shares
+  ✓ P12.4a: Resolve uses opcode 8
+  ✓ P12.4b: No opcode 11 (dao_resolve) in resolve builder
+  ✓ P12.4c: Resolve instruction is 82 bytes
+  ✓ P12.4d: DISPUTE_BOND (100 mUSD) included
+  ✓ P12.5a: CSS targets predict-toggle-btn
+  ✓ P12.5b: Old predict-outcome-btn selector removed
+  ✓ P12.6a: loadCreatedMarkets function exists
+  ✓ P12.6b: Fetches markets filtered by creator
+  ✓ P12.6c: Renders into predictCreatedBody table
+  ✓ P12.7a: MarketListQuery has creator field
+  ✓ P12.7b: get_markets handler checks creator filter
+  ✓ P12.8a: Close date min set to today
+  ✓ P12.8b: Past date shows warning notification
+  ✓ P12.9a: Claim handler validates position exists
+  ✓ P12.9b: No default-to-0 fallback for outcome
+  ✓ P12.10a: buildAddInitialLiquidityArgs defined
+  ✓ P12.10b: Uses opcode 2 (add_initial_liquidity)
+  ✓ P12.10c: Create market sends both create + liquidity instructions
+  ✓ P12.11: YES→0, NO→1 outcome mapping correct
+  ✓ P12.12a: HTML shows 2% fee
+  ✓ P12.12b: Contract fee = 200 bps = 2%
+  ✓ P12.13a: buildBuySharesArgs exists
+  ✓ P12.13b: 50 bytes for buy_shares
+  ✓ P12.13c: Opcode 4 for buy_shares
+  ✓ P12.14: Initial liquidity converted to MUSD units (1e6)
+  ✓ P12.15a: HTML has predictCreatedBody tbody
+  ✓ P12.15b: My Markets has table class
+  ✓ P12.16: Multi-outcome section toggle present
+  ✓ P13.1: Bronze threshold is < 100K MOLT
+  ✓ P13.1: Silver threshold is 100K — 1M
+  ✓ P13.1: Gold threshold is 1M — 10M
+  ✓ P13.1: Diamond threshold is > 10M MOLT
+  ✓ P13.1: Old wrong Bronze threshold removed
+  ✓ P13.1: Old wrong Diamond threshold removed
+  ✓ P13.2: TIER_THRESHOLDS constant defined
+  ✓ P13.2: computeRewardTier function defined
+  ✓ P13.2: Tier computed from volume
+  ✓ P13.2: No data.tier dependency (phantom field removed)
+  ✓ P13.3: Bronze max matches contract TIER_BRONZE_MAX
+  ✓ P13.3: Silver max matches contract TIER_SILVER_MAX
+  ✓ P13.3: Gold max matches contract TIER_GOLD_MAX
+  ✓ P13.3: Diamond has no upper bound (Infinity)
+  ✓ P13.4: Bronze multiplier 1.0
+  ✓ P13.4: Silver multiplier 1.5
+  ✓ P13.4: Gold multiplier 2.0
+  ✓ P13.4: Diamond multiplier 3.0
+  ✓ P13.5: Uses camelCase referralCount
+  ✓ P13.5: Uses camelCase referralEarnings
+  ✓ P13.5: Uses camelCase totalVolume
+  ✓ P13.5: No snake_case referral_count
+  ✓ P13.5: No snake_case referral_earnings
+  ✓ P13.6: RPC uses camelCase totalDistributed
+  ✓ P13.6: RPC uses camelCase tradeCount
+  ✓ P13.6: RPC uses camelCase traderCount
+  ✓ P13.6: RPC uses camelCase totalVolume
+  ✓ P13.7: referralLink element referenced
+  ✓ P13.7: Referral link uses ?ref= parameter
+  ✓ P13.7: Referral link includes wallet address
+  ✓ P13.8: rewards-sources panel wallet-gated
+  ✓ P13.8: tier-your-progress panel wallet-gated
+  ✓ P13.9: tier-bar element targeted
+  ✓ P13.9: Progress bar width set dynamically
+  ✓ P13.9: Uses tierMin for progress calculation
+  ✓ P13.9: Uses tierMax for progress calculation
+  ✓ P13.10: No phantom monthly_earned field
+  ✓ P13.10: No phantom total_earned field
+  ✓ P13.10: No phantom lp_pending field
+  ✓ P13.10: No phantom lp_positions field
+  ✓ P13.10: No phantom lp_liquidity field
+  ✓ P13.11: Uses data.claimed (real RPC field)
+  ✓ P13.11: All Time = claimed + pending
+  ✓ P13.12: No el() call on rewardsTier (innerHTML used directly)
+  ✓ P13.13: active-tier class toggled on tier rows
+  ✓ P13.13: Selects non-header tier rows
+  ✓ P13.14: claimAllBtn referenced in wallet-gate
+  ✓ P13.14: Claim disabled when wallet cannot sign
+  ✓ P13.15: RewardInfoJson has pending field
+  ✓ P13.15: RewardInfoJson has claimed field
+  ✓ P13.15: RewardInfoJson has total_volume field
+  ✓ P13.15: RewardInfoJson has referral_count field
+  ✓ P13.15: RewardInfoJson has referral_earnings field
+  ✓ P13.15: RewardInfoJson uses camelCase serialization
+  ✓ P13.16: buildClaimRewardsArgs function exists
+  ✓ P13.16: Claim args is 33 bytes
+  ✓ P13.16: Opcode is 2
+  ✓ P14.1: New pair proposal is 97 bytes binary
+  ✓ P14.1: Opcode is 1 (propose_new_pair)
+  ✓ P14.1: Base token at offset 33
+  ✓ P14.1: Quote token at offset 65
+  ✓ P14.2: Delist/param proposals show unsupported message
+  ✓ P14.2: emergency_delist opcode 10 removed
+  ✓ P14.3: Param proposals show unsupported message
+  ✓ P14.4: RPC returns activeProposals
+  ✓ P14.4: RPC returns proposalCount (camelCase)
+  ✓ P14.4: RPC returns totalVotes (camelCase)
+  ✓ P14.5: typeLabels mapping defined
+  ✓ P14.5: new_pair type label defined
+  ✓ P14.5: fee_change type label defined
+  ✓ P14.5: No phantom title/description access
+  ✓ P14.6: Uses endSlot for time calculation
+  ✓ P14.6: Computes remaining time
+  ✓ P14.6: No phantom timeRemaining field
+  ✓ P14.7: ProposalJson has base_token field
+  ✓ P14.7: ProposalJson has new_maker_fee field
+  ✓ P14.7: ProposalJson has new_taker_fee field
+  ✓ P14.8: No MOLT balance check for voting
+  ✓ P14.8: Uses buildVoteArgs for binary instruction
+  ✓ P14.9: Uses camelCase proposalCount
+  ✓ P14.9: Uses camelCase activeProposals
+  ✓ P14.10: Min listing liquidity is 100,000 MOLT
+  ✓ P14.10: Old wrong 10,000 MOLT removed
+  ✓ P14.11: applyGovernanceFilter function exists
+  ✓ P14.11: Filter reapplied after DOM rebuild
+  ✓ P14.12: Vote args is 42 bytes
+  ✓ P14.12: Uses writeU8 for opcode
+  ✓ P14.13: Fee change opcode is 9
+  ✓ P14.13: Maker fee at offset 41 (i16 LE)
+  ✓ P14.13: Taker fee at offset 43 (u16 LE)
+  ✓ P14.14: Approval threshold 66% shown
+  ✓ P14.14: Voting period shown
+  ✓ P14.15: Base token evidence displayed
+  ✓ P14.15: Maker fee evidence displayed
+  ✓ P14.15: Evidence HTML variable used in template
+  ✓ P14.16: Decodes base_token from bytes 82..114
+  ✓ P14.16: Decodes maker_fee as i16 LE
+  ✓ P14.16: Decodes taker_fee as u16 LE
+
+── Phase 15: Wallet Gating & UX States ──
+  ✓ P15.1: applyWalletGateAll function exists
+  ✓ P15.1: applyWalletGateAll gates at least 10 element selectors
+  ✓ P15.2: Gates .order-form-panel for trade tabs/type/mode coverage
+  ✓ P15.3: Submit button shows "Connect Wallet to Trade"
+  ✓ P15.4: predict-trade-panel is wallet-gated
+  ✓ P15.5: predict-create-panel is wallet-gated
+  ✓ P15.6: addLiqForm is wallet-gated
+  ✓ P15.7: pool-add-btn buttons are dynamically gated in applyWalletGateAll
+  ✓ P15.8: margin-form-card is wallet-gated
+  ✓ P15.9: Trading Rewards and LP Mining sections exist
+  ✓ P15.9: Trading Rewards Claim button has claim-btn class
+  ✓ P15.9: LP Mining Claim button has claim-btn class
+  ✓ P15.9: Per-source claim buttons gated in applyWalletGateAll
+  ✓ P15.10: vote-btn buttons are dynamically gated in applyWalletGateAll
+  ✓ P15.11: toggleWalletPanels function exists
+  ✓ P15.11: tradeBottomPanel hidden when disconnected
+  ✓ P15.11: predictBottomPanel hidden when disconnected
+  ✓ P15.12: walletBalancePanel hidden when disconnected
+  ✓ P15.13: disconnectWallet function exists
+  ✓ P15.13: disconnectWallet calls applyWalletGateAll
+  ✓ P15.14: connectWalletTo function exists
+  ✓ P15.14: connectWalletTo calls applyWalletGateAll
+
+── Phase 16: Data Format Consistency ──
+  ✓ P16.1: feeTier parsed via parseInt for "Nbps" strings
+  ✓ P16.2: PRICE_SCALE = 1e9 defined
+  ✓ P16.3: Order book quantities divided by 1e9
+  ✓ P16.4a: core stats uses camelCase pairCount
+  ✓ P16.4b: core stats uses camelCase orderCount
+  ✓ P16.4c: amm stats uses camelCase poolCount
+  ✓ P16.4d: amm stats uses camelCase totalFees
+  ✓ P16.5: LP positions query uses owner= param
+  ✓ P16.6: Prediction yes price multiplied by 100 for percentage
+  ✓ P16.7: Margin entry_price divided by PRICE_SCALE in RPC
+  ✓ P16.8: Candle timestamp converted to ms for TradingView
+  ✓ P16.9: Governance slot-to-seconds uses 0.4s/slot
+  ✓ P16.9: Governance uses currentSlot from API
+  ✓ P16.9: No Date.now()/500 in governance time calc
+  ✓ P16.10: Reward pending divided by 1e9
+  ✓ P16.11a: formatPrice uses Math.abs for negative values
+  ✓ P16.11b: formatVolume has explicit zero check
+  ✓ P16.12: Pool liquidity not fed raw into formatVolume
+  ✓ P16.13: Ticker lastPrice divided by PRICE_SCALE
+  ✓ P16.14: Trade table quantity divided by 1e9
+  ✓ P16.15: sqrt_price Q32.32 conversion present
+  ✓ P16.16: Margin position size divided by 1e9
+  ✓ P17.1a: Fast poll comment exists
+  ✓ P17.1b: Fast poll interval is 5000ms
+  ✓ P17.1c: Fast poll includes trade view
+  ✓ P17.1d: Fast poll includes pool view
+  ✓ P17.1e: Fast poll includes margin view
+  ✓ P17.2a: Slow poll comment exists
+  ✓ P17.2b: Slow poll interval is 30000ms
+  ✓ P17.2c: Slow poll includes rewards
+  ✓ P17.2d: Slow poll includes governance
+  ✓ P17.2e: Slow poll calls loadRewardsStats
+  ✓ P17.2f: Slow poll calls loadGovernanceStats
+  ✓ P17.3a: DexWS class exists
+  ✓ P17.3b: Initial reconnect delay is 1000ms
+  ✓ P17.3c: Exponential backoff doubles delay
+  ✓ P17.3d: Backoff cap is 30000ms
+  ✓ P17.3e: Uses Math.min with cap
+  ✓ P17.3f: onopen handler in WS class
+  ✓ P17.3g: Reconnect delay resets on open
+  ✓ P17.4: Fast poll has at least 4 currentView guards (trade, predict, pool, margin)
+  ✓ P17.5a: Fast poll calls loadTicker
+  ✓ P17.5b: Fast poll calls updateTickerDisplay
+  ✓ P17.5c: Fast poll calls streamBarUpdate for chart
+  ✓ P17.6a: Pool view guard in fast poll
+  ✓ P17.6b: loadPoolStats called in fast poll
+  ✓ P17.7a: Predict view in fast poll
+  ✓ P17.7b: loadPredictionStats in fast poll
+  ✓ P17.7c: Separate prediction poll exists
+  ✓ P17.7d: loadPredictionMarkets in slower poll
+  ✓ P17.7e: Prediction market list refresh at 15s
+  ✓ P17.8a: F17.8 post-trade refresh comment exists
+  ✓ P17.8b: loadBalances called after trade
+  ✓ P17.8c: renderBalances called after trade
+  ✓ P17.8d: loadOrderBook called after trade
+  ✓ P17.9a: loadRewardsStats in slow poll
+  ✓ P17.9b: loadRewardsStats NOT in fast poll
+  ✓ P17.10a: loadGovernanceStats in slow poll
+  ✓ P17.10b: loadGovernanceStats NOT in fast poll
+  ✓ P18.1a: 1-minute interval defined
+  ✓ P18.1b: 1-day interval defined
+  ✓ P18.1c: 9 intervals defined
+  ✓ P18.1d: 24h stats update function
+  ✓ P18.1e: trader stats update function
+  ✓ P18.1f: candle update function
+  ✓ P18.2a: Analytics address key in dex_core
+  ✓ P18.2b: call_contract imported in dex_core
+  ✓ P18.2c: CrossCall imported in dex_core
+  ✓ P18.2d: fill_at_price_level function exists
+  ✓ P18.2e: Cross-contract call to record_trade in fill function
+  ✓ P18.2f: Analytics address loaded in fill function
+  ✓ P18.2g: Authorized caller key in analytics
+  ✓ P18.2h: set_authorized_caller function in analytics
+  ✓ P18.3a: update_candle function exists
+  ✓ P18.3b: get_retention called in update_candle
+  ✓ P18.3c: Modular indexing used for candle retention
+  ✓ P18.3d: 1-min retention is 1440 candles (24h)
+  ✓ P18.4a: get_core_stats function exists
+  ✓ P18.4b: Reads pair count from dex_core
+  ✓ P18.4c: Reads trade count from dex_core
+  ✓ P18.4d: Reads total volume from dex_core
+  ✓ P18.5a: get_analytics_stats function exists
+  ✓ P18.5b: camelCase recordCount
+  ✓ P18.5c: camelCase traderCount
+  ✓ P18.5d: camelCase totalVolume
+  ✓ P18.5e: No snake_case record_count
+  ✓ P18.6a: Standalone decoder: [16..24] = low
+  ✓ P18.6b: Standalone decoder: [24..32] = open
+  ✓ P18.6c: get_pair_ticker has F18.6 fix comment
+  ✓ P18.6d: get_pair_ticker: [16..24] = low_raw
+  ✓ P18.6e: get_pairs reads open from [24..32]
+  ✓ P18.7a: SLOTS_PER_DAY constant defined
+  ✓ P18.7b: Day slot tracking key exists
+  ✓ P18.7c: Day boundary check in fill function
+  ✓ P18.8a: Analytics contract has test module
+  ✓ P18.8b: test_record_trade test exists
+  ✓ P18.8c: update_candle called from record_trade
+  ✓ P18.9a: update_leaderboard function exists
+  ✓ P18.9b: Leaderboard count key defined
+  ✓ P18.9c: Leaderboard min volume key defined
+  ✓ P18.9d: update_leaderboard called from update_trader_stats
+  ✓ P18.9e: MAX_LEADERBOARD used in leaderboard
+  ✓ P18.10a: record_pnl function exists
+  ✓ P18.10b: PnL biased parameter accepted
+  ✓ P18.10c: PnL delta calculation implemented
+  ✓ P18.10d: Opcode 12 dispatches to record_pnl
+  ✓ P19.1a: musd has initialize
+  ✓ P19.1b: musd has balance_of or transfer
+  ✓ P19.1c: musd has mint
+  ✓ P19.1a: wsol has initialize
+  ✓ P19.1b: wsol has balance_of or transfer
+  ✓ P19.1c: wsol has mint
+  ✓ P19.1a: weth has initialize
+  ✓ P19.1b: weth has balance_of or transfer
+  ✓ P19.1c: weth has mint
+  ✓ P19.1a: molt has initialize
+  ✓ P19.1b: molt has balance_of or transfer
+  ✓ P19.1c: molt has mint
+  ✓ P19.2a: handle_get_token_balance function exists
+  ✓ P19.2b: getTokenBalance returns decimals
+  ✓ P19.2c: getTokenBalance returns ui_amount
+  ✓ P19.2d: getTokenBalance returns symbol
+  ✓ P19.2e: getTokenBalance looks up registry
+  ✓ P19.3a: mUSD DECIMALS is 9 (not 6)
+  ✓ P19.3b: MINT_CAP adjusted for 9 decimals
+  ✓ P19.4a: loadBalances function exists
+  ✓ P19.4b: Uses spendable instead of total shells
+  ✓ P19.4c: Fetches token accounts for wallet
+  ✓ P19.4d: Uses ui_amount from token accounts
+  ✓ P19.4e: Uses symbol from token accounts
+  ✓ P19.5a: MOLT has initialize function
+  ✓ P19.5b: initialize mints initial supply
+  ✓ P19.6a: wSOL has mint function
+  ✓ P19.6b: wSOL has burn/redeem
+  ✓ P19.6c: wSOL has reserve/circuit breaker
+  ✓ P19.6d: wETH has mint function
+  ✓ P19.6e: wETH has burn/redeem
+  ✓ P19.7a: mUSD has mint function
+  ✓ P19.7b: mUSD has rate limiting
+  ✓ P19.7c: mUSD has emergency pause
+  ✓ P19.8a: MOLT has transfer function
+  ✓ P19.8b: MOLT has transfer test
+  ✓ P19.9a: Frontend loads symbol registry
+  ✓ P19.9b: Pair display uses symbol from registry
+  ✓ P19.10a: formatAmount function exists
+  ✓ P19.10b: Explicitly checks for zero (not falsy)
+  ✓ P19.10c: Sub-dust branch uses 6 decimal places
+  ✓ P19.10d: Shows "< 0.000001" for very small dust
+  ✓ P19.11a: place_order function exists
+  ✓ P19.11b: On-chain balance check via cross-contract call
+  ✓ P19.11c: Returns error code 11 for insufficient balance
+  ✓ P19.11d: Client-side balance check exists
+  ✓ P19.12a: fill_at_price_level function exists
+  ✓ P19.12b: Fee deduction via cross-contract transfer_fee
+  ✓ P19.12c: Protocol fees tracked in treasury
+  ✓ P19.12d: Maker rebates accumulated in dex_rebate_ key
+  ✓ P19.12e: Maker rebate is NOT discarded anymore
+  ✓ P20.1a: api.rpc() method exists
+  ✓ P20.1b: RPC checks res.ok before parsing JSON
+  ✓ P20.1c: Error includes HTTP status code
+  ✓ P20.2a: RPC propagates error message from response
+  ✓ P20.2b: Order submit shows error message
+  ✓ P20.3a: Token balance uses ta.decimals
+  ✓ P20.3b: Division uses actual decimals, not hardcoded 1e9
+  ✓ P20.4a: Rejects zero/negative amount
+  ✓ P20.4b: Rejects zero/negative price
+  ✓ P20.4c: Shows clear error message for negative values
+  ✓ P20.5a: Prediction buy checks market status
+  ✓ P20.6a: Submit button disabled on click
+  ✓ P20.6b: Button text changes to Submitting...
+  ✓ P20.7a: showNotification supports success type
+  ✓ P20.7b: showNotification supports warning type
+  ✓ P20.7c: showNotification supports error type
+  ✓ P20.8a: Chart has fallback message
+  ✓ P20.9a: WebSocket parses JSON
+  ✓ P20.9b: WebSocket has onmessage handler
+  ✓ P20.10a: Maximum amount/price cap at 9M
+  ✓ P20.10b: Shows overflow error for large amounts
+  ✓ P20.10c: Shows overflow error for large prices
+  ✓ P20.11a: Cancel shows failure message on error
+  ✓ P20.11b: Success notification near cancel code
+  ✓ P20.12a: dex_core has reentrancy_enter
+  ✓ P20.12b: dex_core has reentrancy_exit
+  ✓ P20.13a: withRetry utility function exists
+  ✓ P20.13b: withRetry has configurable max retries
+  ✓ P20.13c: withRetry uses backoff delay
+  ✓ P20.14a: hexToBytes validates hex format
+  ✓ P20.14b: hexToBytes rejects odd-length hex
+  ✓ P20.14c: fromSecretKey available for direct import flow
+  ✓ P21.1a: SDK connection rpc() checks res.ok
+  ✓ P21.1b: SDK connection rpc() includes status in error
+  ✓ P21.1c: SDK connection rpc() reads status text on error
+  ✓ P21.2a: encodePlaceOrder uses opcode 0x02
+  ✓ P21.2b: encodePlaceOrder no longer uses wrong opcode 0x03
+  ✓ P21.2c: encodePlaceOrder buffer is 67 bytes (includes trader pubkey)
+  ✓ P21.2d: encodePlaceOrder accepts trader parameter
+  ✓ P21.2e: encodePlaceOrder writes trader pubkey at offset 1
+  ✓ P21.2f: pair_id at offset 33 (after opcode+trader)
+  ✓ P21.2g: side at offset 41
+  ✓ P21.2h: orderType at offset 42
+  ✓ P21.2i: price at offset 43
+  ✓ P21.2j: quantity at offset 51
+  ✓ P21.2k: expiry at offset 59
+  ✓ P21.2l: encodeCancelOrder uses opcode 0x03
+  ✓ P21.2m: encodeCancelOrder no longer uses wrong opcode 0x04
+  ✓ P21.2n: encodeCancelOrder buffer is 41 bytes (includes trader pubkey)
+  ✓ P21.2o: encodeCancelOrder accepts trader parameter
+  ✓ P21.2p: order_id at offset 33 (after opcode+trader)
+  ✓ P21.3a: encodeAddLiquidity accepts provider parameter
+  ✓ P21.3b: encodeAddLiquidity buffer is 65 bytes
+  ✓ P21.3c: encodeAddLiquidity writes provider at offset 1
+  ✓ P21.3d: pool_id at offset 33
+  ✓ P21.3e: lowerTick at offset 41
+  ✓ P21.3f: upperTick at offset 45
+  ✓ P21.3g: amountA at offset 49
+  ✓ P21.3h: amountB at offset 57
+  ✓ P21.3i: both amounts are bigint params
+  ✓ P21.3j: encodeRemoveLiquidity has all params
+  ✓ P21.3k: encodeRemoveLiquidity buffer is 49 bytes
+  ✓ P21.3l: position_id at offset 33
+  ✓ P21.3m: liquidityAmount at offset 41
+  ✓ P21.4a: market maker loads wallet from file
+  ✓ P21.4b: market maker uses wallet path from config
+  ✓ P21.4c: wallet passed to MoltDEX constructor
+  ✓ P21.4d: wallet path configurable via env var
+  ✓ P21.4e: BotConfig includes walletPath field
+  ✓ P21.4f: walletPath has default value
+  ✓ P21.5a: MM uses config endpoint
+  ✓ P21.5b: MM uses config WS endpoint
+  ✓ P21.6a: spread strategy places limit orders via SDK
+  ✓ P21.6b: both buy and sell orders placed
+  ✓ P21.7a: WS subscribes to orders:<traderAddress> not orders:mm
+  ✓ P21.7b: no reference to invalid orders:mm channel
+  ✓ P21.7c: traderAddress field declared
+  ✓ P21.7d: traderAddress set from wallet in constructor
+  ✓ P21.7e: net position updated on fill
+  ✓ P21.7f: skew adjustment affects quotes
+  ✓ P21.8a: WS docs list orderbook channel
+  ✓ P21.8b: WS docs list trades channel
+  ✓ P21.8c: WS docs list orders channel
+  ✓ P21.8d: WS docs list positions channel
+  ✓ P21.8e: WS has auto-reconnect logic
+  ✓ P21.9a: rpc() no longer uses this.post (double-unwrap fixed)
+  ✓ P21.9b: rpc() parses JSON directly
+  ✓ P21.9c: rpc() checks json.error
+  ✓ P21.9d: rpc() returns json.result
+  ✓ P21.9e: placeLimitOrder validates price > 0
+  ✓ P21.9f: placeLimitOrder validates quantity > 0
+  ✓ P21.9g: placeLimitOrder validates side
+  ✓ P21.9h: rpc() uses AbortController for timeout
+  ✓ P21.9i: rpc() aborts on timeout
+  ✓ P21.9j: client request() checks res.ok
+  ✓ P21.9k: client reports HTTP status code
+  ✓ P21.10a: Side type matches contract convention
+  ✓ P21.10b: OrderType matches contract
+  ✓ P21.10c: OrderStatus matches contract
+  ✓ P21.10d: TradingPair has pairId
+  ✓ P21.10e: Order has orderId
+  ✓ P21.10f: Pool has poolId
+  ✓ P21.10g: ApiResponse envelope matches backend
+  ✓ P21.10h: ApiResponse has success field
+  ✓ P21.10i: ORDER_SIZE = 128 bytes
+  ✓ P21.10j: decodeOrder reads trader from bytes 0-32
+  ✓ P21.10k: decodeOrder reads pairId from offset 32
+  ✓ P21.10l: decodeOrder reads side from byte 40
+  ✓ P21.10m: decodeOrder reads orderType from byte 41
+  ✓ P21.10n: decodeOrder reads orderId from offset 83
+  ✓ P21.10o: POOL_SIZE = 96 bytes
+  ✓ P21.10p: decodePool reads poolId from offset 64
+  ✓ P21.10q: decodePool reads sqrtPrice from offset 72
+  ✓ P21.10r: decodePool reads tick from offset 80
+  ✓ P21.10s: decodePool reads liquidity from offset 84
+  ✓ P21.Xa: frontend place_order opcode is 2
+  ✓ P21.Xb: SDK place_order opcode is 0x02
+  ✓ P21.Xc: frontend cancel_order opcode is 3
+  ✓ P21.Xd: SDK cancel_order opcode is 0x03
+  ✓ P21.Xe: frontend addLiquidity buffer is 65 bytes
+  ✓ P21.Xf: SDK addLiquidity buffer is 65 bytes
+  ✓ P21.Xg: frontend removeLiquidity buffer is 49 bytes
+  ✓ P21.Xh: SDK removeLiquidity buffer is 49 bytes
+  ✓ P22.1a: m.category escaped in market table
+  ✓ P22.1b: m.status text escaped in market table
+  ✓ P22.1c: m.status class attribute escaped
+  ✓ P22.1d: statusClass escaped
+  ✓ P22.1e: statusLabel escaped
+  ✓ P22.1f: idTag escaped
+  ✓ P22.1g: market question escaped
+  ✓ P22.1h: prediction question escaped
+  ✓ P22.2a: o.side escaped in open orders class
+  ✓ P22.2b: o.id escaped in open orders data-id
+  ✓ P22.2c: tr.side escaped in trade history class
+  ✓ P22.3a: margin rejects non-positive values
+  ✓ P22.3b: margin rejects overflow
+  ✓ P22.3c: liquidity rejects negative amounts
+  ✓ P22.3d: liquidity rejects overflow
+  ✓ P22.3e: prediction buy rejects overflow
+  ✓ P22.4a: bs58decode used for address decoding
+  ✓ P22.4b: writePubkey calls bs58decode (throws on bad input)
+  ✓ P22.5a: uses nacl.sign.detached for Ed25519 signatures
+  ✓ P22.6a: generate() enabled for DEX create-wallet flow
+  ✓ P22.6b: no zero secretKey fallback
+  ✓ P22.6c: secretKey not stored in localStorage
+  ✓ P22.7a: keypair starts as null (memory-only)
+  ✓ P22.8a: CORS headers configured in RPC
+  ✓ P22.9a: dex_core validates quantity non-zero
+  ✓ P22.9b: dex_core checks max order size
+  ✓ P22.10a: fee treasury uses saturating_add
+  ✓ P22.10b: price band uses u128 intermediate
+  ✓ P22.10c: yes votes use saturating_add
+  ✓ P22.10d: no votes use saturating_add
+  ✓ P22.10e: total votes use saturating_add
+  ✓ P22.10f: voter count uses saturating_add
+  ✓ P22.11a: oracle price band enforced
+  ✓ P22.11b: band configured in basis points
+  ✓ P22.12a: resolution requires quorum
+  ✓ P22.13a: unique vote key per (proposal, voter)
+  ✓ P22.13b: checks if voter already voted
+  ✓ P23.1a: has 1200px breakpoint
+  ✓ P23.1b: has 1024px tablet breakpoint
+  ✓ P23.1c: has 768px mobile breakpoint
+  ✓ P23.1d: has 640px small breakpoint
+  ✓ P23.1e: has 480px small-phone breakpoint
+  ✓ P23.2a: trade layout collapses to single column
+  ✓ P23.2b: no order:-1 on order-form-panel at 1200px
+  ✓ P23.2c: chart height 300px at 768px
+  ✓ P23.2d: chart height 220px at 480px
+  ✓ P23.3a: predict grid single column at 1200px
+  ✓ P23.3b: predict stats single column at 768px
+  ✓ P23.4a: positions table overflow-x auto
+  ✓ P23.5a: hamburger toggle displayed at 768px
+  ✓ P23.5b: nav menu hidden at 768px
+  ✓ P23.5c: network-select hidden at 768px
+  ✓ P23.5d: nav-actions gap tightened at 768px
+  ✓ P23.6a: chart modal max-height 90vh at 768px
+  ✓ P23.6b: chart modal scrollable at 768px
+  ✓ P23.6c: chart modal 96% width at 640px
+  ✓ P23.7a: position tabs 44px touch target
+  ✓ P23.7b: buttons 44px touch target
+  ✓ P23.8a: footer wraps at 768px
+  ✓ P23.8b: positions tabs scrollable at 768px
+  ✓ P23.8c: footer column at 480px
+  ✓ P23.8d: nav-actions super tight at 480px
+  ✓ P23.9a: info pills shrink at 1024px
+  ✓ P23.9b: info pills shrink further at 480px
+  ✓ P23.10a: stat labels shrink at 1024px
+  ✓ P23.10b: stat values shrink at 1024px
+  ✓ P23.11a: 1200px before 1024px
+  ✓ P23.11b: 1024px before 768px
+  ✓ P23.11c: 768px before 640px
+  ✓ P23.11d: 640px before 480px
+  ✓ P23.12a: webkit overflow scrolling on tables
+  ✓ P23.12b: multiple touch-scrolling declarations
+  ✓ P24.1a: margin sums divided by 1e9
+  ✓ P24.1b: p.margin divided by 1e9
+  ✓ P24.1c: equity uses unrealized PnL
+  ✓ P24.2a: data-raw-liquidity attribute exists
+  ✓ P24.2b: LP liquidity uses formatAmount not formatVolume
+  ✓ P24.2c: remove handler reads data-raw-liquidity
+  ✓ P24.3a: MarginPositionJson has mark_price field
+  ✓ P24.3b: mark_price populated from mrg_mark key
+  ✓ P24.3c: mark_price divided by PRICE_SCALE
+  ✓ P24.5a: notional guard checks > 9B
+  ✓ P24.5b: marginDeposit uses factored notional
+  ✓ P24.6: loadProposals called after vote
+  ✓ P24.7a: loadPredictionMarkets after predict buy
+  ✓ P24.7b: loadPredictionPositions after predict buy
+  ✓ P24.8: loadRewardsStats after rewards claim
+  ✓ P24.9a: MarginInfoJson has max_leverage field
+  ✓ P24.9b: max_leverage defaults to 100
+  ✓ P24.10a: loadLPPositions after add liquidity
+  ✓ P24.10b: loadPools after add liquidity
+  ✓ P24.11a: btn-predict-sell removed
+  ✓ P24.11b: btn-predict-buy-no exists
+  ✓ P24.16a: no client-side order stub
+  ✓ P24.16b: loadTradeHistory after order placement
+  ✓ P24.16c: loadUserOrders after order placement
+  ✓ P24.17a: pool share uses sqrtPrice
+  ✓ P24.17b: pool share weighs by poolPrice
+  ✓ P24.cancel-a: loadBalances after cancel
+  ✓ P24.cancel-b: loadOrderBook after cancel
+
+── Phase 1: Bottom Panel Consolidation ──
+  ✓ P1.1a: Only one content-positions tab button
+  ✓ P1.1b: No content-margin-positions tab remaining
+  ✓ P1.1c: No content-margin-positions div remaining
+  ✓ P1.1d: loadPositionsTab function removed
+  ✓ P1.1e: No calls to loadPositionsTab()
+  ✓ P1.2a: Tab renders as "Margin Positions" with badge
+  ✓ P1.2b: Tab handler targets content-positions
+  ✓ P1.3a: computeLiquidationPrice function defined
+  ✓ P1.3b: getMarginTierParams function defined
+  ✓ P1.3c: Liq price displayed in position row
+  ✓ P1.3d: Long 2x liquidation price = 75
+  ✓ P1.3e: Short 2x liquidation price = 125
+  ✓ P1.3f: Long 10x liquidation price = 95
+  ✓ P1.3g: Short 5x liquidation price ≈ 220
+  ✓ P1.3h: Zero margin returns 0
+  ✓ P1.3i: 2x leverage → 2500 maintenanceBps
+  ✓ P1.3j: 10x leverage → 500 maintenanceBps
+  ✓ P1.3k: 50x leverage → 100 maintenanceBps
+  ✓ P1.4a: pnlPct computed in loadMarginPositions
+  ✓ P1.4b: pnlPctStr formatted
+  ✓ P1.4c: PnL percentage shown in parentheses alongside absolute
+  ✓ P1.5a: buildAddMarginArgs function defined
+  ✓ P1.5b: buildRemoveMarginArgs function defined
+  ✓ P1.5c: Add margin uses opcode 4
+  ✓ P1.5d: Remove margin uses opcode 5
+  ✓ P1.5e: buildAddMarginArgs allocates 49 bytes
+  ✓ P1.5f: buildRemoveMarginArgs allocates 49 bytes
+  ✓ P1.5g: Add margin button class in rendered HTML
+  ✓ P1.5h: Remove margin button class in rendered HTML
+  ✓ P1.5i: Inline margin adjustment panel rendered
+  ✓ P1.5j: Confirm button for margin adjustment
+  ✓ P1.5k: Wallet gate on add/remove margin
+  ✓ P1.5l: CSS for btn-margin-add
+  ✓ P1.5m: CSS for btn-margin-remove
+  ✓ P1.5n: CSS for margin-adjust-inline
+  ✓ P1.5o: CSS for margin-adjust-input
+  ✓ P1.5p: CSS for text-warning (liquidation price)
+  ✓ P1.5q: Add margin opcode = 4
+  ✓ P1.5r: Add margin args = 49 bytes
+  ✓ P1.5s: Add margin position_id = 42
+  ✓ P1.5t: Add margin amount = 1e9
+  ✓ P1.5u: Remove margin opcode = 5
+  ✓ P1.5v: Remove margin position_id = 7
+  ✓ P1.5w: Remove margin amount = 5e8
+  ✓ P1.equity: Equity uses unrealized PnL
+
+── Phase 3: Order Form Completeness ──
+  ✓ P3.1a: Post-only overrides effectiveOrderType
+  ✓ P3.1b: Checks postOnly checkbox state
+  ✓ P3.1c: post-only maps to ORDER_POST_ONLY=3
+  ✓ P3.1d: market maps to ORDER_MARKET=1
+  ✓ P3.1e: stop-limit maps to ORDER_STOP_LIMIT=2
+  ✓ P3.1f: Post-only checkbox present in HTML
+  ✓ P3.2a: Checks reduceOnly checkbox state
+  ✓ P3.2b: Reduce-only only applies in margin mode
+  ✓ P3.2c: Warning when no positions exist
+  ✓ P3.2d: Warning when amount exceeds position size
+  ✓ P3.2e: Warning references correct side
+  ✓ P3.2f: Correct side mapping for reduce-only
+  ✓ P3.2g: Reduce-only checkbox present in HTML
+  ✓ P3.3a: buildCancelAllOrdersArgs defined
+  ✓ P3.3b: Cancel All button referenced
+  ✓ P3.3c: Cancel All button in HTML
+  ✓ P3.3d: Cancel All wired to active pair
+  ✓ P3.3e: Success notification shows
+  ✓ P3.3f: Confirmation prompt before cancel all
+  ✓ P3.3g: buildCancelAllOrdersArgs function body found
+  ✓ P3.3h: Cancel all args = 41 bytes
+  ✓ P3.3i: Cancel all opcode = 17
+  ✓ P3.3j: Cancel All builder extractable
+  ✓ P3.3k: Helper functions found
+  ✓ P3.3l: Cancel all opcode byte = 17
+  ✓ P3.3m: Cancel all total bytes = 41
+  ✓ P3.3n: Cancel all pair_id = 5
+  ✓ P3.4a: buildModifyOrderArgs defined
+  ✓ P3.4b: Edit order button class in JS
+  ✓ P3.4c: buildModifyOrderArgs function body found
+  ✓ P3.4d: Modify order args = 57 bytes
+  ✓ P3.4e: Modify order opcode = 16
+  ✓ P3.4f: Modify Order builder extractable
+  ✓ P3.4g: Modify order opcode byte = 16
+  ✓ P3.4h: Modify order total bytes = 57
+  ✓ P3.4i: Modify order_id = 42
+  ✓ P3.4j: Modify new_price = 1.5e9
+  ✓ P3.4k: Modify new_qty = 2e9
+  ✓ P3.4l: Edit order button class rendered
+  ✓ P3.4m: Pencil icon for edit button
+  ✓ P3.4n: Check icon for save action
+  ✓ P3.4o: Inline price input for editing
+  ✓ P3.4p: Inline quantity input for editing
+  ✓ P3.4q: Modify uses wallet.address
+  ✓ P3.4r: Modify success notification
+  ✓ P3.4s: Modify failure notification
+  ✓ P3.4t: Open orders tbody uses 9-column span
+  ✓ P3.4u: Orders table thead found
+  ✓ P3.4v: Orders table has 9 <th> columns
+  ✓ P3.5a: showOrderConfirmation function defined
+  ✓ P3.5b: Confirmation overlay class
+  ✓ P3.5c: Confirmation modal class
+  ✓ P3.5d: Skip confirmation stored in localStorage
+  ✓ P3.5e: Skip checkbox element
+  ✓ P3.5f: showOrderConfirmation returns Promise
+  ✓ P3.5g: Cancel button in confirmation modal
+  ✓ P3.5h: Confirm button in confirmation modal
+  ✓ P3.5i: Modal title
+  ✓ P3.5j: Estimated fee shown
+  ✓ P3.5k: Threshold for confirmation dialog
+  ✓ P3.5l: Overlay CSS defined
+  ✓ P3.5m: Modal CSS defined
+  ✓ P3.5n: Button container CSS defined
+  ✓ P3.5o: Edit button CSS defined
+  ✓ P3.5p: Editing row CSS defined
+  ✓ P3.5q: Confirm row CSS defined
+
+── Phase 5: Settings & Preferences ──
+  ✓ P5.1a: Slippage loaded from localStorage
+  ✓ P5.1b: Slippage saved to localStorage
+  ✓ P5.1c: slippagePct in state
+  ✓ P5.1d: Router quote uses state.slippagePct
+  ✓ P5.1e: Settings gear button in HTML
+  ✓ P5.1f: Settings popover in HTML
+  ✓ P5.1g: Slippage options container
+  ✓ P5.1h: 0.1% slippage option
+  ✓ P5.1i: 0.5% slippage option (default)
+  ✓ P5.1j: 1.0% slippage option
+  ✓ P5.1k: Custom slippage input
+  ✓ P5.1l: Gear button CSS
+  ✓ P5.1m: Settings popover CSS
+  ✓ P5.1n: Slippage button CSS
+  ✓ P5.1o: Active slippage button CSS
+  ✓ P5.1p: Custom slippage CSS
+  ✓ P5.1q: Gear button referenced in JS
+  ✓ P5.1r: Popover referenced in JS
+  ✓ P5.1s: setSlippage function
+  ✓ P5.1t: Default slippage fallback to 0.5
+  ✓ P5.2a: notifPrefs in state
+  ✓ P5.2b: Notif prefs saved to localStorage
+  ✓ P5.2c: Notif prefs loaded from localStorage
+  ✓ P5.2d: Fill notification preference used
+  ✓ P5.2e: Partial fill preference used
+  ✓ P5.2f: Liquidation proximity preference used
+  ✓ P5.2g: Fill toggle in HTML
+  ✓ P5.2h: Partial fill toggle in HTML
+  ✓ P5.2i: Liquidation toggle in HTML
+  ✓ P5.2j: Toggle row CSS
+  ✓ P5.2k: Notif toggles container CSS
+  ✓ P5.2l: Liquidation warning flash class
+  ✓ P5.2m: Liq warning flash CSS
+  ✓ P5.2n: Liq flash keyframes
+  ✓ P5.2o: Liquidation proximity notification text
+  ✓ P5.2p: Margin ratio threshold at 120%
+  ✓ P5.2q: saveNotifPrefs function defined
+  ✓ P5.2r: Partial-fill notification message present
+  ✓ P5.2s: Fill/cancel status notification message present
+  ✓ P5.2t: SL/TP set notification message present
+  ✓ P5.2u: SL/TP updated notification message present
+  ✓ P5.2v: Liquidation warning notification message present
+  ✓ P5.3a: Chart interval loaded from localStorage
+  ✓ P5.3b: Chart interval saved to localStorage
+  ✓ P5.3c: activeResolution uses localStorage
+  ✓ P5.3d: TradingView widget uses saved interval
+  ✓ P5.3e: subscribeBars persists interval
+  ✓ P5.4a: Last pair saved to localStorage
+  ✓ P5.4b: Last pair loaded from localStorage
+  ✓ P5.4c: savedPairId variable used
+  ✓ P5.4d: savedPair lookup from pairs array
+  ✓ P5.4e: selectPair persists pairId
+
+── Phase 6: Governance Lifecycle ──
+  ✓ P6.1a: buildFinalizeProposalArgs defined
+  ✓ P6.1b: buildFinalizeProposalArgs function body found
+  ✓ P6.1c: Finalize args = 9 bytes
+  ✓ P6.1d: Finalize opcode = 3
+  ✓ P6.1e: Finalize builder extractable
+  ✓ P6.1f: Finalize opcode byte = 3
+  ✓ P6.1g: Finalize total bytes = 9
+  ✓ P6.1h: Finalize proposal_id = 42
+  ✓ P6.1i: Finalize button class
+  ✓ P6.1j: bindFinalizeButtons function defined
+  ✓ P6.1k: Finalize handler calls builder
+  ✓ P6.1l: Finalize success notification
+  ✓ P6.1m: Finalize failure notification
+  ✓ P6.1n: votingEnded variable used
+  ✓ P6.2a: buildExecuteProposalArgs defined
+  ✓ P6.2b: buildExecuteProposalArgs function body found
+  ✓ P6.2c: Execute args = 9 bytes
+  ✓ P6.2d: Execute opcode = 4
+  ✓ P6.2e: Execute builder extractable
+  ✓ P6.2f: Execute opcode byte = 4
+  ✓ P6.2g: Execute total bytes = 9
+  ✓ P6.2h: Execute proposal_id = 99
+  ✓ P6.2i: Execute button class
+  ✓ P6.2j: bindExecuteButtons function defined
+  ✓ P6.2k: Execute handler calls builder
+  ✓ P6.2l: Execute success notification
+  ✓ P6.2m: Execute failure notification
+  ✓ P6.2n: Execute button conditional on passed status
+  ✓ P6.3a: Pipeline container class
+  ✓ P6.3b: Pipeline step class
+  ✓ P6.3c: Pipeline dot class
+  ✓ P6.3d: Pipeline line class
+  ✓ P6.3e: Pipeline stages defined
+  ✓ P6.3f: Rejected proposal CSS class
+  ✓ P6.3g: Rejected proposal CSS defined
+  ✓ P6.3h: Pipeline CSS defined
+  ✓ P6.3i: Pipeline step CSS
+  ✓ P6.3j: Pipeline dot CSS
+  ✓ P6.3k: Pipeline line CSS
+  ✓ P6.3l: Completed step CSS
+  ✓ P6.3m: Active step CSS
+  ✓ P6.3n: Rejected step CSS
+  ✓ P6.3o: Skipped step CSS
+  ✓ P7.1a: computeTokenUsd function exists
+  ✓ P7.1b: computeTokenUsd handles mUSD stablecoin
+  ✓ P7.1b2: computeTokenUsd handles USDT stablecoin
+  ✓ P7.1c: computeTokenUsd looks up direct pair
+  ✓ P7.1d: computeTokenUsd handles inverse pair
+  ✓ P7.1e: computeTokenUsd cross-references via MOLT
+  ✓ P7.1f: computePortfolioSummary function exists
+  ✓ P7.1g: Portfolio summary sums balance USD values
+  ✓ P7.1h: Portfolio uses localStorage cache key
+  ✓ P7.1i: Portfolio cache uses 24h TTL (86400000ms)
+  ✓ P7.1j: computeUnrealizedPnl function exists
+  ✓ P7.1k: computeUnrealizedPnl queries margin position rows
+  ✓ P7.1l: computeUnrealizedPnl parses P&L text
+  ✓ P7.1m: renderPortfolioSummary function exists
+  ✓ P7.1n: renderPortfolioSummary targets #portfolioSummary
+  ✓ P7.1o: renderPortfolioSummary includes portfolio-value class
+  ✓ P7.1p: renderPortfolioSummary includes portfolio-change badge
+  ✓ P7.1q: renderPortfolioSummary shows unrealized P&L
+  ✓ P7.1r: renderBalances calls renderPortfolioSummary
+  ✓ P7.1s: renderPortfolioSummary clears when disconnected
+  ✓ P7.1t: loadBalances uses computeTokenUsd for token pricing
+  ✓ P7.1u-pre: computeTokenUsd function extracted
+  ✓ P7.1u: computeTokenUsd('mUSD', 100) = 100, expected 100
+  ✓ P7.1v: computeTokenUsd('wETH', 2) with pair price 3000 = 6000, expected 6000
+  ✓ P7.1w: portfolioSummary div in index.html
+  ✓ P7.1x: portfolio-summary CSS exists
+  ✓ P7.1x2: portfolio-total CSS exists
+  ✓ P7.1x3: portfolio-value CSS exists
+  ✓ P7.1x4: portfolio-metrics CSS exists
+  ✓ P7.1x5: portfolio-change CSS exists
+  ✓ P7.1x6: portfolio-label CSS exists
+  ✓ P7.2a: exportTradeHistoryCSV function exists
+  ✓ P7.2b: CSV column headers correct
+  ✓ P7.2c: CSV uses Blob for download
+  ✓ P7.2d: CSV filename starts with moltchain-trades-
+  ✓ P7.2e: CSV triggers download via anchor click
+  ✓ P7.2f: exportTradeHistoryCSV reads cached trade data
+  ✓ P7.2g: loadTradeHistory caches data in state._tradeHistoryData
+  ✓ P7.2h: Export CSV button in trade history
+  ✓ P7.2i: Export button calls exportTradeHistoryCSV
+  ✓ P7.2j: Fee column header in trade history
+  ✓ P7.2k: Fee extracted from trade data
+  ✓ P7.2l: CSV content type correct
+  ✓ P7.2m: createObjectURL used
+  ✓ P7.2m2: revokeObjectURL cleanup
+  ✓ P7.2n: Export shows success notification
+  ✓ P7.2o: Export shows warning when no data
+  ✓ P7.2p-pre: exportTradeHistoryCSV function extracted
+  ✓ P7.2p: CSV cells joined by comma
+  ✓ P7.2p2: CSV rows joined by newline
+  ✓ P7.2q: export-csv-btn CSS exists
+  ✓ P7.2q2: trade-history-header CSS exists
+  ✓ P7.2r: CSV escapes commas with quotes
+  ✓ P7.2s: Trade history table has 7 columns (Pair, Side, Price, Amount, Total, Fee, Time)
+  ✓ P8.1a: buildChallengeResolutionArgs function exists
+  ✓ P8.1b-pre: buildChallengeResolutionArgs function extracted
+  ✓ P8.1b: buildChallengeResolutionArgs uses opcode 9
+  ✓ P8.1c: buildChallengeResolutionArgs allocates 81-byte buffer
+  ✓ P8.1d: buildChallengeResolutionArgs includes dispute bond
+  ✓ P8.1e: buildChallengeResolutionArgs writes evidence at offset 41
+  ✓ P8.1f-pre: buildChallengeResolutionArgs body extracted
+  ✓ P8.1f: buildChallengeResolutionArgs returns Uint8Array
+  ✓ P8.1f2: buildChallengeResolutionArgs length = 81, expected 81
+  ✓ P8.1f3: opcode byte = 9, expected 9
+  ✓ P8.1g: buildFinalizeResolutionArgs function exists
+  ✓ P8.1h-pre: buildFinalizeResolutionArgs function extracted
+  ✓ P8.1h: buildFinalizeResolutionArgs uses opcode 10
+  ✓ P8.1i: buildFinalizeResolutionArgs allocates 41-byte buffer
+  ✓ P8.1j-pre: buildFinalizeResolutionArgs body extracted
+  ✓ P8.1j: buildFinalizeResolutionArgs returns Uint8Array
+  ✓ P8.1j2: buildFinalizeResolutionArgs length = 41, expected 41
+  ✓ P8.1j3: opcode byte = 10, expected 10
+  ✓ P8.1k: Challenge button class exists in JS
+  ✓ P8.1l: Finalize button class exists in JS
+  ✓ P8.1m: dispute-panel class in JS
+  ✓ P8.1n: Dispute countdown computes hours/minutes
+  ✓ P8.1o: Slot-to-seconds conversion at 0.5s/slot
+  ✓ P8.1p: Disputed market shows DAO message
+  ✓ P8.1q: Challenge handler includes evidence prompt
+  ✓ P8.1r: Challenge handler calls buildChallengeResolutionArgs
+  ✓ P8.1s: Finalize handler calls buildFinalizeResolutionArgs
+  ✓ P8.1t: Challenge success notification
+  ✓ P8.1u: Finalize success notification
+  ✓ P8.1v: Market data maps dispute_end_slot
+  ✓ P8.1w: Market data maps resolver
+  ✓ P8.1x: Market data maps winning_outcome
+  ✓ P8.1y: Dispute expired state handled
+  ✓ P8.1z: dispute-panel CSS exists
+  ✓ P8.1z2: dispute-info CSS exists
+  ✓ P8.1z3: dispute-countdown CSS exists
+  ✓ P8.1z4: dispute-actions CSS exists
+  ✓ P8.1z5: btn-predict-challenge CSS exists
+  ✓ P8.1z6: btn-predict-finalize CSS exists
+  ✓ P8.1z7: disputed-state CSS exists
+  ✓ P8.1z8: dispute-label CSS exists
+  ✓ P8.1aa: disputeHtml inserted into market card
+  ✓ P8.1ab: Challenge prompt mentions 100 mUSD bond
+  ✓ P8.1ac: Resolver address shown in dispute panel
+  ✓ P8.1ad: Winning outcome displayed in dispute panel
+
+── Phase 2: Stop-Loss / Take-Profit System ──
+  ✓ P2.1a: buildPlaceOrderArgs accepts stopPrice parameter
+  ✓ P2.1b: buildPlaceOrderArgs creates 75-byte buffer
+  ✓ P2.1c: stopPrice written at offset 67
+  ✓ P2.2a: STATUS_DORMANT constant defined
+  ✓ P2.2b: encode_order accepts trigger_price parameter
+  ✓ P2.2c: decode_order_trigger_price helper exists
+  ✓ P2.2d: update_order_trigger_price helper exists
+  ✓ P2.2e: trigger_price stored at bytes 91..99
+  ✓ P2.2f: place_order with trigger_price signature
+  ✓ P2.2g: Stop-limit with trigger goes dormant
+  ✓ P2.2h: Dormant orders skip matching
+  ✓ P2.2i: Opcode 2 parses trigger_price from 75-byte args
+  ✓ P2.2j: Falls back to 0 trigger for shorter args
+  ✓ P2.3a: check_triggers function exists
+  ✓ P2.3b: Only processes dormant orders
+  ✓ P2.3c: Sell-stop trigger condition (price <= trigger)
+  ✓ P2.3d: Buy-stop trigger condition (price >= trigger)
+  ✓ P2.3e: Activated orders set to STATUS_OPEN
+  ✓ P2.3f: Activated orders sent through matching engine
+  ✓ P2.3g: Unfilled remainder rests on book
+  ✓ P2.3h: Opcode 29 dispatch exists
+  ✓ P2.3i: Opcode 29 passes pair_id and last_price
+  ✓ P2.4a: Stop price input read from DOM
+  ✓ P2.4b: Validation requires stopPrice for stop-limit
+  ✓ P2.4c: Sell-stop directional validation
+  ✓ P2.4d: Buy-stop directional validation
+  ✓ P2.4e: stopPrice scaled by PRICE_SCALE
+  ✓ P2.4f: stopPrice passed to confirmation dialog
+  ✓ P2.4g: Confirmation dialog displays stop price
+  ✓ P2.5a: Margin SL input exists in HTML
+  ✓ P2.5b: Margin TP input exists in HTML
+  ✓ P2.5c: SL/TP row container exists
+  ✓ P2.5d: SL/TP labels in margin form
+  ✓ P2.5e: SL/TP inputs read after margin open
+  ✓ P2.5f: buildSetPositionSlTpArgs called after position open
+  ✓ P2.5g: Graceful error if SL/TP fails after open
+  ✓ P2.6a: POSITION_SIZE expanded to 128
+  ✓ P2.6b: POSITION_SIZE_V1 for backward compat
+  ✓ P2.6c: decode_pos_sl_price helper exists
+  ✓ P2.6d: decode_pos_tp_price helper exists
+  ✓ P2.6e: update_pos_sl_price helper exists
+  ✓ P2.6f: update_pos_tp_price helper exists
+  ✓ P2.6g: set_position_sl_tp function exists
+  ✓ P2.6h: Long SL must be below entry validation
+  ✓ P2.6i: Short SL must be above entry validation
+  ✓ P2.6j: Long TP must be above entry validation
+  ✓ P2.6k: Short TP must be below entry validation
+  ✓ P2.6l: Opcode 24 dispatch exists
+  ✓ P2.6m: Opcode 24 parses sl_price and tp_price
+  ✓ P2.6n: Guards use POSITION_SIZE_V1 for backward compat
+  ✓ P2.7a: buildSetPositionSlTpArgs builder exists
+  ✓ P2.7b: buildSetPositionSlTpArgs creates 57-byte buffer
+  ✓ P2.7c: buildSetPositionSlTpArgs uses opcode 24
+  ✓ P2.7d: SL/TP edit button exists on position rows
+  ✓ P2.7e: SL/TP inline edit form exists
+  ✓ P2.7f: SL input field in inline edit form
+  ✓ P2.7g: TP input field in inline edit form
+  ✓ P2.7h: Save button in SL/TP edit form
+  ✓ P2.7i: Cancel button in SL/TP edit form
+  ✓ P2.7j: Success notification after SL/TP save
+  ✓ P2.7k: SL price read from position data
+  ✓ P2.7l: TP price read from position data
+  ✓ P2.7m: SL displayed on position row
+  ✓ P2.7n: TP displayed on position row
+  ✓ P2.8a: run_sltp_trigger_engine function exists
+  ✓ P2.8b: Trigger engine has its own trade counter
+  ✓ P2.8c: Collects last trade price per pair
+  ✓ P2.8d: Checks for STATUS_DORMANT (5) in order status
+  ✓ P2.8e: Reads trigger_price from order bytes 91..99
+  ✓ P2.8f: Sets activated order to STATUS_OPEN (0)
+  ✓ P2.8g: Adds activated orders to book
+  ✓ P2.8h: Updates best bid/ask on activation
+  ✓ P2.8i: Only checks open margin positions (status 0)
+  ✓ P2.8j: Reads SL/TP from position bytes
+  ✓ P2.8k: Closes position (POS_CLOSED = 1) on SL/TP hit
+  ✓ P2.8l: Calculates biased PnL on SL/TP close
+  ✓ P2.8m: Logs activated orders
+  ✓ P2.8n: Logs closed margin positions
+  ✓ P2.8o: Trigger engine called in block production loop
+  ✓ P2.F1: Opcode byte is 2 (place_order)
+  ✓ P2.F2: Order type byte is 2 (stop-limit)
+  ✓ P2.F3: Stop price correctly written at offset 67
+  ✓ P2.F4: Total buffer is 75 bytes
+  ✓ P2.F5: Limit price at offset 43 correct
+  ✓ P2.F6: Opcode byte is 24 (set_position_sl_tp)
+  ✓ P2.F7: positionId correctly at offset 33
+  ✓ P2.F8: SL price correctly at offset 41
+  ✓ P2.F9: TP price correctly at offset 49
+  ✓ P2.F10: Total buffer is 57 bytes
+  ✓ P2.V1: Sell-stop below market is valid
+  ✓ P2.V2: Sell-stop at/above market is invalid
+  ✓ P2.V3: Buy-stop above market is valid
+  ✓ P2.V4: Buy-stop at/below market is invalid
+  ✓ P2.T1: Sell-stop triggers when price below trigger
+  ✓ P2.T2: Sell-stop triggers when price equals trigger
+  ✓ P2.T3: Sell-stop does NOT trigger when price above trigger
+  ✓ P2.T4: Buy-stop triggers when price above trigger
+  ✓ P2.T5: Buy-stop triggers when price equals trigger
+  ✓ P2.T6: Buy-stop does NOT trigger when price below trigger
+  ✓ P2.M1: Long SL below entry is valid
+  ✓ P2.M2: Long SL above entry is invalid
+  ✓ P2.M3: Long TP above entry is valid
+  ✓ P2.M4: Long TP below entry is invalid
+  ✓ P2.M5: Short SL above entry is valid
+  ✓ P2.M6: Short SL below entry is invalid
+  ✓ P2.M7: Short TP below entry is valid
+  ✓ P2.M8: Short TP above entry is invalid
+  ✓ P2.BC1: V1 record is 112 bytes
+  ✓ P2.BC2: V2 record is 128 bytes
+  ✓ P2.BC3: V1 record too short for SL field (returns 0)
+  ✓ P2.BC4: V2 record returns correct SL
+  ✓ P2.BC5: V2 record returns correct TP
+  ✓ MRG4.2a: partial_close function defined
+  ✓ MRG4.2b: partial_close has correct signature
+  ✓ MRG4.2c: partial_close returns u32
+  ✓ MRG4.2d: partial_close uses reentrancy guard
+  ✓ MRG4.2e: partial_close verifies transaction signer
+  ✓ MRG4.2f: partial_close returns 5 for zero close_amount
+  ✓ MRG4.2g: partial_close delegates to close_position when close_amount >= size
+  ✓ MRG4.2h: partial_close calculates proportional margin using u128
+  ✓ MRG4.2i: partial_close calculates proportional PnL using u128
+  ✓ MRG4.2j: partial_close unlocks collateral via CrossCall unlock
+  ✓ MRG4.2k: partial_close updates size and margin in-place
+  ✓ MRG4.2m: partial_close logs partially closed
+  ✓ MRG4.2n: partial_close accumulates realized PnL
+  ✓ MRG4.2o: partial_close updates cumulative profit/loss tracking
+  ✓ MRG4.2p: update_pos_size helper function defined
+  ✓ MRG4.2q: update_pos_size writes to correct position offset
+  ✓ MRG4.2r: Opcode 25 dispatches to partial_close
+  ✓ MRG4.2s: Opcode 25 requires >= 49 bytes
+  ✓ MRG4.2t: partial_close checks ownership (returns 2)
+  ✓ MRG4.2u: partial_close checks open status (returns 3)
+  ✓ MRG4.2v: partial_close uses freshness-checked mark price
+  ✓ MRG4.2w: partial_close sets return data to unlock_amount
+  ✓ MRG4.2F1: buildPartialCloseArgs defined
+  ✓ MRG4.2F1b: buildClosePositionLimitArgs defined
+  ✓ MRG4.2F1c: buildPartialCloseLimitArgs defined
+  ✓ MRG4.2F1d: buildClosePositionLimitArgs uses opcode 27
+  ✓ MRG4.2F1e: buildClosePositionLimitArgs creates 49-byte buffer
+  ✓ MRG4.2F1f: buildPartialCloseLimitArgs uses opcode 28
+  ✓ MRG4.2F1g: buildPartialCloseLimitArgs creates 57-byte buffer
+  ✓ MRG4.2F2: buildPartialCloseArgs uses opcode 25
+  ✓ MRG4.2F3: buildPartialCloseArgs creates 49-byte buffer
+  ✓ MRG4.2F4a: result is 49 bytes
+  ✓ MRG4.2F4b: opcode is 25
+  ✓ MRG4.2F4c: caller starts at byte 1
+  ✓ MRG4.2F4d: positionId at 33
+  ✓ MRG4.2F4e: closeAmount at 41
+  ✓ MRG4.2F5: Close button shows dropdown chevron
+  ✓ MRG4.2F6: Partial close inline panel class
+  ✓ MRG4.2F7: Partial close has 25/50/75/100% buttons
+  ✓ MRG4.2F8: Custom quantity input exists
+  ✓ MRG4.2F9: Percentage buttons calculate closeAmount correctly
+  ✓ MRG4.2F10: 100% uses buildClosePositionArgs for full close
+  ✓ MRG4.2F11a: Custom close button exists
+  ✓ MRG4.2F11b: Custom handler calls buildPartialCloseArgs
+  ✓ MRG4.2F12: Cancel button exists
+  ✓ MRG4.2F13: Close button toggles panel
+  ✓ MRG4.2F13b: submitMarginClose routes limit closes through buildClosePositionLimitArgs
+  ✓ MRG4.2F13c: submitMarginClose routes partial limit closes through buildPartialCloseLimitArgs
+  ✓ MRG4.2F14: Partial close shows success notification
+  ✓ MRG4.2F15: Position row passes sizeRaw
+  ✓ MRG4.1a: RPC has get_margin_funding_rate handler
+  ✓ MRG4.1b: /margin/funding-rate route registered
+  ✓ MRG4.1c: FundingRateJson struct defined
+  ✓ MRG4.1d: FundingTierJson struct defined
+  ✓ MRG4.1e: FundingRateJson includes base_rate_bps
+  ✓ MRG4.1f: FundingRateJson includes interval_hours
+  ✓ MRG4.1g: Handler includes all tier multipliers
+  ✓ MRG4.1h: Funding interval is 8 hours
+  ✓ MRG4.1i: HTML has #marginFundingRate element
+  ✓ MRG4.1j: HTML has funding-rate-badge class
+  ✓ MRG4.1k: JS fetches /margin/funding-rate
+  ✓ MRG4.1l: JS reads baseRateBps and intervalHours
+  ✓ MRG4.1n: Contract defines FUNDING_INTERVAL_SLOTS = 28_800
+  ✓ MRG4.1o: Contract defines MAX_FUNDING_RATE_BPS = 100
+  ✓ MRG4.3a: generatePnlShareCard defined
+  ✓ MRG4.3b: showPnlShareCard defined
+  ✓ MRG4.3c: Share card creates Canvas element
+  ✓ MRG4.3d: Card has MoltChain DEX branding
+  ✓ MRG4.3e: Card uses gradient background
+  ✓ MRG4.3f: Green gradient for profit
+  ✓ MRG4.3g: Red gradient for loss
+  ✓ MRG4.3h: Card displays pair
+  ✓ MRG4.3i: Card displays side uppercased
+  ✓ MRG4.3j: Card displays entry price
+  ✓ MRG4.3k: Card displays mark price
+  ✓ MRG4.3l: Card displays PnL dollar
+  ✓ MRG4.3m: Card displays PnL percentage
+  ✓ MRG4.3n: Card displays leverage
+  ✓ MRG4.3x: Canvas has explicit dimensions
+  ✓ MRG4.3y: Card footer shows moltchain.io
+  ✓ MRG4.3o: Share modal has Copy Image button
+  ✓ MRG4.3p: Copy uses clipboard API with ClipboardItem
+  ✓ MRG4.3q: Share modal has Download PNG button
+  ✓ MRG4.3r: Download generates PNG
+  ✓ MRG4.3s: Modal has close action
+  ✓ MRG4.3t: Modal closes on backdrop click
+  ✓ MRG4.3z: Modal uses high z-index
+  ✓ MRG4.3u: Share button class in position row
+  ✓ MRG4.3v: Share button passes position data attributes
+  ✓ MRG4.3w: Share handler calls showPnlShareCard
+  ✓ MRG4.4a: Cross-margin design doc exists
+  ✓ MRG4.4b: Design doc covers account structure
+  ✓ MRG4.4c: Design doc defines new opcodes
+  ✓ MRG4.4d: Design doc addresses cascading liquidation risk
+  ✓ MRG4.4e: Design doc specifies MAX_LEVERAGE_CROSS = 3
+  ✓ MRG4.4f: Design doc includes migration path
+  ✓ MRG4.4g: Design doc explicitly defers implementation
+  ✓ MRG4.4h: Design doc compares isolated vs cross
+  ✓ MRG4.4i: Design doc describes frontend mode toggle
+  ✓ MRG4.4j: Design doc covers position record extension
+  ✓ MRG4.RPC1: MarginPositionJson has sl_price
+  ✓ MRG4.RPC2: MarginPositionJson has tp_price
+  ✓ MRG4.RPC3: Decoder reads SL from 106..114
+  ✓ MRG4.RPC4: Decoder reads TP from 114..122
+  ✓ MRG4.RPC5: Decoder conditionally reads V2 SL/TP fields
+  ✓ MRG4.MATH1: 50% close → proportional margin=50
+  ✓ MRG4.MATH2: 25% close → proportional margin=25
+  ✓ MRG4.MATH3: 75% close → remaining=250
+  ✓ MRG4.MATH4a: Full PnL = 10.0
+  ✓ MRG4.MATH4b: 50% proportional PnL = 5.0
+  ✓ MRG4.MATH5: Profit → unlock = margin + pnl
+  ✓ MRG4.MATH6: Loss > margin → saturates to 0
+  ✓ MRG4.MATH7: close_amount > size → full close
+  ✓ MRG4.MATH8: close_amount == size → full close
+  ✓ MRG4.MATH9a: Biased PnL accumulates
+  ✓ MRG4.MATH9b: De-biased = +5.0
+  ✓ MRG4.MATH10: Loss de-biases to -3.0
+  ✓ MRG4.TIER1: ≤2x tier (5000/2500/300/10)
+  ✓ MRG4.TIER2: ≤3x tier (3333/1700/300/10)
+  ✓ MRG4.TIER3: ≤5x tier (2000/1000/500/15)
+  ✓ MRG4.TIER4: ≤10x tier (1000/500/500/20)
+  ✓ MRG4.TIER5: ≤25x tier (400/200/700/30)
+  ✓ MRG4.TIER6: ≤50x tier (200/100/1000/50)
+  ✓ MRG4.TIER7: ≤100x tier (100/50/1500/100)
+
+── Task 9: Wallet Modal Restoration ──
+  ✓ T9.1: Wallets tab present
+  ✓ T9.2: Import tab present
+  ✓ T9.3: Extension tab present
+  ✓ T9.4: Create New tab present
+  ✓ T9.5: Import tab has Private Key toggle
+  ✓ T9.6: Import tab has Mnemonic toggle
+  ✓ T9.7: Private key input field exists
+  ✓ T9.8: Mnemonic grid container exists
+  ✓ T9.9: Password input field exists
+  ✓ T9.10: Connect/Import button exists
+  ✓ T9.11: Extension connect button exists
+  ✓ T9.12: Extension tab content div exists
+  ✓ T9.13: Create wallet button exists
+  ✓ T9.14: Created wallet display container exists
+  ✓ T9.15: New address display element exists
+  ✓ T9.16: New private key display element exists
+  ✓ T9.17: Private key uses blur/reveal wm-secret class
+  ✓ T9.18: Save-key warning message present
+  ✓ T9.19: wallet.fromSecretKey() method restored
+  ✓ T9.20: wallet.generate() method restored
+  ✓ T9.21: DEX import handler reads wmPrivateKey
+  ✓ T9.22: DEX import handler calls wallet.fromSecretKey()
+  ✓ T9.22b: DEX import handler supports mnemonic mode
+  ✓ T9.23: Mnemonic grid dynamically built
+  ✓ T9.24: Mnemonic inputs have numbered placeholders
+  ✓ T9.25: Mnemonic paste handler wired
+  ✓ T9.26: DEX create handler calls wallet.generate()
+  ✓ T9.27: DEX renders generated private key seed in create flow
+  ✓ T9.27b: DEX create handler shows success message
+  ✓ T9.28: Extension button wired
+  ✓ T9.29: Extension tab calls wallet.connect()
+  ✓ T9.30: Import type toggle wired
+  ✓ T9.31: Key/mnemonic toggle logic present
+  ✓ T9.32: wmTC includes extension tab
+  ✓ T9.33: CSS .wm-import-toggle exists
+  ✓ T9.34: CSS .mnemonic-grid exists
+  ✓ T9.35: CSS .wm-secret blur/reveal exists
+  ✓ T9.36: CSS .wm-warning exists
+  ✓ T9.37: CSS .wm-generated-row exists
+  ✓ T9.38: wallet-connect.js no longer shows blocking alert
+  ✓ T9.39: AUDIT-FIX H6-01 removed from wallet-connect.js
+  ✓ T9.40: wallet-connect.js still supports nacl keypair generation
+
+── Task 10: Prediction Market Tests ──
+  ✓ T10.1: prediction_market has initialize()
+  ✓ T10.2: prediction_market has create_market()
+  ✓ T10.3: prediction_market has add_initial_liquidity()
+  ✓ T10.4: prediction_market has buy_shares()
+  ✓ T10.5: prediction_market has sell_shares()
+  ✓ T10.6: prediction_market has submit_resolution()
+  ✓ T10.7: prediction_market has finalize_resolution()
+  ✓ T10.8: prediction_market has redeem_shares()
+  ✓ T10.9: prediction_market has dao_resolve()
+  ✓ T10.10: prediction_market has dao_void()
+  ✓ T10.11: prediction_market has mint_complete_set()
+  ✓ T10.12: prediction_market has redeem_complete_set()
+  ✓ T10.13: prediction_market has withdraw_liquidity()
+  ✓ T10.14: prediction_market has close_market()
+  ✓ T10.15: prediction_market has emergency_pause()
+  ✓ T10.16: 2% fee (200 BPS) in prediction market
+  ✓ T10.17: buildBuySharesArgs function exists
+  ✓ T10.18: buildCreateMarketArgs function exists
+  ✓ T10.19: buildRedeemSharesArgs function exists
+  ✓ T10.20: buildResolveMarketArgs function exists
+  ✓ T10.21: buildBuySharesArgs uses typed array
+  ✓ T10.22: loadPredictionStats function exists
+  ✓ T10.23: loadPredictionMarkets function exists
+  ✓ T10.24: loadPredictionPositions function exists
+  ✓ T10.25: loadCreatedMarkets function exists
+  ✓ T10.26: renderPredictionMarkets function exists
+  ✓ T10.27: renderPredictionPositions function exists
+  ✓ T10.28: Uses prediction_market contract symbol
+  ✓ T10.29: No unsigned POST to /prediction-market/create
+  ✓ T10.30: Contract has pool/reserves state
+  ✓ T10.31: Contract supports multiple outcomes
+  ✓ T10.32: Contract supports market categories
+  ✓ T10.33: Market state PENDING exists
+  ✓ T10.34: Market state ACTIVE exists
+  ✓ T10.35: Market state CLOSED exists
+  ✓ T10.36: Market state RESOLVED exists
+  ✓ T10.37: Prediction chart canvas wired
+  ✓ T10.38: Price history endpoint used
+  ✓ T10.39: Quick trade calculator wired
+  ✓ T10.40: Market creation notification and loader wired
+  ✓ T10.41: CPMM equal reserves → price = 0.50
+  ✓ T10.42: CPMM equal reserves → complementary = 0.50
+  ✓ T10.43: CPMM prices sum to 1.0
+  ✓ T10.44: CPMM skewed YES price < 0.50
+  ✓ T10.45: CPMM skewed NO price > 0.50
+  ✓ T10.46: CPMM skewed prices sum to 1.0
+  ✓ T10.47: 2% fee on 100 mUSD = 2 mUSD
+  ✓ T10.48: Net after fee = 98 mUSD
+  ✓ T10.49: 3-outcome equal reserves → price ≈ 0.333
+  ✓ T10.50: 3-outcome prices sum to 1.0
+  ✓ T10.51: e2e-prediction.js covers P1 through P15
+  ✓ T10.52: E2E tests cover share buying
+  ✓ T10.53: E2E tests cover share selling
+  ✓ T10.54: E2E tests cover complete sets
+  ✓ T10.55: E2E tests cover redemption and final verification
+
+── Task 11: Pool / Liquidity Tests ──
+  ✓ T11.1: dex_amm has add_liquidity()
+  ✓ T11.2: dex_amm has remove_liquidity()
+  ✓ T11.3: dex_amm has swap_exact_in/out()
+  ✓ T11.4: AMM contract manages reserves/liquidity
+  ✓ T11.5: loadPoolStats function exists
+  ✓ T11.6: loadPools function exists
+  ✓ T11.7: loadLPPositions function exists
+  ✓ T11.8: loadPools renders pool rows inline
+  ✓ T11.9: Add liquidity form wired
+  ✓ T11.10: Add liquidity form in HTML
+  ✓ T11.11: My Pools filter implemented
+  ✓ T11.12: AMM tracks LP tokens/shares
+  ✓ T11.13: AMM has fee configuration
+  ✓ T11.14: AMM uses constant product or concentrated liquidity
+  ✓ T11.15: Pool view section in HTML
+  ✓ T11.16: Pool stats elements wired
+  ✓ T11.17: Remove liquidity wired
+  ✓ T11.18: Pool pairs displayed
+  ✓ T11.19: Pool bottom panel wallet-gated
+  ✓ T11.20: AMM swap output positive and < input (price impact)
+  ✓ T11.21: Constant product k preserved after swap
+  ✓ T11.22: LP deposit requires proportional B amount
+  ✓ T11.23: LP tokens minted = 10% of pool for 10% deposit
+  ✓ T11.24: Withdraw A proportional to LP burned
+  ✓ T11.25: Withdraw B proportional to LP burned
+  ✓ T11.26: Large trade has worse effective price than small trade
+  ✓ T11.27: Both trades produce positive output
+
+── Task 12: Comprehensive E2E Structure ──
+  ✓ T12.E2E: tests/e2e-prediction.js exists
+  ✓ T12.E2E: tests/e2e-dex.js exists
+  ✓ T12.E2E: tests/e2e-launchpad.js exists
+  ✓ T12.E2E: tests/e2e-production.js exists
+  ✓ T12.E2E: tests/e2e-transactions.js exists
+  ✓ T12.1: funded-wallets.js helper exists
+  ✓ T12.2: e2e-dex.js covers order/trade flow
+  ✓ T12.3: e2e-launchpad.js covers deployment
+  ✓ T12.4: e2e-launchpad.js covers graduation
+  ✓ T12.5: e2e-production.js checks system health
+  ✓ T12.6: prediction_market has Rust unit tests
+  ✓ T12.6: dex_core has Rust unit tests
+  ✓ T12.6: dex_amm has Rust unit tests
+  ✓ T12.6: moltcoin has Rust unit tests
+  ✓ T12.6: moltyid has Rust unit tests
+  ✓ T12.7: Core has test directory
+  ✓ T12.8: Core has benchmarks or integration tests
+  ✓ T12.9: shared/utils.js has SHELLS_PER_MOLT constant
+  ✓ T12.10: shared/utils.js has TRUST_TIER_THRESHOLDS
+  ✓ T12.11: shared/utils.js has ACHIEVEMENT_DEFS
+  ✓ T12.12: shared/utils.js has FEE_SPLIT
+  ✓ T12.13: shared/utils.js exports getTrustTier()
+  ✓ T12.14: address.js uses shared constants
+  ✓ T12.15: transaction.js uses shared constants
+
+════════════════════════════════════════════════════════════
+  DEX Tests: 1887 passed, 0 failed, 1887 total
+════════════════════════════════════════════════════════════
+

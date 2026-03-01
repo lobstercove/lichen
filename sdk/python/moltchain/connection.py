@@ -4,6 +4,7 @@ import asyncio
 import json
 import base64
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 import httpx
 import websockets
@@ -12,6 +13,9 @@ from .publickey import PublicKey
 from .transaction import Transaction, TransactionBuilder
 
 logger = logging.getLogger(__name__)
+
+RPC_NO_BLOCKS_RETRIES = max(1, int(os.getenv("MOLT_RPC_NO_BLOCKS_RETRIES", "20")))
+RPC_NO_BLOCKS_DELAY_SECS = max(0.05, float(os.getenv("MOLT_RPC_NO_BLOCKS_DELAY_SECS", "0.5")))
 
 
 class Connection:
@@ -48,27 +52,35 @@ class Connection:
         """Make an RPC call"""
         if params is None:
             params = []
-        
-        client = await self._get_client()
-        response = await client.post(
-            self.rpc_url,
-            json={
-                "jsonrpc": "2.0",
-                "id": self._next_id,
-                "method": method,
-                "params": params
-            },
-        )
-        self._next_id += 1
 
-        # J-2: Check HTTP status before parsing JSON
-        response.raise_for_status()
-        data = response.json()
+        attempts = RPC_NO_BLOCKS_RETRIES
+        for attempt in range(attempts):
+            client = await self._get_client()
+            response = await client.post(
+                self.rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._next_id,
+                    "method": method,
+                    "params": params
+                },
+            )
+            self._next_id += 1
 
-        if "error" in data:
-            raise Exception(f"RPC Error: {data['error']['message']}")
+            # J-2: Check HTTP status before parsing JSON
+            response.raise_for_status()
+            data = response.json()
 
-        return data.get("result")
+            if "error" in data:
+                message = str(data["error"].get("message", "RPC error"))
+                if "No blocks yet" in message and attempt < attempts - 1:
+                    await asyncio.sleep(RPC_NO_BLOCKS_DELAY_SECS)
+                    continue
+                raise Exception(f"RPC Error: {message}")
+
+            return data.get("result")
+
+        raise Exception("RPC Error: exceeded retry budget while waiting for blocks")
     
     # ============================================================================
     # BASIC QUERIES

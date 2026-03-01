@@ -10,6 +10,33 @@ function getBlockNumber() {
     return params.get('slot') || params.get('block');
 }
 
+function isShieldedType(typeRaw) {
+    return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
+}
+
+function redactShieldedBlockForRaw(blockObj) {
+    if (!blockObj || typeof blockObj !== 'object') return blockObj;
+    const clone = JSON.parse(JSON.stringify(blockObj));
+    if (Array.isArray(clone.transactions)) {
+        clone.transactions = clone.transactions.map((tx) => {
+            const txType = tx?.type || tx?.tx_type || tx?.transaction_type || 'Transfer';
+            if (!isShieldedType(txType)) return tx;
+            const txClone = { ...tx, from: null, to: null };
+            if (txClone.message && Array.isArray(txClone.message.instructions)) {
+                txClone.message.instructions = txClone.message.instructions.map((inst) => {
+                    const instClone = { ...inst };
+                    if (Array.isArray(instClone.accounts) && instClone.accounts.length > 0) {
+                        instClone.accounts = [`<redacted:${instClone.accounts.length}>`];
+                    }
+                    return instClone;
+                });
+            }
+            return txClone;
+        });
+    }
+    return clone;
+}
+
 
 // Load and display block
 async function loadBlock() {
@@ -94,10 +121,13 @@ async function displayBlock(block) {
     document.getElementById('stateRoot').textContent = formatHash(stateRoot);
     document.getElementById('stateRoot').dataset.full = stateRoot;
     document.getElementById('detailTimestamp').textContent = formatTimeFull(timestamp);
+    const nonShieldedParticipants = transactions
+        .filter(tx => !isShieldedType(tx?.type || tx?.tx_type || tx?.transaction_type || 'Transfer'))
+        .flatMap(tx => [tx.from, tx.to]);
     const addressNames = typeof batchResolveMoltNames === 'function'
         ? await batchResolveMoltNames([
             validator,
-            ...transactions.flatMap(tx => [tx.from, tx.to]),
+            ...nonShieldedParticipants,
             reward?.recipient
         ])
         : {};
@@ -140,10 +170,12 @@ async function displayBlock(block) {
         `;
     } else {
         tbody.innerHTML = transactions.map(tx => {
+            const typeRaw = tx?.type || tx?.tx_type || tx?.transaction_type || 'Transfer';
+            const shieldedTx = isShieldedType(typeRaw);
             const safeSig = typeof escapeHtml === 'function' ? escapeHtml(tx.signature) : tx.signature;
             const safeFrom = typeof escapeHtml === 'function' ? escapeHtml(tx.from) : tx.from;
             const safeTo = typeof escapeHtml === 'function' ? escapeHtml(tx.to) : tx.to;
-            const safeType = typeof escapeHtml === 'function' ? escapeHtml(tx.type || 'Transfer') : (tx.type || 'Transfer');
+            const safeType = typeof escapeHtml === 'function' ? escapeHtml(typeRaw) : typeRaw;
             const safeStatus = typeof escapeHtml === 'function' ? escapeHtml(tx.status || 'Success') : (tx.status || 'Success');
             const fromDisplay = addressNames[tx.from] && typeof formatAddressWithMoltName === 'function'
                 ? formatAddressWithMoltName(tx.from, addressNames[tx.from])
@@ -159,14 +191,14 @@ async function displayBlock(block) {
                     </a>
                 </td>
                 <td>
-                    <a href="address.html?address=${encodeURIComponent(tx.from)}" class="hash-link">
-                        ${fromDisplay}
-                    </a>
+                    ${shieldedTx
+                            ? '<span class="hash-link" title="Shielded sender redacted">Private</span>'
+                        : `<a href="address.html?address=${encodeURIComponent(tx.from)}" class="hash-link">${fromDisplay}</a>`}
                 </td>
                 <td>
-                    <a href="address.html?address=${encodeURIComponent(tx.to)}" class="hash-link">
-                        ${toDisplay}
-                    </a>
+                    ${shieldedTx
+                            ? '<span class="hash-link" title="Shielded recipient redacted">Private</span>'
+                        : `<a href="address.html?address=${encodeURIComponent(tx.to)}" class="hash-link">${toDisplay}</a>`}
                 </td>
                 <td><span class="pill pill-${safeType.toLowerCase()}">${safeType}</span></td>
                 <td>
@@ -238,7 +270,8 @@ async function displayBlock(block) {
     }
 
     // Raw data
-    document.getElementById('rawData').textContent = JSON.stringify(block, null, 2);
+    const rawBlock = redactShieldedBlockForRaw(block);
+    document.getElementById('rawData').textContent = JSON.stringify(rawBlock, null, 2);
 }
 
 // Search functionality

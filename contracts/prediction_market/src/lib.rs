@@ -64,12 +64,12 @@ const MAX_OPEN_MARKETS: u64 = 10_000;
 const MIN_COLLATERAL: u64 = 1_000_000;       // 1 mUSD (6 decimals)
 const MAX_COLLATERAL: u64 = 100_000_000_000;  // 100K mUSD
 
-// --- Timing (in slots; 1 slot ≈ 0.5s) ---
-const MIN_DURATION: u64 = 7_200;             // 1 hour minimum
-const MAX_DURATION: u64 = 63_072_000;        // 1 year maximum
-const RESOLUTION_TIMEOUT: u64 = 604_800;     // 7 days to resolve after close
-const DISPUTE_PERIOD: u64 = 172_800;         // 48 hours to challenge resolution
-const EMERGENCY_TIMEOUT: u64 = 2_592_000;    // 30 days — auto-void if unresolved
+// --- Timing (in slots; 1 slot = 400ms) ---
+const MIN_DURATION: u64 = 9_000;             // 1 hour minimum
+const MAX_DURATION: u64 = 78_840_000;        // 1 year maximum
+const RESOLUTION_TIMEOUT: u64 = 1_512_000;   // 7 days to resolve after close
+const DISPUTE_PERIOD: u64 = 432_000;         // 48 hours to challenge resolution
+const EMERGENCY_TIMEOUT: u64 = 6_480_000;    // 30 days — auto-void if unresolved
 
 // --- Fees (basis points / flat) ---
 const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 mUSD (anti-spam)
@@ -100,7 +100,7 @@ const RESOLUTION_THRESHOLD: u8 = 3;         // Min oracle attestations
 const CIRCUIT_BREAKER_COLLATERAL: u64 = 50_000_000_000; // 50K mUSD per market
 const CIRCUIT_BREAKER_PLATFORM: u64 = 1_000_000_000_000; // 1M mUSD total
 const PRICE_MOVE_PAUSE_BPS: u64 = 5_000;    // 50% in single slot → pause
-const PRICE_MOVE_PAUSE_SLOTS: u64 = 120;    // 60 seconds (at 0.5s/slot)
+const PRICE_MOVE_PAUSE_SLOTS: u64 = 150;    // 60 seconds (at 400ms/slot)
 
 // --- Market statuses ---
 const STATUS_PENDING: u8 = 0;
@@ -418,13 +418,13 @@ fn update_market_trader_stats(market_id: u64, trader: &[u8], volume: u64) {
         let count = load_u64(&count_key);
         save_u64(&count_key, count + 1);
     }
-    // 24h rolling volume (172,800 slots at 0.5s/slot = 24 hours)
+    // 24h rolling volume (216,000 slots at 400ms/slot = 24 hours)
     let vol_key = market_24h_volume_key(market_id);
     let reset_key = market_24h_reset_slot_key(market_id);
     let current_slot = get_slot();
     let reset_slot = load_u64(&reset_key);
     let elapsed = current_slot.saturating_sub(reset_slot);
-    if elapsed >= 172_800 {
+    if elapsed >= 216_000 {
         // Reset window
         save_u64(&vol_key, volume);
         save_u64(&reset_key, current_slot);

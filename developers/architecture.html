@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Architecture - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -510,7 +510,7 @@ contribution_score = (
             <!-- ========== 7. PRIVACY & SECURITY ========== -->
             <h2 id="privacy">Privacy &amp; Security</h2>
 
-            <p>MoltChain's privacy architecture is centered on shielded transactions, nullifier-based double-spend prevention, and ZK proofs for note validity. The implementation is in active transition from legacy scaffolding to full Groth16-based verification.</p>
+            <p>MoltChain's privacy architecture is centered on shielded transactions, nullifier-based double-spend prevention, and ZK proofs for note validity. The current implementation uses Groth16-based verification for shielded flows in production deployments.</p>
 
             <h3>Implementation Status (Current)</h3>
             <table class="arch-table">
@@ -519,7 +519,7 @@ contribution_score = (
                 </thead>
                 <tbody>
                     <tr><td>Core ZK modules (<code>core/src/zk/*</code>)</td><td>Scaffolded</td><td>Pedersen, Merkle, note/key types, circuits, prover/verifier plumbing</td></tr>
-                    <tr><td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td><td>Prototype</td><td>State and flows exist; production-grade proof verification still being finalized</td></tr>
+                    <tr><td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td><td>Production</td><td>Shielded state and transaction flows run with Groth16 proof verification</td></tr>
                     <tr><td>Runtime/RPC wiring</td><td>Partial</td><td>Explorer/Wallet-facing methods are expected, with staged backend integration in progress</td></tr>
                     <tr><td>Deployment/boot scripts</td><td>In progress</td><td>First-boot and deploy manifest integration for shielded pool is being completed</td></tr>
                 </tbody>
@@ -559,6 +559,7 @@ contribution_score = (
             <p>The testnet faucet enforces an explicit origin allowlist (localhost dev ports + production domains) with restricted HTTP methods (GET/POST/OPTIONS) — replacing the previous permissive policy.</p>
 
             <!-- ========== 8. PERFORMANCE BENCHMARKS ========== -->
+            <div id="performance"></div>
             <h2 id="benchmarks">Performance Benchmarks</h2>
 
             <p>Benchmarks measured with <strong>Criterion.rs</strong> on the reference hardware (Apple M-series, single-threaded). Source: <code>core/benches/processor_bench.rs</code>.</p>

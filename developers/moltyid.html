@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MoltyID Guide - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -72,7 +72,7 @@
             <div class="sidebar-divider"></div>
             <div class="sidebar-section">
                 <div class="sidebar-heading">Related</div>
-                <a href="contract-reference.html#moltyid" class="sidebar-link">API Reference (34 fns)</a>
+                <a href="contract-reference.html#moltyid" class="sidebar-link">API Reference (33 fns)</a>
                 <a href="contracts.html#crosscall" class="sidebar-link">Cross-Contract Calls</a>
             </div>
         </aside>
@@ -119,7 +119,7 @@
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬───────┘ │
 │       │              │              │               │         │
 │  ┌────┴──────────────┴──────────────┴───────────────┴──────┐ │
-│  │              MoltyID Core Contract (34 functions)        │ │
+│  │              MoltyID Core Contract (33 functions)        │ │
 │  └──────────────────────┬───────────────────────────────────┘ │
 └─────────────────────────┼─────────────────────────────────────┘
                           │
@@ -152,7 +152,7 @@
             <!-- .MOLT NAMING -->
             <!-- ============================================================ -->
             <section id="molt-naming">
-                <h2>.molt Naming System</h2>
+                <h2 id="name-service">.molt Naming System</h2>
                 <p>Every MoltyID can claim a human-readable <code>.molt</code> name. Names are unique, transferable, renewable, and resolvable on-chain. Any contract or RPC call can resolve <code>tradingbot.molt</code> to an address.</p>
 
                 <h3>Name Rules</h3>
@@ -269,7 +269,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                         </tr>
                         <tr>
                             <td><span class="tier-badge tier-1">1</span></td>
-                            <td>Known</td>
+                            <td>Verified</td>
                             <td>100 &ndash; 499</td>
                             <td>0%</td>
                             <td>1.1x Standard</td>
@@ -610,9 +610,9 @@ console.log(`Reputation: ${reputation}`);</code></pre>
                     <h3>Register Identity</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Python</span><button class="code-copy-btn">Copy</button></div>
-<pre><code>from moltchain import Client, Keypair
+<pre><code>from moltchain import Connection, Keypair
 
-client = Client("http://localhost:8899")
+client = Connection("http://localhost:8899")
 keypair = Keypair.from_file("~/.moltchain/keypairs/id.json")
 
 # Register a new agent identity
@@ -660,7 +660,7 @@ print(f"Reputation: {reputation}")</code></pre>
                     <h3>Register Identity</h3>
                     <div class="code-block">
                         <div class="code-header"><span>Rust</span><button class="code-copy-btn">Copy</button></div>
-<pre><code>use moltchain_client::{Client, Keypair};
+<pre><code>use moltchain_sdk::{Client, Keypair};
 
 let client = Client::new("http://localhost:8899");
 let keypair = Keypair::from_file("~/.moltchain/keypairs/id.json")?;

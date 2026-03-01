@@ -15,9 +15,9 @@
 #   ./moltchain-start.sh testnet --build      # Force rebuild before start
 #   ./moltchain-start.sh testnet --foreground # Run validator in foreground
 #
-# Port assignments (one validator per network per machine):
-#   Testnet: RPC=8899  WS=8900  P2P=7001  Signer=9201
-#   Mainnet: RPC=9899  WS=9900  P2P=8001  Signer=9201
+# Port assignments (canonical V1, matching run-validator.sh):
+#   Testnet: RPC=8899  WS=8900  P2P=8000  Signer=9201
+#   Mainnet: RPC=9899  WS=9900  P2P=9000  Signer=9201
 #
 # First-boot behavior:
 #   If no existing blockchain state is found, the validator starts in genesis
@@ -112,25 +112,31 @@ case $NETWORK in
     testnet)
         RPC_PORT=8899
         WS_PORT=8900
-        P2P_PORT=7001
+        P2P_PORT=8000
         SIGNER_PORT=9201
         CHAIN_ID="moltchain-testnet-1"
         ;;
     mainnet)
         RPC_PORT=9899
         WS_PORT=9900
-        P2P_PORT=8001
+        P2P_PORT=9000
         SIGNER_PORT=9201
         CHAIN_ID="moltchain-mainnet-1"
         ;;
 esac
 
-DB_PATH="./data/state-${NETWORK}-${P2P_PORT}"
+DB_PATH="./data/state-${P2P_PORT}"
 LOG_DIR="/tmp/moltchain-${NETWORK}"
 TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
 BIN_PATH="./target/release/moltchain-validator"
+SUPERVISOR_PATH="${REPO_ROOT}/scripts/validator-supervisor.sh"
+VALIDATOR_HOME="${DB_PATH}/home"
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$VALIDATOR_HOME"
+
+# Keep node identity/fingerprint state isolated per validator data directory.
+export HOME="$VALIDATOR_HOME"
 
 # ── Banner ──
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -177,6 +183,11 @@ else
 fi
 echo ""
 
+if [ ! -x "$SUPERVISOR_PATH" ]; then
+    echo -e "${RED}Error: supervisor script missing or not executable: $SUPERVISOR_PATH${NC}"
+    exit 1
+fi
+
 # ── Set environment ──
 export MOLTCHAIN_SIGNER_BIND="0.0.0.0:${SIGNER_PORT}"
 
@@ -210,13 +221,14 @@ if $FOREGROUND && ! $IS_GENESIS; then
     echo -e "     • With TXs: 400ms blocks (0.9 MOLT)"
     echo -e ""
     echo -e "  Starting in foreground (Ctrl+C to stop)..."
-    exec "${VALIDATOR_CMD[@]}"
+    exec "$SUPERVISOR_PATH" "${NETWORK}-primary-p${P2P_PORT}" -- "${VALIDATOR_CMD[@]}"
 fi
 
 # Background mode — start validator, then deploy contracts
-"${VALIDATOR_CMD[@]}" >"${LOG_DIR}/validator.log" 2>&1 &
+"$SUPERVISOR_PATH" "${NETWORK}-primary-p${P2P_PORT}" -- "${VALIDATOR_CMD[@]}" >"${LOG_DIR}/validator.log" 2>&1 &
 VALIDATOR_PID=$!
-echo -e "  ${GREEN}✅ Validator started (PID: $VALIDATOR_PID)${NC}"
+SUPERVISOR_PID="$VALIDATOR_PID"
+echo -e "  ${GREEN}✅ Validator supervisor started (PID: $SUPERVISOR_PID)${NC}"
 echo -e "     Log: ${LOG_DIR}/validator.log"
 echo ""
 
@@ -274,6 +286,7 @@ echo -e "${CYAN}║  MoltChain Validator Running                             ║
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo -e ""
 echo -e "  ${BOLD}Validator PID:${NC}  $VALIDATOR_PID"
+echo -e "  ${BOLD}Supervisor PID:${NC} $SUPERVISOR_PID"
 [ -n "${DEPLOY_PID:-}" ]  && echo -e "  ${BOLD}Deploy PID:${NC}     $DEPLOY_PID"
 [ -n "${CUSTODY_PID:-}" ] && echo -e "  ${BOLD}Custody PID:${NC}    $CUSTODY_PID"
 echo -e ""
@@ -287,7 +300,7 @@ echo -e "    tail -f ${LOG_DIR}/validator.log"
 [ -n "${CUSTODY_PID:-}" ] && echo -e "    tail -f ${LOG_DIR}/custody.log"
 echo -e ""
 echo -e "  ${BOLD}Stop:${NC}"
-echo -e "    kill $VALIDATOR_PID"
+echo -e "    kill $SUPERVISOR_PID"
 [ -n "${CUSTODY_PID:-}" ] && echo -e "    kill $CUSTODY_PID"
 echo -e ""
 
@@ -307,6 +320,7 @@ fi
 # ── Write PID file for stop script ──
 cat > "${LOG_DIR}/pids.env" <<EOF
 VALIDATOR_PID=$VALIDATOR_PID
+SUPERVISOR_PID=$SUPERVISOR_PID
 DEPLOY_PID=${DEPLOY_PID:-}
 CUSTODY_PID=${CUSTODY_PID:-}
 NETWORK=$NETWORK

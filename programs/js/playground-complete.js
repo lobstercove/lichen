@@ -255,77 +255,67 @@ const Playground = {
         
         // Wallet button
         document.getElementById('walletBtn')?.addEventListener('click', () => {
-            if (this.wallet) {
-                this.toggleWalletDropdown();
-            } else {
-                this.openWalletModal();
-            }
-        });
-
-        document.getElementById('walletDropdownClose')?.addEventListener('click', () => {
-            this.hideWalletDropdown();
-        });
-
-        document.getElementById('walletAddBtn')?.addEventListener('click', () => {
-            this.hideWalletDropdown();
             this.openWalletModal();
         });
 
-        document.getElementById('walletRemoveBtn')?.addEventListener('click', () => {
-            this.removeActiveWallet();
-        });
-
-        document.addEventListener('click', (event) => {
-            const dropdown = document.getElementById('walletDropdown');
-            const walletBtn = document.getElementById('walletBtn');
-            if (!dropdown || dropdown.style.display === 'none') return;
-            if (dropdown.contains(event.target) || walletBtn?.contains(event.target)) return;
-            this.hideWalletDropdown();
-        });
-
-        // Wallet modal controls
+        // Wallet modal controls — DEX-consistent design
         document.getElementById('closeWalletModal')?.addEventListener('click', () => {
             this.closeWalletModal();
         });
-        document.getElementById('walletModalOverlay')?.addEventListener('click', () => {
-            this.closeWalletModal();
-        });
-        document.getElementById('createWalletBtn')?.addEventListener('click', () => {
-            this.createWalletFromModal();
-        });
-        document.getElementById('importWalletBtn')?.addEventListener('click', () => {
-            this.importWalletFromModal();
-        });
-        document.getElementById('exportSeedBtn')?.addEventListener('click', () => {
-            this.exportWalletSeed();
-        });
-        document.getElementById('exportPrivateKeyBtn')?.addEventListener('click', () => {
-            this.exportWalletPrivateKey();
-        });
-        document.getElementById('exportJsonBtn')?.addEventListener('click', () => {
-            this.exportWallet();
+        // Close on overlay click
+        const walletModalEl = document.getElementById('walletModal');
+        if (walletModalEl) walletModalEl.addEventListener('click', (e) => { if (e.target === walletModalEl) this.closeWalletModal(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closeWalletModal(); });
+
+        // Tab switching
+        document.querySelectorAll('.wm-tab').forEach(tab => {
+            tab.addEventListener('click', () => this.switchWmTab(tab.dataset.wmTab));
         });
 
-        document.querySelectorAll('.modal-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.modal-tab').forEach(btn => btn.classList.remove('active'));
-                document.querySelectorAll('.modal-tab-content').forEach(content => content.classList.remove('active'));
-                tab.classList.add('active');
-                const target = tab.dataset.walletTab;
-                document.querySelectorAll(`.modal-tab-content[data-wallet-tab="${target}"]`).forEach(panel => {
-                    panel.classList.add('active');
-                });
-            });
-        });
+        // Import-type toggle (Private Key / Mnemonic)
+        document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
+            document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const k = document.getElementById('wmImportKey'), m = document.getElementById('wmImportMnemonic');
+            if (btn.dataset.import === 'key') { if (k) k.classList.remove('hidden'); if (m) m.classList.add('hidden'); }
+            else { if (k) k.classList.add('hidden'); if (m) m.classList.remove('hidden'); }
+        }));
 
-        document.querySelectorAll('input[name="importMethod"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                const method = e.target.value;
-                document.getElementById('importSeedPanel').style.display = method === 'seed' ? 'block' : 'none';
-                document.getElementById('importPrivateKeyPanel').style.display = method === 'privatekey' ? 'block' : 'none';
-                document.getElementById('importJsonPanel').style.display = method === 'json' ? 'block' : 'none';
+        // Build mnemonic word grid (12 words default, expand to 24 on paste)
+        const mnGrid = document.getElementById('mnemonicGrid');
+        if (mnGrid) {
+            for (let i = 0; i < 24; i++) {
+                const inp = document.createElement('input');
+                inp.type = 'text'; inp.placeholder = `Word ${i + 1}`; inp.className = 'form-input'; inp.dataset.wordIdx = i;
+                if (i >= 12) inp.style.display = 'none';
+                mnGrid.appendChild(inp);
+            }
+            mnGrid.addEventListener('paste', (e) => {
+                const text = (e.clipboardData || window.clipboardData).getData('text').trim();
+                const words = text.split(/\s+/);
+                if (words.length >= 2) {
+                    e.preventDefault();
+                    const inputs = mnGrid.querySelectorAll('input');
+                    if (words.length > 12) inputs.forEach(inp => inp.style.display = '');
+                    words.forEach((w, i) => { if (inputs[i]) inputs[i].value = w; });
+                }
             });
-        });
+        }
+
+        // Import tab — connect from private key or mnemonic
+        document.getElementById('wmConnectBtn')?.addEventListener('click', () => this.wmImportWallet());
+
+        // Extension tab
+        document.getElementById('wmExtensionBtn')?.addEventListener('click', () => this.wmConnectExtension());
+
+        // Create tab — generate new keypair
+        document.getElementById('wmCreateBtn')?.addEventListener('click', () => this.wmCreateWallet());
+
+        // Copy buttons in create tab
+        document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => {
+            const el = document.getElementById(btn.dataset.copy);
+            if (el) navigator.clipboard.writeText(el.textContent).then(() => this.addTerminalLine('Copied!', 'success'));
+        }));
         
         // Faucet button
         document.getElementById('faucetBtn')?.addEventListener('click', () => {
@@ -340,6 +330,7 @@ const Playground = {
         document.getElementById('buildBtn')?.addEventListener('click', () => this.buildProgram());
         document.getElementById('deployBtn')?.addEventListener('click', () => this.deployProgram());
         document.getElementById('upgradeProgramBtn')?.addEventListener('click', () => this.upgradeProgram());
+        document.getElementById('closeProgramBtn')?.addEventListener('click', () => this.closeProgram());
         document.getElementById('testBtn')?.addEventListener('click', () => this.runTests());
         document.getElementById('formatBtn')?.addEventListener('click', () => this.formatCode());
         document.getElementById('verifyBtn')?.addEventListener('click', () => this.verifyCode());
@@ -414,7 +405,26 @@ const Playground = {
         });
 
         document.getElementById('importProgramKeypairBtn')?.addEventListener('click', () => {
+            this.toggleProgramSeedImportUI(true);
+        });
+
+        document.getElementById('programSeedImportConfirmBtn')?.addEventListener('click', () => {
             this.importProgramKeypair();
+        });
+
+        document.getElementById('programSeedImportCancelBtn')?.addEventListener('click', () => {
+            this.toggleProgramSeedImportUI(false);
+        });
+
+        document.getElementById('programSeedImportInput')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.importProgramKeypair();
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.toggleProgramSeedImportUI(false);
+            }
         });
 
         document.getElementById('exportProgramKeypairBtn')?.addEventListener('click', () => {
@@ -488,9 +498,6 @@ const Playground = {
             ?.addEventListener('click', () => terminalInput?.focus());
         
         // Test & Interact
-        document.getElementById('testProgramBtn')?.addEventListener('click', () => {
-            this.testProgram();
-        });
 
         document.getElementById('testProgramAddr')?.addEventListener('change', (e) => {
             const programId = e.target.value.trim();
@@ -639,24 +646,25 @@ const Playground = {
             }
         });
         
-        // Subscribe to metrics if we can get them
-        // For now, poll metrics every 5s
-        setInterval(async () => {
-            try {
-                const metrics = await this.rpc.getMetrics();
-                const tpsEl = document.getElementById('metricTPS');
-                const totalTxsEl = document.getElementById('metricTotalTxs');
-                const blockTimeEl = document.getElementById('metricBlockTime');
-                const burnedEl = document.getElementById('metricBurned');
+        // Metrics polling — only if at least one metric element exists in DOM
+        if (document.getElementById('metricTPS') || document.getElementById('metricTotalTxs')) {
+            setInterval(async () => {
+                try {
+                    const metrics = await this.rpc.getMetrics();
+                    const tpsEl = document.getElementById('metricTPS');
+                    const totalTxsEl = document.getElementById('metricTotalTxs');
+                    const blockTimeEl = document.getElementById('metricBlockTime');
+                    const burnedEl = document.getElementById('metricBurned');
 
-                if (tpsEl) tpsEl.textContent = metrics.tps.toFixed(2);
-                if (totalTxsEl) totalTxsEl.textContent = metrics.total_transactions.toLocaleString();
-                if (blockTimeEl) blockTimeEl.textContent = `${(metrics.average_block_time * 1000).toFixed(0)}ms`;
-                if (burnedEl) burnedEl.textContent = `${(metrics.total_burned / 1_000_000_000).toFixed(2)} MOLT`;
-            } catch (e) {
-                // Ignore errors
-            }
-        }, 5000);
+                    if (tpsEl) tpsEl.textContent = metrics.tps.toFixed(2);
+                    if (totalTxsEl) totalTxsEl.textContent = metrics.total_transactions.toLocaleString();
+                    if (blockTimeEl) blockTimeEl.textContent = `${(metrics.average_block_time * 1000).toFixed(0)}ms`;
+                    if (burnedEl) burnedEl.textContent = `${(metrics.total_burned / 1_000_000_000).toFixed(2)} MOLT`;
+                } catch (e) {
+                    // Ignore errors
+                }
+            }, 5000);
+        }
         
         // Subscribe to wallet balance if we have a wallet
         if (this.wallet) {
@@ -1627,32 +1635,7 @@ const Playground = {
         }
     },
 
-    updateCreateWalletDescription() {
-        const description = document.getElementById('createWalletDescription');
-        const warning = document.getElementById('createWalletWarning');
-        if (!description) return;
 
-        if (this.network === 'mainnet') {
-            description.textContent = 'Create a new wallet for mainnet deployment. Store keys securely.';
-            if (warning) {
-                warning.innerHTML = '<i class="fas fa-shield-alt"></i><strong>Mainnet wallet:</strong> You are responsible for key security.';
-            }
-            return;
-        }
-
-        if (this.network === 'local') {
-            description.textContent = 'Create a new wallet for local testing.';
-            if (warning) {
-                warning.innerHTML = '<i class="fas fa-exclamation-triangle"></i><strong>Local only!</strong> This wallet is for development.';
-            }
-            return;
-        }
-
-        description.textContent = 'Create a new wallet for testnet experimentation.';
-        if (warning) {
-            warning.innerHTML = '<i class="fas fa-exclamation-triangle"></i><strong>For testing only!</strong> Don\'t send real funds to this wallet.';
-        }
-    },
 
     scheduleRegistryStatusUpdate() {
         if (this.registryStatusTimer) {
@@ -1716,7 +1699,11 @@ const Playground = {
                 this.setRegistryStatus('Available', 'available');
             }
         } catch (error) {
-            this.setRegistryStatus('Registry unavailable', 'warning');
+            if (error && error.message && error.message.includes('Method not found')) {
+                this.setRegistryStatus('Registry not supported on this network', 'info');
+            } else {
+                this.setRegistryStatus('Could not check registry — node may be offline', 'warning');
+            }
         }
     },
 
@@ -3015,6 +3002,8 @@ pub extern "C" fn total_minted() -> u64 {
                 };
                 this.registryLookupCache.set(registryPayload.symbol, result.registry);
             }
+
+            result.owner = result.owner || this.wallet?.address || null;
             
             // Save deployed program
             this.deployedPrograms.push(result);
@@ -3051,8 +3040,8 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
-        // Determine which program to upgrade
-        let programId = document.getElementById('upgradeProgramId')?.value?.trim();
+        // Determine which program to upgrade — use currently viewed program, or last deployed
+        let programId = this.selectedProgramId;
         if (!programId && this.deployedPrograms.length > 0) {
             programId = this.deployedPrograms[this.deployedPrograms.length - 1].programId;
         }
@@ -3078,6 +3067,35 @@ pub extern "C" fn total_minted() -> u64 {
             await this.refreshBalance();
         } catch (error) {
             this.addTerminalLine('❌ Upgrade failed:', 'error');
+            this.addTerminalLine(`   ${error.message}`, 'error');
+        }
+    },
+
+    async closeProgram() {
+        if (!this.wallet) {
+            this.addTerminalLine('❌ No wallet connected.', 'error');
+            this.openWalletModal();
+            return;
+        }
+
+        const programId = this.selectedProgramId || (this.deployedPrograms.length > 0 ? this.deployedPrograms[this.deployedPrograms.length - 1].programId : null);
+        if (!programId) {
+            this.addTerminalLine('❌ No program selected to close.', 'error');
+            return;
+        }
+
+        if (!confirm(`Close program ${this.truncateAddress(programId)}? This cannot be undone.`)) return;
+
+        this.addTerminalLine(`🗑️ Closing program ${programId}...`, 'info');
+        try {
+            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const result = await deployer.close(programId);
+            this.addTerminalLine('✅ Program closed!', 'success');
+            this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
+            await this.refreshBalance();
+            this.updateDeployedProgramsList();
+        } catch (error) {
+            this.addTerminalLine('❌ Close failed:', 'error');
             this.addTerminalLine(`   ${error.message}`, 'error');
         }
     },
@@ -3351,211 +3369,236 @@ pub extern "C" fn total_minted() -> u64 {
     // ========================================================================
     
     openWalletModal() {
-        // Create modal if it doesn't exist
-        let modal = document.getElementById('walletModal');
-        if (!modal) {
-            modal = this.createWalletModal();
-            document.body.appendChild(modal);
-        }
+        const modal = document.getElementById('walletModal');
+        if (!modal) return;
+        this.renderWalletList();
+        this.resetWalletModalInputs();
+        this.switchWmTab(this.wallets.length ? 'wallets' : 'extension');
+        modal.classList.remove('hidden');
+    },
 
-        this.updateCreateWalletDescription();
-        
-        modal.style.display = 'flex';
-    },
-    
-    createWalletModal() {
-        const modal = document.createElement('div');
-        modal.id = 'walletModal';
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2><i class="fas fa-wallet"></i> Wallet</h2>
-                    <button class="modal-close" onclick="Playground.closeWalletModal()">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-                <div class="modal-body">
-                    ${this.wallet ? this.getWalletConnectedHTML() : this.getWalletDisconnectedHTML()}
-                </div>
-            </div>
-        `;
-        return modal;
-    },
-    
-    getWalletDisconnectedHTML() {
-        return `
-            <div class="wallet-actions">
-                <button class="btn btn-primary btn-block btn-lg" onclick="Playground.createWallet()">
-                    <i class="fas fa-plus-circle"></i> Create New Wallet
-                </button>
-                <button class="btn btn-secondary btn-block btn-lg" onclick="Playground.importWallet()">
-                    <i class="fas fa-file-import"></i> Import Wallet
-                </button>
-            </div>
-        `;
-    },
-    
-    getWalletConnectedHTML() {
-        return `
-            <div class="wallet-info-display">
-                <div class="wallet-address">
-                    <label>Address:</label>
-                    <code>${this.wallet.address}</code>
-                    <button class="btn-icon" onclick="navigator.clipboard.writeText('${this.wallet.address}')">
-                        <i class="fas fa-copy"></i>
-                    </button>
-                </div>
-                <div class="wallet-balance">
-                    <label>Balance:</label>
-                    <h3>${this.balance ? (this.balance.spendable / 1_000_000_000).toFixed(4) : '0.0000'} MOLT</h3>
-                </div>
-            </div>
-            <div class="wallet-actions">
-                <button class="btn btn-secondary btn-block" onclick="Playground.exportWallet()">
-                    <i class="fas fa-download"></i> Export Wallet
-                </button>
-                <button class="btn btn-danger btn-block" onclick="Playground.disconnectWallet()">
-                    <i class="fas fa-sign-out-alt"></i> Disconnect
-                </button>
-            </div>
-        `;
-    },
-    
     closeWalletModal() {
         const modal = document.getElementById('walletModal');
-        if (modal) {
-            modal.style.display = 'none';
-        }
+        if (modal) modal.classList.add('hidden');
+        this.resetWalletModalInputs();
     },
 
-    createWalletFromModal() {
-        const password = document.getElementById('createWalletPassword')?.value || '';
-        const name = document.getElementById('createWalletName')?.value || '';
-        this.createWallet(password, name);
+    switchWmTab(tab) {
+        const wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
+        document.querySelectorAll('.wm-tab').forEach(t => t.classList.toggle('active', t.dataset.wmTab === tab));
+        Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== tab); });
     },
 
-    async importWalletFromModal() {
-        const method = document.querySelector('input[name="importMethod"]:checked')?.value || 'seed';
-        const name = document.getElementById('importWalletName')?.value || '';
+    resetWalletModalInputs() {
+        const pk = document.getElementById('wmPrivateKey');
+        if (pk) pk.value = '';
+        const pwd = document.getElementById('wmPassword');
+        if (pwd) pwd.value = '';
+        const createPwd = document.getElementById('wmCreatePassword');
+        if (createPwd) createPwd.value = '';
+        const mnGrid = document.getElementById('mnemonicGrid');
+        if (mnGrid) mnGrid.querySelectorAll('input').forEach((inp, idx) => { inp.value = ''; inp.style.display = idx >= 12 ? 'none' : ''; });
+        const created = document.getElementById('wmCreatedWallet');
+        if (created) created.classList.add('hidden');
+        const createBtn = document.getElementById('wmCreateBtn');
+        if (createBtn) createBtn.classList.remove('hidden');
+        // Default import type to key
+        document.querySelectorAll('.wm-import-type').forEach(b => b.classList.toggle('active', b.dataset.import === 'key'));
+        const k = document.getElementById('wmImportKey');
+        const m = document.getElementById('wmImportMnemonic');
+        if (k) k.classList.remove('hidden');
+        if (m) m.classList.add('hidden');
+    },
 
-        if (method === 'json') {
-            const fileInput = document.getElementById('importJsonFile');
-            const file = fileInput?.files?.[0];
-            if (!file) {
-                alert('Select a JSON keystore file');
-                return;
-            }
-            try {
-                const content = await file.text();
-                const json = JSON.parse(content);
-                const wallet = MoltChain.Wallet.import(json, '');
-                this.applyImportedWallet(wallet, name);
-            } catch (e) {
-                alert('Invalid JSON keystore');
-            }
+    renderWalletList() {
+        const list = document.getElementById('wmWalletsList');
+        if (!list) return;
+
+        if (!this.wallets.length) {
+            list.innerHTML = '<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>';
+            const b = document.getElementById('wmEmptyImport');
+            if (b) b.addEventListener('click', () => this.switchWmTab('import'));
             return;
         }
 
-        const rawValue = method === 'privatekey'
-            ? document.getElementById('importPrivateKey')?.value
-            : document.getElementById('importSeed')?.value;
+        list.innerHTML = this.wallets.map((w, i) => {
+            const isActive = w.id === this.activeWalletId;
+            const label = w.name || this.truncateAddress(w.address);
+            return `<div class="wm-wallet-item ${isActive ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${isActive ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
+        }).join('') + '<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>';
 
-        try {
-            const seed = this.parseWalletSeedInput(rawValue || '');
-            if (!seed) {
-                alert('Enter a valid secret key');
+        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => {
+            const w = this.wallets[parseInt(btn.dataset.idx)];
+            if (w && w.id !== this.activeWalletId) this.setActiveWallet(w.id).then(() => this.renderWalletList());
+        }));
+
+        list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', () => {
+            const i = parseInt(btn.dataset.idx, 10);
+            const removed = this.wallets[i];
+            if (Number.isNaN(i) || !removed) return;
+            this.wallets.splice(i, 1);
+            if (this.activeWalletId === removed.id) {
+                if (this.wallets.length) {
+                    this.setActiveWallet(this.wallets[0].id).then(() => this.renderWalletList());
+                } else {
+                    this.activeWalletId = null;
+                    this.wallet = null;
+                    this.balance = null;
+                    localStorage.removeItem('molt_wallet');
+                    this.updateWalletDisplay();
+                    this.updateProgramIdPreview();
+                    this.renderWalletList();
+                }
+            } else {
+                this.renderWalletList();
+            }
+            this.saveWalletStore();
+        }));
+
+        const da = document.getElementById('wmDisconnectAll');
+        if (da) da.addEventListener('click', () => {
+            this.wallets = [];
+            this.activeWalletId = null;
+            this.wallet = null;
+            this.balance = null;
+            localStorage.removeItem('molt_wallet');
+            this.saveWalletStore();
+            this.updateWalletDisplay();
+            this.renderWalletList();
+            this.updateProgramIdPreview();
+        });
+    },
+
+    wmImportWallet() {
+        const importPassword = document.getElementById('wmPassword')?.value.trim() || '';
+        if (!importPassword) { alert('Password is required'); return; }
+        const activeType = document.querySelector('.wm-import-type.active')?.dataset.import || 'key';
+        let wallet;
+
+        if (activeType === 'key') {
+            const raw = (document.getElementById('wmPrivateKey')?.value || '').trim();
+            if (!raw) { alert('Enter a private key'); return; }
+            try {
+                let seedBytes;
+                if (/^(0x)?[0-9a-fA-F]+$/.test(raw)) {
+                    const hex = raw.startsWith('0x') ? raw.slice(2) : raw;
+                    seedBytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+                } else {
+                    // Try base58 decode
+                    seedBytes = MoltChain.utils.base58Decode(raw);
+                }
+                if (seedBytes.length === 64) seedBytes = seedBytes.slice(0, 32);
+                if (seedBytes.length !== 32) { alert('Invalid key length (need 32 or 64 bytes)'); return; }
+                wallet = new MoltChain.Wallet(seedBytes);
+            } catch (e) {
+                alert('Invalid private key: ' + e.message);
                 return;
             }
-            const wallet = MoltChain.Wallet.import({ seed }, '');
-            this.applyImportedWallet(wallet);
-        } catch (e) {
-            alert(e.message || 'Invalid secret key');
+        } else {
+            // Mnemonic
+            const inputs = document.querySelectorAll('#mnemonicGrid input');
+            const words = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
+            if (words.length !== 12 && words.length !== 24) { alert('Enter 12 or 24 mnemonic words'); return; }
+            try {
+                // BIP39: PBKDF2-HMAC-SHA512, salt="mnemonic", 2048 iterations (matches wallet app & extension)
+                const phrase = words.join(' ').toLowerCase();
+                const mnemonicBytes = new TextEncoder().encode(phrase.normalize('NFKD').trim());
+                const saltBytes = new TextEncoder().encode('mnemonic');
+                crypto.subtle.importKey('raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']).then(keyMaterial => {
+                    return crypto.subtle.deriveBits(
+                        { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
+                        keyMaterial, 512
+                    );
+                }).then(seedBuffer => {
+                    const seed = new Uint8Array(seedBuffer).slice(0, 32);
+                    wallet = new MoltChain.Wallet(seed);
+                    this._finishImport(wallet);
+                }).catch(e => alert('Mnemonic derivation failed: ' + e.message));
+                return; // async path
+            } catch (e) {
+                alert('Invalid mnemonic: ' + e.message);
+                return;
+            }
         }
+
+        this._finishImport(wallet);
     },
 
-    parseWalletSeedInput(value) {
-        const trimmed = (value || '').trim();
-        if (!trimmed) return null;
-        if (trimmed.includes(' ')) {
-            throw new Error('Mnemonic import not supported. Use base58 or JSON.');
-        }
-        if (/^0x[0-9a-fA-F]+$/.test(trimmed)) {
-            const bytes = MoltChain.utils.hexToBytes(trimmed);
-            return MoltChain.utils.base58Encode(bytes);
-        }
-        return trimmed;
-    },
-
-    applyImportedWallet(wallet, name = '') {
+    _finishImport(wallet) {
+        if (!wallet) return;
+        const label = document.getElementById('wmPassword')?.value.trim() || '';
         this.wallet = wallet;
-        this.addWalletToStore(wallet, name);
+        this.addWalletToStore(wallet, label || `Imported ${this.wallets.length}`);
         this.saveWallet();
         this.updateWalletDisplay();
+        this.renderWalletList();
         this.closeWalletModal();
         this.refreshBalance();
-
         this.addTerminalLine('✅ Wallet imported!', 'success');
         this.addTerminalLine(`   Address: ${this.wallet.address}`, 'info');
-
         this.updateProgramIdPreview();
     },
 
-    exportWalletSeed() {
-        if (!this.wallet) return;
-        const walletData = this.wallet.export('');
-        alert(`SECRET KEY (BASE58):\n\n${walletData.seed}\n\nKeep it secure!`);
+    async wmConnectExtension() {
+        try {
+            if (typeof window.moltWallet === 'undefined') {
+                alert('MoltWallet extension not detected. Please install it.');
+                return;
+            }
+            const resp = await window.moltWallet.connect();
+            if (resp && resp.address) {
+                // Create a lightweight wallet object
+                this.wallet = { address: resp.address, isExtension: true, export: () => ({ publicKey: resp.address }) };
+                this.addWalletToStore({ address: resp.address, export: () => ({ seed: '', publicKey: resp.address }) }, 'Extension Wallet');
+                this.saveWalletStore();
+                this.updateWalletDisplay();
+                this.renderWalletList();
+                this.closeWalletModal();
+                this.refreshBalance();
+                this.addTerminalLine('✅ Extension wallet connected!', 'success');
+                this.addTerminalLine(`   Address: ${resp.address}`, 'info');
+                this.updateProgramIdPreview();
+            }
+        } catch (e) {
+            alert('Extension connection failed: ' + e.message);
+        }
     },
 
-    exportWalletPrivateKey() {
-        if (!this.wallet) return;
-        const walletData = this.wallet.export('');
-        const seedBytes = MoltChain.utils.base58Decode(walletData.seed);
-        const hex = MoltChain.utils.bytesToHex(seedBytes);
-        alert(`SECRET KEY (HEX):\n\n0x${hex}\n\nKeep it secure!`);
-    },
-    
-    createWallet(password = '', name = '') {
-        this.wallet = new MoltChain.Wallet();
-        this.addWalletToStore(this.wallet, name);
-        const walletData = this.wallet.export(password);
-        
-        alert(`SAVE YOUR SECRET KEY (BASE58):\n\n${walletData.seed}\n\nKeep it secure!`);
-        
-        // Save wallet
+    wmCreateWallet() {
+        const createPassword = document.getElementById('wmCreatePassword')?.value.trim() || '';
+        if (!createPassword) { alert('Password is required'); return; }
+        const wallet = new MoltChain.Wallet();
+        this.wallet = wallet;
+        const label = `Wallet ${this.wallets.length + 1}`;
+        this.addWalletToStore(wallet, label);
         this.saveWallet();
-        
-        // Update UI
         this.updateWalletDisplay();
-        this.closeWalletModal();
-        
+
+        // Show generated info — private key as 64 hex chars (32-byte seed), matching DEX format
+        const created = document.getElementById('wmCreatedWallet');
+        const addrEl = document.getElementById('wmNewAddress');
+        const keyEl = document.getElementById('wmNewKey');
+        const createBtn = document.getElementById('wmCreateBtn');
+        if (created && addrEl && keyEl) {
+            addrEl.textContent = wallet.address;
+            keyEl.textContent = Array.from(wallet.seed).map(x => x.toString(16).padStart(2, '0')).join('');
+            created.classList.remove('hidden');
+        }
+        if (createBtn) createBtn.classList.add('hidden');
+
         // Subscribe to updates
         if (this.ws && this.ws.connected) {
-            this.ws.subscribeAccount(this.wallet.address, (accountInfo) => {
+            this.ws.subscribeAccount(wallet.address, (accountInfo) => {
                 this.balance = accountInfo;
                 this.updateBalanceDisplay();
             });
         }
-        
-        // Refresh balance
-        this.refreshBalance();
-        
-        this.addTerminalLine('✅ New wallet created!', 'success');
-        this.addTerminalLine(`   Address: ${this.wallet.address}`, 'info');
 
+        this.refreshBalance();
+        this.addTerminalLine('✅ New wallet created!', 'success');
+        this.addTerminalLine(`   Address: ${wallet.address}`, 'info');
         this.updateProgramIdPreview();
-    },
-    
-    importWallet() {
-        const seed = prompt('Enter your base58 secret key:');
-        if (seed) {
-            try {
-                const wallet = MoltChain.Wallet.import({ seed }, '');
-                this.applyImportedWallet(wallet, name);
-            } catch (e) {
-                alert('Invalid secret key');
-            }
-        }
+        this.renderWalletList();
     },
     
     exportWallet() {
@@ -3685,7 +3728,6 @@ pub extern "C" fn total_minted() -> u64 {
         this.activeWalletId = id;
         this.saveWalletStore();
         await this.applyActiveWallet();
-        this.hideWalletDropdown();
     },
 
     removeActiveWallet() {
@@ -3699,7 +3741,6 @@ pub extern "C" fn total_minted() -> u64 {
         localStorage.removeItem('molt_wallet');
         this.saveWalletStore();
         this.updateWalletDisplay();
-        this.hideWalletDropdown();
     },
 
     updateWalletBalanceUI() {
@@ -3921,7 +3962,6 @@ pub extern "C" fn total_minted() -> u64 {
             faucetBtn.style.display = ['mainnet', 'local-mainnet'].includes(this.network) ? 'none' : 'inline-flex';
         }
 
-        this.updateCreateWalletDescription();
     },
     
     updateWalletDisplay() {
@@ -3934,10 +3974,7 @@ pub extern "C" fn total_minted() -> u64 {
             }
         }
         this.updateWalletBalanceUI();
-        this.updateWalletDropdown();
-        if (!this.wallet) {
-            this.hideWalletDropdown();
-        }
+        this.renderWalletList();
         this.updateProgramOverrideAvailability();
         this.updateTemplateOwnerUI();
     },
@@ -3957,7 +3994,18 @@ pub extern "C" fn total_minted() -> u64 {
         const listEl = document.getElementById('deployedProgramsList');
         if (!listEl) return;
 
-        const mergedPrograms = this.mergeProgramLists();
+        if (!this.wallet?.address) {
+            listEl.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-wallet"></i>
+                    <p>No wallet connected</p>
+                    <small>Connect a wallet to view your deployed programs</small>
+                </div>
+            `;
+            return;
+        }
+
+        const mergedPrograms = this.mergeProgramLists(this.wallet.address);
 
         if (mergedPrograms.length === 0) {
             listEl.innerHTML = `
@@ -3970,16 +4018,17 @@ pub extern "C" fn total_minted() -> u64 {
         } else {
             // AUDIT-FIX F14.2: escape metadata name + use data-attribute instead of onclick interpolation
             listEl.innerHTML = mergedPrograms.map(program => `
-                <div class="deployed-program-item">
-                    <div class="program-icon">📦</div>
-                    <div class="program-info">
-                        <h4>${escapeHtml(program.metadata?.name || 'Unnamed')}</h4>
-                        <code class="program-id">${escapeHtml(this.truncateAddress(program.programId))}</code>
+                <div class="program-card">
+                    <div class="program-header">
+                        <span class="program-name">${escapeHtml(program.metadata?.name || 'Unnamed')}</span>
+                        <button class="btn-icon program-view-btn" data-program-id="${escapeHtml(program.programId)}" title="View in Explorer">
+                            <i class="fas fa-external-link-alt"></i>
+                        </button>
                     </div>
-                    <span class="program-source">${escapeHtml(program.sourceLabel)}</span>
-                    <button class="btn-icon program-view-btn" data-program-id="${escapeHtml(program.programId)}">
-                        <i class="fas fa-external-link-alt"></i>
-                    </button>
+                    <code class="program-address">${escapeHtml(this.truncateAddress(program.programId))}</code>
+                    <div class="program-stats">
+                        <span>${escapeHtml(program.sourceLabel)}</span>
+                    </div>
                 </div>
             `).join('');
 
@@ -4014,24 +4063,28 @@ pub extern "C" fn total_minted() -> u64 {
         }
     },
 
-    mergeProgramLists() {
+    mergeProgramLists(ownerAddress = null) {
+        if (!ownerAddress) return [];
+
         const merged = new Map();
+        const targetOwner = String(ownerAddress).trim();
 
         this.deployedPrograms.forEach(program => {
+            const programOwner = String(
+                program?.owner
+                || program?.registry?.owner
+                || program?.metadata?.owner
+                || ''
+            ).trim();
+
+            if (!programOwner || programOwner !== targetOwner) {
+                return;
+            }
+
             merged.set(program.programId, {
                 ...program,
                 sourceLabel: 'Local'
             });
-        });
-
-        this.networkPrograms.forEach(programId => {
-            if (!merged.has(programId)) {
-                merged.set(programId, {
-                    programId,
-                    metadata: { name: 'On-chain Program' },
-                    sourceLabel: 'On-chain'
-                });
-            }
         });
 
         return Array.from(merged.values());
@@ -4297,6 +4350,23 @@ pub extern "C" fn total_minted() -> u64 {
         if (checkbox) {
             checkbox.checked = enabled;
         }
+        if (!enabled) {
+            this.toggleProgramSeedImportUI(false);
+        }
+    },
+
+    toggleProgramSeedImportUI(show) {
+        const group = document.getElementById('programSeedImportGroup');
+        const input = document.getElementById('programSeedImportInput');
+        if (!group) return;
+        group.style.display = show ? 'block' : 'none';
+        if (!show && input) {
+            input.value = '';
+        }
+        if (show && input) {
+            input.focus();
+            input.select();
+        }
     },
 
     saveProgramOverride() {
@@ -4314,7 +4384,14 @@ pub extern "C" fn total_minted() -> u64 {
                 preview.value = 'Connect wallet';
                 return;
             }
-            const overrideValue = this.getProgramIdOverride();
+            let overrideValue = this.getProgramIdOverride();
+            if (!overrideValue && this.programKeypair?.publicKey) {
+                overrideValue = this.programKeypair.publicKey;
+                const overrideInput = document.getElementById('programIdOverrideValue');
+                if (overrideInput) {
+                    overrideInput.value = overrideValue;
+                }
+            }
             preview.value = overrideValue || 'Override enabled';
             if (overrideValue) {
                 this.updateProgramIdDeclaration(overrideValue);
@@ -4322,8 +4399,13 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
-        if (!this.compiledWasm || !this.wallet) {
-            preview.value = 'Build and connect wallet';
+        if (!this.wallet) {
+            preview.value = 'Connect wallet to preview';
+            return;
+        }
+
+        if (!this.compiledWasm) {
+            preview.value = 'Build to preview';
             return;
         }
 
@@ -4395,18 +4477,26 @@ pub extern "C" fn total_minted() -> u64 {
         }
     },
 
-    importProgramKeypair() {
-        const seed = prompt('Enter program seed (base58):');
-        if (!seed) return;
+    importProgramKeypair(seedInput) {
+        const fromInput = document.getElementById('programSeedImportInput')?.value;
+        const seed = String(seedInput || fromInput || '').trim();
+        if (!seed) {
+            this.showToast('Enter program seed first', 'warning');
+            return;
+        }
 
         try {
             const utils = MoltChain.utils;
-            const seedBytes = utils.base58Decode(seed.trim());
+            const seedBytes = utils.base58Decode(seed);
+            if (!seedBytes || seedBytes.length !== 32) {
+                this.showToast('Program seed must decode to 32 bytes', 'warning');
+                return;
+            }
             const keypair = window.nacl.sign.keyPair.fromSeed(seedBytes);
             const pubkeyBase58 = utils.base58Encode(keypair.publicKey);
 
             this.programKeypair = {
-                seed: seed.trim(),
+                seed,
                 publicKey: pubkeyBase58
             };
             localStorage.setItem('program_keypair', JSON.stringify(this.programKeypair));
@@ -4421,8 +4511,10 @@ pub extern "C" fn total_minted() -> u64 {
             this.saveProgramOverride();
 
             this.updateProgramIdPreview();
+            this.toggleProgramSeedImportUI(false);
+            this.showToast('Program keypair imported', 'success');
         } catch (e) {
-            alert('Invalid program seed');
+            this.showToast('Invalid program seed', 'warning');
         }
     },
 

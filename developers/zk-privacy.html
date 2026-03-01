@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ZK Privacy Layer - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -88,7 +88,7 @@
             </div>
         </aside>
 
-        <main class="docs-content">
+        <main class="docs-main">
             <h1>ZK Shielded Privacy Layer</h1>
             <p class="subtitle">Groth16/BN254 zero-knowledge proofs for private value transfers on MoltChain.</p>
 
@@ -126,7 +126,7 @@
             <section id="concepts">
                 <h2>Key Concepts</h2>
 
-                <h3>Notes</h3>
+                <h3 id="notes">Notes</h3>
                 <p>A <em>note</em> represents value in the shielded pool. Each note has:</p>
                 <ul>
                     <li><strong>value</strong> — amount in shells (1 MOLT = 1,000,000,000 shells)</li>
@@ -137,12 +137,12 @@
                 <p>The <strong>commitment</strong> <code>Poseidon(value, blinding)</code> is stored on-chain in the Merkle tree.
                 The preimage (<code>value</code>, <code>blinding</code>, <code>serial</code>, <code>spending_key</code>) must be kept secret and persisted.</p>
 
-                <h3>Nullifiers</h3>
+                <h3 id="nullifiers">Nullifiers</h3>
                 <p>To spend a note, the owner reveals the <strong>nullifier</strong> = <code>Poseidon(serial, spending_key)</code>.
                 The chain records spent nullifiers to prevent double-spending. Since the nullifier is derived deterministically
                 from the note's secrets, only the owner can produce it, and each note can only be spent once.</p>
 
-                <h3>Merkle Tree</h3>
+                <h3 id="merkle">Merkle Tree</h3>
                 <p>All commitments are inserted into a binary Merkle tree of depth 20. The Merkle root is stored in
                 the pool state and updated with each shield or transfer operation. The root is a BN254 field element
                 displayed as a 64-character hex string (not base58, since it's a hash, not an address).</p>

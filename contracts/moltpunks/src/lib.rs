@@ -82,6 +82,11 @@ pub extern "C" fn mint(
         core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
         let caller = Address(caller_addr);
 
+        // Parse recipient
+        let mut to_addr = [0u8; 32];
+        core::ptr::copy_nonoverlapping(to_ptr, to_addr.as_mut_ptr(), 32);
+        let to = Address(to_addr);
+
         // P9-SC-06: Verify caller matches transaction signer
         let real_caller = get_caller();
         if real_caller.0 != caller.0 {
@@ -89,9 +94,11 @@ pub extern "C" fn mint(
             return 0;
         }
         
-        // Check if caller is minter
-        if caller.0 != get_minter().0 {
-            log_info("Unauthorized: Only minter can mint");
+        // Allow mint authority OR self-minting to avoid privileged-minter lockout.
+        let minter = get_minter();
+        let is_authorized = caller.0 == minter.0 || caller.0 == to.0;
+        if !is_authorized {
+            log_info("Unauthorized: only minter or self-mint is allowed");
             return 0;
         }
         
@@ -104,11 +111,6 @@ pub extern "C" fn mint(
                 return 0;
             }
         }
-        
-        // Parse recipient
-        let mut to_addr = [0u8; 32];
-        core::ptr::copy_nonoverlapping(to_ptr, to_addr.as_mut_ptr(), 32);
-        let to = Address(to_addr);
         
         // Parse metadata URI
         let mut metadata = alloc::vec![0u8; metadata_len as usize];

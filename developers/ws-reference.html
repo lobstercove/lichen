@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebSocket Reference - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,7 +22,7 @@
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
                 <li><a href="getting-started.html">Get Started</a></li>
-                <li><a href="rpc-reference.html" class="active">API</a></li>
+                <li><a href="ws-reference.html" class="active">API</a></li>
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
@@ -567,6 +567,54 @@ await conn.offMarketSales(subId);</pre></code>
             </div>
 
             <!-- ═══ NEW SUBSCRIPTIONS ═══ -->
+
+            <!-- subscribeBridgeLocks -->
+            <div class="method-card" id="subscribeBridgeLocks">
+                <h3 class="method-name">subscribeBridgeLocks / unsubscribeBridgeLocks</h3>
+                <p class="method-desc">Receive bridge lock events when assets are locked for cross-chain transfer.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "BridgeLock",
+  "chain": "ethereum",
+  "asset": "MOLT",
+  "amount": 250000000,
+  "amount_display": 250.0,
+  "sender": "0xabc...",
+  "recipient": "RecipientPub..."
+}</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeBridgeMints -->
+            <div class="method-card" id="subscribeBridgeMints">
+                <h3 class="method-name">subscribeBridgeMints / unsubscribeBridgeMints</h3>
+                <p class="method-desc">Receive bridge mint events when bridged assets are minted on MoltChain.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "BridgeMint",
+  "chain": "ethereum",
+  "asset": "MOLT",
+  "amount": 250000000,
+  "amount_display": 250.0,
+  "recipient": "RecipientPub...",
+  "tx_hash": "0xdef..."
+}</pre></code>
+                    </div>
+                </div>
+            </div>
 
             <!-- subscribeSignatureStatus -->
             <div class="method-card" id="subscribeSignatureStatus">

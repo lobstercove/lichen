@@ -28,9 +28,10 @@ use moltchain_sdk::{
 // CONSTANTS
 // ============================================================================
 
-const VOTING_PERIOD_SLOTS: u64 = 172_800; // ~48 hours at 1 slot/sec
+const SLOT_DURATION_MS: u64 = 400;
+const VOTING_PERIOD_SLOTS: u64 = 432_000; // ~48 hours at 400ms/slot
 const APPROVAL_THRESHOLD_BPS: u64 = 6600; // 66%
-const EXECUTION_DELAY_SLOTS: u64 = 3_600; // 1 hour timelock after voting
+const EXECUTION_DELAY_SLOTS: u64 = 9_000; // 1 hour timelock after voting at 400ms/slot
 const MIN_REPUTATION: u64 = 500;
 const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000_000; // 10,000 MOLT ($1K at $0.10) per TOKENOMICS.md
 const MIN_LISTING_HOLDERS: u64 = 10;

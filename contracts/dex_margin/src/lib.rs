@@ -748,6 +748,121 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     0
 }
 
+/// Close a margin position with a limit price guard.
+/// Long positions can close only when mark_price >= limit_price.
+/// Short positions can close only when mark_price <= limit_price.
+/// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
+///          5=oracle unavailable (price stale or missing), 6=limit condition not met/invalid.
+pub fn close_position_limit(caller: *const u8, position_id: u64, limit_price: u64) -> u32 {
+    if !reentrancy_enter() { return 4; }
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if limit_price == 0 {
+        reentrancy_exit();
+        return 6;
+    }
+
+    let pk = position_key(position_id);
+    let data = match storage_get(&pk) {
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
+        _ => { reentrancy_exit(); return 1; }
+    };
+
+    let trader = decode_pos_trader(&data);
+    if trader != c { reentrancy_exit(); return 2; }
+    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+
+    let pair_id = decode_pos_pair_id(&data);
+    let side = decode_pos_side(&data);
+    let mark_price = fresh_mark_price(pair_id);
+    if mark_price == 0 {
+        reentrancy_exit();
+        return 5;
+    }
+
+    let limit_ok = if side == SIDE_LONG {
+        mark_price >= limit_price
+    } else {
+        mark_price <= limit_price
+    };
+
+    if !limit_ok {
+        reentrancy_exit();
+        return 6;
+    }
+
+    reentrancy_exit();
+    close_position(caller, position_id)
+}
+
+/// Partially close a margin position with a limit price guard.
+/// Long positions can close only when mark_price >= limit_price.
+/// Short positions can close only when mark_price <= limit_price.
+/// If close_amount >= current position size, delegates to full limit-close.
+/// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
+///          5=oracle unavailable (price stale or missing), 6=invalid input/limit condition not met.
+pub fn partial_close_limit(caller: *const u8, position_id: u64, close_amount: u64, limit_price: u64) -> u32 {
+    if !reentrancy_enter() { return 4; }
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if close_amount == 0 || limit_price == 0 {
+        reentrancy_exit();
+        return 6;
+    }
+
+    let pk = position_key(position_id);
+    let data = match storage_get(&pk) {
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
+        _ => { reentrancy_exit(); return 1; }
+    };
+
+    let trader = decode_pos_trader(&data);
+    if trader != c { reentrancy_exit(); return 2; }
+    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+
+    let pair_id = decode_pos_pair_id(&data);
+    let side = decode_pos_side(&data);
+    let size = decode_pos_size(&data);
+    let mark_price = fresh_mark_price(pair_id);
+    if mark_price == 0 {
+        reentrancy_exit();
+        return 5;
+    }
+
+    let limit_ok = if side == SIDE_LONG {
+        mark_price >= limit_price
+    } else {
+        mark_price <= limit_price
+    };
+
+    if !limit_ok {
+        reentrancy_exit();
+        return 6;
+    }
+
+    reentrancy_exit();
+    if close_amount >= size {
+        close_position(caller, position_id)
+    } else {
+        partial_close(caller, position_id, close_amount)
+    }
+}
+
 /// Add margin to a position
 pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     if !reentrancy_enter() { return 4; }
@@ -857,7 +972,11 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
             args
         },
     );
-    let _ = call_contract(unlock_call);
+    if call_contract(unlock_call).is_err() {
+        log_info("remove_margin: collateral unlock failed");
+        reentrancy_exit();
+        return 8;
+    }
 
     update_pos_margin(&mut data, new_margin);
     storage_set(&pk, &data);
@@ -914,6 +1033,15 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let liquidator_reward = (penalty as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
     let insurance_add = penalty.saturating_sub(liquidator_reward);
 
+    // DEX-L03: Do not silently skip liquidator rewards when reward token is not configured.
+    // If a reward is owed, the MOLT token address must be set.
+    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
+    if liquidator_reward > 0 && is_zero(&molt_addr) {
+        log_info("liquidate: moltcoin address not configured");
+        reentrancy_exit();
+        return 12;
+    }
+
     // Add to insurance fund (saturating to prevent overflow)
     let insurance = load_u64(INSURANCE_FUND_KEY);
     save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add));
@@ -963,19 +1091,16 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
 
     // AUDIT-FIX G-4: Actually transfer liquidator reward via token transfer
     if liquidator_reward > 0 {
-        let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-        if !is_zero(&molt_addr) {
-            let contract_addr = get_contract_address();
-            if call_token_transfer(
-                Address(molt_addr),
-                contract_addr,
-                Address(liq),
-                liquidator_reward,
-            ).is_err() {
-                log_info("liquidate: reward transfer failed, crediting to insurance");
-                // If transfer fails, add reward to insurance fund instead of losing it
-                save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add).saturating_add(liquidator_reward));
-            }
+        let contract_addr = get_contract_address();
+        if call_token_transfer(
+            Address(molt_addr),
+            contract_addr,
+            Address(liq),
+            liquidator_reward,
+        ).is_err() {
+            log_info("liquidate: reward transfer failed, crediting to insurance");
+            // If transfer fails, add reward to insurance fund instead of losing it
+            save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add).saturating_add(liquidator_reward));
         }
     }
 
@@ -1630,6 +1755,25 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
+        // 27 = close_position_limit(caller[32], pos_id[8], limit_price[8])
+        27 => {
+            if args.len() >= 49 {
+                let pos_id = bytes_to_u64(&args[33..41]);
+                let limit_price = bytes_to_u64(&args[41..49]);
+                let r = close_position_limit(args[1..33].as_ptr(), pos_id, limit_price);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 28 = partial_close_limit(caller[32], pos_id[8], close_amount[8], limit_price[8])
+        28 => {
+            if args.len() >= 57 {
+                let pos_id = bytes_to_u64(&args[33..41]);
+                let close_amount = bytes_to_u64(&args[41..49]);
+                let limit_price = bytes_to_u64(&args[49..57]);
+                let r = partial_close_limit(args[1..33].as_ptr(), pos_id, close_amount, limit_price);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
@@ -2018,6 +2162,7 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
+        let molt_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 2x long, margin=500M, size=1B at price 1.0
         test_mock::set_caller(trader);
@@ -2025,6 +2170,7 @@ mod tests {
         // Drop mark price to 0.6 → PnL = -400M, effective = 100M, notional = 600M
         // margin_ratio = 100M / 600M * 10000 = 1666 bps < 2500 maint → liquidatable
         test_mock::set_caller(admin);
+        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 600_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -2038,6 +2184,7 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
+        let molt_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20M
         // maint_margin_bps=100 = 1%
@@ -2046,6 +2193,7 @@ mod tests {
         // Drop mark price to 0.985 → PnL = -15M, effective = 5M, notional = 985M
         // ratio = 5M / 985M * 10000 ≈ 50 bps < 100 bps maint → liquidatable
         test_mock::set_caller(admin);
+        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 985_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -2070,6 +2218,7 @@ mod tests {
         let trader_a = [2u8; 32];
         let trader_b = [3u8; 32];
         let liquidator = [4u8; 32];
+        let molt_addr = [10u8; 32];
         test_mock::set_slot(100);
 
         // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
@@ -2082,6 +2231,7 @@ mod tests {
         // Drop mark price to 0.85 → PnL=-150M, effective=50M, notional=850M
         // ratio = 50M/850M*10000 = 588 bps < 1000 maint → liquidatable
         test_mock::set_caller(_admin);
+        set_moltcoin_address(_admin.as_ptr(), molt_addr.as_ptr());
         set_mark_price(_admin.as_ptr(), 1, 850_000_000);
         test_mock::set_caller(liquidator);
         let liq1 = liquidate(liquidator.as_ptr(), 1);
@@ -2853,6 +3003,74 @@ mod tests {
         assert_eq!(close_position(trader.as_ptr(), 1), 0);
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_CLOSED);
+    }
+
+    #[test]
+    fn test_close_position_limit_long_success() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_020_000_000);
+
+        test_mock::set_caller(trader);
+        assert_eq!(close_position_limit(trader.as_ptr(), 1, 1_010_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_CLOSED);
+    }
+
+    #[test]
+    fn test_close_position_limit_long_not_met() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Current mark is 1.0, so requiring >= 1.1 should fail.
+        assert_eq!(close_position_limit(trader.as_ptr(), 1, 1_100_000_000), 6);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_OPEN);
+    }
+
+    #[test]
+    fn test_partial_close_limit_long_success() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_020_000_000);
+
+        test_mock::set_caller(trader);
+        assert_eq!(partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_010_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_OPEN);
+        assert_eq!(decode_pos_size(&data), 500_000_000);
+    }
+
+    #[test]
+    fn test_partial_close_limit_long_not_met() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Current mark is 1.0, so requiring >= 1.1 should fail.
+        assert_eq!(partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_100_000_000), 6);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_OPEN);
+        assert_eq!(decode_pos_size(&data), 1_000_000_000);
     }
 
     #[test]

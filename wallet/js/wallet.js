@@ -27,13 +27,6 @@ const WS_ENDPOINTS = {
     'local-mainnet': 'ws://localhost:8900'
 };
 
-const CUSTODY_ENDPOINTS = {
-    'mainnet': 'https://custody.moltchain.network',
-    'testnet': 'https://testnet-custody.moltchain.network',
-    'local-testnet': 'http://localhost:9105',
-    'local-mainnet': 'http://localhost:9105'
-};
-
 function getSelectedNetwork() {
     return localStorage.getItem('moltchain_wallet_network') || 'local-testnet';
 }
@@ -44,10 +37,6 @@ function getRpcEndpoint() {
 
 function getWsEndpoint() {
     return WS_ENDPOINTS[getSelectedNetwork()] || WS_ENDPOINTS['local-testnet'];
-}
-
-function getCustodyEndpoint() {
-    return CUSTODY_ENDPOINTS[getSelectedNetwork()] || CUSTODY_ENDPOINTS['local-testnet'];
 }
 
 // ===== LIVE BALANCE WEBSOCKET =====
@@ -329,67 +318,6 @@ function stopBalancePolling() {
     }
 }
 
-// ── Bincode Message Serializer ──
-// Produces the same bytes as Rust's `bincode::serialize(&Message)` so signatures match.
-// Message = { instructions: Vec<Instruction>, recent_blockhash: Hash([u8;32]) }
-// Instruction = { program_id: Pubkey([u8;32]), accounts: Vec<Pubkey>, data: Vec<u8> }
-function serializeMessageBincode(message) {
-    const parts = [];
-
-    // Helper: write u64 little-endian (8 bytes) — bincode uses fixint u64 for Vec lengths
-    function writeU64LE(n) {
-        const buf = new ArrayBuffer(8);
-        const view = new DataView(buf);
-        view.setBigUint64(0, BigInt(n), true);
-        parts.push(new Uint8Array(buf));
-    }
-
-    // Helper: write raw bytes
-    function writeBytes(bytes) {
-        parts.push(new Uint8Array(bytes));
-    }
-
-    // instructions: Vec<Instruction>
-    const ixs = message.instructions || [];
-    writeU64LE(ixs.length);
-    for (const ix of ixs) {
-        // program_id: [u8; 32] — fixed-size, no length prefix
-        writeBytes(ix.program_id);
-        // accounts: Vec<Pubkey> — u64 length + N * 32 bytes
-        const accounts = ix.accounts || [];
-        writeU64LE(accounts.length);
-        for (const acct of accounts) {
-            writeBytes(acct);
-        }
-        // data: Vec<u8> — u64 length + N bytes
-        const data = ix.data || [];
-        writeU64LE(data.length);
-        writeBytes(data);
-    }
-
-    // recent_blockhash: Hash([u8; 32]) — parse hex string to 32 bytes
-    // AUDIT-FIX FE-11: Validate blockhash to prevent zeroed replay-vulnerable transactions
-    const hashHex = message.blockhash || message.recent_blockhash;
-    if (!hashHex || typeof hashHex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hashHex)) {
-        throw new Error('Invalid or missing blockhash: must be a 64-character hex string');
-    }
-    const hashBytes = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) {
-        hashBytes[i] = parseInt(hashHex.substr(i * 2, 2), 16);
-    }
-    writeBytes(hashBytes);
-
-    // Concatenate all parts
-    const totalLen = parts.reduce((s, p) => s + p.length, 0);
-    const result = new Uint8Array(totalLen);
-    let offset = 0;
-    for (const p of parts) {
-        result.set(p, offset);
-        offset += p.length;
-    }
-    return result;
-}
-
 // RPC Client (same as explorer)
 class MoltChainRPC {
     constructor(url) {
@@ -431,6 +359,38 @@ class MoltChainRPC {
 }
 
 const rpc = new MoltChainRPC(getRpcEndpoint());
+
+let _networkBaseFeeMolt = typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001;
+
+function getNetworkBaseFeeMolt() {
+    return (Number.isFinite(_networkBaseFeeMolt) && _networkBaseFeeMolt > 0)
+        ? _networkBaseFeeMolt
+        : (typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001);
+}
+
+function updateSendFeeEstimateUI() {
+    const feeEl = document.getElementById('sendNetworkFeeDisplay');
+    if (!feeEl) return;
+    feeEl.textContent = `${fmtToken(getNetworkBaseFeeMolt())} MOLT`;
+}
+
+async function refreshDynamicFeeConfig() {
+    try {
+        const feeConfig = await rpc.call('getFeeConfig', []);
+        const baseFeeShells = Number(
+            feeConfig?.base_fee_shells
+            ?? feeConfig?.baseFeeShells
+            ?? feeConfig?.base_fee
+            ?? 0
+        );
+        if (Number.isFinite(baseFeeShells) && baseFeeShells > 0) {
+            _networkBaseFeeMolt = baseFeeShells / SHELLS_PER_MOLT;
+        }
+    } catch (_) {
+        _networkBaseFeeMolt = typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001;
+    }
+    updateSendFeeEstimateUI();
+}
 
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
@@ -1028,9 +988,16 @@ async function importWalletPrivateKey() {
     const privateKey = document.getElementById('importPrivateKey').value.trim();
     const password = document.getElementById('importPasswordPrivate').value;
     
-    // AUDIT-FIX W-3: Validate hex format, not just length
-    if (!privateKey || privateKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(privateKey)) {
-        alert('Invalid private key format (must be 64 hex characters)');
+    // Accept 64 hex (32-byte seed) or 128 hex (64-byte secret key, take first 32 bytes)
+    let normalizedKey = privateKey.replace(/^0x/, '');
+    if (!normalizedKey || !/^[0-9a-fA-F]+$/.test(normalizedKey)) {
+        alert('Invalid private key format (must be hex characters)');
+        return;
+    }
+    if (normalizedKey.length === 128) {
+        normalizedKey = normalizedKey.slice(0, 64); // Take 32-byte seed from 64-byte secret key
+    } else if (normalizedKey.length !== 64) {
+        alert('Invalid private key length (must be 64 or 128 hex characters)');
         return;
     }
     
@@ -1039,9 +1006,9 @@ async function importWalletPrivateKey() {
         return;
     }
     
-    const publicKey = await MoltCrypto.derivePublicKey(MoltCrypto.hexToBytes(privateKey));
+    const publicKey = await MoltCrypto.derivePublicKey(MoltCrypto.hexToBytes(normalizedKey));
     const address = MoltCrypto.publicKeyToAddress(publicKey);
-    const encrypted = await MoltCrypto.encryptPrivateKey(privateKey, password);
+    const encrypted = await MoltCrypto.encryptPrivateKey(normalizedKey, password);
     
     const wallet = {
         id: MoltCrypto.generateId(),
@@ -1148,6 +1115,60 @@ async function showDashboard() {
     startBalancePolling();
 }
 
+async function initShieldedForActiveWallet() {
+    const wallet = getActiveWallet();
+    if (!wallet || !wallet.encryptedKey || typeof initShielded !== 'function') return;
+
+    const password = window.prompt('Enter wallet password to initialize shielded wallet');
+    if (!password) {
+        showToast('Shielded initialization cancelled');
+        return;
+    }
+
+    let decryptedSeedHex = null;
+    try {
+        if (wallet.encryptedMnemonic) {
+            try {
+                const mnemonic = await MoltCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
+                if (mnemonic && MoltCrypto.isValidMnemonic && MoltCrypto.isValidMnemonic(mnemonic)) {
+                    const keypair = await MoltCrypto.mnemonicToKeypair(mnemonic);
+                    decryptedSeedHex = keypair.privateKey;
+                    zeroBytes(keypair.secretKey);
+                }
+            } catch (_) {
+                // Fall back to encrypted private key path.
+            }
+        }
+
+        if (!decryptedSeedHex) {
+            decryptedSeedHex = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+        }
+
+        if (!/^[0-9a-fA-F]{64}$/.test(decryptedSeedHex || '')) {
+            throw new Error('Invalid decrypted wallet seed');
+        }
+
+        const domain = new TextEncoder().encode('moltchain-shielded-spending-seed-v1');
+        const seedBytes = MoltCrypto.hexToBytes(decryptedSeedHex);
+        const keyMaterial = new Uint8Array(seedBytes.length + domain.length);
+        keyMaterial.set(seedBytes, 0);
+        keyMaterial.set(domain, seedBytes.length);
+
+        const digest = await crypto.subtle.digest('SHA-256', keyMaterial);
+        const shieldSeed = new Uint8Array(digest);
+
+        zeroBytes(seedBytes);
+        zeroBytes(keyMaterial);
+
+        await initShielded(shieldSeed);
+        zeroBytes(shieldSeed);
+    } catch (error) {
+        showToast('Failed to initialize shielded wallet: ' + (error?.message || 'unknown error'));
+    } finally {
+        decryptedSeedHex = null;
+    }
+}
+
 function setupDashboardTabs() {
     const tabs = document.querySelectorAll('.dashboard-tab');
     const contents = document.querySelectorAll('.tab-content');
@@ -1173,14 +1194,8 @@ function setupDashboardTabs() {
                 loadIdentity();
             }
             if (tabName === 'shield' && typeof initShielded === 'function') {
-                const wallet = getActiveWallet();
-                if (wallet && wallet.encryptedKey && !shieldedState?.initialized) {
-                    // Derive shielded seed from wallet's encrypted key
-                    // initShielded needs a seed — derive from address as a deterministic source
-                    // Full ZK key derivation requires password; use address-based init for viewing
-                    const encoder = new TextEncoder();
-                    const seedBytes = encoder.encode(wallet.address + ':shielded');
-                    initShielded(seedBytes);
+                if (!shieldedState?.initialized) {
+                    initShieldedForActiveWallet();
                 } else if (typeof syncShieldedState === 'function') {
                     syncShieldedState();
                 }
@@ -1236,6 +1251,10 @@ function getActiveWallet() {
 function switchWallet(walletId) {
     walletState.activeWalletId = walletId;
     saveWalletState();
+    clearStakingValidatorsCache();
+    if (typeof clearIdentityCache === 'function') {
+        clearIdentityCache();
+    }
     // Close dropdown before refreshing dashboard
     document.getElementById('walletDropdown').classList.remove('show');
     // Reconnect WS + polling for new wallet address
@@ -1375,6 +1394,42 @@ let _activityBeforeSlot = null; // Pagination cursor for activity
 let _activityItems = [];        // Accumulated activity items
 let _activityHasMore = true;    // Whether more items may exist
 const ACTIVITY_PAGE_SIZE = 20;  // Items per page
+const STAKING_VALIDATORS_CACHE_TTL_MS = 30 * 1000;
+let _stakingValidatorsCache = {
+    network: null,
+    updatedAt: 0,
+    validators: []
+};
+
+function clearStakingValidatorsCache() {
+    _stakingValidatorsCache = {
+        network: null,
+        updatedAt: 0,
+        validators: []
+    };
+}
+
+async function getStakingValidators() {
+    const now = Date.now();
+    const network = getSelectedNetwork();
+    const isFresh = (
+        _stakingValidatorsCache.network === network
+        && (now - Number(_stakingValidatorsCache.updatedAt || 0)) < STAKING_VALIDATORS_CACHE_TTL_MS
+        && Array.isArray(_stakingValidatorsCache.validators)
+    );
+    if (isFresh) {
+        return _stakingValidatorsCache.validators;
+    }
+
+    const validatorsResponse = await rpc.call('getValidators');
+    const validators = Array.isArray(validatorsResponse?.validators) ? validatorsResponse.validators : [];
+    _stakingValidatorsCache = {
+        network,
+        updatedAt: now,
+        validators
+    };
+    return validators;
+}
 
 async function loadActivity(reset = true) {
     const activityList = document.getElementById('activityList');
@@ -1397,18 +1452,26 @@ async function loadActivity(reset = true) {
     try {
         // Fetch on-chain transactions via proper RPC (paginated)
         let transactions = [];
+        const requestBeforeSlot = _activityBeforeSlot;
+        let rpcHasMore = null;
+        let rpcNextBeforeSlot = null;
         try {
             const opts = { limit: ACTIVITY_PAGE_SIZE };
-            if (_activityBeforeSlot) opts.before_slot = _activityBeforeSlot;
+            if (requestBeforeSlot) opts.before_slot = requestBeforeSlot;
             const result = await rpc.call('getTransactionsByAddress', [wallet.address, opts]);
             transactions = result?.transactions || (Array.isArray(result) ? result : []);
+            if (result && !Array.isArray(result)) {
+                if (typeof result.has_more === 'boolean') rpcHasMore = result.has_more;
+                const nextBeforeSlot = Number(result.next_before_slot);
+                if (Number.isFinite(nextBeforeSlot) && nextBeforeSlot > 0) rpcNextBeforeSlot = nextBeforeSlot;
+            }
         } catch (e) {
             // Account may not exist on-chain yet
         }
 
         // Fetch airdrops from faucet (only on first page, only if faucet is configured)
         let airdrops = [];
-        if (!_activityBeforeSlot) {
+        if (!requestBeforeSlot) {
             try {
                 const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : null;
                 if (faucetUrl) {
@@ -1432,13 +1495,32 @@ async function loadActivity(reset = true) {
             } catch (e) { /* faucet API unavailable — skip silently */ }
         }
 
-        // Track pagination cursor from last TX slot
-        if (transactions.length > 0) {
-            const lastTx = transactions[transactions.length - 1];
-            const lastSlot = lastTx.slot || lastTx.block_slot;
-            if (lastSlot) _activityBeforeSlot = lastSlot;
+        if (typeof rpcHasMore === 'boolean') {
+            _activityHasMore = rpcHasMore;
+            if (_activityHasMore) {
+                if (rpcNextBeforeSlot && rpcNextBeforeSlot !== requestBeforeSlot) {
+                    _activityBeforeSlot = rpcNextBeforeSlot;
+                } else {
+                    const lastTx = transactions[transactions.length - 1];
+                    const lastSlot = Number(lastTx?.slot || lastTx?.block_slot || 0);
+                    if (Number.isFinite(lastSlot) && lastSlot > 0 && lastSlot !== requestBeforeSlot) {
+                        _activityBeforeSlot = lastSlot;
+                    } else {
+                        _activityHasMore = false;
+                    }
+                }
+            } else {
+                _activityBeforeSlot = null;
+            }
+        } else {
+            // Legacy fallback: infer pagination from page size + last tx slot
+            if (transactions.length > 0) {
+                const lastTx = transactions[transactions.length - 1];
+                const lastSlot = Number(lastTx?.slot || lastTx?.block_slot || 0);
+                if (Number.isFinite(lastSlot) && lastSlot > 0) _activityBeforeSlot = lastSlot;
+            }
+            _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
         }
-        _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
 
         // Merge new page into accumulated items
         // RPC returns timestamp as unix seconds — convert to ms for Date()
@@ -1544,10 +1626,13 @@ async function loadActivity(reset = true) {
             }
 
             const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
-            const date = tx.timestamp ? new Date(tx.timestamp).toLocaleString() : '';
+            const date = tx.timestamp ? formatTime(tx.timestamp) : '';
             const sig = tx.signature || tx.hash || '';
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
-            const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
+            const explorerBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.explorer)
+                ? String(MOLT_CONFIG.explorer).replace(/\/$/, '')
+                : '../explorer';
+            const explorerLink = sig ? `${explorerBase}/transaction.html?sig=${encodeURIComponent(sig)}` : '#';
             const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
                 || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
                 || tx.type === 'CreateAccount');
@@ -1604,8 +1689,7 @@ async function loadStaking() {
     
     try {
         // Check if this wallet is a validator
-        const validatorsResponse = await rpc.call('getValidators');
-        const validators = validatorsResponse?.validators || [];
+        const validators = await getStakingValidators();
         const myValidator = validators.find(v => v.pubkey === wallet.address);
         
         // Always show staking tab (for ReefStake or validator staking)
@@ -1953,6 +2037,7 @@ async function showReefStakeModal() {
             </div>`,
         icon: 'fas fa-layer-group',
         confirmText: 'Stake MOLT',
+        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
         fields: [
             { id: 'stakeAmount', label: 'Amount (MOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             { id: 'lockTier', label: 'Lock Tier', type: 'select',
@@ -2042,6 +2127,7 @@ async function showReefUnstakeModal() {
             </div>`,
         icon: 'fas fa-unlock-alt',
         confirmText: 'Unstake',
+        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
         fields: [
             { id: 'unstakeAmount', label: 'Amount (stMOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
@@ -2149,6 +2235,7 @@ async function claimReefStake() {
         message: 'Enter your password to sign the claim transaction. Your matured MOLT will be returned to your spendable balance.',
         icon: 'fas fa-check-circle',
         confirmText: 'Claim',
+        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
         fields: [
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
@@ -2195,6 +2282,8 @@ async function claimReefStake() {
 async function showSend() {
     const wallet = getActiveWallet();
     if (!wallet) return;
+
+    await refreshDynamicFeeConfig();
     
     // Dynamically populate token dropdown from on-chain data — only show tokens with balance
     const select = document.getElementById('sendToken');
@@ -2241,20 +2330,72 @@ async function showSend() {
     
     // Update balance hint
     updateSendTokenUI();
-    
+
+    // Clear previous amount
+    const sendAmtInput = document.getElementById('sendAmount');
+    if (sendAmtInput) {
+        sendAmtInput.value = '';
+        sendAmtInput.onblur = async function () {
+            let v = parseFloat(this.value);
+            if (isNaN(v) || v < 0) { this.value = ''; return; }
+            const sel = document.getElementById('sendToken')?.value || 'MOLT';
+            let maxSend = 0;
+            try {
+                const baseFee = getNetworkBaseFeeMolt();
+                if (sel === 'MOLT') {
+                    maxSend = Math.max(0, (window.walletBalance || 0) - baseFee);
+                } else if (sel === 'stMOLT') {
+                    const pos = await rpc.call('getStakingPosition', [getActiveWallet()?.address]);
+                    maxSend = (pos?.st_molt_amount || 0) / SHELLS_PER_MOLT;
+                } else {
+                    maxSend = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) || 0;
+                }
+            } catch (_) { /* keep 0 */ }
+            if (v > maxSend) this.value = maxSend > 0 ? maxSend : '';
+        };
+    }
+
+    // Disable Send button when MOLT balance can't cover fee
+    const sendConfirmBtn = document.querySelector('#sendModal .modal-footer .btn-primary');
+    if (sendConfirmBtn) {
+        const baseFee = getNetworkBaseFeeMolt();
+        const bal = window.walletBalance || 0;
+        if (bal <= baseFee) {
+            sendConfirmBtn.disabled = true;
+            sendConfirmBtn.style.opacity = '0.5';
+            sendConfirmBtn.style.cursor = 'not-allowed';
+            sendConfirmBtn.title = `Insufficient balance — need at least ${fmtToken(baseFee)} MOLT for the fee`;
+        } else {
+            sendConfirmBtn.disabled = false;
+            sendConfirmBtn.style.opacity = '';
+            sendConfirmBtn.style.cursor = '';
+            sendConfirmBtn.title = '';
+        }
+    }
+
     document.getElementById('sendModal').classList.add('show');
 }
 
-function showReceive(tab = 'receive') {
+async function showReceive(tab = 'receive') {
     const wallet = getActiveWallet();
     if (!wallet) return;
     
     // Set native Base58 address
     document.getElementById('walletAddress').value = wallet.address;
     
-    // Generate EVM address (0x format)
-    const evmAddress = generateEVMAddress(wallet.address);
-    document.getElementById('walletAddressEVM').value = evmAddress;
+    const evmAddressSection = document.getElementById('evmAddressSection');
+    const evmAddressInfo = document.getElementById('evmAddressInfo');
+    const evmAddressInput = document.getElementById('walletAddressEVM');
+    const evmAddress = await getRegisteredEvmAddress(wallet.address);
+    if (evmAddress) {
+        if (evmAddressInput) evmAddressInput.value = evmAddress;
+        if (evmAddressSection) evmAddressSection.style.display = 'block';
+        if (evmAddressInfo) evmAddressInfo.style.display = 'none';
+    } else {
+        if (evmAddressInput) evmAddressInput.value = '';
+        if (evmAddressSection) evmAddressSection.style.display = 'none';
+        if (evmAddressInfo) evmAddressInfo.style.display = 'block';
+    }
     
     // Generate QR code for native address
     const qrCodeDiv = document.getElementById('qrCode');
@@ -2300,10 +2441,6 @@ function switchReceiveTab(tabName) {
 
 // ===== BRIDGE DEPOSIT =====
 
-function getCustodyUrl() {
-    return getCustodyEndpoint();
-}
-
 async function showDepositInfo(chain) {
     const wallet = getActiveWallet();
     if (!wallet) return;
@@ -2316,22 +2453,24 @@ async function showDepositInfo(chain) {
     const info = chainInfo[chain];
     if (!info) return;
     
-    // Ask user which token they want to bridge
-    const asset = info.tokens.length === 1 ? info.tokens[0].toLowerCase() : null;
-    
-    // Request deposit address from custody service
+    // Build token buttons with data attributes (no inline onclick)
     const tokenSelect = info.tokens.map(t => 
-        `<button class="btn btn-secondary btn-small" style="margin: 0.25rem;" onclick="requestDepositAddress('${info.chain}', '${t.toLowerCase()}', '${info.name}', '${info.icon}')">${t}</button>`
+        `<button class="btn btn-secondary btn-small bridge-token-btn" style="margin: 0.25rem;" data-chain="${escapeHtml(info.chain)}" data-asset="${escapeHtml(t.toLowerCase())}" data-chain-name="${escapeHtml(info.name)}" data-icon="${escapeHtml(info.icon)}">${escapeHtml(t)}</button>`
     ).join(' ');
 
     showConfirmModal({
         title: `Bridge from ${info.name}`,
         message: `<div style="text-align: left; font-size: 0.9rem;">
-            <p style="margin-bottom: 0.75rem;">Select a token to deposit from ${info.name} → MoltChain:</p>
-            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+            <p style="margin-bottom: 0.75rem;">Select a token to deposit from ${escapeHtml(info.name)} → MoltChain:</p>
+            <div id="bridgeTokenSelect" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
                 ${tokenSelect}
             </div>
-            <p style="font-size: 0.8rem; color: var(--text-muted);">
+            <div id="bridgeLoadingState" style="display:none; text-align: center; padding: 1.5rem 0;">
+                <i class="fas fa-spinner fa-spin" style="font-size: 1.5rem; color: var(--primary);"></i>
+                <p style="margin-top: 0.5rem; color: var(--text-secondary);">Generating deposit address...</p>
+            </div>
+            <div id="bridgeDepositResult" style="display:none;"></div>
+            <p id="bridgeHelpText" style="font-size: 0.8rem; color: var(--text-muted);">
                 You'll receive a unique deposit address. Send tokens there and they'll be credited
                 to your MoltChain wallet automatically (~2-5 min after source chain finality).
             </p>
@@ -2341,65 +2480,66 @@ async function showDepositInfo(chain) {
         confirmText: 'Close',
         cancelText: null
     });
+
+    // Wire token button click handlers
+    document.querySelectorAll('.bridge-token-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const c = btn.dataset.chain;
+            const a = btn.dataset.asset;
+            const cn = btn.dataset.chainName;
+            const ic = btn.dataset.icon;
+            await requestDepositAddress(c, a, cn, ic);
+        });
+    });
 }
 
 async function requestDepositAddress(chain, asset, chainName, icon) {
     const wallet = getActiveWallet();
     if (!wallet) return;
     
-    // AUDIT-FIX W-H1: Validate inputs before sending to custody
+    // Validate inputs
     const validChains = ['solana', 'ethereum', 'bnb'];
     const validAssets = ['usdc', 'usdt', 'sol', 'eth', 'bnb'];
-    if (!validChains.includes(chain)) {
-        showToast('Invalid chain selected', 'error');
-        return;
-    }
-    if (!validAssets.includes(asset)) {
-        showToast('Invalid asset selected', 'error');
-        return;
-    }
-    if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) {
-        showToast('Invalid wallet address', 'error');
-        return;
-    }
+    if (!validChains.includes(chain)) { showToast('Invalid chain selected', 'error'); return; }
+    if (!validAssets.includes(asset)) { showToast('Invalid asset selected', 'error'); return; }
+    if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) { showToast('Invalid wallet address', 'error'); return; }
     
-    // Close any open modals
-    document.querySelectorAll('.password-modal').forEach(m => m.remove());
+    // Show loading state in the CURRENT modal (don't close it)
+    const tokenSelect = document.getElementById('bridgeTokenSelect');
+    const loadingState = document.getElementById('bridgeLoadingState');
+    const depositResult = document.getElementById('bridgeDepositResult');
+    const helpText = document.getElementById('bridgeHelpText');
+    
+    if (tokenSelect) tokenSelect.style.display = 'none';
+    if (loadingState) loadingState.style.display = 'block';
+    if (helpText) helpText.style.display = 'none';
     
     try {
-        showToast('Requesting deposit address...');
+        // Route through RPC bridge proxy — custody auth handled server-side
+        const data = await rpc.call('createBridgeDeposit', [{
+            user_id: wallet.address,
+            chain: chain,
+            asset: asset
+        }]);
         
-        const response = await fetch(`${getCustodyUrl()}/deposits`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user_id: wallet.address,
-                chain: chain,
-                asset: asset
-            })
-        });
-        
-        if (!response.ok) {
-            const err = await response.json().catch(() => ({ message: 'Request failed' }));
-            showToast(err.message || 'Failed to create deposit address', 'error');
-            return;
-        }
-        
-        const data = await response.json();
         const depositAddress = data.address;
         const depositId = data.deposit_id;
         
-        // AUDIT-FIX W-C2: Escape all server-provided values before HTML insertion
-        // to prevent XSS if custody returns malicious data.
+        if (!depositAddress || !depositId) {
+            throw new Error('Invalid response from bridge service');
+        }
+        
+        // Escape server-provided values
         const safeAddress = escapeHtml(depositAddress);
         const safeDepositId = escapeHtml(depositId);
         const safeAsset = escapeHtml(asset.toUpperCase());
         const safeChainName = escapeHtml(chainName);
         
-        // Show deposit address with copy + status polling
-        showConfirmModal({
-            title: `Send ${safeAsset} on ${safeChainName}`,
-            message: `<div style="text-align: left; font-size: 0.9rem;">
+        // Hide loading, show deposit result in the SAME modal
+        if (loadingState) loadingState.style.display = 'none';
+        if (depositResult) {
+            depositResult.style.display = 'block';
+            depositResult.innerHTML = `
                 <p style="margin-bottom: 0.75rem;">Send <strong>${safeAsset}</strong> to this ${safeChainName} address:</p>
                 <div id="depositAddrBox" style="padding: 0.75rem; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; font-family: monospace; font-size: 0.78rem; word-break: break-all; cursor: pointer;">
                     ${safeAddress}
@@ -2413,39 +2553,34 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
                     This address expires in 24 hours. Funds sent after expiry may be lost.<br>
                     Deposit ID: <code style="font-size: 0.72rem;">${safeDepositId}</code>
                 </p>
-            </div>`,
-            icon: icon,
-            confirmText: 'Done',
-            cancelText: 'Copy Address'
-        }).then(confirmed => {
-            stopDepositPolling();
-            if (!confirmed) {
-                navigator.clipboard.writeText(depositAddress).then(() => {
-                    showToast('Deposit address copied!');
+            `;
+            
+            // Attach copy handler
+            const addrBox = document.getElementById('depositAddrBox');
+            if (addrBox) {
+                addrBox.addEventListener('click', () => {
+                    navigator.clipboard.writeText(depositAddress).then(() => {
+                        const hint = document.getElementById('copyHint');
+                        if (hint) {
+                            hint.textContent = 'Copied!';
+                            setTimeout(() => { hint.textContent = 'Click to copy'; }, 1500);
+                        }
+                    });
                 });
             }
-        });
-        
-        // AUDIT-FIX W-C2: Attach copy handler via JS instead of inline onclick
-        const addrBox = document.getElementById('depositAddrBox');
-        if (addrBox) {
-            addrBox.addEventListener('click', () => {
-                navigator.clipboard.writeText(depositAddress).then(() => {
-                    const hint = document.getElementById('copyHint');
-                    if (hint) {
-                        hint.textContent = 'Copied!';
-                        setTimeout(() => { hint.textContent = 'Click to copy'; }, 1500);
-                    }
-                });
-            });
         }
         
-        // Start polling deposit status
+        // Start polling deposit status via RPC proxy
         startDepositPolling(depositId);
+        showToast(`Deposit address generated for ${safeAsset}!`);
         
     } catch (error) {
         console.error('Deposit request failed:', error);
-        showToast('Failed to connect to bridge service. Is custody running?', 'error');
+        // Restore the token selection UI
+        if (tokenSelect) tokenSelect.style.display = 'flex';
+        if (loadingState) loadingState.style.display = 'none';
+        if (helpText) helpText.style.display = 'block';
+        showToast(error.message || 'Failed to connect to bridge service', 'error');
     }
 }
 
@@ -2478,17 +2613,9 @@ function startDepositPolling(depositId) {
 
     depositPollInterval = setInterval(async () => {
         try {
-            const res = await fetch(`${getCustodyUrl()}/deposits/${depositId}`);
-            if (!res.ok) {
-                consecutiveErrors++;
-                if (consecutiveErrors >= MAX_DEPOSIT_POLL_ERRORS) {
-                    console.error('[Bridge] Too many consecutive polling failures, stopping');
-                    stopDepositPolling();
-                }
-                return;
-            }
+            // Route through RPC bridge proxy — custody auth handled server-side
+            const deposit = await rpc.call('getBridgeDeposit', [depositId]);
             consecutiveErrors = 0; // reset on success
-            const deposit = await res.json();
             const statusEl = document.getElementById('depositStatus');
             if (!statusEl) {
                 stopDepositPolling();
@@ -2629,6 +2756,19 @@ function zeroBytes(arr) {
     }
 }
 
+function wipeSensitiveWalletData(wallet) {
+    if (!wallet || typeof wallet !== 'object') return;
+    const wipeString = (value) => (typeof value === 'string' ? '0'.repeat(value.length) : value);
+
+    wallet.encryptedKey = wipeString(wallet.encryptedKey) || null;
+    for (const field of ['encryptedMnemonic', 'encryptedSeed', 'mnemonic', 'privateKey']) {
+        wallet[field] = wipeString(wallet[field]) || null;
+    }
+    wallet.cachedTransactions = [];
+    wallet.txHistory = [];
+    wallet.shieldedNotes = [];
+}
+
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
@@ -2664,6 +2804,11 @@ function copyAddress(type = 'native', triggerEl = null) {
         : document.getElementById('walletAddress').value;
     const label = type === 'evm' ? 'EVM address' : 'Native address';
 
+    if (!address) {
+        showToast(type === 'evm' ? 'EVM address is available after on-chain registration' : 'Address unavailable');
+        return;
+    }
+
     navigator.clipboard.writeText(address).then(() => {
         pulseCopyButton(triggerEl);
         showToast(`✅ ${label} copied to clipboard!`);
@@ -2676,35 +2821,23 @@ function copyAddress(type = 'native', triggerEl = null) {
 // Implements Keccak256(pubkey)[12:32] derivation as per core/src/account.rs
 function generateEVMAddress(base58Address) {
     try {
-        // Check if required libraries are loaded
-        if (typeof bs58 === 'undefined' || !bs58.decode) {
-            console.error('bs58 library not loaded');
-            throw new Error('bs58 not available');
+        if (window.MoltCrypto && typeof window.MoltCrypto.generateEVMAddress === 'function') {
+            const evmAddress = window.MoltCrypto.generateEVMAddress(base58Address);
+            if (evmAddress) {
+                return evmAddress;
+            }
+            throw new Error('Invalid base58 address');
         }
-        
-        // Check for keccak_256 function (js-sha3 v0.9.x exposes it globally)
-        if (typeof keccak_256 === 'undefined') {
-            console.error('keccak_256 library not loaded');
-            throw new Error('keccak_256 not available');
+
+        if (typeof bs58 === 'undefined' || !bs58.decode || typeof keccak_256 === 'undefined') {
+            throw new Error('Required address derivation libraries unavailable');
         }
-        
-        // Decode Base58 to get 32-byte public key
-        // console.log('Decoding base58 address:', base58Address);
+
         const pubkeyBytes = bs58.decode(base58Address);
-        // console.log('Decoded pubkey bytes:', pubkeyBytes.length, 'bytes');
-        
         if (pubkeyBytes.length !== 32) {
-            console.error('Invalid pubkey length:', pubkeyBytes.length, 'expected 32');
             throw new Error(`Invalid pubkey length: ${pubkeyBytes.length}`);
         }
-        
-        // Hash with Keccak256 - js-sha3 v0.9.x returns hex string directly
-        const hashHex = keccak_256(pubkeyBytes);
-        
-        // Take last 20 bytes (last 40 hex chars)
-        const evmAddress = '0x' + hashHex.slice(-40);
-        // console.log('Generated EVM address:', evmAddress);
-        return evmAddress;
+        return '0x' + keccak_256(pubkeyBytes).slice(-40);
     } catch (e) {
         console.error('Failed to generate EVM address:', e);
         console.error('Error details:', e.message, e.stack);
@@ -2712,6 +2845,27 @@ function generateEVMAddress(base58Address) {
         // Return error placeholder instead of broken fallback
         return '0x' + '0'.repeat(40);
     }
+}
+
+async function getRegisteredEvmAddress(nativeAddress) {
+    if (!nativeAddress) return null;
+    const cacheKey = `moltEvmRegistered:${nativeAddress}`;
+
+    try {
+        if (localStorage.getItem(cacheKey) === '1') {
+            return generateEVMAddress(nativeAddress);
+        }
+    } catch (_) {}
+
+    try {
+        const existing = await rpc.call('getEvmRegistration', [nativeAddress]);
+        if (existing && existing.evmAddress) {
+            try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
+            return existing.evmAddress;
+        }
+    } catch (_) {}
+
+    return null;
 }
 
 // Auto-register EVM address on-chain for seamless MetaMask compatibility
@@ -2801,7 +2955,7 @@ async function setMaxAmount() {
             const balance = await rpc.getBalance(wallet.address);
             const molt = parseFloat(balance.molt) || 0;
             // Reserve base fee for gas
-            const maxAmount = Math.max(0, molt - BASE_FEE_MOLT);
+            const maxAmount = Math.max(0, molt - getNetworkBaseFeeMolt());
             document.getElementById('sendAmount').value = maxAmount.toFixed(6);
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
@@ -2859,9 +3013,10 @@ async function confirmSend() {
 
     // Pre-flight balance check with auto-correction
     try {
+        await refreshDynamicFeeConfig();
         const balResult = await rpc.call('getBalance', [wallet.address]);
         const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
-        const baseFee = BASE_FEE_MOLT;
+        const baseFee = getNetworkBaseFeeMolt();
 
         if (selectedToken === 'MOLT') {
             const maxSendable = Math.max(0, spendable - baseFee);
@@ -3209,6 +3364,24 @@ function showPasswordModal(options) {
         document.body.appendChild(modal);
         requestAnimationFrame(() => modal.classList.add('show'));
         
+        // Balance guard: disable confirm when wallet balance is too low
+        if (options.requiredMolt != null && options.requiredMolt > 0) {
+            const confirmBtn = modal.querySelector('#passwordModalConfirm');
+            const spendable = window.walletBalance || 0;
+            if (spendable < options.requiredMolt) {
+                confirmBtn.disabled = true;
+                confirmBtn.title = `Insufficient balance (need ${options.requiredMolt} MOLT, have ${spendable.toFixed(4)})`;
+                confirmBtn.style.opacity = '0.5';
+                confirmBtn.style.cursor = 'not-allowed';
+                // Add warning below the fields
+                const warning = document.createElement('div');
+                warning.style.cssText = 'color:#ef4444;font-size:0.82rem;margin:0.5rem 0 0.75rem;padding:0.5rem 0.75rem;background:rgba(239,68,68,0.08);border-radius:6px;';
+                warning.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Insufficient balance — need at least ${options.requiredMolt} MOLT`;
+                const body = modal.querySelector('.password-modal-body');
+                if (body) body.insertBefore(warning, body.querySelector('.password-modal-actions'));
+            }
+        }
+        
         // Call onRender callback for dynamic behavior (e.g. cost previews)
         if (typeof options.onRender === 'function') {
             try { options.onRender(modal); } catch (_) {}
@@ -3381,9 +3554,7 @@ async function exportPrivateKeyWithPassword(password) {
         
         // Show private key in modal — export the 32-byte seed (64 hex chars)
         // so it matches the import format (which expects 64 hex chars = 32 bytes)
-        const privateKeyHex = testDecrypt.privateKey || Array.from(testDecrypt.secretKey.slice(0, 32))
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('');
+        const privateKeyHex = testDecrypt.privateKey;
         
         closeModal('settingsModal');
         
@@ -4016,6 +4187,9 @@ function showDeleteWallet() {
                 if (inputValue) showToast('❌ Deletion cancelled - name did not match');
                 return;
             }
+
+            const wipeTarget = walletState.wallets.find(w => w.id === wallet.id);
+            wipeSensitiveWalletData(wipeTarget);
             
             // Remove wallet from list
             walletState.wallets = walletState.wallets.filter(w => w.id !== wallet.id);

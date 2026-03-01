@@ -154,25 +154,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => { if (this.pendingReqs.has(id)) { this.pendingReqs.delete(id); reject(new Error('timeout')); }}, 10000);
             });
         }
-        async subscribe(channel, callback) {
-            const existing = this.subs.get(channel);
+        async subscribeWithMethod(channelKey, method, params, unsubscribeMethod, callback) {
+            const existing = this.subs.get(channelKey);
             if (existing) {
                 existing.callback = callback;
-                this.subs.set(channel, existing);
-                return existing.subId || channel;
+                this.subs.set(channelKey, existing);
+                return existing.subId || channelKey;
             }
 
-            const entry = { channel, method: 'subscribeDex', params: { channel }, callback, subId: null };
-            this.subs.set(channel, entry);
+            const entry = { channel: channelKey, method, params, unsubscribeMethod, callback, subId: null };
+            this.subs.set(channelKey, entry);
 
             try {
-                const subId = await this._sendSubscribe('subscribeDex', { channel });
+                const subId = await this._sendSubscribe(method, params);
                 entry.subId = subId;
-                this.subs.set(channel, entry);
-                return subId || channel;
+                this.subs.set(channelKey, entry);
+                return subId || channelKey;
             } catch {
-                return channel;
+                return channelKey;
             }
+        }
+        async subscribe(channel, callback) {
+            return this.subscribeWithMethod(channel, 'subscribeDex', { channel }, 'unsubscribeDex', callback);
+        }
+        async subscribePrediction(channel, callback) {
+            const key = `prediction:${channel}`;
+            return this.subscribeWithMethod(key, 'subscribePrediction', { channel }, 'unsubscribePrediction', callback);
         }
         unsubscribe(subscriptionOrChannel) {
             let channel = null;
@@ -196,7 +203,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (sub.subId && this.ws?.readyState === WebSocket.OPEN) {
                 try {
-                    this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: 'unsubscribeDex', params: { subscription: sub.subId } }));
+                    this.ws.send(JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: this.nextReqId++,
+                        method: sub.unsubscribeMethod || 'unsubscribeDex',
+                        params: { subscription: sub.subId }
+                    }));
                 } catch { /* connection may have closed */ }
             }
         }
@@ -344,7 +356,15 @@ document.addEventListener('DOMContentLoaded', () => {
         },
     };
 
+    function walletCanSign() {
+        return !!(wallet.address && wallet.signingReady);
+    }
+
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
+    function keypairSeedHex(keypair) {
+        if (!keypair || !keypair.secretKey) return '';
+        return bytesToHex(keypair.secretKey.slice(0, 32));
+    }
     function hexToBytes(h) {
         const c = h.startsWith('0x') ? h.slice(2) : h;
         // F20.14: Validate hex format before parsing
@@ -387,6 +407,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return result;
     }
 
+    function walletAddressToHex(addr) {
+        if (!addr) return '';
+        try {
+            return bytesToHex(bs58decode(addr)).toLowerCase();
+        } catch {
+            return '';
+        }
+    }
+
+    function formatAddressShort(addr) {
+        const text = String(addr || '');
+        if (!text) return '—';
+        if (text.length <= 16) return text;
+        return `${text.slice(0, 8)}...${text.slice(-6)}`;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // F8.2 SYSTEMIC FIX: Contract call infrastructure
     // All contract calls must use CONTRACT_PROGRAM_ID (0xFF*32),
@@ -396,16 +432,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
 
     // Build ContractInstruction::Call JSON (matches Rust's serde serialization)
-    function buildContractCall(argsBytes) {
-        return JSON.stringify({ Call: { function: "call", args: Array.from(argsBytes), value: 0 }});
+    function buildContractCall(argsBytes, value = 0) {
+        return JSON.stringify({ Call: { function: "call", args: Array.from(argsBytes), value }});
     }
 
     // Build a sendTransaction instruction with correct program_id + accounts
-    function contractIx(contractAddr, argsBytes) {
+    function contractIx(contractAddr, argsBytes, value = 0) {
         return {
             program_id: CONTRACT_PROGRAM_ID,
             accounts: [wallet.address, contractAddr],
-            data: buildContractCall(argsBytes),
+            data: buildContractCall(argsBytes, value),
         };
     }
 
@@ -563,6 +599,31 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 27: close_position_limit(caller, position_id, limit_price)
+    function buildClosePositionLimitArgs(caller, positionId, limitPrice) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 27); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, limitPrice);
+        return arr;
+    }
+
+    // Opcode 28: partial_close_limit(caller, position_id, close_amount, limit_price)
+    function buildPartialCloseLimitArgs(caller, positionId, closeAmount, limitPrice) {
+        const buf = new ArrayBuffer(57);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 28); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, closeAmount);
+        writeU64LE(view, 49, limitPrice);
+        return arr;
+    }
+
     // Opcode 25: partial_close(caller[32], position_id[8], close_amount[8])
     function buildPartialCloseArgs(caller, positionId, closeAmount) {
         const buf = new ArrayBuffer(49);
@@ -596,6 +657,17 @@ document.addEventListener('DOMContentLoaded', () => {
         writePubkey(arr, 1, caller);
         writeU64LE(view, 33, positionId);
         writeU64LE(view, 41, amount);
+        return arr;
+    }
+
+    // Opcode 6: liquidate(liquidator[32], position_id[8])
+    function buildLiquidateArgs(liquidator, positionId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 6); // opcode
+        writePubkey(arr, 1, liquidator);
+        writeU64LE(view, 33, positionId);
         return arr;
     }
 
@@ -689,7 +761,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Opcode 1: create_market(creator, category, close_slot, outcome_count, question_hash, question)
-    function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot) {
+    async function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot) {
         const encoder = new TextEncoder();
         const qBytes = encoder.encode(question);
         const totalLen = 79 + qBytes.length;
@@ -704,9 +776,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // F11.2 FIX: close_slot must be > current_slot; caller must provide valid slot
         writeU64LE(view, 34, closeSlot || 0);
         writeU8(arr, 42, outcomeCount || 2);
-        // question_hash: simple hash of question string (fill 32 bytes)
-        const hashBytes = new Uint8Array(32);
-        for (let i = 0; i < qBytes.length; i++) hashBytes[i % 32] ^= qBytes[i];
+        // question_hash: SHA-256(question), must match prediction contract validation
+        const digest = await crypto.subtle.digest('SHA-256', qBytes);
+        const hashBytes = new Uint8Array(digest);
         arr.set(hashBytes, 43);
         view.setUint32(75, qBytes.length, true); // question_len
         arr.set(qBytes, 79);
@@ -774,6 +846,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 3: claim_lp_rewards(provider[32], position_id[8])
+    function buildClaimLpRewardsArgs(provider, positionId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 3); // opcode
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, positionId);
+        return arr;
+    }
+
     // ── ClawPump (Launchpad) instruction builders ──
     // Uses named-export ABI — function names instead of opcode bytes
     // create_token(creator_ptr[32], fee_paid[8]) = 40 bytes
@@ -822,8 +905,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── Tick math for AMM (Uniswap V3 style) ──
-    const MIN_TICK = -887272;
-    const MAX_TICK = 887272;
+    const MIN_TICK = -443636;
+    const MAX_TICK = 443636;
+    function sqrtPriceQ32ToPrice(sqrtPrice) {
+        if (!sqrtPrice) return 0;
+        const sqrtP = sqrtPrice / (2 ** 32);
+        return sqrtP * sqrtP;
+    }
     function priceToTick(price) {
         if (price <= 0) return MIN_TICK;
         return Math.floor(Math.log(price) / Math.log(1.0001));
@@ -875,6 +963,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch
     const MOLT_GENESIS_PRICE = 0.10;
+    const MAX_OPEN_ORDERS_PER_USER = 100;
+    const GOVERNANCE_SLOT_SECONDS = 1;
+    const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
+    const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';
 
     // Display-inversion helpers for MOLT-quoted wrapped pairs.
     // On-chain pairs are stored as wBNB/MOLT (base=wBNB, quote=MOLT) with price
@@ -908,7 +1000,9 @@ document.addEventListener('DOMContentLoaded', () => {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
         currentView: 'trade', leverageValue: 2, lastPrice: MOLT_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
-        candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], marginMaxLeverage: 100,
+        candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], _predictWsSub: null, _predictWsRefreshTimer: null, _predictCountdownTimer: null, _marginRealtimeRefreshTimer: null, marginMaxLeverage: 100,
+        _predictSlotAnchor: { slot: 0, ts: 0 },
+        governanceMinQuorum: GOVERNANCE_MIN_QUORUM_DEFAULT,
         // Task 5.1: Slippage tolerance (loaded from localStorage)
         slippagePct: parseFloat(localStorage.getItem('dexSlippage')) || 0.5,
         // Task 5.2: Notification preferences
@@ -972,6 +1066,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 const votePeriod = data.voting_period_hours ?? 48;
                 const timelock = data.execution_timelock_hours ?? 1;
+                const minQuorum = Number(data.min_quorum ?? data.minQuorum ?? GOVERNANCE_MIN_QUORUM_DEFAULT);
                 const threshold = data.approval_threshold ?? 66;
                 const minRep = data.min_reputation ?? 500;
                 const minLiq = data.min_listing_liquidity ?? 100000;
@@ -981,6 +1076,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const feeLps = data.fee_split_lps ?? 30;
                 const feeStakers = data.fee_split_stakers ?? 30;
                 const predFee = data.prediction_fee ?? 2;
+
+                if (Number.isFinite(minQuorum) && minQuorum > 0) {
+                    state.governanceMinQuorum = minQuorum;
+                }
 
                 el('govReqReputation', `≥ ${formatNumber(minRep)}`);
                 el('govReqMinLiq', `${formatNumber(minLiq)} MOLT`);
@@ -1242,6 +1341,81 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* ws unavailable */ }
     }
 
+    function setPredictSlotAnchor(slot) {
+        const parsed = Number(slot || 0);
+        if (!Number.isFinite(parsed) || parsed <= 0) return;
+        state._predictSlotAnchor = { slot: parsed, ts: Date.now() };
+    }
+
+    function getRealtimePredictSlot(fallback = 0) {
+        const anchor = state._predictSlotAnchor || { slot: 0, ts: 0 };
+        if (!anchor.slot || !anchor.ts) return Number(fallback || 0);
+        const elapsedMs = Math.max(0, Date.now() - anchor.ts);
+        const advancedSlots = Math.floor(elapsedMs / 500);
+        return anchor.slot + advancedSlots;
+    }
+
+    function stopPredictCountdownTicker() {
+        if (state._predictCountdownTimer) {
+            clearInterval(state._predictCountdownTimer);
+            state._predictCountdownTimer = null;
+        }
+    }
+
+    function startPredictCountdownTicker() {
+        stopPredictCountdownTicker();
+        state._predictCountdownTimer = setInterval(() => {
+            if (state.currentView !== 'predict') return;
+            if (!predictState.markets.length) return;
+            renderPredictionMarkets();
+            if (state.connected && predictState.positions.length) {
+                renderPredictionPositions();
+            }
+        }, 1000);
+    }
+
+    function scheduleMarginRealtimeRefresh() {
+        if (state._marginRealtimeRefreshTimer) clearTimeout(state._marginRealtimeRefreshTimer);
+        state._marginRealtimeRefreshTimer = setTimeout(() => {
+            const shouldRefresh = state.connected && (state.currentView === 'trade' || state.currentView === 'margin');
+            if (!shouldRefresh) return;
+            loadMarginPositions().catch(() => {});
+            if (state.currentView === 'margin') {
+                loadMarginHistory().catch(() => {});
+            }
+        }, 300);
+    }
+
+    function schedulePredictRealtimeRefresh() {
+        if (state._predictWsRefreshTimer) clearTimeout(state._predictWsRefreshTimer);
+        state._predictWsRefreshTimer = setTimeout(() => {
+            loadPredictionMarkets().catch(() => {});
+            if (state.connected && state.currentView === 'predict') {
+                loadPredictionPositions().catch(() => {});
+                loadPredictionHistory().catch(() => {});
+            }
+            if (state.connected) {
+                loadCreatedMarkets().catch(() => {});
+            }
+        }, 120);
+    }
+
+    function unsubscribePredictionRealtime() {
+        if (!dexWs || !state._predictWsSub) return;
+        dexWs.unsubscribe(state._predictWsSub);
+        state._predictWsSub = null;
+    }
+
+    function subscribePredictionRealtime() {
+        if (!dexWs) return;
+        unsubscribePredictionRealtime();
+        dexWs.subscribePrediction('all', (event) => {
+            if (!event || typeof event !== 'object') return;
+            setPredictSlotAnchor(event.slot || 0);
+            schedulePredictRealtimeRefresh();
+        }).then(id => { state._predictWsSub = id; }).catch(() => {});
+    }
+
     // F6.11: RAF-throttle for high-frequency WS order book updates
     function rafThrottle(fn) { let pending = false, lastArgs; return function(...args) { lastArgs = args; if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; fn(...lastArgs); }); } }; }
     const throttledRenderOrderBook = rafThrottle(() => { if (state.currentView === 'trade') renderOrderBook(); });
@@ -1279,6 +1453,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     c.prepend(row); if (c.children.length > 40) c.lastChild.remove();
                 }
                 streamBarUpdate(displayPrice, d.quantity || 0);
+                scheduleMarginRealtimeRefresh();
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
@@ -1324,7 +1499,36 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } if (v === 'launchpad') { loadLaunchpadStats(); loadLaunchpadTokens(); } applyWalletGateAll(); }
+    function switchView(v) {
+        state.currentView = v;
+        views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`));
+        navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v));
+        if (v === 'trade') {
+            drawChart();
+            loadTradeHistory();
+            loadMarginStats();
+            loadMarginPositions();
+            loadMarginHistory();
+        }
+        if (v === 'predict') {
+            loadPredictionStats();
+            loadPredictionMarkets();
+            loadPredictionPositions();
+            loadPredictionHistory();
+            loadCreatedMarkets();
+            refreshPredictWalletBalance();
+            subscribePredictionRealtime();
+            startPredictCountdownTicker();
+        } else {
+            unsubscribePredictionRealtime();
+            stopPredictCountdownTicker();
+        }
+        if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); }
+        if (v === 'rewards') { loadRewardsStats(); }
+        if (v === 'governance') { loadGovernanceStats(); loadProposals(); }
+        if (v === 'launchpad') { loadLaunchpadStats(); loadLaunchpadTokens(); }
+        applyWalletGateAll();
+    }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // Mobile nav toggle
@@ -1530,6 +1734,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const slot = await api.rpc('getSlot', []);
             if (typeof slot === 'number') {
                 updateFooterStatus(slot, true);
+                setPredictSlotAnchor(slot);
             }
         } catch {
             updateFooterStatus(footerBlockHeight, false);
@@ -1713,6 +1918,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function getQuoteAvailableMargin() {
+        const quoteSymbol = state.activePair?.quote;
+        if (!quoteSymbol) return 0;
+        return Math.max(0, balances[quoteSymbol]?.available || 0);
+    }
+
     function updateSubmitBtn() {
         if (!submitBtn) return;
         const sideLabel = state.tradeMode === 'margin'
@@ -1744,11 +1955,19 @@ document.addEventListener('DOMContentLoaded', () => {
         else {
             const notional = price * amount;
             if (state.tradeMode === 'margin') {
-                const leverage = Math.max(1, Number(state.leverageValue || 1));
-                const requiredMargin = (notional / leverage) * (1 + feeRate);
                 const quoteSymbol = state.activePair.quote;
-                const availableQuote = balances[quoteSymbol]?.available || 0;
-                if (requiredMargin > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
+                const availableQuote = getQuoteAvailableMargin();
+                if (state.marginType === 'cross') {
+                    if (availableQuote <= 0) disabledReason = `Insufficient ${quoteSymbol}`;
+                    else {
+                        const maxOpenNotional = (availableQuote * Math.max(1, Number(state.leverageValue || 1))) / (1 + feeRate);
+                        if (notional > maxOpenNotional) disabledReason = `Insufficient ${quoteSymbol}`;
+                    }
+                } else {
+                    const leverage = Math.max(1, Number(state.leverageValue || 1));
+                    const requiredMargin = (notional / leverage) * (1 + feeRate);
+                    if (requiredMargin > availableQuote) disabledReason = `Insufficient ${quoteSymbol}`;
+                }
             } else if (state.orderSide === 'buy') {
                 const quoteSymbol = state.activePair.quote;
                 const requiredQuote = notional * (1 + feeRate);
@@ -1971,7 +2190,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function preflightOrder({ side, orderType, price, amount, stopPrice, pair, tradeMode, leverage }) {
         // 1. Wallet & connectivity
         if (!state.connected) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
-        if (!wallet.keypair) return { ok: false, error: 'Connect wallet to sign transactions', code: 'NO_KEYPAIR' };
+        if (!walletCanSign()) return { ok: false, error: 'Reconnect wallet to sign transactions', code: 'NO_KEYPAIR' };
 
         // 2. Basic input validation
         if (!amount || amount <= 0) return { ok: false, error: 'Amount must be positive', code: 'BAD_AMOUNT' };
@@ -2072,8 +2291,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 10. Open order limit check
-        if (openOrders.length >= 50) {
-            return { ok: false, error: 'Maximum open orders reached (50). Cancel an order first.', code: 'ORDER_LIMIT' };
+        if (openOrders.length >= MAX_OPEN_ORDERS_PER_USER) {
+            return { ok: false, error: `Maximum open orders reached (${MAX_OPEN_ORDERS_PER_USER}). Cancel an order first.`, code: 'ORDER_LIMIT' };
         }
 
         // 11. Live balance check — refresh from on-chain before validating
@@ -2181,7 +2400,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
                 const notional = amount * (price || state.lastPrice);
-                const marginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
+                const quoteAvailable = getQuoteAvailableMargin();
+                const isolatedMarginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
+                const crossMarginDeposit = Math.round(quoteAvailable * PRICE_SCALE);
+                const marginDeposit = state.marginType === 'cross' ? crossMarginDeposit : isolatedMarginDeposit;
+                if (marginDeposit <= 0) {
+                    showNotification(`Insufficient ${state.activePair?.quote || 'quote'} balance for margin`, 'warning');
+                    return;
+                }
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
                     buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit, state.marginType)
@@ -2246,7 +2472,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tb.innerHTML = openOrders.map(o => `<tr class="order-row" data-order-id="${escapeHtml(String(o.id))}"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td class="order-price-cell">${formatPrice(o.price)}</td><td class="order-qty-cell">${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="edit-order-btn" data-id="${escapeHtml(String(o.id))}" data-price="${o.price}" data-amount="${o.amount}" title="Edit order"><i class="fas fa-pencil-alt"></i></button></td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         // Task 3.4: Edit order buttons
         tb.querySelectorAll('.edit-order-btn').forEach(btn => btn.addEventListener('click', () => {
-            if (!state.connected || !wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+            if (!state.connected || !walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             const orderId = btn.dataset.id;
             const row = btn.closest('tr');
             if (!row) return;
@@ -2303,7 +2529,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             try {
                 await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
@@ -2322,7 +2548,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const cancelAllOrdersBtn = document.getElementById('cancelAllOrdersBtn');
     if (cancelAllOrdersBtn) {
         cancelAllOrdersBtn.addEventListener('click', async () => {
-            if (!state.connected || !wallet.keypair) {
+            if (!state.connected || !walletCanSign()) {
                 showNotification('Connect wallet first', 'warning');
                 return;
             }
@@ -2350,25 +2576,230 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); if (tab.dataset.target === 'content-positions') { loadMarginStats(); loadMarginPositions(); } }));
+    document.querySelectorAll('.positions-tabs').forEach(tabGroup => {
+        const panelRoot = tabGroup.closest('.positions-panel, .panel-card') || document;
+        const tabs = Array.from(tabGroup.querySelectorAll('.pos-tab'));
+        tabs.forEach(tab => tab.addEventListener('click', () => {
+            tabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            panelRoot.querySelectorAll('.positions-content').forEach(content => content.classList.add('hidden'));
+            const target = document.getElementById(tab.dataset.target);
+            if (target) target.classList.remove('hidden');
+            if (tab.dataset.target === 'content-positions') {
+                loadMarginStats();
+                loadMarginPositions();
+            } else if (tab.dataset.target === 'content-history') {
+                loadTradeHistory();
+            } else if (tab.dataset.target === 'content-margin-history') {
+                loadMarginHistory();
+            } else if (tab.dataset.target === 'predict-positions') {
+                loadPredictionPositions();
+            } else if (tab.dataset.target === 'predict-history') {
+                loadPredictionHistory();
+            } else if (tab.dataset.target === 'predict-created') {
+                loadCreatedMarkets();
+            }
+        }));
+    });
 
     // ═══════════════════════════════════════════════════════════════════════
     // Wallet UI
     // ═══════════════════════════════════════════════════════════════════════
     const connectBtn = document.getElementById('connectWallet'), walletModal = document.getElementById('walletModal'), closeModalBtn = document.getElementById('closeWalletModal');
     const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
-    let savedWallets = JSON.parse(localStorage.getItem('dexWallets') || '[]');
+    const ACTIVE_WALLET_KEY = 'dexActiveWallet';
+    const LOCAL_WALLET_SESSION_KEY = 'dexWalletSessionsV1';
+    const LOCAL_WALLET_PASSWORD_PREFIX = 'dexWalletPassword:';
+    let savedWallets = (() => {
+        try {
+            const parsed = JSON.parse(localStorage.getItem('dexWallets') || '[]');
+            if (!Array.isArray(parsed)) return [];
+            return parsed.filter(w => w && typeof w.address === 'string' && w.address.length > 0);
+        } catch {
+            return [];
+        }
+    })();
     const localWalletSessions = new Map();
+    let persistedLocalWalletSessions = (() => {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            return {};
+        }
+    })();
+
+    function getWalletPasswordCacheKey(address) {
+        return `${LOCAL_WALLET_PASSWORD_PREFIX}${address}`;
+    }
+
+    async function deriveSessionKey(password, saltBytes) {
+        const passwordKey = await crypto.subtle.importKey(
+            'raw',
+            new TextEncoder().encode(password),
+            'PBKDF2',
+            false,
+            ['deriveKey']
+        );
+        return crypto.subtle.deriveKey(
+            {
+                name: 'PBKDF2',
+                salt: saltBytes,
+                iterations: 100000,
+                hash: 'SHA-256'
+            },
+            passwordKey,
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['encrypt', 'decrypt']
+        );
+    }
+
+    async function encryptSeedHex(seedHex, password) {
+        if (window.MoltCrypto && typeof window.MoltCrypto.encryptPrivateKey === 'function') {
+            return window.MoltCrypto.encryptPrivateKey(seedHex, password);
+        }
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const key = await deriveSessionKey(password, salt);
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const payload = new TextEncoder().encode(seedHex);
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
+        return {
+            encrypted: bytesToHex(new Uint8Array(encrypted)),
+            salt: bytesToHex(salt),
+            iv: bytesToHex(iv)
+        };
+    }
+
+    async function decryptSeedHex(encryptedData, password) {
+        if (window.MoltCrypto && typeof window.MoltCrypto.decryptPrivateKey === 'function') {
+            return window.MoltCrypto.decryptPrivateKey(encryptedData, password);
+        }
+        const saltBytes = hexToBytes(encryptedData.salt || '');
+        const ivBytes = hexToBytes(encryptedData.iv || '');
+        const encryptedBytes = hexToBytes(encryptedData.encrypted || '');
+        const key = await deriveSessionKey(password, saltBytes);
+        try {
+            const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, key, encryptedBytes);
+            return new TextDecoder().decode(decrypted);
+        } catch {
+            throw new Error('Invalid password');
+        }
+    }
+
+    function walletSeedHex(keypair) {
+        if (!keypair || !keypair.secretKey) return '';
+        return bytesToHex(keypair.secretKey.slice(0, 32));
+    }
+
+    function persistSessionStoragePassword(address, password) {
+        if (!address || !password) return;
+        try { sessionStorage.setItem(getWalletPasswordCacheKey(address), password); } catch { }
+    }
+
+    function getCachedSessionPassword(address) {
+        if (!address) return '';
+        try { return sessionStorage.getItem(getWalletPasswordCacheKey(address)) || ''; } catch { return ''; }
+    }
+
+    function clearCachedSessionPassword(address) {
+        if (!address) return;
+        try { sessionStorage.removeItem(getWalletPasswordCacheKey(address)); } catch { }
+    }
+
+    async function persistLocalWalletSession(address, keypair, password) {
+        if (!address || !keypair || !keypair.secretKey) return;
+        if (!password) throw new Error('Password is required');
+        const seedHex = walletSeedHex(keypair);
+        const encrypted = await encryptSeedHex(seedHex, password);
+        persistedLocalWalletSessions[address] = { ...encrypted, updatedAt: Date.now() };
+        try { localStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
+        persistSessionStoragePassword(address, password);
+    }
+
+    function removePersistedLocalWalletSession(address) {
+        if (!address) return;
+        delete persistedLocalWalletSessions[address];
+        localWalletSessions.delete(address);
+        clearCachedSessionPassword(address);
+        try { localStorage.setItem(LOCAL_WALLET_SESSION_KEY, JSON.stringify(persistedLocalWalletSessions)); } catch { }
+    }
+
+    function restoreLocalWalletSessions() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(LOCAL_WALLET_SESSION_KEY) || '{}');
+            persistedLocalWalletSessions = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            persistedLocalWalletSessions = {};
+        }
+    }
+
+    async function unlockLocalWalletSession(address) {
+        if (!address) return null;
+        const existing = localWalletSessions.get(address);
+        if (existing) return existing;
+        const encrypted = persistedLocalWalletSessions[address];
+        if (!encrypted || !encrypted.encrypted || !encrypted.salt || !encrypted.iv) return null;
+
+        let password = getCachedSessionPassword(address);
+        if (!password) {
+            const entered = window.prompt('Enter wallet password to unlock signing for this address.');
+            if (!entered) return null;
+            password = entered;
+        }
+        try {
+            const seedHex = await decryptSeedHex(encrypted, password);
+            const seedBytes = hexToBytes(seedHex);
+            if (seedBytes.length !== 32) throw new Error('Invalid wallet seed length');
+            const kp = nacl.sign.keyPair.fromSeed(seedBytes);
+            const derivedAddress = bs58encode(kp.publicKey);
+            if (String(derivedAddress) !== String(address)) throw new Error('Password does not match wallet');
+            localWalletSessions.set(address, kp);
+            persistSessionStoragePassword(address, password);
+            return kp;
+        } catch {
+            clearCachedSessionPassword(address);
+            return null;
+        }
+    }
+
+    async function tryHydrateExtensionSigner(targetAddress) {
+        if (!targetAddress) return false;
+        try {
+            const ext = await wallet.connect();
+            return !!(ext?.address && String(ext.address).trim() === String(targetAddress).trim());
+        } catch {
+            return false;
+        }
+    }
+
+    async function resolveWalletSigningState(address) {
+        const sessionKp = await unlockLocalWalletSession(address);
+        if (sessionKp) {
+            return { signingReady: true, localKeypair: sessionKp, source: 'local' };
+        }
+        const extensionReady = await tryHydrateExtensionSigner(address);
+        return { signingReady: extensionReady, localKeypair: null, source: extensionReady ? 'extension' : 'none' };
+    }
+
+    restoreLocalWalletSessions();
 
     function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'extension'); } }
-    function closeWalletModalFn() { if (walletModal) walletModal.classList.add('hidden'); }
+    function closeWalletModalFn() {
+        if (walletModal) walletModal.classList.add('hidden');
+        resetWalletModalInputs();
+    }
     function switchWmTab(t) { wmTabs.forEach(x => x.classList.toggle('active', x.dataset.wmTab === t)); Object.entries(wmTC).forEach(([k, el]) => { if (el) el.classList.toggle('hidden', k !== t); }); }
-    function resetWalletModalInputs() {
+    function resetWalletModalInputs(options = {}) {
+        const { clearCreated = true } = options;
         const privateKeyInput = document.getElementById('wmPrivateKey');
         if (privateKeyInput) privateKeyInput.value = '';
 
         const passwordInput = document.getElementById('wmPassword');
         if (passwordInput) passwordInput.value = '';
+
+        const createPasswordInput = document.getElementById('wmCreatePassword');
+        if (createPasswordInput) createPasswordInput.value = '';
 
         const importTypeButtons = document.querySelectorAll('.wm-import-type');
         importTypeButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.import === 'key'));
@@ -2387,9 +2818,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const createdBox = document.getElementById('wmCreatedWallet');
         const newAddrEl = document.getElementById('wmNewAddress');
         const newKeyEl = document.getElementById('wmNewKey');
-        if (createdBox) createdBox.classList.add('hidden');
-        if (newAddrEl) newAddrEl.textContent = '';
-        if (newKeyEl) newKeyEl.textContent = '';
+        const createBtn = document.getElementById('wmCreateBtn');
+        if (clearCreated) {
+            if (createdBox) createdBox.classList.add('hidden');
+            if (newAddrEl) newAddrEl.textContent = '';
+            if (newKeyEl) newKeyEl.textContent = '';
+            if (createBtn) createBtn.classList.remove('hidden');
+        }
     }
 
     if (connectBtn) connectBtn.addEventListener('click', () => openWalletModal());
@@ -2432,6 +2867,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
         try {
             const activeImport = document.querySelector('.wm-import-type.active')?.dataset.import || 'key';
+            const password = (document.getElementById('wmPassword')?.value || '').trim();
+            if (!password) throw new Error('Password is required');
             let connectedWallet;
             if (activeImport === 'mnemonic') {
                 const words = Array.from(document.querySelectorAll('#mnemonicGrid input'))
@@ -2439,8 +2876,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     .filter(Boolean);
                 if (words.length !== 12 && words.length !== 24) throw new Error('Mnemonic must have 12 or 24 words');
                 const phrase = words.join(' ').toLowerCase();
-                const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(phrase));
-                const seed = new Uint8Array(digest).slice(0, 32);
+                // BIP39: PBKDF2-HMAC-SHA512, salt="mnemonic", 2048 iterations (matches wallet app & extension)
+                const mnemonicBytes = new TextEncoder().encode(phrase.normalize('NFKD').trim());
+                const saltBytes = new TextEncoder().encode('mnemonic');
+                const keyMaterial = await crypto.subtle.importKey('raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']);
+                const seedBuffer = await crypto.subtle.deriveBits(
+                    { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
+                    keyMaterial, 512
+                );
+                const seed = new Uint8Array(seedBuffer).slice(0, 32);
                 const kp = nacl.sign.keyPair.fromSeed(seed);
                 connectedWallet = await wallet.connectAddress(bs58encode(kp.publicKey), { signingReady: true, localKeypair: kp });
             } else {
@@ -2449,6 +2893,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             localWalletSessions.set(connectedWallet.address, connectedWallet.keypair);
+            await persistLocalWalletSession(connectedWallet.address, connectedWallet.keypair, password);
             if (!savedWallets.some(w => w.address === connectedWallet.address)) {
                 savedWallets.push({ address: connectedWallet.address, short: connectedWallet.shortAddr, added: Date.now() });
                 localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
@@ -2466,9 +2911,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (wmExtensionBtn) wmExtensionBtn.addEventListener('click', async () => {
         try {
             await wallet.connect();
-            savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
-            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-            connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
+            if (!savedWallets.some(w => w.address === wallet.address)) {
+                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            }
+            await connectWalletTo(wallet.address, wallet.shortAddr, { signingReady: true });
             closeWalletModalFn();
             showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
         } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
@@ -2478,8 +2925,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const wmCreateBtn = document.getElementById('wmCreateBtn');
     if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
         try {
+            const createPassword = (document.getElementById('wmCreatePassword')?.value || '').trim();
+            if (!createPassword) throw new Error('Password is required');
             const generated = await wallet.generate();
             localWalletSessions.set(generated.address, generated.keypair);
+            await persistLocalWalletSession(generated.address, generated.keypair, createPassword);
             if (!savedWallets.some(w => w.address === generated.address)) {
                 savedWallets.push({ address: generated.address, short: generated.shortAddr, added: Date.now() });
                 localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
@@ -2488,9 +2938,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const newKeyEl = document.getElementById('wmNewKey');
             const createdBox = document.getElementById('wmCreatedWallet');
             if (newAddrEl) newAddrEl.textContent = generated.address;
-            if (newKeyEl) newKeyEl.textContent = bytesToHex(generated.keypair.secretKey);
+            if (newKeyEl) newKeyEl.textContent = keypairSeedHex(generated.keypair);
             if (createdBox) createdBox.classList.remove('hidden');
-            await connectWalletTo(generated.address, generated.shortAddr, { signingReady: true, localKeypair: generated.keypair });
+            if (wmCreateBtn) wmCreateBtn.classList.add('hidden');
+            await connectWalletTo(generated.address, generated.shortAddr, { signingReady: true, localKeypair: generated.keypair, preserveCreatedDetails: true });
             showNotification('New wallet created and connected', 'success');
         } catch (e) {
             showNotification(`Create wallet failed: ${e.message}`, 'error');
@@ -2500,11 +2951,18 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
 
     async function connectWalletTo(address, shortAddr, options = {}) {
-        const { signingReady = false, localKeypair = null } = options;
+        const { signingReady = false, localKeypair = null, preserveCreatedDetails = false } = options;
         state.connected = true; state.walletAddress = address;
+        localStorage.setItem(ACTIVE_WALLET_KEY, address);
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
-        const resolvedSessionKey = localKeypair || localWalletSessions.get(address) || null;
-        await wallet.connectAddress(address, { signingReady: signingReady || !!resolvedSessionKey, localKeypair: resolvedSessionKey });
+        let resolvedSessionKey = localKeypair || localWalletSessions.get(address) || null;
+        let resolvedSigningReady = !!signingReady;
+        if (!resolvedSessionKey && !resolvedSigningReady) {
+            const resolved = await resolveWalletSigningState(address);
+            resolvedSessionKey = resolved.localKeypair || null;
+            resolvedSigningReady = !!resolved.signingReady;
+        }
+        await wallet.connectAddress(address, { signingReady: resolvedSigningReady || !!resolvedSessionKey, localKeypair: resolvedSessionKey });
         // M16: Resolve .molt name and fetch MoltyID profile for connected trader
         let displayLabel = shortAddr;
         try {
@@ -2532,14 +2990,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(displayLabel)}${repBadge}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
-        resetWalletModalInputs();
+        resetWalletModalInputs({ clearCreated: !preserveCreatedDetails });
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
-        renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions();
+        renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory();
+        loadPredictionHistory();
+        renderWalletList();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
     }
 
     function disconnectWallet() {
         state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet._moltWallet = null;
+        localStorage.removeItem(ACTIVE_WALLET_KEY);
         state.moltName = null; state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
@@ -2547,7 +3008,7 @@ document.addEventListener('DOMContentLoaded', () => {
         applyWalletGateAll();
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
-        loadTradeHistory(); loadMarginPositions(); loadLPPositions(); loadPredictionPositions(); loadCreatedMarkets();
+        loadTradeHistory(); loadMarginPositions(); loadMarginHistory(); loadLPPositions(); loadPredictionPositions(); loadPredictionHistory(); loadCreatedMarkets();
     }
 
     function toggleWalletPanels(show) {
@@ -2577,16 +3038,67 @@ document.addEventListener('DOMContentLoaded', () => {
             const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);
             return `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
         }).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
-        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => {
+        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', async () => {
             const w = savedWallets[parseInt(btn.dataset.idx)];
             if (w) {
-                const sessionKp = localWalletSessions.get(w.address) || null;
-                connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady: !!sessionKp, localKeypair: sessionKp });
+                const currentAddress = state.walletAddress;
+                const { signingReady, localKeypair } = await resolveWalletSigningState(w.address);
+                if (!signingReady && walletCanSign() && currentAddress && currentAddress !== w.address) {
+                    showNotification('Switch blocked: target wallet is not ready to sign. Connect matching extension account or import its key first.', 'warning');
+                    return;
+                }
+                if (!signingReady) {
+                    showNotification('Switched wallet in read-only mode. Import key or reconnect matching extension account to sign.', 'warning');
+                }
+                await connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...', { signingReady, localKeypair });
                 renderWalletList();
             }
         }));
-        list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', () => { const i = parseInt(btn.dataset.idx), r = savedWallets[i]; savedWallets.splice(i, 1); localStorage.setItem('dexWallets', JSON.stringify(savedWallets)); if (state.walletAddress === r?.address) disconnectWallet(); renderWalletList(); showNotification('Wallet removed', 'info'); }));
-        const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => { savedWallets = []; localStorage.removeItem('dexWallets'); disconnectWallet(); renderWalletList(); showNotification('All wallets disconnected', 'info'); });
+        list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', async () => {
+            const i = parseInt(btn.dataset.idx, 10);
+            const removedWallet = savedWallets[i];
+            if (Number.isNaN(i) || !removedWallet) return;
+
+            savedWallets.splice(i, 1);
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            removePersistedLocalWalletSession(removedWallet.address);
+
+            if (state.walletAddress === removedWallet.address) {
+                const fallbackWallet = savedWallets[0] || null;
+                if (fallbackWallet) {
+                    const { signingReady, localKeypair } = await resolveWalletSigningState(fallbackWallet.address);
+                    await connectWalletTo(
+                        fallbackWallet.address,
+                        fallbackWallet.short || fallbackWallet.address.slice(0, 8) + '...',
+                        { signingReady, localKeypair }
+                    );
+                    showNotification('Wallet removed. Switched to another wallet', 'info');
+                } else {
+                    disconnectWallet();
+                    showNotification('Wallet removed', 'info');
+                }
+            } else {
+                showNotification('Wallet removed', 'info');
+            }
+
+            renderWalletList();
+        }));
+        const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => {
+            savedWallets = [];
+            localWalletSessions.clear();
+            persistedLocalWalletSessions = {};
+            try {
+                Object.keys(sessionStorage)
+                    .filter(k => k.startsWith(LOCAL_WALLET_PASSWORD_PREFIX))
+                    .forEach(k => sessionStorage.removeItem(k));
+            } catch { }
+            localStorage.removeItem('dexWallets');
+            localStorage.removeItem(ACTIVE_WALLET_KEY);
+            localStorage.removeItem(LOCAL_WALLET_SESSION_KEY);
+            disconnectWallet();
+            renderWalletList();
+            showNotification('All wallets disconnected', 'info');
+        });
     }
 
     function renderBalances() {
@@ -2594,6 +3106,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) { c.innerHTML = ''; renderPortfolioSummary(); return; }
         c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${escapeHtml(t.toLowerCase())}-icon">${escapeHtml(t[0])}</div><span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
         renderPortfolioSummary();
+        refreshPredictWalletBalance();
+    }
+
+    function refreshPredictWalletBalance() {
+        const el = document.getElementById('predictMusdBalance');
+        if (!el) return;
+        if (!state.connected) {
+            el.textContent = 'Connect wallet';
+            return;
+        }
+        const available = balances.mUSD?.available ?? 0;
+        el.textContent = `${formatAmount(available)} mUSD`;
     }
 
     // Task 7.1: Derive USD value for a token using pair prices
@@ -2691,20 +3215,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // F10E.1/E2/E4/E9/E10 — Wallet-Gate All Interactive Forms
     // ═══════════════════════════════════════════════════════════════════════
     function applyWalletGateAll() {
-        const connected = state.connected;
+        const connected = !!(state.connected && (state.walletAddress || wallet.address));
+        const canSign = walletCanSign();
 
         // --- Trade view: Order Form Panel (F15.2: gate entire panel including tabs/type/mode) ---
         const orderFormPanel = document.querySelector('.order-form-panel');
         if (orderFormPanel) orderFormPanel.classList.toggle('wallet-gated-disabled', !connected);
         if (submitBtn) {
-            if (connected) {
+            if (canSign) {
                 submitBtn.disabled = false;
                 submitBtn.classList.remove('btn-wallet-gate');
                 updateSubmitBtn();
             } else {
                 submitBtn.disabled = true;
                 submitBtn.className = 'btn-full btn-wallet-gate';
-                submitBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+                submitBtn.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
 
@@ -2715,8 +3242,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (predictCreatePanel) predictCreatePanel.classList.toggle('wallet-gated-disabled', !connected);
 
         const predictSubmit = document.getElementById('predictSubmitBtn');
+        const predictYesToggle = document.getElementById('predictYesBtn');
+        const predictNoToggle = document.getElementById('predictNoBtn');
+        if (predictYesToggle) {
+            predictYesToggle.disabled = !canSign;
+            predictYesToggle.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
+        }
+        if (predictNoToggle) {
+            predictNoToggle.disabled = !canSign;
+            predictNoToggle.title = canSign ? '' : (connected ? 'Reconnect wallet to sign' : 'Connect wallet to trade');
+        }
         if (predictSubmit) {
-            if (connected) {
+            if (canSign) {
                 predictSubmit.disabled = false;
                 predictSubmit.classList.remove('btn-wallet-gate');
                 const side = (typeof predictState !== 'undefined' && predictState.selectedOutcome === 'no') ? 'NO' : 'YES';
@@ -2724,19 +3261,23 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 predictSubmit.disabled = true;
                 predictSubmit.className = 'btn-full btn-wallet-gate';
-                predictSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+                predictSubmit.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
         const predictCreate = document.getElementById('predictCreateBtn');
         if (predictCreate) {
-            if (connected) {
+            if (canSign) {
                 predictCreate.disabled = false;
                 predictCreate.classList.remove('btn-wallet-gate');
                 predictCreate.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
             } else {
                 predictCreate.disabled = true;
                 predictCreate.className = 'btn btn-full btn-wallet-gate';
-                predictCreate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Create';
+                predictCreate.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Create';
             }
         }
 
@@ -2745,14 +3286,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (addLiqForm) addLiqForm.classList.toggle('wallet-gated-disabled', !connected);
         const addLiqSubmit = document.getElementById('addLiqBtn');
         if (addLiqSubmit) {
-            if (connected) {
+            if (canSign) {
                 addLiqSubmit.disabled = false;
                 addLiqSubmit.classList.remove('btn-wallet-gate');
                 addLiqSubmit.textContent = 'Add Liquidity';
             } else {
                 addLiqSubmit.disabled = true;
                 addLiqSubmit.className = 'btn btn-full btn-wallet-gate';
-                addLiqSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
+                addLiqSubmit.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet';
             }
         }
 
@@ -2761,21 +3304,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (proposalForm) proposalForm.classList.toggle('wallet-gated-disabled', !connected);
         const proposalSubmit = document.getElementById('submitProposalBtn');
         if (proposalSubmit) {
-            if (connected) {
+            if (canSign) {
                 proposalSubmit.disabled = false;
                 proposalSubmit.classList.remove('btn-wallet-gate');
                 proposalSubmit.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
             } else {
                 proposalSubmit.disabled = true;
                 proposalSubmit.className = 'btn btn-full btn-wallet-gate';
-                proposalSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Propose';
+                proposalSubmit.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Propose';
             }
         }
 
         // --- Rewards: Claim button (already has wallet check, but disable visually) ---
         const claimAll = document.getElementById('claimAllBtn');
         if (claimAll) {
-            claimAll.disabled = !connected;
+            claimAll.disabled = !canSign;
         }
 
         // --- Rewards: Source panels wallet-gated (F13.5) ---
@@ -2786,29 +3331,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- Rewards: Per-source Claim buttons (F15.9) ---
         document.querySelectorAll('.rewards-sources .claim-btn').forEach(btn => {
-            btn.disabled = !connected;
+            btn.disabled = !canSign;
         });
 
         // --- Pool: Per-row Add buttons (F15.7) ---
         document.querySelectorAll('.pool-add-btn').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
         });
 
         // --- Governance: Vote buttons (F15.10) ---
         document.querySelectorAll('.vote-btn').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
         });
 
         // --- Prediction: Card action buttons (dynamically rendered) ---
         document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
         });
         document.querySelectorAll('.btn-predict-resolve, .btn-predict-claim, .btn-predict-claim-pos').forEach(btn => {
-            btn.disabled = !connected;
-            btn.classList.toggle('btn-wallet-gate', !connected);
+            btn.disabled = !canSign;
+            btn.classList.toggle('btn-wallet-gate', !canSign);
         });
 
         // --- Trade: Margin close & cancel order buttons ---
@@ -2824,25 +3369,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         const launchTradeGate = document.getElementById('launchTradeBtn');
         if (launchTradeGate) {
-            if (connected) {
+            if (canSign) {
                 launchTradeGate.disabled = false;
                 launchTradeGate.classList.remove('btn-wallet-gate');
             } else {
                 launchTradeGate.disabled = true;
                 launchTradeGate.className = 'btn btn-full btn-wallet-gate';
-                launchTradeGate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+                launchTradeGate.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
             }
         }
         const launchCreateGate = document.getElementById('launchCreateBtn');
         if (launchCreateGate) {
-            if (connected) {
+            if (canSign) {
                 launchCreateGate.disabled = false;
                 launchCreateGate.classList.remove('btn-wallet-gate');
                 launchCreateGate.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 MOLT)';
             } else {
                 launchCreateGate.disabled = true;
                 launchCreateGate.className = 'btn btn-full btn-wallet-gate';
-                launchCreateGate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Launch';
+                launchCreateGate.innerHTML = connected
+                    ? '<i class="fas fa-key"></i> Unlock Wallet to Sign'
+                    : '<i class="fas fa-wallet"></i> Connect Wallet to Launch';
             }
         }
         const launchTradeForm = document.getElementById('launchTradeForm');
@@ -3065,6 +3614,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const e = document.getElementById('marginEntry'), l = document.getElementById('marginLiqPrice'), r = document.getElementById('marginRatio');
         const manualPrice = parseFloat(priceInput?.value || '0') || 0;
         const referencePrice = manualPrice > 0 ? manualPrice : state.lastPrice;
+        const amount = Math.max(0, parseFloat(amountInput?.value || '0') || 0);
+        const notional = Math.max(0, referencePrice * amount);
         if (e) e.textContent = formatPrice(referencePrice);
         // F10.7 FIX: Liquidation price uses tier-appropriate maintenance BPS
         // Liq occurs when margin_ratio drops to maintenance level
@@ -3073,10 +3624,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // For short: liq_price = entry * (1 + 1/leverage - maintBps/10000)
         const maintBps = getMaintenanceBps(state.leverageValue);
         const maintFrac = maintBps / 10000;
+        const isolatedMargin = state.leverageValue > 0 ? (notional / state.leverageValue) : 0;
+        const effectiveMargin = state.marginType === 'cross' ? getQuoteAvailableMargin() : isolatedMargin;
+        const effectiveLeverage = effectiveMargin > 0 && notional > 0
+            ? Math.max(1, notional / effectiveMargin)
+            : Math.max(1, state.leverageValue);
         if (l) l.textContent = formatPrice(state.marginSide === 'long'
-            ? referencePrice * (1 - 1 / state.leverageValue + maintFrac)
-            : referencePrice * (1 + 1 / state.leverageValue - maintFrac));
-        if (r) r.textContent = `${(100 / state.leverageValue).toFixed(1)}%`;
+            ? referencePrice * (1 - 1 / effectiveLeverage + maintFrac)
+            : referencePrice * (1 + 1 / effectiveLeverage - maintFrac));
+        if (r) r.textContent = `${(100 / effectiveLeverage).toFixed(1)}%`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -3133,8 +3689,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
                     const priceEl = document.getElementById('liqCurrentPrice');
                     if (pool && pool.sqrtPrice && priceEl) {
-                        const sqrtP = pool.sqrtPrice / (1 << 16) / (1 << 16); // Q32.32 → float
-                        const price = sqrtP * sqrtP;
+                        const price = sqrtPriceQ32ToPrice(pool.sqrtPrice);
                         priceEl.textContent = price >= 0.01 ? price.toFixed(6) : price.toExponential(4);
                     } else if (priceEl) { priceEl.textContent = '—'; }
                 }
@@ -3194,7 +3749,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!collectBtn && !removeBtn && !addBtn) return;
         e.stopPropagation();
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
 
         if (collectBtn) {
             const posId = parseInt(collectBtn.dataset.positionId) || 0;
@@ -3334,7 +3889,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
             const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
             // F24.17 FIX: Weight deposit by pool price ratio for accurate share estimate
-            const poolPrice = pool.sqrtPrice ? Math.pow(pool.sqrtPrice / (1 << 16), 2) : 1;
+            const poolPrice = pool.sqrtPrice ? sqrtPriceQ32ToPrice(pool.sqrtPrice) : 1;
             const deposit = (amtA * poolPrice + amtB) * 1e9; // scale to match liquidity units
             const share = deposit / (pool.liquidity + deposit) * 100;
             shareEl.textContent = share >= 0.01 ? share.toFixed(2) + '%' : '< 0.01%';
@@ -3555,6 +4110,159 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* keep default */ }
     }
 
+    async function submitMarginClose(positionId, fullSizeRaw, closeAmountRaw, closeType = 'market', limitPriceRaw = 0) {
+        if (!state.connected || !walletCanSign()) throw new Error('Wallet not ready');
+        if (!contracts.dex_margin) throw new Error('Margin contract not loaded');
+        let ix;
+        if (closeType === 'limit') {
+            if (!limitPriceRaw || limitPriceRaw <= 0) throw new Error('Enter a valid limit close price');
+            if (closeAmountRaw >= fullSizeRaw) {
+                ix = contractIx(contracts.dex_margin, buildClosePositionLimitArgs(wallet.address, positionId, limitPriceRaw));
+            } else {
+                ix = contractIx(contracts.dex_margin, buildPartialCloseLimitArgs(wallet.address, positionId, closeAmountRaw, limitPriceRaw));
+            }
+        } else if (closeAmountRaw >= fullSizeRaw) {
+            ix = contractIx(contracts.dex_margin, buildClosePositionArgs(wallet.address, positionId));
+        } else {
+            ix = contractIx(contracts.dex_margin, buildPartialCloseArgs(wallet.address, positionId, closeAmountRaw));
+        }
+        await wallet.sendTransaction([ix]);
+        await loadMarginPositions();
+        await loadMarginHistory();
+        if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+    }
+
+    async function submitMarginLiquidation(positionId) {
+        if (!state.connected || !walletCanSign()) throw new Error('Wallet not ready');
+        if (!contracts.dex_margin) throw new Error('Margin contract not loaded');
+        if (!Number.isFinite(positionId) || positionId <= 0) throw new Error('Invalid position ID');
+        await wallet.sendTransaction([contractIx(contracts.dex_margin, buildLiquidateArgs(wallet.address, positionId))]);
+        await loadMarginPositions();
+        await loadMarginHistory();
+        if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+    }
+
+    function showMarginCloseModal(positionId, fullSizeRaw, positionSide = 'long') {
+        const overlay = document.createElement('div');
+        overlay.className = 'order-confirm-overlay';
+        overlay.innerHTML = `
+            <div class="order-confirm-modal" style="max-width:460px;">
+                <div class="order-confirm-header">
+                    <h3><i class="fas fa-times-circle"></i> Close Margin Position</h3>
+                    <button class="order-confirm-close" aria-label="Close">×</button>
+                </div>
+                <div class="order-confirm-body" style="display:flex;flex-direction:column;gap:10px;">
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-small btn-primary" data-close-type="market">Market</button>
+                        <button class="btn btn-small btn-secondary" data-close-type="limit">Limit</button>
+                    </div>
+                    <div style="font-size:0.8rem;color:var(--text-secondary);" id="marginCloseTypeHint">Market close executes immediately at current mark price.</div>
+                    <label id="marginCloseLimitPriceRow" class="hidden" style="display:flex;flex-direction:column;gap:4px;font-size:0.82rem;">
+                        <span>Limit close price</span>
+                        <input id="marginCloseLimitPriceInput" type="number" min="0.000000001" step="0.000000001" placeholder="e.g. 0.1250" />
+                    </label>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button class="btn btn-small btn-secondary" data-close-pct="25">25%</button>
+                        <button class="btn btn-small btn-secondary" data-close-pct="50">50%</button>
+                        <button class="btn btn-small btn-secondary" data-close-pct="75">75%</button>
+                        <button class="btn btn-small btn-primary" data-close-pct="100">100%</button>
+                    </div>
+                    <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82rem;">
+                        <span>Custom quantity</span>
+                        <input id="marginCloseQtyInput" type="number" min="0.001" step="0.001" placeholder="e.g. 0.2500" />
+                    </label>
+                </div>
+                <div class="order-confirm-footer">
+                    <button class="btn btn-small btn-secondary" data-close-action="cancel">Cancel</button>
+                    <button class="btn btn-small btn-primary" data-close-action="submit">Close Position</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+
+        let selectedType = 'market';
+        let selectedPct = 100;
+        const closeTypeHint = overlay.querySelector('#marginCloseTypeHint');
+        const limitPriceRow = overlay.querySelector('#marginCloseLimitPriceRow');
+        const limitPriceInput = overlay.querySelector('#marginCloseLimitPriceInput');
+        const qtyInput = overlay.querySelector('#marginCloseQtyInput');
+        const submitBtn = overlay.querySelector('[data-close-action="submit"]');
+        const closeBtn = overlay.querySelector('.order-confirm-close');
+        const cancelBtn = overlay.querySelector('[data-close-action="cancel"]');
+
+        const closeOverlay = () => {
+            try { overlay.remove(); } catch { /* no-op */ }
+        };
+
+        overlay.querySelectorAll('[data-close-type]').forEach(btn => btn.addEventListener('click', () => {
+            selectedType = btn.dataset.closeType;
+            overlay.querySelectorAll('[data-close-type]').forEach(b => b.className = `btn btn-small ${b.dataset.closeType === selectedType ? 'btn-primary' : 'btn-secondary'}`);
+            if (selectedType === 'limit') {
+                closeTypeHint.textContent = `Limit close executes when mark ${positionSide === 'short' ? '≤' : '≥'} your limit price.`;
+                if (limitPriceRow) limitPriceRow.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.title = '';
+            } else {
+                closeTypeHint.textContent = 'Market close executes immediately at current mark price.';
+                if (limitPriceRow) limitPriceRow.classList.add('hidden');
+                submitBtn.disabled = false;
+                submitBtn.title = '';
+            }
+        }));
+
+        overlay.querySelectorAll('[data-close-pct]').forEach(btn => btn.addEventListener('click', () => {
+            selectedPct = Math.max(1, Math.min(100, parseInt(btn.dataset.closePct || '100')));
+            overlay.querySelectorAll('[data-close-pct]').forEach(b => b.className = `btn btn-small ${parseInt(b.dataset.closePct || '0') === selectedPct ? 'btn-primary' : 'btn-secondary'}`);
+            if (qtyInput) qtyInput.value = '';
+        }));
+
+        if (qtyInput) qtyInput.addEventListener('input', () => {
+            const customQty = parseFloat(qtyInput.value || '0');
+            if (customQty > 0) {
+                overlay.querySelectorAll('[data-close-pct]').forEach(b => b.className = 'btn btn-small btn-secondary');
+            }
+        });
+
+        const submit = async () => {
+            const customQty = parseFloat(qtyInput?.value || '0');
+            let closeAmountRaw;
+            if (customQty > 0) {
+                closeAmountRaw = Math.floor(customQty * PRICE_SCALE);
+            } else {
+                closeAmountRaw = Math.floor(fullSizeRaw * selectedPct / 100);
+            }
+            if (!closeAmountRaw || closeAmountRaw <= 0) {
+                showNotification('Close amount too small', 'warning');
+                return;
+            }
+            closeAmountRaw = Math.min(closeAmountRaw, fullSizeRaw);
+
+            let limitPriceRaw = 0;
+            if (selectedType === 'limit') {
+                const limitPriceHuman = parseFloat(limitPriceInput?.value || '0');
+                if (!limitPriceHuman || limitPriceHuman <= 0) {
+                    showNotification('Enter a valid limit close price', 'warning');
+                    return;
+                }
+                limitPriceRaw = Math.round(limitPriceHuman * PRICE_SCALE);
+            }
+
+            submitBtn.disabled = true;
+            try {
+                await submitMarginClose(positionId, fullSizeRaw, closeAmountRaw, selectedType, limitPriceRaw);
+                showNotification(closeAmountRaw >= fullSizeRaw ? 'Position closed' : 'Position partially closed', 'success');
+                closeOverlay();
+            } catch (e) {
+                showNotification(`Close failed: ${e.message}`, 'error');
+            }
+            submitBtn.disabled = false;
+        };
+
+        closeBtn?.addEventListener('click', closeOverlay);
+        cancelBtn?.addEventListener('click', closeOverlay);
+        submitBtn?.addEventListener('click', submit);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(); });
+    }
+
     async function loadMarginPositions() {
         const badge = document.querySelector('.margin-badge');
         const container = document.getElementById('marginPositionsList');
@@ -3628,10 +4336,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <button class="btn btn-small btn-margin-add" data-position-id="${posId}" title="Add Margin">＋</button>
                                 <button class="btn btn-small btn-margin-remove" data-position-id="${posId}" title="Remove Margin">−</button>
                                 ${isOpen ? `<button class="btn btn-small btn-margin-sltp" data-position-id="${posId}" title="Edit SL/TP" style="font-size:0.72rem;">SL/TP</button>` : ''}
-                                ${isOpen ? `<button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}" data-size="${sizeRaw}">Close ▾</button>` : ''}
+                                ${isOpen ? `<button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}" data-size="${sizeRaw}" data-side="${side.toLowerCase()}">Close ▾</button>` : ''}
                                 ${isOpen ? `<button class="btn btn-small btn-outline margin-share-btn" data-position-id="${posId}" data-pair="${escapeHtml(pos.pair || 'MOLT/mUSD')}" data-side="${escapeHtml(side)}" data-entry="${pos.entryPrice || 0}" data-mark="${mark}" data-pnl="${pnl}" data-pnlpct="${pnlPctStr}" data-leverage="${leverage}" data-slot="${pos.createdSlot || 0}" title="Share PnL">📤</button>` : ''}
                             </div>
-                            <div class="margin-sltp-inline hidden" data-position-id="${posId}">
+                            <div class="margin-sltp-inline hidden" data-position-id="${posId}" data-side="${side.toLowerCase()}" data-entry-price="${entryHuman}">
                                 <div style="display:flex;gap:6px;align-items:center;">
                                     <input type="number" class="sltp-sl-input" placeholder="Stop-Loss" step="0.0001" value="${slPrice > 0 ? (slPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
                                     <input type="number" class="sltp-tp-input" placeholder="Take-Profit" step="0.0001" value="${tpPrice > 0 ? (tpPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
@@ -3664,18 +4372,19 @@ document.addEventListener('DOMContentLoaded', () => {
                             showNotification(`⚠ ${warningRows.length} position(s) near liquidation — margin ratio < 120%`, 'warning');
                         }
                     }
-                    // Bind close buttons — toggle partial close panel
+                    // Bind close buttons — open close modal
                     container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+                        if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
-                        const panel = container.querySelector(`.margin-pclose-inline[data-position-id="${posId}"]`);
-                        if (!panel) return;
-                        panel.classList.toggle('hidden');
+                        const fullSize = parseInt(btn.dataset.size || '0');
+                        const posSide = String(btn.dataset.side || 'long').toLowerCase();
+                        if (!posId || !fullSize) { showNotification('Invalid position size', 'warning'); return; }
+                        showMarginCloseModal(parseInt(posId), fullSize, posSide);
                     }));
                     // Bind partial close percentage buttons
                     container.querySelectorAll('.pclose-pct-btn').forEach(btn => btn.addEventListener('click', async () => {
-                        if (!state.connected || !wallet.keypair) return;
+                        if (!state.connected || !walletCanSign()) return;
                         const posId = parseInt(btn.dataset.positionId);
                         const panel = btn.closest('.margin-pclose-inline');
                         const fullSize = parseInt(panel.dataset.size);
@@ -3699,7 +4408,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }));
                     // Bind partial close custom button
                     container.querySelectorAll('.pclose-custom-btn').forEach(btn => btn.addEventListener('click', async () => {
-                        if (!state.connected || !wallet.keypair) return;
+                        if (!state.connected || !walletCanSign()) return;
                         const posId = parseInt(btn.dataset.positionId);
                         const panel = btn.closest('.margin-pclose-inline');
                         const input = panel.querySelector('.pclose-custom-input');
@@ -3739,7 +4448,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Bind Add Margin buttons
                     container.querySelectorAll('.btn-margin-add').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+                        if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
                         const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
                         if (!row) return;
@@ -3751,7 +4460,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Bind Remove Margin buttons
                     container.querySelectorAll('.btn-margin-remove').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+                        if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
                         const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
                         if (!row) return;
@@ -3768,7 +4477,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }));
                     // Bind confirm buttons (add/remove margin)
                     container.querySelectorAll('.margin-adjust-confirm').forEach(btn => btn.addEventListener('click', async () => {
-                        if (!state.connected || !wallet.keypair) { showNotification('Wallet not ready', 'warning'); return; }
+                        if (!state.connected || !walletCanSign()) { showNotification('Wallet not ready', 'warning'); return; }
                         if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); return; }
                         const posId = parseInt(btn.dataset.positionId);
                         const action = btn.dataset.action;
@@ -3812,7 +4521,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }));
                     // Bind SL/TP save buttons
                     container.querySelectorAll('.sltp-save-btn').forEach(btn => btn.addEventListener('click', async () => {
-                        if (!state.connected || !wallet.keypair) { showNotification('Wallet not ready', 'warning'); return; }
+                        if (!state.connected || !walletCanSign()) { showNotification('Wallet not ready', 'warning'); return; }
                         if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); return; }
                         const posId = parseInt(btn.dataset.positionId);
                         const row = container.querySelector(`.margin-sltp-inline[data-position-id="${btn.dataset.positionId}"]`);
@@ -3820,15 +4529,28 @@ document.addEventListener('DOMContentLoaded', () => {
                         const tpInput = row?.querySelector('.sltp-tp-input');
                         const slVal = parseFloat(slInput?.value) || 0;
                         const tpVal = parseFloat(tpInput?.value) || 0;
-                        if (slVal <= 0 && tpVal <= 0) { showNotification('Enter at least one SL or TP price', 'warning'); return; }
+                        if (slVal < 0 || tpVal < 0) { showNotification('SL/TP cannot be negative', 'warning'); return; }
+                        if (slVal > 9_000_000 || tpVal > 9_000_000) { showNotification('SL/TP price too large', 'warning'); return; }
+                        const side = String(row?.dataset.side || 'long').toLowerCase();
+                        const entryRef = Math.max(0, parseFloat(row?.dataset.entryPrice || '0') || 0);
+                        const refPrice = entryRef > 0 ? entryRef : (state.lastPrice || 0);
+                        if (side === 'long') {
+                            if (slVal > 0 && refPrice > 0 && slVal >= refPrice) { showNotification('For LONG, SL must be below entry', 'warning'); return; }
+                            if (tpVal > 0 && refPrice > 0 && tpVal <= refPrice) { showNotification('For LONG, TP must be above entry', 'warning'); return; }
+                        } else {
+                            if (slVal > 0 && refPrice > 0 && slVal <= refPrice) { showNotification('For SHORT, SL must be above entry', 'warning'); return; }
+                            if (tpVal > 0 && refPrice > 0 && tpVal >= refPrice) { showNotification('For SHORT, TP must be below entry', 'warning'); return; }
+                        }
                         btn.disabled = true;
                         try {
                             await wallet.sendTransaction([contractIx(
                                 contracts.dex_margin,
                                 buildSetPositionSlTpArgs(wallet.address, posId, slVal > 0 ? Math.round(slVal * PRICE_SCALE) : 0, tpVal > 0 ? Math.round(tpVal * PRICE_SCALE) : 0)
                             )]);
-                            showNotification(`SL/TP updated${slVal > 0 ? ' SL: ' + formatPrice(slVal) : ''}${tpVal > 0 ? ' TP: ' + formatPrice(tpVal) : ''}`, 'success');
+                            if (slVal <= 0 && tpVal <= 0) showNotification('SL/TP cleared', 'success');
+                            else showNotification(`SL/TP updated${slVal > 0 ? ' SL: ' + formatPrice(slVal) : ''}${tpVal > 0 ? ' TP: ' + formatPrice(tpVal) : ''}`, 'success');
                             await loadMarginPositions();
+                            await loadMarginHistory();
                         } catch (e) { showNotification(`SL/TP update failed: ${e.message}`, 'error'); }
                         btn.disabled = false;
                     }));
@@ -3880,7 +4602,55 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (exportBtn) exportBtn.addEventListener('click', exportTradeHistoryCSV);
                 return;
             }
-        } catch { /* no history from API */ }
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-history" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No spot trade history</div>';
+        } catch {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-circle-exclamation" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Unable to load trade history</div>';
+        }
+    }
+
+    async function loadMarginHistory() {
+        const container = document.getElementById('content-margin-history');
+        if (!container) return;
+        if (!state.connected) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view margin history</div>';
+            return;
+        }
+        try {
+            const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+            const rows = Array.isArray(data) ? data.slice() : [];
+            rows.sort((a, b) => Number(b.updatedSlot || b.closedSlot || b.createdSlot || 0) - Number(a.updatedSlot || a.closedSlot || a.createdSlot || 0));
+            if (!rows.length) {
+                container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-history" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No margin history</div>';
+                return;
+            }
+            container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Mode</th><th>Entry</th><th>Exit/Mark</th><th>Size</th><th>PnL</th><th>Status</th></tr></thead><tbody>${rows.map(pos => {
+                const sideRaw = String(pos.side || 'long').toLowerCase();
+                const sideLabel = sideRaw === 'short' ? 'SHORT' : 'LONG';
+                const sideClass = sideRaw === 'short' ? 'side-sell' : 'side-buy';
+                const modeLabel = pos.marginType === 'cross' ? 'Cross' : 'Isolated';
+                const pairLabel = escapeHtml(pos.pair || state.activePair?.id || '—');
+                const statusRaw = String(pos.status ?? '').toLowerCase();
+                const statusLabel = statusRaw || 'open';
+                const entryValue = Number(pos.entryPrice || 0);
+                const exitValue = Number(pos.exitPrice || pos.markPrice || state.lastPrice || 0);
+                const sizeValue = Number(pos.size || 0) / PRICE_SCALE;
+                const pnlRaw = Number(pos.realizedPnl ?? pos.pnl ?? pos.unrealizedPnl ?? 0);
+                const pnlClass = pnlRaw >= 0 ? 'positive' : 'negative';
+                const pnlPrefix = pnlRaw >= 0 ? '+' : '';
+                return `<tr>
+                    <td>${pairLabel}</td>
+                    <td class="${sideClass}">${sideLabel}</td>
+                    <td>${modeLabel}</td>
+                    <td class="mono-value">${formatPrice(entryValue)}</td>
+                    <td class="mono-value">${formatPrice(exitValue)}</td>
+                    <td class="mono-value">${formatAmount(sizeValue)}</td>
+                    <td class="mono-value ${pnlClass}">${pnlPrefix}${formatPrice(pnlRaw)}</td>
+                    <td>${escapeHtml(statusLabel.toUpperCase())}</td>
+                </tr>`;
+            }).join('')}</tbody></table>`;
+        } catch {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-exclamation-triangle" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Failed to load margin history</div>';
+        }
     }
 
     // Task 7.2: Export trade history as CSV
@@ -4030,6 +4800,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const yesVotes = p.yesVotes || 0;
                         const noVotes = p.noVotes || 0;
                         const totalVotes = yesVotes + noVotes;
+                        const minQuorum = Number(state.governanceMinQuorum || GOVERNANCE_MIN_QUORUM_DEFAULT);
+                        const quorumMet = totalVotes >= minQuorum;
+                        const quorumShortfall = Math.max(0, minQuorum - totalVotes);
                         const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
                         const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : status === 'rejected' ? 'rejected-proposal' : 'executed-proposal';
                         // F14.5: Generate title from proposalType + proposalId
@@ -4037,12 +4810,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         const safeTitle = escapeHtml(typeLabels[p.proposalType] || p.proposalType || 'Proposal') + ` #${p.proposalId || 0}`;
                         const safeType = escapeHtml(p.proposalType || 'New Pair');
                         const safeStatus = escapeHtml(status.charAt(0).toUpperCase() + status.slice(1));
-                        // F16.9: Compute time remaining from endSlot using API slot (0.4s per slot)
+                        // F16.9: Compute time remaining from endSlot using API slot (1s per slot)
                         let timeStr = '';
                         const nowSlot = currentSlot || 0;
                         const votingEnded = p.endSlot && nowSlot > p.endSlot;
                         if (p.endSlot && status === 'active') {
-                            const remaining = (p.endSlot - nowSlot) * 0.4;
+                            const remaining = (p.endSlot - nowSlot) * GOVERNANCE_SLOT_SECONDS;
                             if (remaining > 3600) timeStr = `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m remaining`;
                             else if (remaining > 0) timeStr = `${Math.floor(remaining / 60)}m remaining`;
                             else timeStr = 'Voting ended';
@@ -4082,9 +4855,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
                             </div>`;
                         } else if (status === 'active' && votingEnded) {
-                            actionHtml = `<div class="proposal-actions">
-                                <button class="btn btn-small btn-primary finalize-btn" data-proposal-id="${p.proposalId || p.id || 0}">Finalize</button>
-                            </div>`;
+                            if (quorumMet) {
+                                actionHtml = `<div class="proposal-actions">
+                                    <button class="btn btn-small btn-primary finalize-btn" data-proposal-id="${p.proposalId || p.id || 0}">Finalize</button>
+                                </div>`;
+                            } else {
+                                actionHtml = `<div class="proposal-actions"><span class="text-secondary" style="font-size:0.82rem;">Quorum not met (${totalVotes}/${minQuorum}). ${quorumShortfall} more vote(s) required.</span></div>`;
+                            }
                         } else if (status === 'passed') {
                             actionHtml = `<div class="proposal-actions">
                                 <button class="btn btn-small btn-primary execute-btn" data-proposal-id="${p.proposalId || p.id || 0}">Execute</button>
@@ -4135,7 +4912,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindVoteButtons() {
         document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             const card = btn.closest('.proposal-card');
             // F14.7: Contract uses MoltyID reputation check (>=500), not MOLT balance
             // Vote via signed sendTransaction
@@ -4160,7 +4937,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindFinalizeButtons() {
         document.querySelectorAll('.finalize-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
             const pid = parseInt(btn.dataset.proposalId);
             if (!pid) return;
@@ -4183,7 +4960,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindExecuteButtons() {
         document.querySelectorAll('.execute-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
             const pid = parseInt(btn.dataset.proposalId);
             if (!pid) return;
@@ -4208,14 +4985,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const feeFields = document.getElementById('feeFields');
     const delistFields = document.getElementById('delistFields');
     const paramFields = document.getElementById('paramFields');
+    const SUPPORTED_PROPOSAL_TYPES = new Set(['pair', 'fee']);
     proposalTypeBtns.forEach(btn => btn.addEventListener('click', () => {
         proposalTypeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        const ptype = btn.dataset.ptype;
+        const ptype = SUPPORTED_PROPOSAL_TYPES.has(btn.dataset.ptype) ? btn.dataset.ptype : 'pair';
         if (pairFields) pairFields.classList.toggle('hidden', ptype !== 'pair');
         if (feeFields) feeFields.classList.toggle('hidden', ptype !== 'fee');
-        if (delistFields) delistFields.classList.toggle('hidden', ptype !== 'delist');
-        if (paramFields) paramFields.classList.toggle('hidden', ptype !== 'param');
+        if (delistFields) delistFields.classList.add('hidden');
+        if (paramFields) paramFields.classList.add('hidden');
     }));
 
     // F10E.5: Parameter selector — show current value + description
@@ -4254,9 +5032,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const submitProposalBtn = document.getElementById('submitProposalBtn');
     if (submitProposalBtn) submitProposalBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to propose', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         const activeType = document.querySelector('.proposal-type-btn.active');
-        const ptype = activeType?.dataset?.ptype || 'pair';
+        const ptype = SUPPORTED_PROPOSAL_TYPES.has(activeType?.dataset?.ptype) ? activeType.dataset.ptype : 'pair';
         submitProposalBtn.disabled = true; submitProposalBtn.textContent = 'Submitting...';
         try {
             // AUDIT-FIX: Proposal submission via signed sendTransaction (not unsigned REST)
@@ -4271,25 +5049,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
                 proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
                 proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
-            } else if (ptype === 'delist') {
-                // F10E.5: Delist proposal with pair selection + reason
-                const delistPair = document.getElementById('propDelistPair')?.value;
-                const delistReason = document.getElementById('propDelistReason')?.value?.trim();
-                if (!delistPair) { showNotification('Select a pair to delist', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
-                if (!delistReason) { showNotification('Provide a reason for delisting', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
-                const pair = pairs.find(p => String(p.pairId) === delistPair);
-                proposalData.pair_id = parseInt(delistPair);
-                proposalData.pair_symbol = pair?.id || `Pair#${delistPair}`;
-                proposalData.reason = delistReason;
-            } else if (ptype === 'param') {
-                // F10E.5: Parameter change proposal
-                const paramName = document.getElementById('propParamName')?.value;
-                const paramValue = document.getElementById('propParamValue')?.value;
-                if (!paramName || paramValue === '' || paramValue === undefined) { showNotification('Select parameter and enter new value', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
-                const opt = document.getElementById('propParamName')?.options[document.getElementById('propParamName')?.selectedIndex];
-                proposalData.parameter = paramName;
-                proposalData.current_value = opt?.dataset?.current || '';
-                proposalData.proposed_value = paramValue;
             }
             // Build binary args based on proposal type
             let govArgs;
@@ -4322,17 +5081,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 v.setInt16(41, proposalData.maker_fee || -1, true);
                 v.setUint16(43, proposalData.taker_fee || 5, true);
                 govArgs = a;
-            } else if (ptype === 'delist' && proposalData.pair_id) {
-                // F14.2: Contract has no propose_delist opcode — only emergency_delist (admin-only, op 10)
-                // Cannot submit delist proposals through governance until contract is extended
-                showNotification('Delist proposals are not yet supported on-chain. Use governance forum to discuss.', 'warning');
-                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
-                return;
-            } else if (ptype === 'param') {
-                // F14.3: Contract has no propose_param_change opcode
-                showNotification('Parameter change proposals are not yet supported on-chain. Use governance forum to discuss.', 'warning');
-                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
-                return;
             } else {
                 showNotification('Please fill in all required fields', 'warning');
                 submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
@@ -4343,10 +5091,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(`Proposal submitted: List ${escapeHtml(proposalData.base_token)}/${escapeHtml(proposalData.quote_token)}`, 'success');
             } else if (ptype === 'fee') {
                 showNotification(`Fee change proposal submitted for ${escapeHtml(proposalData.pair)}`, 'success');
-            } else if (ptype === 'delist') {
-                showNotification(`Delist proposal submitted for ${escapeHtml(proposalData.pair_symbol)}`, 'success');
-            } else if (ptype === 'param') {
-                showNotification(`Parameter change proposal: ${escapeHtml(proposalData.parameter)} → ${escapeHtml(proposalData.proposed_value)}`, 'success');
             } else {
                 showNotification('Proposal submitted', 'success');
             }
@@ -4360,14 +5104,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Only real on-chain prediction markets displayed
     const INITIAL_MARKETS = [];
+    const PREDICT_DISPUTE_BOND = 100_000_000; // 100 mUSD
 
     const predictState = {
         selectedMarket: 1,
         selectedOutcome: 'yes',
+        activeCategory: 'all',
         markets: [...INITIAL_MARKETS],
         positions: [],
         stats: null,
         live: false,
+        lastMarketsError: null,
     };
 
     // ─── Load prediction stats from API ─────────────────────────
@@ -4376,6 +5123,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/prediction-market/stats');
             if (data) {
                 predictState.stats = data;
+                setPredictSlotAnchor(data.current_slot || 0);
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('pmTotalVolume', formatVolume(data.total_volume || 0));
                 el('pmOpenMarkets', data.open_markets ?? '—');
@@ -4390,19 +5138,32 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadPredictionMarkets() {
         try {
             const { data } = await api.get('/prediction-market/markets?limit=50');
-            if (data?.markets?.length > 0) {
+            setPredictSlotAnchor(data?.current_slot || 0);
+            const liveSlot = getRealtimePredictSlot(predictState.stats?.current_slot || 0);
+            let marketRows = Array.isArray(data) ? data : (Array.isArray(data?.markets) ? data.markets : []);
+            if (!marketRows.length) {
+                try {
+                    const rpcMarkets = await api.rpc('getPredictionMarkets', [{ limit: 50, offset: 0 }]);
+                    marketRows = Array.isArray(rpcMarkets)
+                        ? rpcMarkets
+                        : (Array.isArray(rpcMarkets?.markets) ? rpcMarkets.markets : []);
+                } catch { /* fallback unavailable */ }
+            }
+            if (marketRows.length > 0) {
                 // Transform API data into UI format
-                predictState.markets = data.markets.map(m => ({
+                predictState.markets = marketRows.map(m => ({
                     id: m.id,
                     question: m.question,
                     cat: m.category,
                     yes: m.outcomes?.[0]?.price ?? 0.5,
                     // F11.4 FIX: RPC already divides by PRICE_SCALE — no *1e9
-                    volume: m.total_volume || 0,
-                    liquidity: m.total_collateral || 0,
+                    volume: Number(m.total_volume ?? m.volume ?? 0),
+                    liquidity: Number(m.total_collateral ?? m.liquidity ?? 0),
                     // F11.9 FIX: Use unique_traders from market response (no N+1 query)
-                    traders: m.unique_traders || 0,
-                    status: m.status,
+                    traders: Number(m.unique_traders ?? m.traders ?? 0),
+                    status: (m.status === 'active' && Number(m.close_slot || 0) > 0 && liveSlot >= Number(m.close_slot || 0))
+                        ? 'closed'
+                        : m.status,
                     multi: (m.outcome_count || 2) > 2,
                     outcomes: m.outcomes || [],
                     // F11.7 FIX: Map close_slot and creator for time remaining and attribution
@@ -4410,20 +5171,28 @@ document.addEventListener('DOMContentLoaded', () => {
                     creator: m.creator || '',
                     // Task 8.1: Fields for challenge/dispute lifecycle
                     dispute_end_slot: m.dispute_end_slot || 0,
-                    current_slot: m.current_slot || data.current_slot || 0,
+                    current_slot: Number(m.current_slot ?? liveSlot ?? predictState.stats?.current_slot ?? data.current_slot ?? 0),
                     resolver: m.resolver || '',
                     winning_outcome: m.winning_outcome,
-                    resolved_outcome: m.resolved_outcome || '',
+                    resolved_outcome: typeof m.resolved_outcome === 'string'
+                        ? m.resolved_outcome.toLowerCase()
+                        : (m.winning_outcome === 0 ? 'yes' : (m.winning_outcome === 1 ? 'no' : '')),
                 }));
                 predictState.live = true;
+                predictState.lastMarketsError = null;
                 renderPredictionMarkets();
                 return;
             }
-        } catch { /* API unavailable */ }
-        // Empty state — no markets from API
-        predictState.markets = [];
-        predictState.live = true;
-        renderPredictionMarkets();
+            // Empty state — no markets from API
+            predictState.markets = [];
+            predictState.live = true;
+            predictState.lastMarketsError = null;
+            renderPredictionMarkets();
+        } catch {
+            predictState.live = true;
+            predictState.lastMarketsError = 'Unable to load markets right now';
+            if (!predictState.markets.length) renderPredictionMarkets();
+        }
     }
 
     // ─── Load user positions from API ───────────────────────────
@@ -4439,7 +5208,77 @@ document.addEventListener('DOMContentLoaded', () => {
                 predictState.positions = data;
                 renderPredictionPositions();
             }
-        } catch { /* API unavailable */ }
+        } catch {
+            const tbody = document.querySelector('.predict-positions-table tbody') || document.getElementById('predictPositionsBody');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-circle-exclamation" style="margin-right:6px;"></i>Unable to load positions</td></tr>';
+        }
+    }
+
+    async function loadPredictionHistory() {
+        const container = document.getElementById('predict-history');
+        if (!container) return;
+        if (!state.connected) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view trade history</div>';
+            return;
+        }
+
+        const addrEncoded = encodeURIComponent(wallet.address || '');
+
+        try {
+            const [{ data: stats }, { data: trades }] = await Promise.all([
+                api.get(`/prediction-market/traders/${addrEncoded}/stats`),
+                api.get(`/prediction-market/trades?address=${addrEncoded}&limit=50`),
+            ]);
+
+            const rows = Array.isArray(trades) ? trades : [];
+            const tradeCount = Number(stats?.trade_count || 0);
+            const totalVolume = Number(stats?.total_volume || 0);
+            const lastSlot = Number(stats?.last_trade_slot || 0);
+
+            const tableRows = rows.length
+                ? rows.map((t) => {
+                    const actionRaw = String(t.action || '');
+                    const actionLabel = actionRaw.replace(/_/g, ' ').toUpperCase();
+                    const actionClass = actionRaw === 'buy' ? 'positive' : (actionRaw === 'sell' ? 'negative' : '');
+                    const outcomeLabel = t.outcome === 0 ? 'YES' : (t.outcome === 1 ? 'NO' : '—');
+                    const amount = Number(t.amount || 0);
+                    const timestamp = Number(t.timestamp || 0);
+                    const timeLabel = timestamp > 0 ? new Date(timestamp * 1000).toLocaleString() : `Slot ${formatNumber(t.slot || 0)}`;
+                    return `<tr>
+                        <td class="mono-value" style="padding:8px;">#${formatNumber(t.market_id || 0)}</td>
+                        <td class="${actionClass}" style="padding:8px;font-weight:700;">${escapeHtml(actionLabel)}</td>
+                        <td style="padding:8px;">${escapeHtml(outcomeLabel)}</td>
+                        <td class="mono-value" style="padding:8px;">$${formatAmount(amount)}</td>
+                        <td class="mono-value" style="padding:8px;">${formatNumber(t.slot || 0)}</td>
+                        <td style="padding:8px;font-size:0.8rem;color:var(--text-muted);">${escapeHtml(timeLabel)}</td>
+                    </tr>`;
+                }).join('')
+                : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:16px;">No prediction trades yet</td></tr>';
+
+            container.innerHTML = `
+                <div style="display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:12px;padding:12px 8px 14px;">
+                    <div class="panel-card" style="padding:10px;"><div style="font-size:0.75rem;color:var(--text-muted)">Trades</div><div class="mono-value" style="font-size:1rem;">${formatNumber(tradeCount)}</div></div>
+                    <div class="panel-card" style="padding:10px;"><div style="font-size:0.75rem;color:var(--text-muted)">Total Volume</div><div class="mono-value" style="font-size:1rem;">${formatVolume(totalVolume)}</div></div>
+                    <div class="panel-card" style="padding:10px;"><div style="font-size:0.75rem;color:var(--text-muted)">Last Trade Slot</div><div class="mono-value" style="font-size:1rem;">${lastSlot > 0 ? formatNumber(lastSlot) : '—'}</div></div>
+                </div>
+                <div style="overflow:auto;padding:0 8px 14px;">
+                    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+                        <thead>
+                            <tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border-color);">
+                                <th style="padding:8px;">Market</th>
+                                <th style="padding:8px;">Action</th>
+                                <th style="padding:8px;">Outcome</th>
+                                <th style="padding:8px;">Amount</th>
+                                <th style="padding:8px;">Slot</th>
+                                <th style="padding:8px;">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>${tableRows}</tbody>
+                    </table>
+                </div>`;
+        } catch {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-circle-exclamation" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Unable to load prediction activity</div>';
+        }
     }
 
     // F12.5 FIX: Load and render "My Markets" tab — markets created by connected wallet
@@ -4451,24 +5290,51 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try {
-            const resp = await api.get(`/prediction-market/markets?creator=${encodeURIComponent(wallet.address)}`);
-            const markets = resp?.data?.markets || [];
+            const creatorFilters = [walletAddressToHex(wallet.address), wallet.address].filter(Boolean);
+            let markets = [];
+            for (const creator of creatorFilters) {
+                const resp = await api.get(`/prediction-market/markets?creator=${encodeURIComponent(creator)}`);
+                const rows = Array.isArray(resp?.data) ? resp.data : (resp?.data?.markets || []);
+                if (rows.length > 0) {
+                    markets = rows;
+                    break;
+                }
+            }
             if (!markets.length) {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-chart-pie" style="margin-right:6px;"></i>No markets created yet</td></tr>';
                 return;
             }
             tbody.innerHTML = markets.map(m => {
-                const closeDate = m.close_slot ? new Date(Date.now() + (m.close_slot - (m.created_slot || 0)) * 500).toLocaleDateString() : '—';
+                const volumeValue = Number(m.total_volume || m.volume || 0);
+                const closeDate = m.close_date || (m.close_slot ? `Slot ${formatNumber(m.close_slot)}` : '—');
                 return `<tr>
                     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.question)}">${escapeHtml(m.question.slice(0, 60))}</td>
                     <td>${escapeHtml(m.category || '—')}</td>
                     <td><span class="status-badge status-${escapeHtml(m.status || 'active')}">${escapeHtml(m.status || 'Active')}</span></td>
-                    <td>$${(m.total_volume || 0).toFixed(2)}</td>
+                    <td>${formatVolume(volumeValue)}</td>
                     <td>${m.unique_traders || 0}</td>
                     <td>${closeDate}</td>
                 </tr>`;
             }).join('');
         } catch { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">Failed to load markets</td></tr>'; }
+    }
+
+    function formatPredictCloseLabel(closeSlot, currentSlot) {
+        const close = Number(closeSlot || 0);
+        if (!close) return '';
+        const now = Number(currentSlot || getRealtimePredictSlot(predictState.stats?.current_slot || 0) || 0);
+        if (!now) return `Slot ${formatNumber(close)}`;
+        const remainingSlots = close - now;
+        if (remainingSlots <= 0) return 'Closed';
+        const totalSeconds = Math.floor(remainingSlots * 0.5);
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        if (days > 0) return `${days}d ${hours}h left`;
+        if (hours > 0) return `${hours}h ${minutes}m left`;
+        if (minutes > 0) return `${minutes}m ${seconds}s left`;
+        return `${Math.max(0, seconds)}s left`;
     }
 
     // ─── Render market cards dynamically ────────────────────────
@@ -4484,7 +5350,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const emptyEl = document.createElement('div');
             emptyEl.className = 'predict-empty-state';
             emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;';
-            emptyEl.innerHTML = '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
+            const hasError = !!predictState.lastMarketsError;
+            emptyEl.innerHTML = hasError
+                ? '<i class="fas fa-circle-exclamation" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>Unable to load prediction markets</p><p style="font-size:0.8rem;margin-top:8px;">Retrying automatically...</p>'
+                : '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
             grid.appendChild(emptyEl);
             return;
         }
@@ -4571,13 +5440,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const statusLabel = escapeHtml(statusInfo.label);
             const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + escapeHtml(m.cat || 'Other');
             const idTag = escapeHtml(m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`);
-            const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${escapeHtml(m.closes)}</span>` : '';
-            const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${escapeHtml(m.creator)}</span>` : '';
+            const closesText = formatPredictCloseLabel(m.closes, getRealtimePredictSlot(m.current_slot || predictState.stats?.current_slot || 0));
+            const closesLabel = closesText ? `<span><i class="fas fa-clock"></i> ${escapeHtml(closesText)}</span>` : '';
+            const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${escapeHtml(formatAddressShort(m.creator))}</span>` : '';
             const volLabel = formatVolume(m.volume);
             const liqLabel = formatVolume(m.liquidity);
 
             // AUDIT-FIX F10.5: Show resolve button if user is creator and market is active
-            const isCreator = m.creator && wallet.address && m.creator === wallet.address;
+            const creatorRaw = String(m.creator || '').toLowerCase();
+            const walletRaw = String(wallet.address || '').toLowerCase();
+            const walletHex = walletAddressToHex(wallet.address);
+            const isCreator = !!m.creator && !!wallet.address && (creatorRaw === walletRaw || (walletHex && creatorRaw === walletHex));
             const resolveBtn = (!isResolved && isCreator) ? `<button class="btn btn-small btn-predict-resolve" data-market="${m.id}" style="background:var(--warning,#ffd166);color:#000;margin-left:8px;" title="Resolve this market"><i class="fas fa-gavel"></i> Resolve</button>` : '';
 
             // Task 8.1: Challenge/Finalize buttons for resolving/disputed markets
@@ -4649,6 +5522,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Re-apply wallet gating on dynamically rendered prediction buttons
         applyWalletGateAll();
 
+        // Re-apply active category filter so websocket refreshes don't reset it
+        applyPredictCategoryFilter();
+
         // Apply default selection highlight
         const selCard = document.querySelector(`.market-card[data-market-id="${predictState.selectedMarket}"]`);
         if (selCard) selCard.classList.add('selected');
@@ -4659,7 +5535,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.getElementById('predictPositionsBody');
         if (!tbody) return;
         if (!predictState.positions.length) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
             return;
         }
         // AUDIT-FIX F10.5: Show claim button for positions in resolved markets
@@ -4668,17 +5544,36 @@ document.addEventListener('DOMContentLoaded', () => {
             const qText = escapeHtml(m?.question?.slice(0, 40) || `Market #${p.market_id}`);
             const isResolved = m?.status === 'resolved';
             const won = isResolved && ((m.resolved_outcome === 'yes' && p.outcome === 0) || (m.resolved_outcome === 'no' && p.outcome === 1));
+            const shares = Number(p.shares || 0);
+            const costBasis = Number(p.cost_basis || 0);
+            const avgPrice = shares > 0 ? (costBasis / shares) : 0;
+            const currentPrice = p.outcome === 0
+                ? Number(m?.yes || 0)
+                : (1 - Number(m?.yes || 0));
+            const value = shares * currentPrice;
+            const pnl = value - costBasis;
+            const pnlCls = pnl >= 0 ? 'positive' : 'negative';
+            const pnlSign = pnl >= 0 ? '+' : '';
             const actionCol = isResolved
                 ? (won ? `<button class="btn btn-small btn-predict-claim-pos" data-market="${p.market_id}" style="background:var(--accent);color:#fff;font-size:0.75rem;"><i class="fas fa-gift"></i> Claim</button>` : '<span style="color:var(--text-muted)">Lost</span>')
                 : '<span style="color:var(--text-muted)">Active</span>';
-            return `<tr><td>${qText}...</td><td>${p.outcome === 0 ? 'YES' : 'NO'}</td><td>${p.shares.toFixed(2)}</td><td>$${p.cost_basis.toFixed(2)}</td><td>${actionCol}</td></tr>`;
+            return `<tr>
+                <td>${qText}</td>
+                <td>${p.outcome === 0 ? 'YES' : 'NO'}</td>
+                <td class="mono-value">${shares.toFixed(2)}</td>
+                <td class="mono-value">$${avgPrice.toFixed(4)}</td>
+                <td class="mono-value">$${currentPrice.toFixed(4)}</td>
+                <td class="mono-value ${pnlCls}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</td>
+                <td class="mono-value">$${value.toFixed(2)}</td>
+                <td>${actionCol}</td>
+            </tr>`;
         }).join('');
 
         // Bind claim buttons in positions table
         tbody.querySelectorAll('.btn-predict-claim-pos').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
@@ -4744,7 +5639,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-resolve').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
@@ -4754,7 +5649,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = true; btn.textContent = 'Resolving...';
             try {
                 const winIdx = outcome.toLowerCase() === 'yes' ? 0 : 1;
-                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildResolveMarketArgs(wallet.address, mid, winIdx))]);
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildResolveMarketArgs(wallet.address, mid, winIdx), PREDICT_DISPUTE_BOND)]);
                 showNotification(`Market resolved: ${outcome.toUpperCase()} wins`, 'success');
                 await loadPredictionMarkets();
             } catch (err) { showNotification(`Resolve failed: ${err.message}`, 'error'); }
@@ -4766,7 +5661,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-claim').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
@@ -4786,7 +5681,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-challenge').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
@@ -4794,7 +5689,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!evidence) { showNotification('Challenge cancelled', 'info'); return; }
             btn.disabled = true; btn.textContent = 'Challenging...';
             try {
-                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildChallengeResolutionArgs(wallet.address, mid, evidence))]);
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildChallengeResolutionArgs(wallet.address, mid, evidence), PREDICT_DISPUTE_BOND)]);
                 showNotification('Resolution challenged! Awaiting DAO review.', 'success');
                 await loadPredictionMarkets();
             } catch (err) { showNotification(`Challenge failed: ${err.message}`, 'error'); }
@@ -4805,7 +5700,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-finalize').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+            if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Finalizing...';
             try {
@@ -5005,15 +5900,21 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('.predict-chart-overlay')?.addEventListener('click', closePredictChart);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closePredictChart(); });
 
-    // Category filter
-    document.querySelectorAll('.predict-cat-btn').forEach(btn => btn.addEventListener('click', () => {
-        document.querySelectorAll('.predict-cat-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const cat = btn.dataset.cat;
+    // Category filter — persist selection in predictState so it survives
+    // websocket-driven re-renders of the market grid
+    function applyPredictCategoryFilter() {
+        const cat = predictState.activeCategory || 'all';
+        document.querySelectorAll('.predict-cat-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.cat === cat);
+        });
         document.querySelectorAll('.market-card').forEach(card => {
             if (cat === 'all' || card.dataset.cat === cat) card.style.display = '';
             else card.style.display = 'none';
         });
+    }
+    document.querySelectorAll('.predict-cat-btn').forEach(btn => btn.addEventListener('click', () => {
+        predictState.activeCategory = btn.dataset.cat || 'all';
+        applyPredictCategoryFilter();
     }));
 
     // Bind initial static cards
@@ -5094,7 +5995,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictSubmitBtn = document.getElementById('predictSubmitBtn');
     if (predictSubmitBtn) predictSubmitBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to trade', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
         if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
@@ -5107,7 +6008,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
             const outcomeVal = predictState.selectedOutcome === 'yes' ? 0 : 1;
             // F12.1 FIX: Contract uses MUSD_UNIT (1e6), not PRICE_SCALE (1e9)
-            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, Math.round(amt * 1e6)))]);
+            const tradeAmountMicros = Math.round(amt * 1e6);
+            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, tradeAmountMicros), tradeAmountMicros)]);
             showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
             // F24.7 FIX: Refresh prediction data after buy
             loadPredictionMarkets().catch(() => {}); loadPredictionPositions().catch(() => {});
@@ -5130,7 +6032,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictCreateBtn = document.getElementById('predictCreateBtn');
     if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         const q = document.getElementById('predictQuestion')?.value?.trim();
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
@@ -5173,17 +6075,40 @@ document.addEventListener('DOMContentLoaded', () => {
             // If we couldn't get current slot, use a large estimate
             if (!currentSlot) currentSlot = Math.round(Date.now() / 400); // F16.9: 400ms per slot
             const closeSlot = currentSlot + durationSlots;
-            // F12.8 FIX: Create market, then add initial liquidity
-            // Market ID is next pm_count value, obtained from stats
-            let nextMarketId = 1;
-            try {
-                const statsResp2 = await api.get('/prediction-market/stats');
-                nextMarketId = (statsResp2?.data?.total_markets || 0) + 1;
-            } catch { /* fallback to 1 */ }
-            const createIx = contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot));
-            const liqIx = contractIx(contracts.prediction_market, buildAddInitialLiquidityArgs(wallet.address, nextMarketId, Math.round(liq * 1e6)));
-            await wallet.sendTransaction([createIx, liqIx]);
-            showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with ${liq} mUSD liquidity`, 'success');
+            const predictCreateFee = 10_000_000; // 10 mUSD, matches prediction contract MARKET_CREATION_FEE
+            const createIx = contractIx(contracts.prediction_market, await buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot), predictCreateFee);
+            await wallet.sendTransaction([createIx]);
+
+            const findCreatedMarketId = async () => {
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    try {
+                        const resp = await api.get(`/prediction-market/markets?creator=${encodeURIComponent(wallet.address)}&limit=100`);
+                        const rows = Array.isArray(resp?.data?.markets) ? resp.data.markets : (Array.isArray(resp?.markets) ? resp.markets : []);
+                        if (rows.length > 0) {
+                            const exact = rows
+                                .filter(mm => String(mm.question || '').trim() === q && Number(mm.close_slot || 0) === closeSlot)
+                                .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+                            if (exact[0]?.id) return Number(exact[0].id);
+                            const byQuestion = rows
+                                .filter(mm => String(mm.question || '').trim() === q)
+                                .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+                            if (byQuestion[0]?.id) return Number(byQuestion[0].id);
+                        }
+                    } catch { /* retry */ }
+                    await new Promise(resolve => setTimeout(resolve, 400 + attempt * 200));
+                }
+                return null;
+            };
+
+            const createdMarketId = await findCreatedMarketId();
+            const initialLiquidityMicros = Math.round(liq * 1e6);
+            if (createdMarketId) {
+                const liqIx = contractIx(contracts.prediction_market, buildAddInitialLiquidityArgs(wallet.address, createdMarketId, initialLiquidityMicros), initialLiquidityMicros);
+                await wallet.sendTransaction([liqIx]);
+                showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with ${liq} mUSD liquidity`, 'success');
+            } else {
+                showNotification('Market created, but liquidity step is pending (could not resolve market id yet)', 'warning');
+            }
             await loadPredictionMarkets();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
@@ -5237,19 +6162,86 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Governance + Rewards — claim handlers
     // ═══════════════════════════════════════════════════════════════════════
-    document.querySelectorAll('.claim-btn, .btn-claim').forEach(btn => btn.addEventListener('click', async () => {
+    const claimTradingButtons = [
+        document.getElementById('claimAllBtn'),
+        document.getElementById('claimTradingBtn'),
+    ].filter(Boolean);
+
+    claimTradingButtons.forEach(btn => btn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
-        btn.disabled = true; const origText = btn.innerHTML; btn.textContent = 'Claiming...';
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
+        if (!contracts.dex_rewards) { showNotification('Rewards contract not loaded', 'error'); return; }
+        btn.disabled = true;
+        const origText = btn.innerHTML;
+        btn.textContent = 'Claiming...';
         try {
-            // AUDIT-FIX F10.7: Reward claim via signed sendTransaction (not fake GET)
             await wallet.sendTransaction([contractIx(contracts.dex_rewards, buildClaimRewardsArgs(wallet.address))]);
-            showNotification('Rewards claimed successfully!', 'success');
-            // F24.8 FIX: Refresh rewards stats after claim
+            showNotification('Trading rewards claimed successfully!', 'success');
             loadRewardsStats().catch(() => {});
-        } catch (e) { showNotification(`Claim failed: ${e.message}`, 'error'); }
-        btn.disabled = false; btn.innerHTML = origText;
+        } catch (e) {
+            showNotification(`Claim failed: ${e.message}`, 'error');
+        }
+        btn.disabled = false;
+        btn.innerHTML = origText;
     }));
+
+    const claimLpBtn = document.getElementById('claimLpBtn');
+    if (claimLpBtn) claimLpBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet to claim LP rewards', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
+        if (!contracts.dex_rewards) { showNotification('Rewards contract not loaded', 'error'); return; }
+
+        claimLpBtn.disabled = true;
+        const origText = claimLpBtn.innerHTML;
+        claimLpBtn.textContent = 'Claiming...';
+        try {
+            const { data } = await api.get(`/pools/positions?owner=${wallet.address}`);
+            const positions = Array.isArray(data) ? data : [];
+            const instructions = positions
+                .map(pos => Number(pos.positionId || pos.id || 0))
+                .filter(positionId => Number.isFinite(positionId) && positionId > 0)
+                .map(positionId => contractIx(contracts.dex_rewards, buildClaimLpRewardsArgs(wallet.address, positionId)));
+
+            if (!instructions.length) {
+                showNotification('No LP positions found to claim', 'warning');
+                return;
+            }
+
+            await wallet.sendTransaction(instructions);
+            showNotification(`LP rewards claimed for ${instructions.length} position(s)`, 'success');
+            loadRewardsStats().catch(() => {});
+        } catch (e) {
+            showNotification(`LP claim failed: ${e.message}`, 'error');
+        }
+        claimLpBtn.disabled = false;
+        claimLpBtn.innerHTML = origText;
+    });
+
+    const marginLiquidateBtn = document.getElementById('marginLiquidateBtn');
+    if (marginLiquidateBtn) marginLiquidateBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
+
+        const raw = window.prompt('Enter position ID to liquidate:');
+        if (raw === null) return;
+        const positionId = parseInt(raw.trim(), 10);
+        if (!Number.isFinite(positionId) || positionId <= 0) {
+            showNotification('Invalid position ID', 'warning');
+            return;
+        }
+
+        marginLiquidateBtn.disabled = true;
+        const origText = marginLiquidateBtn.textContent;
+        marginLiquidateBtn.textContent = 'Liquidating...';
+        try {
+            await submitMarginLiquidation(positionId);
+            showNotification(`Liquidation submitted for position #${positionId}`, 'success');
+        } catch (e) {
+            showNotification(`Liquidation failed: ${e.message}`, 'error');
+        }
+        marginLiquidateBtn.disabled = false;
+        marginLiquidateBtn.textContent = origText || 'Liquidate';
+    });
 
     const copyBtn = document.querySelector('.copy-btn');
     if (copyBtn) copyBtn.addEventListener('click', () => { const c = document.querySelector('.referral-link-box code'); if (c) navigator.clipboard.writeText(c.textContent).then(() => showNotification('Referral link copied!', 'success')); });
@@ -5622,7 +6614,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchTradeBtn = document.getElementById('launchTradeBtn');
     if (launchTradeBtn) launchTradeBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
         const tid = launchState.selectedToken;
         if (!tid) { showNotification('Select a token first', 'warning'); return; }
@@ -5659,7 +6651,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchCreateBtn = document.getElementById('launchCreateBtn');
     if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
+        if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
         if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
 
         // Check balance
@@ -5761,6 +6753,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dp = isDisplayInvertedPair(state.activePair) ? invertPrice(t.lastPrice) : t.lastPrice;
                     state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(dp, 0);
                 }
+                if (state.connected) {
+                    await loadMarginPositions();
+                }
             } catch { /* API unavailable */ }
         }
         if (state.currentView === 'predict') {
@@ -5792,16 +6787,24 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally { pollSlowRunning = false; }
     }, 30000);
 
-    // Prediction market refresh (slower interval for full market list)
+    // Prediction market refresh (tight fallback cadence while WS events are unavailable)
     setInterval(async () => {
         if (pollPredictRunning) return;
         pollPredictRunning = true;
         try {
         if (state.currentView === 'predict') {
-            try { await loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } catch { /* API unavailable */ }
+            try {
+                await loadPredictionStats();
+                await loadPredictionMarkets();
+                if (state.connected) {
+                    await loadPredictionPositions();
+                    loadPredictionHistory();
+                    loadCreatedMarkets();
+                }
+            } catch { /* API unavailable */ }
         }
         } finally { pollPredictRunning = false; }
-    }, 15000);
+    }, 5000);
 
     // F1 fix: Refresh ALL pair prices every 10s so dropdown stays current
     // Each pair gets its own ticker fetch to update price + change
@@ -5830,7 +6833,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadMarginEnabledPairs(); // async, non-blocking
         renderPairList(); renderBalances(); renderOpenOrders(); updateOrderSideLabels(); updateSubmitBtn();
         applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
-        loadTradeHistory(); loadMarginStats(); loadMarginPositions();
+        loadTradeHistory(); loadMarginStats(); loadMarginPositions(); loadMarginHistory(); loadPredictionHistory();
         if (state.activePair) {
             if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
             updateOrderBookLabels(state.activePair);
@@ -5849,12 +6852,16 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(initTradingView, 200);
             connectWebSocket();
         }
-        // F10E.7: Connect Binance price feed for wSOL/wETH alignment
-        connectBinancePriceFeed();
+        // F10E.7 / DEX-M01: external Binance WS is opt-in only (default off).
+        if (ENABLE_EXTERNAL_PRICE_WS) connectBinancePriceFeed();
         if (savedWallets.length) {
-            const l = savedWallets[savedWallets.length - 1];
-            const shortAddr = l.short || l.address.slice(0, 8) + '...';
-            await connectWalletTo(l.address, shortAddr, { signingReady: false });
+            const activeWalletAddress = localStorage.getItem(ACTIVE_WALLET_KEY);
+            const restored = savedWallets.find(w => w.address === activeWalletAddress) || savedWallets[savedWallets.length - 1];
+            if (restored && restored.address) {
+                const shortAddr = restored.short || restored.address.slice(0, 8) + '...';
+                const { signingReady, localKeypair } = await resolveWalletSigningState(restored.address);
+                await connectWalletTo(restored.address, shortAddr, { signingReady, localKeypair });
+            }
         }
     })().catch(e => console.error('[DEX] Init error:', e));
 

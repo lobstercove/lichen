@@ -345,10 +345,13 @@ impl P2PNetwork {
                     "P2P: Received block slot {} from {}",
                     block.header.slot, peer_addr
                 );
-                self.block_tx
-                    .send(block)
-                    .await
-                    .map_err(|_| "Failed to send block to validator".to_string())?;
+                // Non-blocking: if the validator is behind and the channel is
+                // full, drop the block with a warning instead of blocking the
+                // entire P2P message loop. The sync manager will request
+                // missing blocks via BlockRangeRequest later.
+                if let Err(e) = self.block_tx.try_send(block) {
+                    warn!("P2P: Block channel full, dropping block from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::Vote(vote) => {
@@ -472,19 +475,18 @@ impl P2PNetwork {
                     "P2P: Received block response for slot {} from {}",
                     block.header.slot, peer_addr
                 );
-                self.block_tx
-                    .send(block)
-                    .await
-                    .map_err(|_| "Failed to send block to validator".to_string())?;
+                if let Err(e) = self.block_tx.try_send(block) {
+                    warn!("P2P: Block channel full, dropping block response from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::BlockRangeResponse { blocks } => {
                 debug!("P2P: Received {} blocks from {}", blocks.len(), peer_addr);
                 for block in blocks {
-                    self.block_tx
-                        .send(block)
-                        .await
-                        .map_err(|_| "Failed to send block to validator".to_string())?;
+                    if let Err(e) = self.block_tx.try_send(block) {
+                        warn!("P2P: Block channel full during range response from {} ({})", peer_addr, e);
+                        break; // Stop sending remaining blocks — will be re-requested
+                    }
                 }
             }
 

@@ -325,6 +325,7 @@ impl GenesisConfig {
                 last_active_slot: 0,
                 joined_slot: 0,
                 commission_rate: 500, // 5% default commission
+                transactions_processed: 0,
             };
 
             validators.push(validator);

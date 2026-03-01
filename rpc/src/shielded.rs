@@ -13,9 +13,11 @@
 //
 // JSON-RPC methods (dispatched from handle_rpc):
 //   getShieldedPoolState       — equivalent of GET /pool
+//   getShieldedPoolStats       — alias of getShieldedPoolState (wallet compat)
 //   getShieldedMerkleRoot      — equivalent of GET /merkle-root
 //   getShieldedMerklePath      — args: [index]
 //   isNullifierSpent           — args: [hex_hash]
+//   checkNullifier             — args: [hex_hash] (alias of isNullifierSpent)
 //   getShieldedCommitments     — args: [{from, limit}]
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -26,8 +28,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use ark_bn254::Fr;
+use ark_ff::PrimeField;
 use moltchain_core::zk::MerkleTree;
+use moltchain_core::zk::{
+    circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
+    circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr, Prover, TREE_DEPTH,
+};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{RpcError, RpcState};
@@ -397,19 +407,24 @@ pub(crate) async fn handle_get_shielded_pool_state(
             message: format!("Database error: {}", e),
         })?;
 
-    Ok(serde_json::json!({
-        "merkleRoot": hex::encode(pool.merkle_root),
-        "commitmentCount": pool.commitment_count,
-        "totalShielded": pool.total_shielded,
-        "totalShieldedMolt": format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
-        "nullifierCount": pool.nullifier_count,
-        "shieldCount": pool.shield_count,
-        "unshieldCount": pool.unshield_count,
-        "transferCount": pool.transfer_count,
-        "vkShieldHash": hex::encode(pool.vk_shield_hash),
-        "vkUnshieldHash": hex::encode(pool.vk_unshield_hash),
-        "vkTransferHash": hex::encode(pool.vk_transfer_hash),
-    }))
+    Ok(shielded_pool_stats_json(&pool))
+}
+
+/// JSON-RPC: getShieldedPoolStats (compat alias of getShieldedPoolState)
+/// Params: none
+pub(crate) async fn handle_get_shielded_pool_stats(
+    state: &RpcState,
+    _params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pool = state
+        .state
+        .get_shielded_pool_state()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    Ok(shielded_pool_stats_json(&pool))
 }
 
 /// JSON-RPC: getShieldedMerkleRoot
@@ -597,6 +612,518 @@ pub(crate) async fn handle_get_shielded_commitments(
     }))
 }
 
+/// JSON-RPC: computeShieldCommitment
+/// Params: [{ "amount": u64, "blinding": "hex32" }]
+pub(crate) async fn handle_compute_shield_commitment(
+    _state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [{ amount, blinding }]".to_string(),
+    })?;
+
+    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: amount (u64) is required".to_string(),
+    })?;
+
+    let blinding_hex = obj
+        .get("blinding")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: blinding (hex) is required".to_string(),
+        })?;
+    let blinding_fr = parse_hex_to_fr(blinding_hex)?;
+
+    let commitment = fr_to_bytes(&poseidon_hash_fr(Fr::from(amount), blinding_fr));
+
+    Ok(serde_json::json!({
+        "amount": amount,
+        "blinding": hex::encode(fr_to_bytes(&blinding_fr)),
+        "commitment": hex::encode(commitment),
+    }))
+}
+
+/// JSON-RPC: generateShieldProof
+/// Params: [{ "amount": u64, "blinding": "hex32" }]
+pub(crate) async fn handle_generate_shield_proof(
+    _state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [{ amount, blinding }]".to_string(),
+    })?;
+
+    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: amount (u64) is required".to_string(),
+    })?;
+
+    let blinding_hex = obj
+        .get("blinding")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: blinding (hex) is required".to_string(),
+        })?;
+    let blinding_fr = parse_hex_to_fr(blinding_hex)?;
+
+    let key_dir = resolve_zk_key_dir();
+    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_SHIELD_PK_PATH", &key_dir, "pk_shield.bin")?;
+    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_SHIELD_VK_PATH", &key_dir, "vk_shield.bin")?;
+
+    let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding_fr);
+    let commitment = fr_to_bytes(&commitment_fr);
+
+    let mut prover = Prover::new();
+    prover
+        .load_shield_key(&pk_bytes)
+        .map_err(internal_rpc_err)?;
+
+    let circuit = ShieldCircuit::new(amount, amount, blinding_fr, commitment_fr);
+    let mut proof = prover.prove_shield(circuit).map_err(internal_rpc_err)?;
+    proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), commitment];
+
+    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = moltchain_core::zk::Verifier::from_vk_shield(vk);
+    let valid = verifier
+        .verify(&proof)
+        .map_err(|e| internal_rpc_err(e.to_string()))?;
+    if !valid {
+        return Err(RpcError {
+            code: -32000,
+            message: "Generated shield proof failed self-verification".to_string(),
+        });
+    }
+
+    Ok(serde_json::json!({
+        "type": "shield",
+        "amount": amount,
+        "blinding": hex::encode(fr_to_bytes(&blinding_fr)),
+        "commitment": hex::encode(commitment),
+        "proof": hex::encode(&proof.proof_bytes),
+    }))
+}
+
+/// JSON-RPC: generateUnshieldProof
+/// Params: [{ amount, merkle_root, recipient, blinding, serial, spending_key, merkle_path?, path_bits? }]
+pub(crate) async fn handle_generate_unshield_proof(
+    _state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected unshield witness object".to_string(),
+    })?;
+
+    let amount = obj.get("amount").and_then(|v| v.as_u64()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: amount (u64) is required".to_string(),
+    })?;
+
+    let merkle_root_hex = obj
+        .get("merkle_root")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: merkle_root (hex) is required".to_string(),
+        })?;
+    let merkle_root_bytes = parse_hex_32(merkle_root_hex)?;
+    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
+
+    let recipient_raw = obj
+        .get("recipient")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: recipient is required".to_string(),
+        })?;
+    let recipient_bytes = parse_recipient_32(recipient_raw)?;
+
+    let blinding_fr = parse_hex_to_fr(
+        obj.get("blinding")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: blinding (hex) is required".to_string(),
+            })?,
+    )?;
+    let serial_fr = parse_hex_to_fr(
+        obj.get("serial")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: serial (hex) is required".to_string(),
+            })?,
+    )?;
+    let spending_key_fr = parse_hex_to_fr(
+        obj.get("spending_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: spending_key (hex) is required".to_string(),
+            })?,
+    )?;
+
+    let merkle_path = if let Some(path_vals) = obj.get("merkle_path").and_then(|v| v.as_array()) {
+        if path_vals.len() != TREE_DEPTH {
+            return Err(RpcError {
+                code: -32602,
+                message: format!("Invalid params: merkle_path must contain {} elements", TREE_DEPTH),
+            });
+        }
+        let mut out = Vec::with_capacity(TREE_DEPTH);
+        for value in path_vals {
+            let hex_str = value.as_str().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: merkle_path elements must be hex strings".to_string(),
+            })?;
+            out.push(Fr::from_le_bytes_mod_order(&parse_hex_32(hex_str)?));
+        }
+        out
+    } else {
+        vec![Fr::from(0u64); TREE_DEPTH]
+    };
+
+    let path_bits = if let Some(bits_vals) = obj.get("path_bits").and_then(|v| v.as_array()) {
+        if bits_vals.len() != TREE_DEPTH {
+            return Err(RpcError {
+                code: -32602,
+                message: format!("Invalid params: path_bits must contain {} elements", TREE_DEPTH),
+            });
+        }
+        let mut out = Vec::with_capacity(TREE_DEPTH);
+        for value in bits_vals {
+            out.push(value.as_bool().ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Invalid params: path_bits elements must be booleans".to_string(),
+            })?);
+        }
+        out
+    } else {
+        vec![false; TREE_DEPTH]
+    };
+
+    let key_dir = resolve_zk_key_dir();
+    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_UNSHIELD_PK_PATH", &key_dir, "pk_unshield.bin")?;
+    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_UNSHIELD_VK_PATH", &key_dir, "vk_unshield.bin")?;
+
+    let nullifier_fr = poseidon_hash_fr(serial_fr, spending_key_fr);
+    let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_bytes);
+    let recipient_hash_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
+    let circuit = UnshieldCircuit::new(
+        merkle_root_fr,
+        nullifier_fr,
+        amount,
+        recipient_hash_fr,
+        amount,
+        blinding_fr,
+        serial_fr,
+        spending_key_fr,
+        recipient_preimage,
+        merkle_path,
+        path_bits,
+    );
+
+    let mut prover = Prover::new();
+    prover
+        .load_unshield_key(&pk_bytes)
+        .map_err(internal_rpc_err)?;
+    let mut proof = prover.prove_unshield(circuit).map_err(internal_rpc_err)?;
+    proof.public_inputs = vec![
+        fr_to_bytes(&merkle_root_fr),
+        fr_to_bytes(&nullifier_fr),
+        fr_to_bytes(&Fr::from(amount)),
+        fr_to_bytes(&recipient_hash_fr),
+    ];
+
+    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = moltchain_core::zk::Verifier::from_vk_unshield(vk);
+    let valid = verifier
+        .verify(&proof)
+        .map_err(|e| internal_rpc_err(e.to_string()))?;
+    if !valid {
+        return Err(RpcError {
+            code: -32000,
+            message: "Generated unshield proof failed self-verification".to_string(),
+        });
+    }
+
+    Ok(serde_json::json!({
+        "type": "unshield",
+        "amount": amount,
+        "merkle_root": hex::encode(merkle_root_bytes),
+        "nullifier": hex::encode(fr_to_bytes(&nullifier_fr)),
+        "recipient_hash": hex::encode(fr_to_bytes(&recipient_hash_fr)),
+        "proof": hex::encode(&proof.proof_bytes),
+    }))
+}
+
+/// JSON-RPC: generateTransferProof
+/// Params: [{ merkle_root, inputs: [{amount, blinding, serial, spending_key, merkle_path, path_bits}, x2], outputs: [{amount, blinding}, x2] }]
+pub(crate) async fn handle_generate_transfer_proof(
+    _state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let obj = first_param_object(params.as_ref()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected transfer witness object".to_string(),
+    })?;
+
+    let merkle_root_hex = obj
+        .get("merkle_root")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: merkle_root (hex) is required".to_string(),
+        })?;
+    let merkle_root_bytes = parse_hex_32(merkle_root_hex)?;
+    let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root_bytes);
+
+    let inputs = obj
+        .get("inputs")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: inputs array is required".to_string(),
+        })?;
+    if inputs.len() != 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid params: transfer requires exactly 2 inputs, got {}", inputs.len()),
+        });
+    }
+
+    let outputs = obj
+        .get("outputs")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: outputs array is required".to_string(),
+        })?;
+    if outputs.len() != 2 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid params: transfer requires exactly 2 outputs, got {}", outputs.len()),
+        });
+    }
+
+    let mut input_values = [0u64; 2];
+    let mut input_blindings_fr = [Fr::from(0u64); 2];
+    let mut input_serials_fr = [Fr::from(0u64); 2];
+    let mut spending_keys_fr = [Fr::from(0u64); 2];
+    let mut input_merkle_paths: [Vec<Fr>; 2] = [vec![], vec![]];
+    let mut input_path_bits: [Vec<bool>; 2] = [vec![], vec![]];
+    let mut nullifiers_fr = [Fr::from(0u64); 2];
+
+    for (i, input) in inputs.iter().enumerate() {
+        let input_obj = input.as_object().ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("Invalid params: inputs[{}] must be an object", i),
+        })?;
+
+        input_values[i] = input_obj
+            .get("amount")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: format!("Invalid params: inputs[{}].amount (u64) is required", i),
+            })?;
+        input_blindings_fr[i] = parse_hex_to_fr(
+            input_obj
+                .get("blinding")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: format!("Invalid params: inputs[{}].blinding (hex) is required", i),
+                })?,
+        )?;
+        input_serials_fr[i] = parse_hex_to_fr(
+            input_obj
+                .get("serial")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: format!("Invalid params: inputs[{}].serial (hex) is required", i),
+                })?,
+        )?;
+        spending_keys_fr[i] = parse_hex_to_fr(
+            input_obj
+                .get("spending_key")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: format!("Invalid params: inputs[{}].spending_key (hex) is required", i),
+                })?,
+        )?;
+
+        let merkle_path_vals = input_obj
+            .get("merkle_path")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: format!("Invalid params: inputs[{}].merkle_path array is required", i),
+            })?;
+        if merkle_path_vals.len() != TREE_DEPTH {
+            return Err(RpcError {
+                code: -32602,
+                message: format!(
+                    "Invalid params: inputs[{}].merkle_path must contain {} elements",
+                    i, TREE_DEPTH
+                ),
+            });
+        }
+        input_merkle_paths[i] = merkle_path_vals
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| RpcError {
+                        code: -32602,
+                        message: format!(
+                            "Invalid params: inputs[{}].merkle_path elements must be hex strings",
+                            i
+                        ),
+                    })
+                    .and_then(|hex_str| parse_hex_32(hex_str).map(|b| Fr::from_le_bytes_mod_order(&b)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let path_bits_vals = input_obj
+            .get("path_bits")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: format!("Invalid params: inputs[{}].path_bits array is required", i),
+            })?;
+        if path_bits_vals.len() != TREE_DEPTH {
+            return Err(RpcError {
+                code: -32602,
+                message: format!(
+                    "Invalid params: inputs[{}].path_bits must contain {} elements",
+                    i, TREE_DEPTH
+                ),
+            });
+        }
+        input_path_bits[i] = path_bits_vals
+            .iter()
+            .map(|value| {
+                value.as_bool().ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: format!(
+                        "Invalid params: inputs[{}].path_bits elements must be booleans",
+                        i
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        nullifiers_fr[i] = poseidon_hash_fr(input_serials_fr[i], spending_keys_fr[i]);
+    }
+
+    let mut output_values = [0u64; 2];
+    let mut output_blindings_fr = [Fr::from(0u64); 2];
+    let mut output_commitments_fr = [Fr::from(0u64); 2];
+    let mut output_commitments_bytes = [[0u8; 32]; 2];
+
+    for (i, output) in outputs.iter().enumerate() {
+        let output_obj = output.as_object().ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("Invalid params: outputs[{}] must be an object", i),
+        })?;
+
+        output_values[i] = output_obj
+            .get("amount")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: format!("Invalid params: outputs[{}].amount (u64) is required", i),
+            })?;
+        output_blindings_fr[i] = parse_hex_to_fr(
+            output_obj
+                .get("blinding")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: format!("Invalid params: outputs[{}].blinding (hex) is required", i),
+                })?,
+        )?;
+
+        output_commitments_fr[i] = poseidon_hash_fr(Fr::from(output_values[i]), output_blindings_fr[i]);
+        output_commitments_bytes[i] = fr_to_bytes(&output_commitments_fr[i]);
+    }
+
+    let total_in: u64 = input_values.iter().sum();
+    let total_out: u64 = output_values.iter().sum();
+    if total_in != total_out {
+        return Err(RpcError {
+            code: -32602,
+            message: format!(
+                "Invalid params: value not conserved (sum(inputs)={} != sum(outputs)={})",
+                total_in, total_out
+            ),
+        });
+    }
+
+    let circuit = TransferCircuit::new(
+        merkle_root_fr,
+        nullifiers_fr,
+        output_commitments_fr,
+        input_values,
+        input_blindings_fr,
+        input_serials_fr,
+        spending_keys_fr,
+        input_merkle_paths,
+        input_path_bits,
+        output_values,
+        output_blindings_fr,
+    );
+
+    let key_dir = resolve_zk_key_dir();
+    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_TRANSFER_PK_PATH", &key_dir, "pk_transfer.bin")?;
+    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_TRANSFER_VK_PATH", &key_dir, "vk_transfer.bin")?;
+
+    let mut prover = Prover::new();
+    prover
+        .load_transfer_key(&pk_bytes)
+        .map_err(internal_rpc_err)?;
+    let mut proof = prover.prove_transfer(circuit).map_err(internal_rpc_err)?;
+
+    proof.public_inputs = vec![
+        fr_to_bytes(&merkle_root_fr),
+        fr_to_bytes(&nullifiers_fr[0]),
+        fr_to_bytes(&nullifiers_fr[1]),
+        output_commitments_bytes[0],
+        output_commitments_bytes[1],
+    ];
+
+    let vk = moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = moltchain_core::zk::Verifier::from_vk_transfer(vk);
+    let valid = verifier
+        .verify(&proof)
+        .map_err(|e| internal_rpc_err(e.to_string()))?;
+    if !valid {
+        return Err(RpcError {
+            code: -32000,
+            message: "Generated transfer proof failed self-verification".to_string(),
+        });
+    }
+
+    Ok(serde_json::json!({
+        "type": "transfer",
+        "merkle_root": hex::encode(merkle_root_bytes),
+        "nullifier_a": hex::encode(fr_to_bytes(&nullifiers_fr[0])),
+        "nullifier_b": hex::encode(fr_to_bytes(&nullifiers_fr[1])),
+        "commitment_c": hex::encode(output_commitments_bytes[0]),
+        "commitment_d": hex::encode(output_commitments_bytes[1]),
+        "proof": hex::encode(&proof.proof_bytes),
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -613,6 +1140,131 @@ fn parse_nullifier_hex(hex_str: &str) -> Result<[u8; 32], String> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(arr)
+}
+
+fn internal_rpc_err(message: String) -> RpcError {
+    RpcError {
+        code: -32000,
+        message,
+    }
+}
+
+fn first_param_object(params: Option<&serde_json::Value>) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    params.and_then(|p| {
+        p.as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_object())
+            .or_else(|| p.as_object())
+    })
+}
+
+fn resolve_zk_key_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".moltchain")
+        .join("zk")
+}
+
+fn load_zk_key_bytes(env_var: &str, key_dir: &PathBuf, default_file: &str) -> Result<Vec<u8>, RpcError> {
+    let path = std::env::var(env_var)
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| key_dir.join(default_file));
+    fs::read(&path).map_err(|e| RpcError {
+        code: -32000,
+        message: format!(
+            "Failed to load ZK key {} ({}): {}. Run zk-setup if keys are missing.",
+            default_file,
+            path.display(),
+            e
+        ),
+    })
+}
+
+fn parse_hex_to_fr(hex_str: &str) -> Result<Fr, RpcError> {
+    let bytes = hex::decode(hex_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+    })?;
+    Ok(Fr::from_le_bytes_mod_order(&bytes))
+}
+
+fn parse_hex_32(hex_str: &str) -> Result<[u8; 32], RpcError> {
+    let bytes = hex::decode(hex_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+    })?;
+    if bytes.len() != 32 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Expected 32-byte hex value, got {} bytes", bytes.len()),
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn parse_recipient_32(input: &str) -> Result<[u8; 32], RpcError> {
+    if let Ok(hex_bytes) = hex::decode(input) {
+        if hex_bytes.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&hex_bytes);
+            return Ok(out);
+        }
+    }
+
+    let decoded = bs58::decode(input).into_vec().map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid recipient encoding (expected base58 pubkey or 32-byte hex): {}", e),
+    })?;
+    if decoded.len() != 32 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Invalid recipient length: expected 32 bytes, got {}", decoded.len()),
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded);
+    Ok(out)
+}
+
+fn shielded_pool_stats_json(pool: &moltchain_core::zk::ShieldedPoolState) -> serde_json::Value {
+    let merkle_root = hex::encode(pool.merkle_root);
+    let total_shielded_molt = format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0);
+    let vk_shield_hash = hex::encode(pool.vk_shield_hash);
+    let vk_unshield_hash = hex::encode(pool.vk_unshield_hash);
+    let vk_transfer_hash = hex::encode(pool.vk_transfer_hash);
+
+    serde_json::json!({
+        // camelCase (current canonical)
+        "merkleRoot": merkle_root,
+        "commitmentCount": pool.commitment_count,
+        "totalShielded": pool.total_shielded,
+        "totalShieldedMolt": total_shielded_molt,
+        "nullifierCount": pool.nullifier_count,
+        "shieldCount": pool.shield_count,
+        "unshieldCount": pool.unshield_count,
+        "transferCount": pool.transfer_count,
+        "vkShieldHash": vk_shield_hash,
+        "vkUnshieldHash": vk_unshield_hash,
+        "vkTransferHash": vk_transfer_hash,
+
+        // snake_case compatibility for wallet/extension callers
+        "merkle_root": hex::encode(pool.merkle_root),
+        "commitment_count": pool.commitment_count,
+        "pool_balance": pool.total_shielded,
+        "pool_balance_molt": pool.total_shielded as f64 / 1_000_000_000.0,
+        "total_shielded": pool.total_shielded,
+        "total_shielded_molt": format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
+        "nullifier_count": pool.nullifier_count,
+        "shield_count": pool.shield_count,
+        "unshield_count": pool.unshield_count,
+        "transfer_count": pool.transfer_count,
+        "vk_shield_hash": hex::encode(pool.vk_shield_hash),
+        "vk_unshield_hash": hex::encode(pool.vk_unshield_hash),
+        "vk_transfer_hash": hex::encode(pool.vk_transfer_hash),
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

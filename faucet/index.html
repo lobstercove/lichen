@@ -23,13 +23,13 @@
                 <span class="logo-text">MoltChain</span>
             </div>
             <ul class="nav-menu">
-                <li><a href="../website/index.html">Home</a></li>
-                <li><a href="../explorer/index.html">Explorer</a></li>
-                <li><a href="../wallet/index.html">Wallet</a></li>
-                <li><a href="index.html" class="active">Faucet</a></li>
+                <li><a href="#" data-molt-app="website">Home</a></li>
+                <li><a href="#" data-molt-app="explorer">Explorer</a></li>
+                <li><a href="#" data-molt-app="wallet">Wallet</a></li>
+                <li><a href="#" data-molt-app="faucet" class="active">Faucet</a></li>
             </ul>
             <div class="nav-actions">
-                <a href="../wallet/index.html" class="btn btn-primary btn-sm">Connect Wallet</a>
+                <a href="#" data-molt-app="wallet" class="btn btn-primary btn-sm">Connect Wallet</a>
             </div>
             <button class="nav-toggle" id="navToggle">
                 <span></span><span></span><span></span>
@@ -64,21 +64,28 @@
                     <div class="stat-icon"><i class="fas fa-coins"></i></div>
                     <div class="stat-content">
                         <div class="stat-label">Per Request</div>
-                        <div class="stat-value">100 MOLT</div>
+                        <div class="stat-value" id="statPerRequest">100 MOLT</div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-icon"><i class="fas fa-clock"></i></div>
                     <div class="stat-content">
                         <div class="stat-label">Cooldown</div>
-                        <div class="stat-value">24 Hours</div>
+                        <div class="stat-value" id="statCooldown">24 Hours</div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-icon"><i class="fas fa-users"></i></div>
                     <div class="stat-content">
                         <div class="stat-label">Daily Limit</div>
-                        <div class="stat-value">100 MOLT / IP</div>
+                        <div class="stat-value" id="statDailyLimit">100 MOLT / IP</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-wallet"></i></div>
+                    <div class="stat-content">
+                        <div class="stat-label">Faucet Balance</div>
+                        <div class="stat-value" id="statFaucetBalance">—</div>
                     </div>
                 </div>
             </div>
@@ -133,16 +140,16 @@
                 </form>
 
                 <!-- Success Message -->
-                <div id="successMessage" class="message message-success hidden">
-                    <i class="fas fa-check-circle"></i>
+                <div id="successMessage" class="message message-success hidden" aria-live="polite">
+                    <i class="fas fa-check-circle" aria-hidden="true"></i>
                     <div>
                         <strong>Success!</strong> Tokens sent to your address.
                     </div>
                 </div>
 
                 <!-- Error Message -->
-                <div id="errorMessage" class="message message-error hidden">
-                    <i class="fas fa-exclamation-circle"></i>
+                <div id="errorMessage" class="message message-error hidden" aria-live="polite">
+                    <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
                     <div id="errorText"></div>
                 </div>
             </div>
@@ -208,10 +215,10 @@
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="../docs/README.md">Documentation</a></li>
-                        <li><a href="../docs/foundation/VISION.md">Vision</a></li>
-                        <li><a href="../docs/foundation/WHITEPAPER.md">Whitepaper</a></li>
-                        <li><a href="../docs/skills/VALIDATOR_SKILL.md">Validator Guide</a></li>
+                        <li><a href="../developers/index.html">Documentation</a></li>
+                        <li><a href="../developers/getting-started.html">Vision</a></li>
+                        <li><a href="../developers/architecture.html">Whitepaper</a></li>
+                        <li><a href="../developers/validator.html">Validator Guide</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
@@ -246,8 +253,8 @@
         </div>
     </footer>
 
-    <script src="../shared/utils.js"></script>
-    <script src="../shared-config.js"></script>
+    <script src="shared/utils.js"></script>
+    <script src="shared-config.js"></script>
     <script src="faucet.js"></script>
 </body>
 </html>

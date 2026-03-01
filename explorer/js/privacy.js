@@ -102,7 +102,10 @@ function updatePoolStatsUI(stats) {
 
     const shieldedBalanceEl = el('shieldedBalance');
     const shieldedShellsEl = el('shieldedBalanceShells');
-    if (shieldedBalanceEl) shieldedBalanceEl.textContent = formatMoltValue(Number(balanceMolt)) + ' MOLT';
+    if (shieldedBalanceEl) {
+        const balanceShells = Math.round(Number(balanceMolt || 0) * SHELLS_PER_MOLT);
+        shieldedBalanceEl.textContent = formatMolt(balanceShells);
+    }
     if (shieldedShellsEl) shieldedShellsEl.textContent = formatNumber(totalShielded) + ' shells';
 
     // Commitment count
@@ -177,7 +180,7 @@ function renderShieldedTxs(txs) {
             : hashDisplay;
 
         const amountDisplay = tx.amount != null
-            ? formatMoltValue(tx.amount / SHELLS_PER_MOLT) + ' MOLT'
+            ? formatMolt(tx.amount)
             : '<span style="color: var(--text-muted);">Hidden</span>';
 
         const proofStatus = tx.proof_valid !== false
@@ -317,37 +320,4 @@ async function lookupNullifier() {
 
 function refreshShieldedTxs() {
     loadShieldedTransactions();
-}
-
-// ===== Helpers =====
-
-function formatMoltValue(molt) {
-    if (molt >= 1_000_000) return (molt / 1_000_000).toFixed(2) + 'M';
-    if (molt >= 1_000) return (molt / 1_000).toFixed(2) + 'K';
-    return molt.toFixed(molt < 1 ? 6 : 2);
-}
-
-function formatNumber(n) {
-    if (n == null) return '0';
-    return Number(n).toLocaleString();
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function formatTimeFull(ts) {
-    try {
-        const d = new Date(ts);
-        return d.toLocaleString();
-    } catch {
-        return ts;
-    }
-}
-
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        // Brief visual feedback could be added here
-    }).catch(() => {});
 }

@@ -257,6 +257,40 @@ impl Mempool {
         self.express_queue = valid_express.into_iter().collect();
     }
 
+    /// Prune transactions whose recent_blockhash is no longer in the valid set.
+    /// This prevents the death-spiral where a validator falls behind, accumulates
+    /// stale-blockhash transactions, and then drops them all at block-production
+    /// time (producing only empty heartbeats).
+    /// Returns the number of evicted transactions.
+    pub fn prune_stale_blockhashes(
+        &mut self,
+        valid_blockhashes: &std::collections::HashSet<Hash>,
+    ) -> usize {
+        let before = self.transactions.len();
+
+        // Partition regular queue
+        let regular: Vec<_> = self.queue.drain().collect();
+        let (valid_regular, stale_regular): (Vec<_>, Vec<_>) = regular
+            .into_iter()
+            .partition(|ptx| valid_blockhashes.contains(&ptx.transaction.message.recent_blockhash));
+        for ptx in &stale_regular {
+            self.transactions.remove(&ptx.hash);
+        }
+        self.queue = valid_regular.into_iter().collect();
+
+        // Partition express queue
+        let express: Vec<_> = self.express_queue.drain().collect();
+        let (valid_express, stale_express): (Vec<_>, Vec<_>) = express
+            .into_iter()
+            .partition(|ptx| valid_blockhashes.contains(&ptx.transaction.message.recent_blockhash));
+        for ptx in &stale_express {
+            self.transactions.remove(&ptx.hash);
+        }
+        self.express_queue = valid_express.into_iter().collect();
+
+        before - self.transactions.len()
+    }
+
     /// Get mempool size
     pub fn size(&self) -> usize {
         self.transactions.len()

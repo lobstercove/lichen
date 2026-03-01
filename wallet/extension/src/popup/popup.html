@@ -222,6 +222,7 @@
         </div>
         <div class="popup-balance-amount" id="walletBalance">0.00 MOLT</div>
         <div class="popup-balance-usd" id="balanceUsd">$0.00 USD</div>
+        <div class="popup-balance-breakdown" id="balanceBreakdown"></div>
         <div class="popup-balance-actions">
           <button class="popup-action-btn" id="showSendPanel"><i class="fas fa-arrow-up"></i><span>Send</span></button>
           <button class="popup-action-btn" id="showReceivePanel"><i class="fas fa-arrow-down"></i><span>Receive</span></button>
@@ -236,6 +237,7 @@
         <button class="popup-dash-tab" data-tab="nfts"><i class="fas fa-image"></i> NFTs</button>
         <button class="popup-dash-tab" data-tab="staking"><i class="fas fa-layer-group"></i> Staking</button>
         <button class="popup-dash-tab" data-tab="identity"><i class="fas fa-fingerprint"></i> Identity</button>
+        <button class="popup-dash-tab" data-tab="shield"><i class="fas fa-shield-alt"></i> Shield</button>
       </div>
 
       <!-- Tab Content: Assets -->
@@ -263,6 +265,7 @@
           <input id="sendPassword" type="password" class="form-input" placeholder="Unlock to sign" />
         </div>
         <button id="sendNow" class="btn btn-primary popup-btn-block"><i class="fas fa-paper-plane"></i> Send</button>
+        <button id="cancelSend" class="btn btn-secondary popup-btn-block" style="margin-top:0.35rem;">Cancel</button>
       </div>
 
       <!-- Tab Content: Receive -->
@@ -270,6 +273,7 @@
         <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
           Receive MOLT and all MoltChain tokens
         </p>
+        <div id="receiveQrCode" style="text-align:center;margin-bottom:0.75rem;"></div>
         <div class="form-group">
           <label><i class="fas fa-fingerprint"></i> Native Address (Base58)</label>
           <div class="popup-address-row">
@@ -297,11 +301,18 @@
 
       <!-- Tab Content: NFTs -->
       <div class="popup-tab-content" data-tab="nfts" id="nftsPanel">
+        <div class="popup-nft-header">
+          <span id="nftCount">0 NFTs</span>
+          <button id="refreshNfts" class="popup-btn-icon" title="Refresh NFTs"><i class="fas fa-sync-alt"></i></button>
+        </div>
         <div class="nfts-grid" id="nftsGrid"></div>
         <div class="nfts-empty" id="nftsEmpty">
           <div class="nfts-empty-icon"><i class="fas fa-gem"></i></div>
           <h3>No NFTs Yet</h3>
           <p>Your collection will appear here once you mint or receive NFTs.</p>
+          <button id="browseMarketplace" class="btn btn-secondary btn-small" style="margin-top:0.5rem;">
+            <i class="fas fa-store"></i> Browse Marketplace
+          </button>
         </div>
       </div>
 
@@ -332,6 +343,120 @@
         <div id="identityContent">
           <!-- MoltyID identity loaded dynamically -->
         </div>
+      </div>
+
+      <!-- Tab Content: Shield (ZK Privacy) -->
+      <div class="popup-tab-content" data-tab="shield" id="shieldPanel">
+        <div id="shieldStatusMsg" class="shield-status-msg"></div>
+
+        <!-- ZK Privacy Banner -->
+        <div class="popup-shield-banner">
+          <i class="fas fa-user-shield"></i>
+          <div>
+            <strong>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></strong>
+            <p style="font-size:0.75rem;margin:0;">Shield MOLT to make transactions fully private using ZK proofs.</p>
+          </div>
+        </div>
+
+        <!-- Shielded Balance Card -->
+        <div class="popup-shield-card">
+          <div class="popup-shield-balance-row">
+            <div>
+              <div class="popup-shield-label">Shielded Balance</div>
+              <div class="popup-shield-balance-value" id="extShieldedBalance">0.0000 MOLT</div>
+              <div class="popup-shield-balance-sub" id="extShieldedShells">0 shells</div>
+            </div>
+            <div class="popup-shield-actions">
+              <button class="btn btn-primary btn-small" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
+              <button class="btn btn-secondary btn-small" id="extUnshieldBtn"><i class="fas fa-arrow-up"></i> Unshield</button>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-small popup-btn-block" id="extPrivateTransferBtn" style="margin-top:0.5rem;">
+            <i class="fas fa-paper-plane"></i> Private Transfer
+          </button>
+        </div>
+
+        <!-- Shielded Keys -->
+        <div class="popup-shield-card">
+          <h4 style="font-size:0.82rem;margin-bottom:0.5rem;"><i class="fas fa-key"></i> Shielded Keys</h4>
+          <div class="popup-shield-key-row">
+            <label>Shielded Address</label>
+            <div class="popup-address-row">
+              <input id="extShieldedAddress" class="form-input" readonly value="Not initialized" />
+              <button id="copyShieldedAddr" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+            </div>
+          </div>
+          <div class="popup-shield-key-row">
+            <label>Viewing Key</label>
+            <div class="popup-address-row">
+              <input id="extViewingKey" class="form-input" type="password" readonly value="Click eye to reveal" />
+              <button id="toggleViewingKey" class="btn btn-secondary btn-small"><i class="fas fa-eye-slash"></i></button>
+              <button id="copyViewingKey" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+            </div>
+          </div>
+          <div class="popup-shield-info">
+            <i class="fas fa-info-circle"></i>
+            Spending key never leaves this device. Viewing key enables auditors to see activity.
+          </div>
+        </div>
+
+        <!-- Pool Statistics -->
+        <div class="popup-shield-card">
+          <h4 style="font-size:0.82rem;margin-bottom:0.5rem;"><i class="fas fa-chart-pie"></i> Pool Statistics</h4>
+          <div class="popup-shield-stats">
+            <div class="popup-shield-stat">
+              <span class="popup-shield-stat-label">Total Shielded</span>
+              <span class="popup-shield-stat-value" id="extPoolShielded">&mdash;</span>
+            </div>
+            <div class="popup-shield-stat">
+              <span class="popup-shield-stat-label">Commitments</span>
+              <span class="popup-shield-stat-value" id="extPoolCommitments">&mdash;</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Owned Notes -->
+        <div class="popup-shield-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+            <h4 style="font-size:0.82rem;margin:0;"><i class="fas fa-file-invoice"></i> Shielded Notes</h4>
+            <span id="extNoteCount" style="font-size:0.72rem;color:var(--text-muted);">0 unspent / 0 total</span>
+          </div>
+          <div id="extShieldedNotes">
+            <div class="popup-shield-empty">
+              <i class="fas fa-shield-alt"></i>
+              <p>No shielded notes yet</p>
+              <p style="font-size:0.72rem;color:var(--text-muted);">Shield MOLT to create your first private note</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Bridge/Deposit -->
+      <div class="popup-tab-content" data-tab="deposit" id="depositPanel">
+        <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
+          Bridge tokens from other chains to MoltChain
+        </p>
+        <div class="popup-deposit-chains">
+          <button class="popup-deposit-chain-btn" data-bridge-chain="SOL">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" width="24" height="24" alt="SOL" />
+            <span>Solana</span>
+          </button>
+          <button class="popup-deposit-chain-btn" data-bridge-chain="ETH">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" width="24" height="24" alt="ETH" />
+            <span>Ethereum</span>
+          </button>
+          <button class="popup-deposit-chain-btn" data-bridge-chain="BNB">
+            <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" width="24" height="24" alt="BNB" />
+            <span>BNB Chain</span>
+          </button>
+        </div>
+        <div id="extBridgeTokenSelect" style="display:none;margin-top:0.75rem;"></div>
+        <div id="extBridgeLoading" style="display:none;text-align:center;padding:1rem;">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.2rem;color:var(--primary);"></i>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-top:0.5rem;">Generating deposit address...</p>
+        </div>
+        <div id="extBridgeResult" style="display:none;"></div>
+        <div id="extBridgeStatus" style="display:none;margin-top:0.75rem;"></div>
       </div>
 
       <!-- Tab Content: Settings -->
@@ -394,16 +519,54 @@
           </div>
           <button id="copyExportOutput" class="btn btn-secondary btn-small popup-btn-block">Copy Output</button>
         </div>
+
+        <!-- Wallet Management -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-wallet"></i> Wallet Management</h4>
+          <div class="form-group">
+            <label>Rename Wallet</label>
+            <div class="popup-address-row">
+              <input id="settingsRenameInput" class="form-input" placeholder="New wallet name" />
+              <button id="renameWalletBtn" class="btn btn-secondary btn-small">Rename</button>
+            </div>
+          </div>
+          <button id="clearHistoryBtn" class="btn btn-secondary btn-small popup-btn-block" style="margin-top:0.5rem;">
+            <i class="fas fa-eraser"></i> Clear Transaction History
+          </button>
+          <button id="deleteWalletBtn" class="btn btn-danger btn-small popup-btn-block" style="margin-top:0.5rem;">
+            <i class="fas fa-trash-alt"></i> Delete Wallet
+          </button>
+        </div>
+
+        <!-- About -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-info-circle"></i> About</h4>
+          <div class="popup-about-info">
+            <div><strong>Version:</strong> <span id="aboutVersion">1.0.0</span></div>
+            <div><strong>Network:</strong> <span id="aboutNetwork">—</span></div>
+            <div><strong>License:</strong> MIT</div>
+            <div><a href="https://github.com/moltchain/moltchain" target="_blank" rel="noopener"><i class="fab fa-github"></i> GitHub Repository</a></div>
+          </div>
+        </div>
       </div>
 
       <!-- Hidden address field for wallet.js compat -->
       <input id="walletAddress" type="hidden" />
 
       <div id="statusField" class="popup-status">Ready</div>
+
+      <!-- Chain Status Bar -->
+      <div class="popup-chain-status" id="chainStatusBar">
+        <span class="popup-chain-dot" id="chainDot"></span>
+        <span id="chainBlockHeight">Connecting...</span>
+        <span style="opacity:0.5;">|</span>
+        <span id="chainLatency"></span>
+      </div>
     </section>
   </main>
 
-  <script src="../../../../shared/utils.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="../../shared/utils.js"></script>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

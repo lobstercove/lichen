@@ -365,7 +365,7 @@ async function handleImportSeed() {
 }
 
 async function handleImportPrivKey() {
-  const key = $('importPrivKey').value.trim().replace(/^0x/, '');
+  let key = $('importPrivKey').value.trim().replace(/^0x/, '');
   const pw = $('importPasswordPriv').value;
   if (!key || !/^[0-9a-fA-F]{64}$/.test(key)) { showToast('Private key must be exactly 64 hex characters (0-9, a-f)', 'error'); return; }
   if (!pw || pw.length < 8) { showToast('Password must be at least 8 characters', 'error'); return; }
@@ -1088,7 +1088,7 @@ async function loadShieldTab() {
   // Fetch pool stats + shielded balance
   let poolStats = null;
   try {
-    const res = await rpcClient.call('getShieldedPoolStats', []);
+    const res = await rpcClient.call('getShieldedPoolState', []).catch(() => rpcClient.call('getShieldedPoolStats', []));
     poolStats = res || null;
   } catch (_) {}
 
@@ -2089,7 +2089,7 @@ function switchReceiveTab(tab) {
 }
 
 /* ──────────────────────────────────────────
-   Bridge Deposit — wired to custody service
+   Bridge Deposit — routed through RPC proxy
    ────────────────────────────────────────── */
 const BRIDGE_CHAINS_EXT = {
   solana:   { label: 'Solana',     assets: ['sol', 'usdc', 'usdt'] },

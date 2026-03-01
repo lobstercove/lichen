@@ -41,6 +41,10 @@ services:
       - RUST_LOG=info
       - PORT=9101
       - RPC_URL=http://validator:8899
+      - FAUCET_KEYPAIR=/app/data/faucet-keypair.json
+      - AIRDROPS_FILE=/app/data/airdrops.json
+    volumes:
+      - faucet-data:/app/data
     depends_on:
       validator:
         condition: service_healthy
@@ -64,6 +68,8 @@ services:
 
 volumes:
   moltchain-data:
+    driver: local
+  faucet-data:
     driver: local
 
 networks:

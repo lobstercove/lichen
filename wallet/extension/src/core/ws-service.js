@@ -10,6 +10,22 @@ class WalletWsManager {
     this.keepaliveTimer = null;
     this.reconnectDelay = 1000;
     this.state = 'idle';
+    this.listeners = new Set();
+  }
+
+  addListener(listener) {
+    if (typeof listener === 'function') this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(event) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // ignore listener errors
+      }
+    }
   }
 
   async endpoint(network) {
@@ -105,6 +121,15 @@ class WalletWsManager {
         const msg = JSON.parse(event.data);
         if (msg.id === 1 && msg.result !== undefined) {
           this.subscriptionId = msg.result;
+          this.emit({ type: 'subscribed', subscriptionId: this.subscriptionId });
+          return;
+        }
+        if (msg.method === 'subscription' && msg.params?.result) {
+          this.emit({
+            type: 'account-change',
+            subscriptionId: msg.params?.subscription,
+            payload: msg.params.result
+          });
         }
       } catch {
         // ignore
@@ -119,6 +144,7 @@ class WalletWsManager {
       if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
       this.subscriptionId = null;
       this.state = 'closed';
+      this.emit({ type: 'closed' });
       this.scheduleReconnect();
     };
   }

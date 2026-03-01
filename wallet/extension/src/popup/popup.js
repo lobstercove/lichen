@@ -19,6 +19,7 @@ import { notify } from '../core/notification-service.js';
 let state = null;
 let pendingGeneratedMnemonic = '';
 let fullCarouselTimer = null;
+let _moltUsdPriceCache = { value: 0.10, ts: 0 };
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -241,6 +242,42 @@ function setStatus(message) {
   if (statusField) {
     statusField.textContent = message;
   }
+}
+
+function rpcEndpointToApiBase(endpoint) {
+  try {
+    const url = new URL(String(endpoint || '').trim());
+    return `${url.origin}/api/v1`;
+  } catch {
+    return '';
+  }
+}
+
+async function getLiveMoltUsdPrice(endpoint) {
+  const now = Date.now();
+  if (now - _moltUsdPriceCache.ts < 60_000 && _moltUsdPriceCache.value > 0) {
+    return _moltUsdPriceCache.value;
+  }
+
+  const apiBase = rpcEndpointToApiBase(endpoint);
+  if (!apiBase) return _moltUsdPriceCache.value || 0.10;
+
+  try {
+    const resp = await fetch(`${apiBase}/oracle/prices`);
+    if (!resp.ok) throw new Error('oracle fetch failed');
+    const data = await resp.json();
+    const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
+    const moltFeed = feeds.find((feed) => String(feed?.asset || '').toUpperCase() === 'MOLT');
+    const price = Number(moltFeed?.price || 0);
+    if (Number.isFinite(price) && price > 0) {
+      _moltUsdPriceCache = { value: price, ts: now };
+      return price;
+    }
+  } catch {
+    // fall back to cached/default
+  }
+
+  return _moltUsdPriceCache.value || 0.10;
 }
 
 function getActiveWallet() {
@@ -848,6 +885,7 @@ async function refreshBalance() {
 
   try {
     const result = await rpc.getBalance(wallet.address);
+    const moltUsdPrice = await getLiveMoltUsdPrice(endpoint);
     const raw = Number(result?.shells || result?.spendable || 0);
     const spendableRaw = Number(result?.spendable ?? result?.shells ?? 0);
     const balanceMolt = raw / 1_000_000_000;
@@ -855,9 +893,41 @@ async function refreshBalance() {
     window._cachedSpendableMolt = spendableMolt;
     document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} MOLT`;
     const usdEl = document.getElementById('balanceUsd');
-    if (usdEl) usdEl.textContent = `$${(balanceMolt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+    if (usdEl) usdEl.textContent = `$${(balanceMolt * moltUsdPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+
+    // Balance breakdown (matches wallet website)
+    const breakdownEl = document.getElementById('balanceBreakdown');
+    if (breakdownEl) {
+      const staked = Number(result?.staked || 0) / 1_000_000_000;
+      const pendingRewards = Number(result?.pending_rewards || 0) / 1_000_000_000;
+      const locked = Number(result?.locked || 0) / 1_000_000_000;
+      const parts = [];
+      parts.push(`<i class="fas fa-wallet"></i> Spendable: <strong>${spendableMolt.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+      if (staked > 0) parts.push(`<i class="fas fa-lock"></i> Staked: <strong>${staked.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+      if (pendingRewards > 0) parts.push(`<i class="fas fa-gift"></i> Rewards: <strong>${pendingRewards.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+      if (locked > 0) parts.push(`<i class="fas fa-hourglass"></i> Locked: <strong>${locked.toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>`);
+      breakdownEl.innerHTML = parts.join(' · ');
+    }
+
     const avail = document.getElementById('sendAvailableBalance');
     if (avail) avail.textContent = `Available: ${spendableMolt.toLocaleString(undefined, { maximumFractionDigits: 9 })} MOLT`;
+
+    // Disable Send button when balance can't cover fee
+    const sendBtn = document.getElementById('sendNow');
+    if (sendBtn) {
+      if (spendableMolt <= 0.001) {
+        sendBtn.disabled = true;
+        sendBtn.style.opacity = '0.5';
+        sendBtn.style.cursor = 'not-allowed';
+        sendBtn.title = 'Insufficient balance — need at least 0.001 MOLT for the fee';
+      } else {
+        sendBtn.disabled = false;
+        sendBtn.style.opacity = '';
+        sendBtn.style.cursor = '';
+        sendBtn.title = '';
+      }
+    }
+
     setStatus(`Connected: ${state.network?.selected || 'local-testnet'}`);
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 MOLT';
@@ -1371,6 +1441,18 @@ async function renderDashboard() {
   showScreen('dashboard');
   await refreshBalance();
   await loadAssets();
+  if (!shieldedPopupState.initialized) {
+    try {
+      const seed = await deriveShieldedSeedFromWallet(wallet);
+      if (seed) await initShieldedPopup(seed);
+    } catch { /* initialize lazily on shield tab open */ }
+  }
+  generateReceiveQrCode();
+  initChainStatusBar();
+  startBalancePolling();
+  // Update about section
+  const aboutNet = document.getElementById('aboutNetwork');
+  if (aboutNet) aboutNet.textContent = state.network?.selected || 'local-testnet';
 }
 
 async function render() {
@@ -1385,6 +1467,419 @@ async function render() {
   }
 
   await renderDashboard();
+}
+
+// ===== chain status bar =====
+
+let chainStatusInterval = null;
+let wsPopupRefreshTimer = null;
+
+function schedulePopupWsRefresh() {
+  if (wsPopupRefreshTimer) {
+    clearTimeout(wsPopupRefreshTimer);
+    wsPopupRefreshTimer = null;
+  }
+  wsPopupRefreshTimer = setTimeout(async () => {
+    wsPopupRefreshTimer = null;
+    if (!state?.isLocked && getActiveWallet()) {
+      await refreshBalance();
+      const activeTab = document.querySelector('.popup-dash-tab.active')?.dataset?.tab;
+      if (activeTab === 'activity') await loadActivity();
+      if (activeTab === 'shield') await loadShieldPanel();
+    }
+  }, 120);
+}
+
+function bindRuntimeRealtimeHandlers() {
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === 'MOLT_WS_EVENT') {
+      const wallet = getActiveWallet();
+      const eventType = message?.payload?.type;
+      const eventPubkey = message?.payload?.payload?.pubkey;
+      if (!wallet) return;
+      if (eventType === 'account-change' && eventPubkey && eventPubkey !== wallet.address) return;
+      schedulePopupWsRefresh();
+      return;
+    }
+
+    if (message?.type === 'MOLT_PROVIDER_STATE_DIRTY') {
+      schedulePopupWsRefresh();
+    }
+  });
+}
+
+async function initChainStatusBar() {
+  if (chainStatusInterval) clearInterval(chainStatusInterval);
+  const dot = document.getElementById('chainDot');
+  const heightEl = document.getElementById('chainBlockHeight');
+  const latencyEl = document.getElementById('chainLatency');
+  if (!dot || !heightEl) return;
+
+  async function poll() {
+    const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+    const rpc = new MoltChainRPC(endpoint);
+    const t0 = performance.now();
+    try {
+      const slot = await rpc.call('getSlot', []);
+      const latency = Math.round(performance.now() - t0);
+      dot.classList.add('connected');
+      dot.classList.remove('connecting');
+      heightEl.textContent = `Block #${Number(slot).toLocaleString()}`;
+      if (latencyEl) latencyEl.textContent = `${latency}ms`;
+    } catch {
+      dot.classList.remove('connected');
+      dot.classList.add('connecting');
+      heightEl.textContent = 'Disconnected';
+      if (latencyEl) latencyEl.textContent = '';
+    }
+  }
+
+  await poll();
+  chainStatusInterval = setInterval(poll, 5000);
+}
+
+// ===== QR code generation for receive =====
+
+function generateReceiveQrCode() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const container = document.getElementById('receiveQrCode');
+  if (!container || typeof QRCode === 'undefined') return;
+  container.innerHTML = '';
+  try {
+    new QRCode(container, {
+      text: wallet.address,
+      width: 160,
+      height: 160,
+      colorDark: '#ffffff',
+      colorLight: '#00000000',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } catch { /* QR lib not loaded */ }
+}
+
+// ===== Shield panel =====
+
+let shieldedPopupState = {
+  initialized: false,
+  spendingKey: null,
+  viewingKey: null,
+  shieldedAddress: null,
+  shieldedBalance: 0,
+  ownedNotes: [],
+};
+
+function resetShieldedPopupState() {
+  shieldedPopupState = {
+    initialized: false,
+    spendingKey: null,
+    viewingKey: null,
+    shieldedAddress: null,
+    shieldedBalance: 0,
+    ownedNotes: [],
+  };
+}
+
+async function deriveShieldedSeedFromWallet(wallet) {
+  if (!wallet?.address) return null;
+  const seedMaterial = new TextEncoder().encode(`${wallet.address}:shielded-popup:v1`);
+  const digest = await crypto.subtle.digest('SHA-256', seedMaterial);
+  return new Uint8Array(digest);
+}
+
+async function initShieldedPopup(walletSeed) {
+  if (!walletSeed || walletSeed.length < 32) return;
+  const enc = new TextEncoder();
+  const spendBuf = await crypto.subtle.digest('SHA-256', new Uint8Array([...walletSeed, ...enc.encode('moltchain-shielded-spending-key-v1')]));
+  shieldedPopupState.spendingKey = new Uint8Array(spendBuf);
+  const vkBuf = await crypto.subtle.digest('SHA-256', new Uint8Array([...shieldedPopupState.spendingKey, ...enc.encode('moltchain-viewing-key-v1')]));
+  shieldedPopupState.viewingKey = new Uint8Array(vkBuf);
+  const addrBuf = await crypto.subtle.digest('SHA-256', shieldedPopupState.viewingKey);
+  shieldedPopupState.shieldedAddress = bs58encode(new Uint8Array(addrBuf).slice(0, 32));
+  shieldedPopupState.initialized = true;
+}
+
+function bytesToHexLocal(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
+
+async function loadShieldPanel() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  if (!shieldedPopupState.initialized) {
+    try {
+      const seed = await deriveShieldedSeedFromWallet(wallet);
+      if (seed) await initShieldedPopup(seed);
+    } catch { /* keep panel available with RPC-backed stats */ }
+  }
+
+  const addrEl = document.getElementById('extShieldedAddress');
+  if (addrEl && shieldedPopupState.shieldedAddress) {
+    addrEl.value = shieldedPopupState.shieldedAddress;
+  }
+  const vkEl = document.getElementById('extViewingKey');
+  if (vkEl && shieldedPopupState.viewingKey) {
+    vkEl.value = bytesToHexLocal(shieldedPopupState.viewingKey);
+  }
+
+  // Fetch pool stats from RPC
+  const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+  const rpc = new MoltChainRPC(endpoint);
+  try {
+    const stats = await rpc.call('getShieldedPoolState', []).catch(() => rpc.call('getShieldedPoolStats', []));
+    if (stats) {
+      const poolShielded = document.getElementById('extPoolShielded');
+      const poolCommits = document.getElementById('extPoolCommitments');
+      const totalShielded = Number(stats.total_shielded ?? stats.totalShielded ?? 0);
+      const commitmentCount = Number(stats.commitment_count ?? stats.commitmentCount ?? 0);
+      if (poolShielded) poolShielded.textContent = `${(totalShielded / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 })} MOLT`;
+      if (poolCommits) poolCommits.textContent = String(commitmentCount);
+    }
+  } catch { /* RPC unavailable */ }
+
+  // Update shielded balance display
+  const balEl = document.getElementById('extShieldedBalance');
+  if (balEl) {
+    const mol = shieldedPopupState.shieldedBalance / 1_000_000_000;
+    balEl.textContent = `${mol.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} MOLT`;
+  }
+  const shellsEl = document.getElementById('extShieldedShells');
+  if (shellsEl) shellsEl.textContent = `${shieldedPopupState.shieldedBalance.toLocaleString()} shells`;
+
+  // Notes count
+  const noteCount = document.getElementById('extNoteCount');
+  if (noteCount) {
+    const unspent = shieldedPopupState.ownedNotes.filter(n => !n.spent).length;
+    noteCount.textContent = `${unspent} unspent / ${shieldedPopupState.ownedNotes.length} total`;
+  }
+}
+
+function openExtShieldModal(type) {
+  // For shield/unshield/transfer, open the full wallet page at shield tab
+  chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#shield' });
+}
+
+// ===== NFTs panel =====
+
+async function loadNftsPanel() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+  const rpc = new MoltChainRPC(endpoint);
+  try {
+    const nfts = await rpc.call('getNFTsByOwner', [wallet.address]);
+    const grid = document.getElementById('nftsGrid');
+    const empty = document.getElementById('nftsEmpty');
+    const countEl = document.getElementById('nftCount');
+    if (!nfts || !nfts.length) {
+      if (grid) grid.innerHTML = '';
+      if (empty) empty.style.display = '';
+      if (countEl) countEl.textContent = '0 NFTs';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (countEl) countEl.textContent = `${nfts.length} NFTs`;
+    if (grid) {
+      grid.innerHTML = nfts.map(n => `<div class="nft-card" style="background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:0.5rem;text-align:center;">
+        <div style="width:100%;aspect-ratio:1;background:linear-gradient(135deg,#6366f1,#a855f7);border-radius:6px;margin-bottom:0.35rem;display:flex;align-items:center;justify-content:center;">
+          <i class="fas fa-gem" style="font-size:1.5rem;color:#fff;"></i>
+        </div>
+        <div style="font-size:0.75rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(n.name || n.mint || 'NFT')}</div>
+      </div>`).join('');
+    }
+  } catch {
+    const empty = document.getElementById('nftsEmpty');
+    if (empty) empty.style.display = '';
+  }
+}
+
+// ===== Bridge/Deposit =====
+
+function showExtBridgeTokens(chain) {
+  const chainInfo = {
+    SOL: { name: 'Solana', chain: 'solana', tokens: ['SOL', 'USDC', 'USDT'] },
+    ETH: { name: 'Ethereum', chain: 'ethereum', tokens: ['ETH', 'USDC', 'USDT'] },
+    BNB: { name: 'BNB Chain', chain: 'bnb', tokens: ['BNB', 'USDC', 'USDT'] },
+  };
+  const info = chainInfo[chain];
+  if (!info) return;
+
+  const selectEl = document.getElementById('extBridgeTokenSelect');
+  if (!selectEl) return;
+  selectEl.style.display = 'block';
+  selectEl.innerHTML = `<p style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.5rem;">Select token on ${escapeHtml(info.name)}:</p>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">${info.tokens.map(t =>
+      `<button class="btn btn-secondary btn-small ext-bridge-token-btn" data-chain="${escapeHtml(info.chain)}" data-asset="${escapeHtml(t.toLowerCase())}" data-chain-name="${escapeHtml(info.name)}">${escapeHtml(t)}</button>`
+    ).join('')}</div>`;
+  selectEl.querySelectorAll('.ext-bridge-token-btn').forEach(btn => {
+    btn.addEventListener('click', () => requestExtBridgeDeposit(btn.dataset.chain, btn.dataset.asset, btn.dataset.chainName));
+  });
+}
+
+async function requestExtBridgeDeposit(chain, asset, chainName) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  const selectEl = document.getElementById('extBridgeTokenSelect');
+  const loadingEl = document.getElementById('extBridgeLoading');
+  const resultEl = document.getElementById('extBridgeResult');
+  if (selectEl) selectEl.style.display = 'none';
+  if (loadingEl) loadingEl.style.display = 'block';
+
+  try {
+    const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+    const rpc = new MoltChainRPC(endpoint);
+    const data = await rpc.call('createBridgeDeposit', [{ user_id: wallet.address, chain, asset }]);
+
+    if (!data?.address || !data?.deposit_id) throw new Error('Invalid response');
+
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = `
+        <p style="font-size:0.82rem;margin-bottom:0.5rem;">Send <strong>${escapeHtml(asset.toUpperCase())}</strong> to this ${escapeHtml(chainName)} address:</p>
+        <div id="extDepositAddr" style="padding:0.6rem;background:rgba(255,255,255,0.06);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:0.72rem;word-break:break-all;cursor:pointer;">
+          ${escapeHtml(data.address)}
+        </div>
+        <p id="extCopyHint" style="text-align:center;font-size:0.7rem;color:var(--text-muted);margin-top:0.25rem;">Click to copy</p>
+        <div id="extDepositStatus" style="margin-top:0.75rem;padding:0.5rem;background:rgba(255,255,255,0.03);border-radius:8px;font-size:0.78rem;">
+          <i class="fas fa-clock" style="color:var(--accent);"></i> Waiting for deposit...
+        </div>
+        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem;">Expires in 24h. ID: <code style="font-size:0.68rem;">${escapeHtml(data.deposit_id)}</code></p>
+      `;
+      document.getElementById('extDepositAddr')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(data.address).then(() => {
+          const h = document.getElementById('extCopyHint');
+          if (h) { h.textContent = 'Copied!'; setTimeout(() => { h.textContent = 'Click to copy'; }, 1500); }
+        });
+      });
+    }
+
+    // Poll deposit status
+    startExtDepositPolling(data.deposit_id);
+    setStatus('Deposit address generated');
+  } catch (e) {
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (selectEl) selectEl.style.display = 'block';
+    setStatus(`Bridge error: ${e.message}`);
+  }
+}
+
+let extDepositPollInterval = null;
+
+function startExtDepositPolling(depositId) {
+  stopExtDepositPolling();
+  const endpoint = resolveRpcEndpoint(state?.network?.selected || 'local-testnet');
+  const rpc = new MoltChainRPC(endpoint);
+  let errors = 0;
+
+  extDepositPollInterval = setInterval(async () => {
+    try {
+      const deposit = await rpc.call('getBridgeDeposit', [depositId]);
+      errors = 0;
+      const statusEl = document.getElementById('extDepositStatus');
+      if (!statusEl) { stopExtDepositPolling(); return; }
+      const map = {
+        issued:    { icon: 'fas fa-clock', color: 'var(--text-muted)', text: 'Waiting for deposit...' },
+        pending:   { icon: 'fas fa-spinner fa-spin', color: '#FFD166', text: 'Deposit detected, confirming...' },
+        confirmed: { icon: 'fas fa-check-circle', color: '#06D6A0', text: 'Confirmed! Sweeping to treasury...' },
+        swept:     { icon: 'fas fa-exchange-alt', color: '#06D6A0', text: 'Swept! Minting wrapped tokens...' },
+        credited:  { icon: 'fas fa-check-double', color: '#06D6A0', text: 'Credited to your MoltChain wallet!' },
+        expired:   { icon: 'fas fa-times-circle', color: '#EF476F', text: 'Deposit expired.' },
+      };
+      const s = map[deposit?.status] || map.issued;
+      statusEl.innerHTML = `<i class="${s.icon}" style="color:${s.color};"></i> ${s.text}`;
+      if (deposit?.status === 'credited' || deposit?.status === 'expired') {
+        stopExtDepositPolling();
+        if (deposit.status === 'credited') {
+          setStatus('Bridge deposit credited!');
+          await refreshBalance();
+        }
+      }
+    } catch {
+      errors++;
+      if (errors >= 20) stopExtDepositPolling();
+    }
+  }, 5000);
+}
+
+function stopExtDepositPolling() {
+  if (extDepositPollInterval) { clearInterval(extDepositPollInterval); extDepositPollInterval = null; }
+}
+
+// ===== Wallet Management (settings) =====
+
+async function handleRenameWallet() {
+  const input = document.getElementById('settingsRenameInput');
+  const newName = (input?.value || '').trim();
+  if (!newName) { setStatus('Enter a name'); return; }
+  if (newName.length > 32) { setStatus('Name too long (max 32 chars)'); return; }
+
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  wallet.name = newName;
+  await persistAndRender(state);
+  setStatus('Wallet renamed');
+  if (input) input.value = '';
+}
+
+async function handleClearHistory() {
+  if (!confirm('Clear all transaction history for this wallet?')) return;
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  wallet.txHistory = [];
+  await persistAndRender(state);
+  setStatus('Transaction history cleared');
+}
+
+async function handleDeleteWallet() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  const name = wallet.name || wallet.address?.slice(0, 8) || 'wallet';
+  const confirmed = prompt(`Type "${name}" to confirm deletion:`);
+  if (confirmed !== name) { setStatus('Deletion cancelled'); return; }
+
+  const idx = state.wallets.findIndex(w => w.id === wallet.id);
+  if (idx >= 0) {
+    const wipeString = (value) => (typeof value === 'string' ? '0'.repeat(value.length) : value);
+    const wipeWallet = state.wallets[idx];
+    if (wipeWallet && typeof wipeWallet === 'object') {
+      wipeWallet.encryptedKey = wipeString(wipeWallet.encryptedKey) || null;
+      wipeWallet.encryptedMnemonic = wipeString(wipeWallet.encryptedMnemonic) || null;
+      wipeWallet.encryptedSeed = wipeString(wipeWallet.encryptedSeed) || null;
+      wipeWallet.mnemonic = wipeString(wipeWallet.mnemonic) || null;
+      wipeWallet.privateKey = wipeString(wipeWallet.privateKey) || null;
+      wipeWallet.txHistory = [];
+      wipeWallet.cachedTransactions = [];
+      wipeWallet.shieldedNotes = [];
+    }
+
+    state.wallets.splice(idx, 1);
+    if (state.wallets.length > 0) {
+      state.activeWalletId = state.wallets[0].id;
+    } else {
+      state.activeWalletId = null;
+    }
+    resetShieldedPopupState();
+    await persistAndRender(state);
+    setStatus('Wallet deleted');
+  }
+}
+
+// ===== Balance polling =====
+
+let balancePollInterval = null;
+
+function startBalancePolling() {
+  stopBalancePolling();
+  balancePollInterval = setInterval(() => {
+    if (!state?.isLocked && getActiveWallet()) refreshBalance();
+  }, 15000);
+}
+
+function stopBalancePolling() {
+  if (balancePollInterval) { clearInterval(balancePollInterval); balancePollInterval = null; }
 }
 
 function wireEvents() {
@@ -1441,13 +1936,15 @@ function wireEvents() {
       if (tabName === 'activity') await loadActivity();
       if (tabName === 'identity') await loadIdentityPanel();
       if (tabName === 'staking') await loadExtensionStaking();
+      if (tabName === 'shield') await loadShieldPanel();
+      if (tabName === 'nfts') await loadNftsPanel();
     });
   });
 
   // Balance card action buttons
   document.getElementById('showSendPanel').addEventListener('click', () => setDashboardPanel('send'));
   document.getElementById('showReceivePanel').addEventListener('click', () => setDashboardPanel('receive'));
-  document.getElementById('showDepositPanel').addEventListener('click', () => setDashboardPanel('receive'));
+  document.getElementById('showDepositPanel').addEventListener('click', () => setDashboardPanel('deposit'));
 
   // Nav-bar settings gear
   document.getElementById('showSettingsPanel').addEventListener('click', () => setDashboardPanel('settings'));
@@ -1483,6 +1980,18 @@ function wireEvents() {
   });
 
   document.getElementById('sendNow').addEventListener('click', handleSendNow);
+
+  // Onblur amount clamping for extension send
+  const extSendAmt = document.getElementById('sendAmount');
+  if (extSendAmt) {
+    extSendAmt.addEventListener('blur', () => {
+      let v = parseFloat(extSendAmt.value);
+      if (isNaN(v) || v < 0) { extSendAmt.value = ''; return; }
+      const spendable = window._cachedSpendableMolt || 0;
+      const maxSend = Math.max(0, spendable - 0.001);
+      if (v > maxSend) extSendAmt.value = maxSend > 0 ? maxSend.toFixed(9) : '';
+    });
+  }
   document.getElementById('saveLockTimeout').addEventListener('click', saveAutoLockSettings);
   document.getElementById('changePasswordBtn').addEventListener('click', changePasswordAction);
   document.getElementById('saveRpcSettings').addEventListener('click', saveRpcSettings);
@@ -1493,6 +2002,64 @@ function wireEvents() {
   document.getElementById('downloadPrivateKey').addEventListener('click', downloadPrivateKeyAction);
   document.getElementById('downloadMnemonic').addEventListener('click', downloadMnemonicAction);
   document.getElementById('copyExportOutput').addEventListener('click', copyExportOutputAction);
+
+  // Cancel Send
+  document.getElementById('cancelSend')?.addEventListener('click', () => setDashboardPanel('assets'));
+
+  // NFT actions
+  document.getElementById('refreshNfts')?.addEventListener('click', () => loadNftsPanel());
+  document.getElementById('browseMarketplace')?.addEventListener('click', () => {
+    window.open('https://marketplace.moltchain.network', '_blank');
+  });
+
+  // Shield tab buttons
+  document.getElementById('extShieldBtn')?.addEventListener('click', () => openExtShieldModal('shield'));
+  document.getElementById('extUnshieldBtn')?.addEventListener('click', () => openExtShieldModal('unshield'));
+  document.getElementById('extPrivateTransferBtn')?.addEventListener('click', () => openExtShieldModal('transfer'));
+  document.getElementById('copyShieldedAddr')?.addEventListener('click', async () => {
+    const el = document.getElementById('extShieldedAddress');
+    if (el && el.value && el.value !== 'Not initialized') {
+      await navigator.clipboard.writeText(el.value);
+      setStatus('Shielded address copied');
+    }
+  });
+  document.getElementById('toggleViewingKey')?.addEventListener('click', () => {
+    const el = document.getElementById('extViewingKey');
+    const btn = document.getElementById('toggleViewingKey');
+    if (el && btn) {
+      if (el.type === 'password') {
+        el.type = 'text';
+        btn.innerHTML = '<i class="fas fa-eye"></i>';
+      } else {
+        el.type = 'password';
+        btn.innerHTML = '<i class="fas fa-eye-slash"></i>';
+      }
+    }
+  });
+  document.getElementById('copyViewingKey')?.addEventListener('click', async () => {
+    const el = document.getElementById('extViewingKey');
+    if (el && el.value && el.value !== 'Click eye to reveal') {
+      await navigator.clipboard.writeText(el.value);
+      setStatus('Viewing key copied');
+    }
+  });
+
+  // Bridge/Deposit chain buttons
+  document.querySelectorAll('.popup-deposit-chain-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const chain = btn.dataset.bridgeChain;
+      if (chain) showExtBridgeTokens(chain);
+    });
+  });
+
+  // Wallet Management
+  document.getElementById('renameWalletBtn')?.addEventListener('click', handleRenameWallet);
+  document.getElementById('clearHistoryBtn')?.addEventListener('click', handleClearHistory);
+  document.getElementById('deleteWalletBtn')?.addEventListener('click', handleDeleteWallet);
+
+  // About section info
+  const aboutNetwork = document.getElementById('aboutNetwork');
+  if (aboutNetwork) aboutNetwork.textContent = state?.network?.selected || 'local-testnet';
 
   document.getElementById('walletSelector').addEventListener('change', async (event) => {
     await persistAndRender({
@@ -1528,6 +2095,7 @@ async function boot() {
   if (!state.network) {
     state.network = { selected: 'local-testnet' };
   }
+  bindRuntimeRealtimeHandlers();
   wireEvents();
   updateImportTypeUi();
   if (!state.isLocked) {

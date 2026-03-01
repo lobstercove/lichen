@@ -3335,10 +3335,11 @@ impl TxProcessor {
                     rep_key.push(hex_chars[(b & 0x0f) as usize]);
                 }
                 // Read from MoltyID's storage in CF_CONTRACT_STORAGE
-                if let Ok(Some(rep_data)) =
-                    self.state.get_contract_storage(&moltyid_pubkey, &rep_key)
-                {
-                    context.cross_contract_storage.insert(rep_key, rep_data);
+                match self.state.get_contract_storage(&moltyid_pubkey, &rep_key) {
+                    Ok(Some(rep_data)) => {
+                        context.cross_contract_storage.insert(rep_key, rep_data);
+                    }
+                    Ok(None) | Err(_) => {}
                 }
             }
         }

@@ -39,6 +39,7 @@ pub mod shielded;
 pub mod ws;
 
 use alloy_primitives::{Address, Bytes, U256};
+use axum::body::Bytes as AxumBytes;
 use axum::http::{HeaderValue, Method};
 use axum::{
     extract::ConnectInfo,
@@ -60,6 +61,17 @@ use moltchain_core::{
 
 /// System account owner (Pubkey([0x01; 32]))
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
+// RPC-H05: keep tx listing endpoints under ~600 DB reads/page by bounding page size.
+// Each tx can consume up to ~4 reads in the worst common path:
+// - 1 index entry read (CF_ACCOUNT_TXS or CF_TX_BY_SLOT)
+// - 1 tx lookup (CF_TRANSACTIONS)
+// - 2 reads for slot->block timestamp (CF_SLOTS + CF_BLOCKS)
+const TX_LIST_MAX_DB_READS: usize = 600;
+const TX_LIST_DB_READS_PER_TX_ESTIMATE: usize = 4;
+const TX_LIST_MAX_LIMIT: usize = TX_LIST_MAX_DB_READS / TX_LIST_DB_READS_PER_TX_ESTIMATE;
+const MARKET_LISTINGS_UNFILTERED_MAX_LIMIT: usize = 200;
+const PROGRAM_LIST_CACHE_TTL_MS: u128 = 1000;
+const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 
 /// P9-RPC-02: Maximum size for bincode transaction deserialization.
 /// Prevents OOM/DoS from maliciously large payloads.  4 MiB matches
@@ -91,13 +103,16 @@ use moltchain_core::consensus::{
     decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::Read;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 
@@ -118,6 +133,13 @@ struct RpcRequest {
     params: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RpcTierProbe {
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    method: String,
+}
+
 /// JSON-RPC response
 #[derive(Debug, Serialize)]
 struct RpcResponse {
@@ -136,6 +158,110 @@ struct RpcError {
     message: String,
 }
 
+fn sanitize_rpc_error_message(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let storage_detail = lower.contains("database error")
+        || lower.contains("rocksdb")
+        || lower.contains("column family")
+        || lower.contains(" cf ")
+        || lower.contains("cf_");
+
+    if storage_detail {
+        return "Database error".to_string();
+    }
+
+    // Generic path redaction for non-storage errors
+    let mut redacted = Vec::new();
+    for token in message.split_whitespace() {
+        let is_path = token.starts_with('/')
+            || token.contains("/Users/")
+            || token.contains("/home/")
+            || token.contains("/.openclaw/")
+            || token.starts_with("file://");
+        if is_path {
+            redacted.push("<redacted-path>");
+        } else {
+            redacted.push(token);
+        }
+    }
+    redacted.join(" ")
+}
+
+fn sanitize_rpc_error(mut error: RpcError) -> RpcError {
+    error.message = sanitize_rpc_error_message(&error.message);
+    error
+}
+
+fn jsonrpc_error_response(
+    status: StatusCode,
+    id: serde_json::Value,
+    code: i32,
+    message: impl Into<String>,
+) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": code,
+                "message": message.into(),
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn parse_rpc_tier_probe(body: &[u8]) -> Result<RpcTierProbe, Response> {
+    serde_json::from_slice(body).map_err(|_| {
+        jsonrpc_error_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::Value::Null,
+            -32700,
+            "Parse error",
+        )
+    })
+}
+
+fn parse_rpc_request(body: &[u8], id: serde_json::Value) -> Result<RpcRequest, Response> {
+    serde_json::from_slice(body).map_err(|_| {
+        jsonrpc_error_response(StatusCode::BAD_REQUEST, id, -32600, "Invalid request")
+    })
+}
+
+fn parse_get_block_slot_param(
+    params: Option<&serde_json::Value>,
+    include_options_hint: bool,
+) -> Result<u64, RpcError> {
+    let suffix = if include_options_hint {
+        "[slot, options?]"
+    } else {
+        "[slot]"
+    };
+    let err_msg = format!(
+        "Invalid params: expected {} where slot is a u64 block height (block hash is not supported)",
+        suffix
+    );
+
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let params_array = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: err_msg.clone(),
+    })?;
+
+    params_array
+        .first()
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: err_msg,
+        })
+}
+
 /// Shared RPC state
 #[derive(Clone)]
 struct RpcState {
@@ -150,7 +276,7 @@ struct RpcState {
     network_id: String,
     version: String,
     evm_chain_id: u64,
-    solana_tx_cache: Arc<Mutex<LruCache<Hash, SolanaTxRecord>>>,
+    solana_tx_cache: Arc<RwLock<LruCache<Hash, SolanaTxRecord>>>,
     /// Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
     /// Hot-rotatable: a background task re-reads MOLTCHAIN_ADMIN_TOKEN env var every 30s.
     admin_token: Arc<std::sync::RwLock<Option<String>>>,
@@ -168,19 +294,90 @@ struct RpcState {
     validator_cache: Arc<RwLock<(Instant, Vec<ValidatorInfo>)>>,
     /// Cached metrics JSON — refreshed at most once per slot (~400ms).
     metrics_cache: Arc<RwLock<(Instant, Option<serde_json::Value>)>>,
-    /// AUDIT-FIX RPC-4: Per-address airdrop cooldown to prevent abuse
-    airdrop_cooldowns: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
+    /// Cached responses for high-frequency list endpoints.
+    program_list_response_cache: Arc<RwLock<HashMap<String, (Instant, serde_json::Value)>>>,
+    /// AUDIT-FIX RPC-4: Per-address airdrop cooldown to prevent abuse.
+    /// Bounded + async lock to avoid blocking runtime and unbounded growth.
+    airdrop_cooldowns: Arc<RwLock<AirdropCooldowns>>,
     /// DEX orderbook cache — per-pair aggregated book levels, refreshed at most once per second.
     /// Eliminates O(total_orders) scan per request; cached result served in O(1).
     orderbook_cache: Arc<RwLock<HashMap<u64, (Instant, serde_json::Value)>>>,
+    /// Custody service URL for bridge deposit proxy (e.g. http://localhost:9105)
+    custody_url: Option<String>,
+    /// Bearer token for custody API auth
+    custody_auth_token: Option<String>,
+}
+
+const AIRDROP_COOLDOWN_SECS: u64 = 60;
+const AIRDROP_COOLDOWN_STALE_SECS: u64 = 120;
+const AIRDROP_COOLDOWN_MAX_ENTRIES: usize = 10_000;
+
+#[derive(Default)]
+struct AirdropCooldowns {
+    by_address: HashMap<String, Instant>,
+    order: VecDeque<String>,
+}
+
+impl AirdropCooldowns {
+    fn prune_stale(&mut self, now: Instant) {
+        while let Some(front) = self.order.front().cloned() {
+            let stale = self
+                .by_address
+                .get(&front)
+                .map(|ts| now.duration_since(*ts).as_secs() >= AIRDROP_COOLDOWN_STALE_SECS)
+                .unwrap_or(true);
+            if !stale {
+                break;
+            }
+            self.order.pop_front();
+            self.by_address.remove(&front);
+        }
+    }
+
+    fn evict_overflow(&mut self) {
+        while self.by_address.len() > AIRDROP_COOLDOWN_MAX_ENTRIES {
+            if let Some(front) = self.order.pop_front() {
+                self.by_address.remove(&front);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Returns Some(remaining_secs) if still cooling down, otherwise records access and returns None.
+    fn check_and_record(&mut self, address: &str, now: Instant) -> Option<u64> {
+        self.prune_stale(now);
+
+        if let Some(last) = self.by_address.get(address) {
+            let elapsed = now.duration_since(*last).as_secs();
+            if elapsed < AIRDROP_COOLDOWN_SECS {
+                return Some(AIRDROP_COOLDOWN_SECS - elapsed);
+            }
+        }
+
+        let key = address.to_string();
+        self.by_address.insert(key.clone(), now);
+        self.order.push_back(key);
+        self.evict_overflow();
+        None
+    }
 }
 
 /// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
 /// Direct state writes bypass consensus and cause divergence when >1 validator.
 /// In multi-validator mode, callers must submit proper signed transactions
 /// via `sendTransaction` instead.
-pub(crate) fn require_single_validator(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
-    let validators = state.state.get_all_validators().unwrap_or_default();
+pub(crate) async fn require_single_validator(
+    state: &RpcState,
+    endpoint: &str,
+) -> Result<(), RpcError> {
+    let validators = cached_validators(state).await.map_err(|e| RpcError {
+        code: e.code,
+        message: format!(
+            "{} unavailable: failed to load validator set ({})",
+            endpoint, e.message
+        ),
+    })?;
     if validators.len() > 1 {
         return Err(RpcError {
             code: -32003,
@@ -220,6 +417,47 @@ async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcEr
     })?;
     *guard = (Instant::now(), validators.clone());
     Ok(validators)
+}
+
+fn program_list_cache_key(method: &str, params: &Option<serde_json::Value>) -> String {
+    let params_key = params
+        .as_ref()
+        .and_then(|v| serde_json::to_string(v).ok())
+        .unwrap_or_else(|| "null".to_string());
+    format!("{}:{}", method, params_key)
+}
+
+async fn get_cached_program_list_response(
+    state: &RpcState,
+    method: &str,
+    params: &Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let key = program_list_cache_key(method, params);
+    let guard = state.program_list_response_cache.read().await;
+    guard.get(&key).and_then(|(ts, cached)| {
+        if ts.elapsed().as_millis() < PROGRAM_LIST_CACHE_TTL_MS {
+            Some(cached.clone())
+        } else {
+            None
+        }
+    })
+}
+
+async fn put_cached_program_list_response(
+    state: &RpcState,
+    method: &str,
+    params: &Option<serde_json::Value>,
+    response: serde_json::Value,
+) {
+    let key = program_list_cache_key(method, params);
+    let mut guard = state.program_list_response_cache.write().await;
+
+    guard.retain(|_, (ts, _)| ts.elapsed().as_millis() < PROGRAM_LIST_CACHE_TTL_MS * 2);
+    if guard.len() >= PROGRAM_LIST_CACHE_MAX_ENTRIES {
+        guard.clear();
+    }
+
+    guard.insert(key, (Instant::now(), response));
 }
 
 /// Verify admin authorization from params
@@ -326,6 +564,7 @@ fn classify_method(method: &str) -> MethodTier {
         "getTransactionsByAddress"
         | "getTransactionHistory"
         | "getRecentTransactions"
+        | "getBlock"
         | "getTokenHolders"
         | "getTokenTransfers"
         | "getContractEvents"
@@ -351,6 +590,16 @@ fn classify_method(method: &str) -> MethodTier {
     }
 }
 
+fn classify_solana_method_tier(method: &str) -> MethodTier {
+    match method {
+        "sendTransaction" => MethodTier::Expensive,
+        "getSignaturesForAddress" | "getSignatureStatuses" | "getBlock" => {
+            MethodTier::Moderate
+        }
+        _ => MethodTier::Cheap,
+    }
+}
+
 /// T2.6: Per-IP rate limiter with stale entry pruning
 /// AUDIT-FIX 2.17: std::sync::Mutex is intentional here — the critical section
 /// is a fast HashMap lookup/insert with no `.await` points, consistent with
@@ -358,19 +607,33 @@ fn classify_method(method: &str) -> MethodTier {
 struct RateLimiter {
     requests: std::sync::Mutex<HashMap<IpAddr, (u64, Instant)>>,
     max_per_second: u64,
+    /// RPC-L02: Optional cross-process shared global limiter state file.
+    /// When set via `RPC_RATE_LIMIT_SHARED_FILE`, all processes pointing to the
+    /// same file coordinate the per-IP global 1s counter.
+    shared_counter_file: Option<PathBuf>,
     last_prune: std::sync::Mutex<Instant>,
     /// P9-RPC-03: Per-tier per-IP counters.
     /// Key = (IpAddr, MethodTier), Value = (count, window_start).
     tier_requests: std::sync::Mutex<HashMap<(IpAddr, MethodTier), (u64, Instant)>>,
     /// Per-second limits for each tier.
     tier_limits: [u64; 3], // [Cheap, Moderate, Expensive]
+    /// Dedicated per-IP counters for REST /api/v1 tiered rate limiting.
+    rest_tier_requests: std::sync::Mutex<HashMap<(IpAddr, MethodTier), (u64, Instant)>>,
+    /// REST per-second limits for each tier.
+    rest_tier_limits: [u64; 3], // [Cheap, Moderate, Expensive]
 }
 
 impl RateLimiter {
     fn new(max_per_second: u64) -> Self {
+        let shared_counter_file = std::env::var("RPC_RATE_LIMIT_SHARED_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty());
+
         Self {
             requests: std::sync::Mutex::new(HashMap::new()),
             max_per_second,
+            shared_counter_file,
             last_prune: std::sync::Mutex::new(Instant::now()),
             tier_requests: std::sync::Mutex::new(HashMap::new()),
             // P9-RPC-03: Default tier limits.
@@ -380,10 +643,120 @@ impl RateLimiter {
                 max_per_second * 2 / 5,                 // Moderate (40%)
                 std::cmp::max(max_per_second / 10, 50), // Expensive (10%, min 50)
             ],
+            rest_tier_requests: std::sync::Mutex::new(HashMap::new()),
+            rest_tier_limits: [200, 100, 50],
         }
     }
 
+    fn check_shared_global(&self, ip: IpAddr) -> Option<bool> {
+        const LOCK_ATTEMPTS: usize = 20;
+        const LOCK_RETRY_DELAY_MS: u64 = 3;
+
+        let shared_file = self.shared_counter_file.as_ref()?;
+        if let Some(parent) = shared_file.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return None;
+            }
+        }
+
+        let lock_path = PathBuf::from(format!("{}.lock", shared_file.display()));
+        let mut lock_file = None;
+        for _ in 0..LOCK_ATTEMPTS {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => {
+                    lock_file = Some(file);
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(Duration::from_millis(LOCK_RETRY_DELAY_MS));
+                }
+                Err(_) => return None,
+            }
+        }
+
+        let result = if lock_file.is_some() {
+            let mut counters: HashMap<String, (u64, u64)> = if let Ok(mut file) =
+                OpenOptions::new().read(true).open(shared_file)
+            {
+                let mut content = String::new();
+                if file.read_to_string(&mut content).is_ok() {
+                    serde_json::from_str(&content).unwrap_or_default()
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            };
+
+            let now_sec = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            counters.retain(|_, (_, ts_sec)| now_sec.saturating_sub(*ts_sec) <= 1);
+
+            let key = ip.to_string();
+            let entry = counters.entry(key).or_insert((0, now_sec));
+            if entry.1 != now_sec {
+                entry.0 = 0;
+                entry.1 = now_sec;
+            }
+
+            entry.0 += 1;
+            let allowed = entry.0 <= self.max_per_second;
+
+            if let Ok(bytes) = serde_json::to_vec(&counters) {
+                let tmp_path = PathBuf::from(format!("{}.tmp", shared_file.display()));
+                if fs::write(&tmp_path, bytes).is_ok() {
+                    let _ = fs::rename(&tmp_path, shared_file);
+                } else {
+                    let _ = fs::remove_file(&tmp_path);
+                }
+            }
+
+            Some(allowed)
+        } else {
+            None
+        };
+
+        drop(lock_file);
+        let _ = fs::remove_file(&lock_path);
+        result
+    }
+
     /// Check if a request from `ip` is within the global rate limit.
+
+fn classify_rest_tier(path: &str, method: &Method) -> Option<MethodTier> {
+    if !path.starts_with("/api/v1") {
+        return None;
+    }
+
+    let is_write = *method == Method::POST || *method == Method::PUT || *method == Method::DELETE;
+    let expensive_paths = ["/orders", "/swap", "/liquidat", "/bridge", "/position", "/mint"];
+    let moderate_paths = [
+        "/pairs",
+        "/orderbook",
+        "/trades",
+        "/candles",
+        "/history",
+        "/analytics",
+        "/market",
+    ];
+
+    if is_write || expensive_paths.iter().any(|needle| path.contains(needle)) {
+        return Some(MethodTier::Expensive);
+    }
+
+    if moderate_paths.iter().any(|needle| path.contains(needle)) {
+        return Some(MethodTier::Moderate);
+    }
+
+    Some(MethodTier::Cheap)
+}
     /// Returns `true` if allowed, `false` if rate-limited.
     fn check(&self, ip: IpAddr) -> bool {
         let mut map = self.requests.lock().unwrap_or_else(|e| e.into_inner());
@@ -398,12 +771,15 @@ impl RateLimiter {
                 if let Ok(mut tier_map) = self.tier_requests.lock() {
                     tier_map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
                 }
+                if let Ok(mut rest_tier_map) = self.rest_tier_requests.lock() {
+                    rest_tier_map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                }
                 *last = now;
             }
         }
 
         let entry = map.entry(ip).or_insert((0, now));
-        if now.duration_since(entry.1).as_secs() >= 1 {
+        let allowed_local = if now.duration_since(entry.1).as_secs() >= 1 {
             // Window expired, reset counter
             entry.0 = 1;
             entry.1 = now;
@@ -411,7 +787,19 @@ impl RateLimiter {
         } else {
             entry.0 += 1;
             entry.0 <= self.max_per_second
+        };
+
+        drop(map);
+
+        if !allowed_local {
+            return false;
         }
+
+        if let Some(allowed_shared) = self.check_shared_global(ip) {
+            return allowed_shared;
+        }
+
+        true
     }
 
     /// P9-RPC-03: Check if a request from `ip` for method `tier` is within
@@ -419,6 +807,24 @@ impl RateLimiter {
     fn check_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
         let limit = self.tier_limits[tier as usize];
         let mut map = self.tier_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let entry = map.entry((ip, tier)).or_insert((0, now));
+        if now.duration_since(entry.1).as_secs() >= 1 {
+            entry.0 = 1;
+            entry.1 = now;
+            true
+        } else {
+            entry.0 += 1;
+            entry.0 <= limit
+        }
+    }
+
+    fn check_rest_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
+        let limit = self.rest_tier_limits[tier as usize];
+        let mut map = self
+            .rest_tier_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let entry = map.entry((ip, tier)).or_insert((0, now));
         if now.duration_since(entry.1).as_secs() >= 1 {
@@ -466,6 +872,35 @@ async fn rate_limit_middleware(
         )
             .into_response();
     }
+
+    if let Some(tier) = RateLimiter::classify_rest_tier(req.uri().path(), req.method()) {
+        if !state.rate_limiter.check_rest_tier(ip, tier) {
+            let label = match tier {
+                MethodTier::Expensive => "expensive",
+                MethodTier::Moderate => "moderate",
+                MethodTier::Cheap => "cheap",
+            };
+            warn!(
+                "RPC-C01: /api/v1 {} endpoint rate limit exceeded for IP {} (path: {})",
+                label,
+                ip,
+                req.uri().path()
+            );
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {
+                        "code": -32005,
+                        "message": format!("Rate limit exceeded for /api/v1 {} endpoints", label)
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
+
     next.run(req).await
 }
 
@@ -527,6 +962,83 @@ fn parse_contract_function(ix: &Instruction) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_contract_call_args(ix: &Instruction) -> Option<Vec<u8>> {
+    if ix.program_id != CONTRACT_PROGRAM_ID {
+        return None;
+    }
+    let json_str = std::str::from_utf8(&ix.data).ok()?;
+    let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let args = val.get("Call")?.get("args")?.as_array()?;
+    let mut out = Vec::with_capacity(args.len());
+    for item in args {
+        let n = item.as_u64()?;
+        if n > 255 {
+            return None;
+        }
+        out.push(n as u8);
+    }
+    Some(out)
+}
+
+fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
+    let predict_program = match state.state.get_symbol_registry("PREDICT") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+    let slot_hint = state.state.get_last_slot().unwrap_or(0).saturating_add(1);
+
+    for ix in &tx.message.instructions {
+        if ix.program_id != CONTRACT_PROGRAM_ID || ix.accounts.len() < 2 || ix.accounts[1] != predict_program {
+            continue;
+        }
+        let Some(args) = parse_contract_call_args(ix) else {
+            continue;
+        };
+        if args.is_empty() {
+            continue;
+        }
+
+        match args[0] {
+            // create_market
+            1 if args.len() >= 43 => {
+                let market_id = state
+                    .state
+                    .get_program_storage_u64("PREDICT", b"pm_market_count")
+                    .saturating_add(1);
+                state
+                    .prediction_broadcaster
+                    .emit_market_created(market_id, "New market", slot_hint);
+            }
+            // buy_shares / sell_shares
+            4 | 5 if args.len() >= 50 => {
+                let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
+                let outcome = args[41];
+                let amount = u64::from_le_bytes(args[42..50].try_into().unwrap_or([0u8; 8]));
+                let outcome_name = if outcome == 0 { "yes" } else if outcome == 1 { "no" } else { "other" };
+                state
+                    .prediction_broadcaster
+                    .emit_trade(market_id, outcome_name, amount, 0.0, slot_hint);
+            }
+            // submit_resolution / finalize_resolution
+            8 if args.len() >= 42 => {
+                let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
+                let winning = args[41];
+                let winner = if winning == 0 { "yes" } else if winning == 1 { "no" } else { "other" };
+                state
+                    .prediction_broadcaster
+                    .emit_market_resolved(market_id, winner, slot_hint);
+            }
+            10 if args.len() >= 41 => {
+                let market_id = u64::from_le_bytes(args[33..41].try_into().unwrap_or([0u8; 8]));
+                state
+                    .prediction_broadcaster
+                    .emit_market_resolved(market_id, "finalized", slot_hint);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn instruction_type(ix: &Instruction) -> &'static str {
@@ -1092,7 +1604,7 @@ pub fn build_rpc_router(
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
-    let solana_tx_cache = Arc::new(Mutex::new(LruCache::new(
+    let solana_tx_cache = Arc::new(RwLock::new(LruCache::new(
         NonZeroUsize::new(10_000).unwrap(),
     )));
     // Filter empty admin token to None
@@ -1158,8 +1670,11 @@ pub fn build_rpc_router(
             Instant::now() - std::time::Duration::from_secs(60),
             None,
         ))),
-        airdrop_cooldowns: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        program_list_response_cache: Arc::new(RwLock::new(HashMap::new())),
+        airdrop_cooldowns: Arc::new(RwLock::new(AirdropCooldowns::default())),
         orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
+        custody_url: std::env::var("CUSTODY_URL").ok().filter(|s| !s.is_empty()),
+        custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN").ok().filter(|s| !s.is_empty()),
     };
 
     // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
@@ -1237,11 +1752,18 @@ pub fn build_rpc_router(
 async fn handle_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
-    Json(req): Json<RpcRequest>,
+    body: AxumBytes,
 ) -> Response {
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
+    };
+    let request_id = probe.id.clone().unwrap_or(serde_json::Value::Null);
+
     // P9-RPC-03: Tiered rate limiting — classify the method and enforce
     // a per-tier per-IP limit on top of the global rate limit.
-    let tier = classify_method(&req.method);
+    // RPC-M05: tier checks happen before full RpcRequest deserialization.
+    let tier = classify_method(&probe.method);
     if tier != MethodTier::Cheap {
         let ip = connect_info
             .map(|ci| ci.0.ip())
@@ -1260,13 +1782,18 @@ async fn handle_rpc(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": req.id,
+                    "id": request_id,
                     "error": {"code": -32005, "message": format!("Rate limit exceeded for {} methods", label)}
                 })),
             )
                 .into_response();
         }
     }
+
+    let req = match parse_rpc_request(body.as_ref(), request_id) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
 
     // Route to appropriate handler
     let result = match req.method.as_str() {
@@ -1291,7 +1818,25 @@ async fn handle_rpc(
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
-        "health" => Ok(serde_json::json!({"status": "ok"})),
+        "health" => {
+            // GX-07: Check block staleness — return 503-equivalent if stalled
+            let slot = state.state.get_last_slot().unwrap_or(0);
+            let stale = if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let age = now.saturating_sub(block.header.timestamp);
+                age > 120 // stale if no block in 2 minutes
+            } else {
+                slot == 0 // stale if no blocks at all
+            };
+            if stale {
+                Ok(serde_json::json!({"status": "behind", "slot": slot}))
+            } else {
+                Ok(serde_json::json!({"status": "ok", "slot": slot}))
+            }
+        },
 
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
@@ -1335,7 +1880,7 @@ async fn handle_rpc(
         "getContractLogs" => handle_get_contract_logs(&state, req.params).await,
         "getContractAbi" => handle_get_contract_abi(&state, req.params).await,
         "setContractAbi" => handle_set_contract_abi(&state, req.params).await,
-        "getAllContracts" => handle_get_all_contracts(&state).await,
+        "getAllContracts" => handle_get_all_contracts(&state, req.params).await,
         "deployContract" => handle_deploy_contract(&state, req.params).await,
         "upgradeContract" => handle_upgrade_contract(&state, req.params).await,
 
@@ -1380,6 +1925,8 @@ async fn handle_rpc(
         "getNFTActivity" => handle_get_nft_activity(&state, req.params).await,
         "getMarketListings" => handle_get_market_listings(&state, req.params).await,
         "getMarketSales" => handle_get_market_sales(&state, req.params).await,
+        "getMarketOffers" => handle_get_market_offers(&state, req.params).await,
+        "getMarketAuctions" => handle_get_market_auctions(&state, req.params).await,
 
         // Token endpoints
         "getTokenBalance" => handle_get_token_balance(&state, req.params).await,
@@ -1426,12 +1973,18 @@ async fn handle_rpc(
         // Platform contract stats — previously missing RPC wiring
         "getClawVaultStats" => handle_get_clawvault_stats(&state).await,
         "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
+        "createBridgeDeposit" => handle_create_bridge_deposit(&state, req.params).await,
+        "getBridgeDeposit" => handle_get_bridge_deposit(&state, req.params).await,
+        "getBridgeDepositsByRecipient" => handle_get_bridge_deposits_by_recipient(&state, req.params).await,
         "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
         "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
 
         // ── Shielded Pool (ZK Privacy) ──────────────────────────────
         "getShieldedPoolState" => {
             shielded::handle_get_shielded_pool_state(&state, req.params).await
+        }
+        "getShieldedPoolStats" => {
+            shielded::handle_get_shielded_pool_stats(&state, req.params).await
         }
         "getShieldedMerkleRoot" => {
             shielded::handle_get_shielded_merkle_root(&state, req.params).await
@@ -1440,8 +1993,21 @@ async fn handle_rpc(
             shielded::handle_get_shielded_merkle_path(&state, req.params).await
         }
         "isNullifierSpent" => shielded::handle_is_nullifier_spent(&state, req.params).await,
+        "checkNullifier" => shielded::handle_is_nullifier_spent(&state, req.params).await,
         "getShieldedCommitments" => {
             shielded::handle_get_shielded_commitments(&state, req.params).await
+        }
+        "computeShieldCommitment" => {
+            shielded::handle_compute_shield_commitment(&state, req.params).await
+        }
+        "generateShieldProof" => {
+            shielded::handle_generate_shield_proof(&state, req.params).await
+        }
+        "generateUnshieldProof" => {
+            shielded::handle_generate_unshield_proof(&state, req.params).await
+        }
+        "generateTransferProof" => {
+            shielded::handle_generate_transfer_proof(&state, req.params).await
         }
 
         _ => Err(RpcError {
@@ -1461,7 +2027,7 @@ async fn handle_rpc(
             jsonrpc: "2.0".to_string(),
             id: req.id,
             result: None,
-            error: Some(error),
+            error: Some(sanitize_rpc_error(error)),
         },
     };
 
@@ -1472,14 +2038,17 @@ async fn handle_rpc(
 async fn handle_solana_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
-    Json(req): Json<RpcRequest>,
+    body: AxumBytes,
 ) -> Response {
-    // P9-RPC-03: Tiered rate limiting for Solana-compat methods
-    let tier = match req.method.as_str() {
-        "sendTransaction" => MethodTier::Expensive,
-        "getSignaturesForAddress" => MethodTier::Moderate,
-        _ => MethodTier::Cheap,
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
     };
+    let request_id = probe.id.clone().unwrap_or(serde_json::Value::Null);
+
+    // P9-RPC-03: Tiered rate limiting for Solana-compat methods
+    // RPC-M05: tier checks happen before full RpcRequest deserialization.
+    let tier = classify_solana_method_tier(&probe.method);
     if tier != MethodTier::Cheap {
         let ip = connect_info
             .map(|ci| ci.0.ip())
@@ -1489,13 +2058,18 @@ async fn handle_solana_rpc(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": req.id,
+                    "id": request_id,
                     "error": {"code": -32005, "message": "Rate limit exceeded"}
                 })),
             )
                 .into_response();
         }
     }
+
+    let req = match parse_rpc_request(body.as_ref(), request_id) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
 
     let result = match req.method.as_str() {
         "getLatestBlockhash" => handle_solana_get_latest_blockhash(&state).await,
@@ -1530,7 +2104,7 @@ async fn handle_solana_rpc(
             jsonrpc: "2.0".to_string(),
             id: req.id,
             result: None,
-            error: Some(error),
+            error: Some(sanitize_rpc_error(error)),
         },
     };
 
@@ -1541,10 +2115,17 @@ async fn handle_solana_rpc(
 async fn handle_evm_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
-    Json(req): Json<RpcRequest>,
+    body: AxumBytes,
 ) -> Response {
+    let probe = match parse_rpc_tier_probe(body.as_ref()) {
+        Ok(probe) => probe,
+        Err(response) => return response,
+    };
+    let request_id = probe.id.clone().unwrap_or(serde_json::Value::Null);
+
     // P9-RPC-03: Tiered rate limiting for EVM-compat methods
-    let tier = match req.method.as_str() {
+    // RPC-M05: tier checks happen before full RpcRequest deserialization.
+    let tier = match probe.method.as_str() {
         "eth_sendRawTransaction" | "eth_call" | "eth_estimateGas" => MethodTier::Expensive,
         "eth_getLogs" => MethodTier::Moderate,
         _ => MethodTier::Cheap,
@@ -1558,13 +2139,18 @@ async fn handle_evm_rpc(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": req.id,
+                    "id": request_id,
                     "error": {"code": -32005, "message": "Rate limit exceeded"}
                 })),
             )
                 .into_response();
         }
     }
+
+    let req = match parse_rpc_request(body.as_ref(), request_id) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
 
     let result = match req.method.as_str() {
         "eth_getBalance" => handle_eth_get_balance(&state, req.params).await,
@@ -1604,7 +2190,7 @@ async fn handle_evm_rpc(
             jsonrpc: "2.0".to_string(),
             id: req.id,
             result: None,
-            error: Some(error),
+            error: Some(sanitize_rpc_error(error)),
         },
     };
 
@@ -1769,38 +2355,108 @@ async fn handle_get_all_symbol_registry(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let limit = params
-        .and_then(|val| {
-            if val.is_array() {
-                val.as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.as_u64())
-            } else if val.is_object() {
-                val.get("limit").and_then(|v| v.as_u64())
-            } else {
-                val.as_u64()
-            }
-        })
-        .unwrap_or(500)
-        .min(2000) as usize;
+    if let Some(cached) =
+        get_cached_program_list_response(state, "getAllSymbolRegistry", &params).await
+    {
+        return Ok(cached);
+    }
 
-    let entries = state
+    let mut limit = 500u64;
+    let mut cursor: Option<String> = None;
+
+    if let Some(val) = params.as_ref() {
+        if let Some(arr) = val.as_array() {
+            if let Some(first) = arr.first() {
+                if let Some(v) = first.as_u64() {
+                    limit = v;
+                } else if let Some(s) = first.as_str() {
+                    cursor = Some(s.to_string());
+                } else if let Some(obj) = first.as_object() {
+                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                        limit = v;
+                    }
+                    cursor = obj
+                        .get("cursor")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                        .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
+                        .map(|s| s.to_string());
+                }
+            }
+            if let Some(second) = arr.get(1) {
+                if let Some(obj) = second.as_object() {
+                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                        limit = v;
+                    }
+                    if cursor.is_none() {
+                        cursor = obj
+                            .get("cursor")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                            .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
+                            .map(|s| s.to_string());
+                    }
+                } else if cursor.is_none() {
+                    if let Some(s) = second.as_str() {
+                        cursor = Some(s.to_string());
+                    }
+                }
+            }
+        } else if let Some(obj) = val.as_object() {
+            if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                limit = v;
+            }
+            cursor = obj
+                .get("cursor")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                .or_else(|| obj.get("after_symbol").and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+        } else if let Some(v) = val.as_u64() {
+            limit = v;
+        } else if let Some(s) = val.as_str() {
+            cursor = Some(s.to_string());
+        }
+    }
+
+    let limit = limit.clamp(1, 2000) as usize;
+    let fetch_limit = limit.saturating_add(1);
+
+    let mut entries = state
         .state
-        .get_all_symbol_registry(limit)
+        .get_all_symbol_registry_paginated(fetch_limit, cursor.as_deref())
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+
+    let has_more = entries.len() > limit;
+    if has_more {
+        entries.truncate(limit);
+    }
+
+    let next_cursor = if has_more {
+        entries.last().map(|entry| entry.symbol.clone())
+    } else {
+        None
+    };
 
     let list: Vec<serde_json::Value> = entries
         .into_iter()
         .map(symbol_registry_entry_to_json)
         .collect();
 
-    Ok(serde_json::json!({
+    let response = serde_json::json!({
         "entries": list,
         "count": list.len(),
-    }))
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    });
+
+    put_cached_program_list_response(state, "getAllSymbolRegistry", &params, response.clone())
+        .await;
+
+    Ok(response)
 }
 
 fn symbol_registry_entry_to_json(entry: SymbolRegistryEntry) -> serde_json::Value {
@@ -1968,19 +2624,7 @@ async fn handle_get_block(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
-
-    let slot = params
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Invalid params: expected [slot]".to_string(),
-        })?;
+    let slot = parse_get_block_slot_param(params.as_ref(), false)?;
 
     let block = state.state.get_block_by_slot(slot).map_err(|e| RpcError {
         code: -32000,
@@ -2155,7 +2799,7 @@ async fn handle_set_fee_config(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     // L3-01: Block in multi-validator mode — direct state write bypasses consensus
-    require_single_validator(state, "setFeeConfig")?;
+    require_single_validator(state, "setFeeConfig").await?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -2269,7 +2913,7 @@ async fn handle_set_rent_params(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     // L3-01: Block in multi-validator mode — direct state write bypasses consensus
-    require_single_validator(state, "setRentParams")?;
+    require_single_validator(state, "setRentParams").await?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -2443,11 +3087,12 @@ async fn handle_get_transactions_by_address(
         })?;
 
     let opts = params_array.get(1);
-    let limit = opts
+    let requested_limit = opts
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
 
     let before_slot = opts
         .and_then(|v| v.get("before_slot"))
@@ -2463,20 +3108,24 @@ async fn handle_get_transactions_by_address(
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
 
-    // Use paginated reverse-iterator method (O(limit), not O(all txs))
+    // Use account->tx reverse index (CF_ACCOUNT_TXS) with cursor pagination.
+    // Fetch one extra index row to compute has_more without extra scans.
+    let fetch_limit = limit.saturating_add(1);
     let indexed = state
         .state
-        .get_account_tx_signatures_paginated(&target, limit, before_slot)
+        .get_account_tx_signatures_paginated(&target, fetch_limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more { &indexed[..limit] } else { indexed.as_slice() };
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
     let mut last_slot: Option<u64> = None;
 
-    for (hash, slot) in &indexed {
+    for (hash, slot) in page_items {
         let tx = match state.state.get_transaction(hash) {
             Ok(Some(tx)) => tx,
             _ => {
@@ -2544,7 +3193,6 @@ async fn handle_get_transactions_by_address(
     }
 
     // Return with pagination cursor
-    let has_more = results.len() == limit;
     Ok(serde_json::json!({
         "transactions": results,
         "has_more": has_more,
@@ -2563,11 +3211,12 @@ async fn handle_get_recent_transactions(
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first());
 
-    let limit = opts
+    let requested_limit = opts
         .and_then(|v| v.get("limit"))
         .and_then(|v| v.as_u64())
         .unwrap_or(50)
         .min(500) as usize;
+    let limit = requested_limit.min(TX_LIST_MAX_LIMIT);
 
     let before_slot = opts
         .and_then(|v| v.get("before_slot"))
@@ -2578,19 +3227,23 @@ async fn handle_get_recent_transactions(
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
 
+    // Use tx-by-slot reverse index (CF_TX_BY_SLOT), over-fetch by 1 for has_more.
+    let fetch_limit = limit.saturating_add(1);
     let indexed = state
         .state
-        .get_recent_txs(limit, before_slot)
+        .get_recent_txs(fetch_limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
+    let has_more = indexed.len() > limit;
+    let page_items = if has_more { &indexed[..limit] } else { indexed.as_slice() };
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
     let mut last_slot: Option<u64> = None;
 
-    for (hash, slot) in &indexed {
+    for (hash, slot) in page_items {
         let tx = match state.state.get_transaction(hash) {
             Ok(Some(tx)) => tx,
             _ => continue,
@@ -2648,7 +3301,6 @@ async fn handle_get_recent_transactions(
         last_slot = Some(*slot);
     }
 
-    let has_more = results.len() == limit;
     Ok(serde_json::json!({
         "transactions": results,
         "has_more": has_more,
@@ -2788,6 +3440,13 @@ fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcEr
     }
 
     Ok(signature_hash.to_hex())
+}
+
+fn validate_incoming_transaction_limits(tx: &Transaction) -> Result<(), RpcError> {
+    tx.validate_structure().map_err(|e| RpcError {
+        code: -32003,
+        message: format!("Invalid transaction structure: {}", e),
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3197,6 +3856,8 @@ async fn handle_send_transaction(
         bounded_bincode_deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?
     };
 
+    validate_incoming_transaction_limits(&tx)?;
+
     // ── Pre-mempool validation ──────────────────────────────────
     // Reject structurally invalid transactions BEFORE entering mempool.
 
@@ -3334,6 +3995,7 @@ async fn handle_send_transaction(
         }
     }
 
+    emit_prediction_events_from_tx(state, &tx);
     let signature = submit_transaction(state, tx)?;
 
     Ok(serde_json::json!(signature))
@@ -3380,6 +4042,8 @@ async fn handle_simulate_transaction(
             message: format!("Invalid transaction: {}", e),
         })?
     };
+
+    validate_incoming_transaction_limits(&tx)?;
 
     let processor = TxProcessor::new(state.state.clone());
     let result = processor.simulate_transaction(&tx);
@@ -3497,7 +4161,7 @@ async fn handle_solana_get_signature_statuses(
 
         let mut found = false;
         let mut tx_slot = last_slot;
-        if state.solana_tx_cache.lock().await.contains(&sig_hash) {
+        if state.solana_tx_cache.read().await.contains(&sig_hash) {
             found = true;
             // Try to get actual slot
             if let Ok(Some(slot)) = state.state.get_tx_slot(&sig_hash) {
@@ -3732,22 +4396,14 @@ async fn handle_solana_get_block(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let params = params.ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Missing params".to_string(),
-    })?;
+    let slot = parse_get_block_slot_param(params.as_ref(), true)?;
 
-    let params_array = params.as_array().ok_or_else(|| RpcError {
-        code: -32602,
-        message: "Invalid params: expected [slot, options?]".to_string(),
-    })?;
-
-    let slot = params_array
-        .first()
-        .and_then(|v| v.as_u64())
+    let params_array = params
+        .as_ref()
+        .and_then(|v| v.as_array())
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Invalid params: expected [slot, options?]".to_string(),
+            message: "Invalid params: expected [slot, options?] where slot is a u64 block height (block hash is not supported)".to_string(),
         })?;
 
     let options = params_array.get(1).and_then(|v| v.as_object());
@@ -3840,7 +4496,7 @@ async fn handle_solana_get_transaction(
 
     let sig_hash = base58_to_hash(sig_str)?;
 
-    if let Some(record) = state.solana_tx_cache.lock().await.get(&sig_hash).cloned() {
+    if let Some(record) = state.solana_tx_cache.read().await.peek(&sig_hash).cloned() {
         if encoding == "base64" || encoding == "base58" {
             return Ok(solana_transaction_encoded_json(
                 &state.state,
@@ -3974,6 +4630,8 @@ async fn handle_solana_send_transaction(
 
     let tx = decode_solana_transaction(tx_payload, encoding)?;
 
+    validate_incoming_transaction_limits(&tx)?;
+
     // P9-RPC-01: Reject EVM sentinel blockhash via Solana sendTransaction
     if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
         return Err(RpcError {
@@ -3997,7 +4655,7 @@ async fn handle_solana_send_transaction(
     // H15 fix: submit first, cache only on success (was caching before submit)
     submit_transaction(state, tx.clone())?;
 
-    state.solana_tx_cache.lock().await.put(
+    state.solana_tx_cache.write().await.put(
         signature_hash,
         SolanaTxRecord {
             tx,
@@ -4113,6 +4771,7 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 "_normalized_reputation": normalized_reputation,
                 "_blocks_produced": v.blocks_proposed,
                 "blocks_proposed": v.blocks_proposed,
+                "transactions_processed": v.transactions_processed,
                 "votes_cast": v.votes_cast,
                 "correct_votes": v.correct_votes,
                 "last_active_slot": v.last_active_slot,
@@ -4494,6 +5153,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
                 "stake": actual_stake,
                 "reputation": v.reputation as f64,
                 "blocks_proposed": v.blocks_proposed,
+                "transactions_processed": v.transactions_processed,
                 "last_active_slot": v.last_active_slot,
                 "joined_slot": v.joined_slot,
                 "active": is_active,
@@ -4578,6 +5238,7 @@ async fn handle_get_validator_info(
         "stake": validator.stake,
         "reputation": validator.reputation,
         "blocks_proposed": validator.blocks_proposed,
+        "transactions_processed": validator.transactions_processed,
         "votes_cast": validator.votes_cast,
         "correct_votes": validator.correct_votes,
         "last_active_slot": validator.last_active_slot,
@@ -4643,6 +5304,7 @@ async fn handle_get_validator_performance(
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),
         "blocks_proposed": validator.blocks_proposed,
+        "transactions_processed": validator.transactions_processed,
         "votes_cast": validator.votes_cast,
         "correct_votes": validator.correct_votes,
         "vote_accuracy": vote_accuracy,
@@ -4672,6 +5334,17 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
     // Block height is same as slot for now (1 block per slot)
     let block_height = current_slot;
 
+    // Check chain health: stale if no block in 120 seconds
+    let is_healthy = if let Ok(Some(block)) = state.state.get_block_by_slot(current_slot) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub(block.header.timestamp) <= 120
+    } else {
+        false
+    };
+
     Ok(serde_json::json!({
         "slot": current_slot,
         "_slot": current_slot,
@@ -4697,7 +5370,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
         "peer_count": if let Some(ref p2p) = state.p2p { p2p.peer_count() } else { 0 },
         "chain_id": state.chain_id,
         "network": state.network_id,
-        "is_healthy": true,
+        "is_healthy": is_healthy,
     }))
 }
 
@@ -5552,7 +6225,7 @@ async fn handle_set_contract_abi(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
-    require_single_validator(state, "setContractAbi")?;
+    require_single_validator(state, "setContractAbi").await?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -5636,26 +6309,134 @@ async fn handle_set_contract_abi(
 }
 
 /// Get all deployed contracts
-async fn handle_get_all_contracts(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let programs = state.state.get_all_programs(1000).map_err(|e| RpcError {
+fn parse_program_list_pagination(
+    params: Option<serde_json::Value>,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<(usize, Option<Pubkey>), RpcError> {
+    let mut limit = default_limit;
+    let mut cursor_str: Option<String> = None;
+
+    if let Some(value) = params {
+        if let Some(obj) = value.as_object() {
+            if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                limit = v;
+            }
+            cursor_str = obj
+                .get("cursor")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+        } else if let Some(arr) = value.as_array() {
+            if let Some(first) = arr.first() {
+                if let Some(v) = first.as_u64() {
+                    limit = v;
+                } else if let Some(obj) = first.as_object() {
+                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                        limit = v;
+                    }
+                    cursor_str = obj
+                        .get("cursor")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                        .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
+                        .map(|s| s.to_string());
+                } else if let Some(s) = first.as_str() {
+                    cursor_str = Some(s.to_string());
+                }
+            }
+            if let Some(second) = arr.get(1) {
+                if let Some(obj) = second.as_object() {
+                    if let Some(v) = obj.get("limit").and_then(|v| v.as_u64()) {
+                        limit = v;
+                    }
+                    if cursor_str.is_none() {
+                        cursor_str = obj
+                            .get("cursor")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| obj.get("after").and_then(|v| v.as_str()))
+                            .or_else(|| obj.get("after_program").and_then(|v| v.as_str()))
+                            .map(|s| s.to_string());
+                    }
+                } else if cursor_str.is_none() {
+                    if let Some(s) = second.as_str() {
+                        cursor_str = Some(s.to_string());
+                    }
+                }
+            }
+        } else if let Some(v) = value.as_u64() {
+            limit = v;
+        } else if let Some(s) = value.as_str() {
+            cursor_str = Some(s.to_string());
+        }
+    }
+
+    let limit = limit.clamp(1, max_limit) as usize;
+    let after = if let Some(cursor) = cursor_str {
+        Some(Pubkey::from_base58(cursor.trim()).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid cursor/after pubkey: {}", e),
+        })?)
+    } else {
+        None
+    };
+
+    Ok((limit, after))
+}
+
+async fn handle_get_all_contracts(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    if let Some(cached) = get_cached_program_list_response(state, "getAllContracts", &params).await
+    {
+        return Ok(cached);
+    }
+
+    let (limit, after) = parse_program_list_pagination(params.clone(), 100, 1000)?;
+    let fetch_limit = limit.saturating_add(1);
+
+    let mut programs = state
+        .state
+        .get_all_programs_paginated(fetch_limit, after.as_ref())
+        .map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+    let has_more = programs.len() > limit;
+    if has_more {
+        programs.truncate(limit);
+    }
+
+    let registry_entries = state.state.get_all_symbol_registry(5000).map_err(|e| RpcError {
         code: -32000,
         message: format!("Database error: {}", e),
     })?;
 
+    let registry_by_program: HashMap<Pubkey, (String, Option<String>, String)> = registry_entries
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.program,
+                (entry.symbol, entry.name, entry.owner.to_base58()),
+            )
+        })
+        .collect();
+
     let contracts: Vec<serde_json::Value> = programs
         .iter()
         .map(|(pk, metadata)| {
-            // Enrich with symbol/name from the registry when available
-            let (symbol, name, owner) =
-                if let Ok(Some(entry)) = state.state.get_symbol_registry_by_program(pk) {
+            let (symbol, name, owner) = registry_by_program
+                .get(pk)
+                .map(|(symbol, name, owner)| {
                     (
-                        Some(entry.symbol.clone()),
-                        Some(entry.name.clone()),
-                        Some(entry.owner.to_base58()),
+                        Some(symbol.clone()),
+                        name.clone(),
+                        Some(owner.clone()),
                     )
-                } else {
-                    (None, None, None)
-                };
+                })
+                .unwrap_or((None, None, None));
             serde_json::json!({
                 "program_id": pk.to_base58(),
                 "symbol": symbol,
@@ -5666,10 +6447,22 @@ async fn handle_get_all_contracts(state: &RpcState) -> Result<serde_json::Value,
         })
         .collect();
 
-    Ok(serde_json::json!({
+    let next_cursor = if has_more {
+        programs.last().map(|(pk, _)| pk.to_base58())
+    } else {
+        None
+    };
+
+    let response = serde_json::json!({
         "contracts": contracts,
         "count": contracts.len(),
-    }))
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    });
+
+    put_cached_program_list_response(state, "getAllContracts", &params, response.clone()).await;
+
+    Ok(response)
 }
 
 /// Deploy a contract via RPC (bypasses transaction instruction size limit).
@@ -5688,7 +6481,7 @@ async fn handle_deploy_contract(
     use sha2::{Digest, Sha256};
 
     // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
-    require_single_validator(state, "deployContract")?;
+    require_single_validator(state, "deployContract").await?;
 
     // Admin-gate: contract deployment requires admin authentication
     verify_admin_auth(state, &params)?;
@@ -5976,7 +6769,7 @@ async fn handle_upgrade_contract(
     use moltchain_core::account::Keypair as MoltKeypair;
     use sha2::{Digest, Sha256};
 
-    require_single_validator(state, "upgradeContract")?;
+    require_single_validator(state, "upgradeContract").await?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -6366,32 +7159,42 @@ async fn handle_get_programs(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let limit = params
-        .and_then(|val| {
-            if val.is_array() {
-                val.as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.as_u64())
-            } else if val.is_object() {
-                val.get("limit").and_then(|v| v.as_u64())
-            } else {
-                val.as_u64()
-            }
-        })
-        .unwrap_or(50)
-        .min(500) as usize;
+    if let Some(cached) = get_cached_program_list_response(state, "getPrograms", &params).await {
+        return Ok(cached);
+    }
 
-    let programs = state.state.get_programs(limit).map_err(|e| RpcError {
+    let (limit, after) = parse_program_list_pagination(params.clone(), 50, 500)?;
+    let fetch_limit = limit.saturating_add(1);
+
+    let mut programs = state
+        .state
+        .get_programs_paginated(fetch_limit, after.as_ref())
+        .map_err(|e| RpcError {
         code: -32000,
         message: format!("Database error: {}", e),
     })?;
+    let has_more = programs.len() > limit;
+    if has_more {
+        programs.truncate(limit);
+    }
 
     let list: Vec<String> = programs.iter().map(|p| p.to_base58()).collect();
+    let next_cursor = if has_more {
+        programs.last().map(|p| p.to_base58())
+    } else {
+        None
+    };
 
-    Ok(serde_json::json!({
+    let response = serde_json::json!({
         "count": list.len(),
         "programs": list,
-    }))
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    });
+
+    put_cached_program_list_response(state, "getPrograms", &params, response.clone()).await;
+
+    Ok(response)
 }
 
 async fn handle_get_program_calls(
@@ -7929,11 +8732,15 @@ async fn handle_get_nfts_by_owner(
             message: format!("Database error: {}", e),
         })?;
 
+    let account_map = state.state.get_accounts_batch(&token_pubkeys).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
     let mut items = Vec::new();
     for token_pubkey in token_pubkeys {
-        let account = match state.state.get_account(&token_pubkey) {
-            Ok(Some(account)) => account,
-            _ => continue,
+        let Some(account) = account_map.get(&token_pubkey) else {
+            continue;
         };
 
         let token = match decode_token_state(&account.data) {
@@ -7999,11 +8806,15 @@ async fn handle_get_nfts_by_collection(
             message: format!("Database error: {}", e),
         })?;
 
+    let account_map = state.state.get_accounts_batch(&token_pubkeys).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
     let mut items = Vec::new();
     for token_pubkey in token_pubkeys {
-        let account = match state.state.get_account(&token_pubkey) {
-            Ok(Some(account)) => account,
-            _ => continue,
+        let Some(account) = account_map.get(&token_pubkey) else {
+            continue;
         };
 
         let token = match decode_token_state(&account.data) {
@@ -8106,19 +8917,37 @@ async fn handle_get_nft_activity(
 // MARKETPLACE ENDPOINTS
 // ============================================================================
 
-fn parse_market_params(
-    params: Option<serde_json::Value>,
-) -> Result<(Option<Pubkey>, usize), RpcError> {
+/// Extended marketplace filter parameters (v3)
+struct MarketFilterParams {
+    collection: Option<Pubkey>,
+    limit: usize,
+    price_min: Option<u64>,
+    price_max: Option<u64>,
+    seller: Option<Pubkey>,
+    sort_by: Option<String>,
+    category: Option<u8>,
+    rarity: Option<u8>,
+}
+
+fn parse_market_params_extended(
+    params: &Option<serde_json::Value>,
+) -> Result<MarketFilterParams, RpcError> {
     let limit_default = 50usize;
 
     let Some(params) = params else {
-        return Ok((None, limit_default));
+        return Ok(MarketFilterParams {
+            collection: None, limit: limit_default,
+            price_min: None, price_max: None, seller: None,
+            sort_by: None, category: None, rarity: None,
+        });
     };
 
+    // Object-form: { collection, limit, price_min, price_max, seller, sort_by, category, rarity }
     if let Some(obj) = params.as_object() {
         let collection = obj
             .get("collection")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .map(Pubkey::from_base58)
             .transpose()
             .map_err(|e| RpcError {
@@ -8126,58 +8955,70 @@ fn parse_market_params(
                 message: format!("Invalid collection pubkey: {}", e),
             })?;
 
-        let limit = obj
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(limit_default as u64)
-            .min(500) as usize;
+        let limit = obj.get("limit").and_then(|v| v.as_u64())
+            .unwrap_or(limit_default as u64).min(500) as usize;
 
-        return Ok((collection, limit));
+        let price_min = obj.get("price_min").and_then(|v| v.as_u64());
+        let price_max = obj.get("price_max").and_then(|v| v.as_u64());
+        let seller = obj.get("seller").and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(Pubkey::from_base58)
+            .transpose()
+            .map_err(|e| RpcError {
+                code: -32602,
+                message: format!("Invalid seller pubkey: {}", e),
+            })?;
+        let sort_by = obj.get("sort_by").and_then(|v| v.as_str()).map(String::from);
+        let category = obj.get("category").and_then(|v| v.as_u64()).map(|v| v as u8);
+        let rarity = obj.get("rarity").and_then(|v| v.as_u64()).map(|v| v as u8);
+
+        return Ok(MarketFilterParams {
+            collection, limit, price_min, price_max, seller,
+            sort_by, category, rarity,
+        });
     }
 
+    // Array-form (legacy): [collection_pubkey?, options?]
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
-        message: "Invalid params: expected [collection_pubkey?, options?] or {collection, limit}"
+        message: "Invalid params: expected [collection_pubkey?, options?] or {collection, limit, ...}"
             .to_string(),
     })?;
 
     let (collection, limit) = match arr.first() {
         Some(first) if first.is_object() => {
-            let limit = first
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(limit_default as u64)
-                .min(500) as usize;
+            let limit = first.get("limit").and_then(|v| v.as_u64())
+                .unwrap_or(limit_default as u64).min(500) as usize;
             (None, limit)
         }
         _ => {
-            let collection = arr
-                .first()
-                .and_then(|v| v.as_str())
-                .map(Pubkey::from_base58)
-                .transpose()
+            let collection = arr.first().and_then(|v| v.as_str())
+                .map(Pubkey::from_base58).transpose()
                 .map_err(|e| RpcError {
                     code: -32602,
                     message: format!("Invalid collection pubkey: {}", e),
                 })?;
-
-            let limit = arr
-                .get(1)
-                .and_then(|v| {
-                    if v.is_object() {
-                        v.get("limit").and_then(|val| val.as_u64())
-                    } else {
-                        v.as_u64()
-                    }
-                })
-                .unwrap_or(limit_default as u64)
-                .min(500) as usize;
-
+            let limit = arr.get(1).and_then(|v| {
+                if v.is_object() { v.get("limit").and_then(|val| val.as_u64()) }
+                else { v.as_u64() }
+            }).unwrap_or(limit_default as u64).min(500) as usize;
             (collection, limit)
         }
     };
 
-    Ok((collection, limit))
+    Ok(MarketFilterParams {
+        collection, limit,
+        price_min: None, price_max: None, seller: None,
+        sort_by: None, category: None, rarity: None,
+    })
+}
+
+/// Legacy wrapper for backward compat (sales endpoint)
+fn parse_market_params(
+    params: Option<serde_json::Value>,
+) -> Result<(Option<Pubkey>, usize), RpcError> {
+    let ext = parse_market_params_extended(&params)?;
+    Ok((ext.collection, ext.limit))
 }
 
 fn market_activity_to_json(activity: &moltchain_core::MarketActivity) -> serde_json::Value {
@@ -8185,6 +9026,17 @@ fn market_activity_to_json(activity: &moltchain_core::MarketActivity) -> serde_j
         MarketActivityKind::Listing => "listing",
         MarketActivityKind::Sale => "sale",
         MarketActivityKind::Cancel => "cancel",
+        MarketActivityKind::Offer => "offer",
+        MarketActivityKind::OfferAccepted => "offer_accepted",
+        MarketActivityKind::OfferCancelled => "offer_cancelled",
+        MarketActivityKind::PriceUpdate => "price_update",
+        MarketActivityKind::AuctionCreated => "auction_created",
+        MarketActivityKind::AuctionBid => "auction_bid",
+        MarketActivityKind::AuctionSettled => "auction_settled",
+        MarketActivityKind::AuctionCancelled => "auction_cancelled",
+        MarketActivityKind::CollectionOffer => "collection_offer",
+        MarketActivityKind::CollectionOfferAccepted => "collection_offer_accepted",
+        MarketActivityKind::Transfer => "transfer",
     };
 
     serde_json::json!({
@@ -8208,26 +9060,83 @@ async fn handle_get_market_listings(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let (collection, limit) = parse_market_params(params)?;
+    let filters = parse_market_params_extended(&params)?;
+
+    let has_post_filters = filters.price_min.is_some()
+        || filters.price_max.is_some()
+        || filters.seller.is_some()
+        || filters.category.is_some()
+        || filters.rarity.is_some();
+
+    // RPC-H09: cap unfiltered marketplace requests to a reasonable page size.
+    let effective_limit = if filters.collection.is_none() && !has_post_filters {
+        filters.limit.min(MARKET_LISTINGS_UNFILTERED_MAX_LIMIT)
+    } else {
+        filters.limit
+    };
+
+    // Fetch more than limit to allow post-filtering
+    let fetch_limit = if has_post_filters {
+        (effective_limit * 5).min(2000)
+    } else {
+        effective_limit
+    };
 
     let activity = state
         .state
         .get_market_activity(
-            collection.as_ref(),
+            filters.collection.as_ref(),
             Some(MarketActivityKind::Listing),
-            limit,
+            fetch_limit,
         )
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
 
-    let items: Vec<serde_json::Value> = activity.iter().map(market_activity_to_json).collect();
+    // Apply multi-criteria filters
+    let mut filtered: Vec<&moltchain_core::MarketActivity> = activity.iter().filter(|a| {
+        // Price range filter (in shells)
+        if let Some(min) = filters.price_min {
+            if a.price.unwrap_or(0) < min { return false; }
+        }
+        if let Some(max) = filters.price_max {
+            if a.price.unwrap_or(u64::MAX) > max { return false; }
+        }
+        // Seller filter
+        if let Some(ref seller) = filters.seller {
+            if a.seller.as_ref() != Some(seller) { return false; }
+        }
+        true
+    }).collect();
+
+    // Sort
+    if let Some(ref sort_by) = filters.sort_by {
+        match sort_by.as_str() {
+            "price_asc" => filtered.sort_by_key(|a| a.price.unwrap_or(0)),
+            "price_desc" => filtered.sort_by(|a, b| b.price.unwrap_or(0).cmp(&a.price.unwrap_or(0))),
+            "oldest" => filtered.sort_by_key(|a| a.timestamp),
+            _ => {} // newest first (default from DB)
+        }
+    }
+
+    // Apply limit after filtering
+    filtered.truncate(effective_limit);
+
+    let items: Vec<serde_json::Value> = filtered.iter().map(|a| market_activity_to_json(a)).collect();
 
     Ok(serde_json::json!({
-        "collection": collection.map(|c| c.to_base58()),
+        "collection": filters.collection.map(|c| c.to_base58()),
         "count": items.len(),
         "listings": items,
+        "filters": {
+            "price_min": filters.price_min,
+            "price_max": filters.price_max,
+            "seller": filters.seller.map(|s| s.to_base58()),
+            "sort_by": filters.sort_by,
+            "category": filters.category,
+            "rarity": filters.rarity,
+        }
     }))
 }
 
@@ -8251,6 +9160,125 @@ async fn handle_get_market_sales(
         "collection": collection.map(|c| c.to_base58()),
         "count": items.len(),
         "sales": items,
+    }))
+}
+
+/// Get marketplace offers (filtered by activity kind = Offer, OfferAccepted)
+async fn handle_get_market_offers(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (collection, limit) = parse_market_params(params.clone())?;
+
+    let token_id_filter = params
+        .as_ref()
+        .and_then(|p| p.as_object())
+        .and_then(|obj| obj.get("token_id"))
+        .and_then(|v| v.as_u64());
+
+    let token_filter = params
+        .as_ref()
+        .and_then(|p| p.as_object())
+        .and_then(|obj| obj.get("token"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(Pubkey::from_base58)
+        .transpose()
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid token pubkey: {}", e),
+        })?;
+
+    let include_collection_offers = params
+        .as_ref()
+        .and_then(|p| p.as_object())
+        .and_then(|obj| obj.get("include_collection_offers"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let fetch_limit = if token_id_filter.is_some() || token_filter.is_some() {
+        (limit.saturating_mul(10)).clamp(limit, 2000)
+    } else {
+        limit
+    };
+
+    let activity = state
+        .state
+        .get_market_activity(collection.as_ref(), Some(MarketActivityKind::Offer), fetch_limit)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let mut all_activity = activity;
+    if include_collection_offers {
+        let collection_activity = state
+            .state
+            .get_market_activity(collection.as_ref(), Some(MarketActivityKind::CollectionOffer), fetch_limit)
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })?;
+        all_activity.extend(collection_activity);
+    }
+
+    let mut filtered: Vec<&moltchain_core::MarketActivity> = all_activity
+        .iter()
+        .filter(|a| {
+            if !include_collection_offers && a.kind == MarketActivityKind::CollectionOffer {
+                return false;
+            }
+            if a.kind == MarketActivityKind::CollectionOffer {
+                return true;
+            }
+            if let Some(token_id) = token_id_filter {
+                if a.token_id != Some(token_id) {
+                    return false;
+                }
+            }
+            if let Some(token) = token_filter.as_ref() {
+                if a.token.as_ref() != Some(token) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    filtered.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    filtered.truncate(limit);
+
+    let items: Vec<serde_json::Value> = filtered.iter().map(|a| market_activity_to_json(a)).collect();
+
+    Ok(serde_json::json!({
+        "collection": collection.map(|c| c.to_base58()),
+        "count": items.len(),
+        "offers": items,
+    }))
+}
+
+/// Get marketplace auctions (filtered by activity kind = AuctionCreated)
+async fn handle_get_market_auctions(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (collection, limit) = parse_market_params(params)?;
+
+    let activity = state
+        .state
+        .get_market_activity(collection.as_ref(), Some(MarketActivityKind::AuctionCreated), limit)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    let items: Vec<serde_json::Value> = activity.iter().map(market_activity_to_json).collect();
+
+    Ok(serde_json::json!({
+        "collection": collection.map(|c| c.to_base58()),
+        "count": items.len(),
+        "auctions": items,
     }))
 }
 
@@ -9783,7 +10811,7 @@ async fn handle_request_airdrop(
 ) -> Result<serde_json::Value, RpcError> {
     // L3-01: Block in multi-validator mode — direct state writes bypass consensus.
     // Even on testnet, multiple validators would diverge on airdrop state.
-    require_single_validator(state, "requestAirdrop")?;
+    require_single_validator(state, "requestAirdrop").await?;
 
     // Only allow on testnet / devnet (not mainnet)
     if state.network_id.contains("mainnet")
@@ -9838,24 +10866,17 @@ async fn handle_request_airdrop(
 
     // AUDIT-FIX RPC-4: Per-address airdrop rate limiting (1 per 60 seconds)
     {
-        let mut cooldowns = state
-            .airdrop_cooldowns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Prune stale entries every check
-        cooldowns.retain(|_, t| t.elapsed().as_secs() < 120);
-        if let Some(last) = cooldowns.get(address_str) {
-            if last.elapsed().as_secs() < 60 {
-                return Err(RpcError {
-                    code: -32005,
-                    message: format!(
-                        "Airdrop rate limit: 1 per 60 seconds per address. Try again in {} seconds.",
-                        60 - last.elapsed().as_secs()
-                    ),
-                });
-            }
+        let now = Instant::now();
+        let mut cooldowns = state.airdrop_cooldowns.write().await;
+        if let Some(remaining) = cooldowns.check_and_record(address_str, now) {
+            return Err(RpcError {
+                code: -32005,
+                message: format!(
+                    "Airdrop rate limit: 1 per {} seconds per address. Try again in {} seconds.",
+                    AIRDROP_COOLDOWN_SECS, remaining
+                ),
+            });
         }
-        cooldowns.insert(address_str.to_string(), Instant::now());
     }
 
     let amount_shells = amount_molt * 1_000_000_000;
@@ -10854,6 +11875,245 @@ async fn handle_get_moltbridge_stats(state: &RpcState) -> Result<serde_json::Val
     }))
 }
 
+// ============================================================================
+// BRIDGE DEPOSIT PROXY — Forwards requests to the custody service.
+// The frontend calls these RPC methods instead of hitting custody directly,
+// avoiding CORS and exposing the Bearer token only server-to-server.
+// ============================================================================
+
+/// createBridgeDeposit — Proxy to custody POST /deposits
+/// Params: [{ user_id, chain, asset }]
+async fn handle_create_bridge_deposit(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
+    })?;
+    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service auth not configured".to_string(),
+    })?;
+
+    let payload = params
+        .and_then(|v| {
+            if v.is_array() {
+                v.as_array().and_then(|a| a.first().cloned())
+            } else if v.is_object() {
+                Some(v)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing params: expected [{ user_id, chain, asset }]".to_string(),
+        })?;
+
+    // Validate required fields
+    let user_id = payload.get("user_id").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing user_id".to_string(),
+    })?;
+    let chain = payload.get("chain").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing chain".to_string(),
+    })?;
+    let asset = payload.get("asset").and_then(|v| v.as_str()).ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing asset".to_string(),
+    })?;
+
+    let valid_chains = ["solana", "ethereum", "bnb", "bsc"];
+    let valid_assets = ["sol", "eth", "bnb", "usdc", "usdt"];
+    if !valid_chains.contains(&chain) {
+        return Err(RpcError { code: -32602, message: format!("Invalid chain: {}", chain) });
+    }
+    if !valid_assets.contains(&asset) {
+        return Err(RpcError { code: -32602, message: format!("Invalid asset: {}", asset) });
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/deposits", custody_url))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "user_id": user_id,
+            "chain": chain,
+            "asset": asset,
+        }))
+        .send()
+        .await
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Bridge service unavailable: {}", e),
+        })?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Bridge service invalid response: {}", e),
+    })?;
+
+    if !status.is_success() {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Bridge request failed");
+        return Err(RpcError {
+            code: -32000,
+            message: msg.to_string(),
+        });
+    }
+
+    Ok(body)
+}
+
+/// getBridgeDeposit — Proxy to custody GET /deposits/:deposit_id
+/// Params: [deposit_id]
+async fn handle_get_bridge_deposit(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
+    })?;
+    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service auth not configured".to_string(),
+    })?;
+
+    let deposit_id = params
+        .and_then(|v| {
+            if v.is_array() {
+                v.as_array().and_then(|a| a.first()).and_then(|v| v.as_str().map(String::from))
+            } else {
+                v.as_str().map(String::from)
+            }
+        })
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing params: expected [deposit_id]".to_string(),
+        })?;
+
+    // Basic ID validation — UUIDs are 36 chars (8-4-4-4-12 with hyphens)
+    if deposit_id.len() != 36 || !deposit_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid deposit_id format".to_string(),
+        });
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/deposits/{}", custody_url, deposit_id))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Bridge service unavailable: {}", e),
+        })?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Bridge service invalid response: {}", e),
+    })?;
+
+    if !status.is_success() {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Deposit lookup failed");
+        return Err(RpcError {
+            code: -32000,
+            message: msg.to_string(),
+        });
+    }
+
+    Ok(body)
+}
+
+/// getBridgeDepositsByRecipient — Proxy to custody GET /deposits?user_id=&limit=
+/// Params: [address, { limit }]
+async fn handle_get_bridge_deposits_by_recipient(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let custody_url = state.custody_url.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service not configured (CUSTODY_URL)".to_string(),
+    })?;
+    let auth_token = state.custody_auth_token.as_deref().ok_or_else(|| RpcError {
+        code: -32000,
+        message: "Bridge service auth not configured".to_string(),
+    })?;
+
+    let arr = params
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+
+    let address = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing params: expected [address, { limit? }]".to_string(),
+        })?;
+
+    // Basic address validation (base58, 32-44 chars)
+    if address.len() < 32 || address.len() > 44 || !address.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(RpcError {
+            code: -32602,
+            message: "Invalid address format".to_string(),
+        });
+    }
+
+    let limit = arr
+        .get(1)
+        .and_then(|v| v.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .min(100); // Cap at 100
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!(
+            "{}/deposits?user_id={}&limit={}",
+            custody_url, address, limit
+        ))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Bridge service unavailable: {}", e),
+        })?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Bridge service invalid response: {}", e),
+    })?;
+
+    if !status.is_success() {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Deposit history lookup failed");
+        return Err(RpcError {
+            code: -32000,
+            message: msg.to_string(),
+        });
+    }
+
+    Ok(body)
+}
+
 /// getMoltDaoStats — DAO governance stats
 async fn handle_get_moltdao_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "DAO")?;
@@ -10878,10 +12138,16 @@ async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_signatures_for_address, validate_solana_encoding,
+        classify_method, classify_solana_method_tier, filter_signatures_for_address,
+        parse_get_block_slot_param, parse_rpc_request, parse_rpc_tier_probe,
+        validate_incoming_transaction_limits,
+        AirdropCooldowns, MethodTier,
+        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        validate_solana_encoding,
         validate_solana_transaction_details,
     };
     use moltchain_core::Hash;
+    use std::time::{Duration, Instant};
 
     fn make_hash(value: u8) -> Hash {
         Hash([value; 32])
@@ -10923,6 +12189,138 @@ mod tests {
 
         let filtered = filter_signatures_for_address(indexed, None, None, 1);
         assert_eq!(filtered, vec![(h4, 4)]);
+    }
+
+    #[test]
+    fn test_m02_native_get_block_is_moderate() {
+        assert_eq!(classify_method("getBlock"), MethodTier::Moderate);
+    }
+
+    #[test]
+    fn test_m02_solana_block_and_signature_statuses_are_moderate() {
+        assert_eq!(
+            classify_solana_method_tier("getBlock"),
+            MethodTier::Moderate
+        );
+        assert_eq!(
+            classify_solana_method_tier("getSignatureStatuses"),
+            MethodTier::Moderate
+        );
+    }
+
+    #[test]
+    fn test_m04_airdrop_cooldown_enforced_and_expires() {
+        let mut cooldowns = AirdropCooldowns::default();
+        let now = Instant::now();
+
+        assert_eq!(cooldowns.check_and_record("addr1", now), None);
+
+        let retry_now = now + Duration::from_secs(1);
+        let remaining = cooldowns.check_and_record("addr1", retry_now);
+        assert_eq!(remaining, Some(AIRDROP_COOLDOWN_SECS - 1));
+
+        let after_window = now + Duration::from_secs(AIRDROP_COOLDOWN_SECS + 1);
+        assert_eq!(cooldowns.check_and_record("addr1", after_window), None);
+    }
+
+    #[test]
+    fn test_m04_airdrop_cooldown_bounded_size() {
+        let mut cooldowns = AirdropCooldowns::default();
+        let base = Instant::now();
+
+        for idx in 0..(AIRDROP_COOLDOWN_MAX_ENTRIES + 500) {
+            let address = format!("addr{}", idx);
+            let _ = cooldowns.check_and_record(&address, base + Duration::from_secs(idx as u64));
+        }
+
+        assert!(cooldowns.by_address.len() <= AIRDROP_COOLDOWN_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn test_m05_tier_probe_succeeds_before_full_request_deserialization() {
+        let body = br#"{"id":7,"method":"sendTransaction"}"#;
+        let probe = parse_rpc_tier_probe(body).expect("probe should parse method + id");
+
+        assert_eq!(probe.method, "sendTransaction");
+        assert_eq!(probe.id, Some(serde_json::json!(7)));
+
+        let full = parse_rpc_request(body, serde_json::json!(7));
+        assert!(
+            full.is_err(),
+            "full request parse should fail (missing required jsonrpc field)"
+        );
+    }
+
+    #[test]
+    fn test_m05_tier_probe_extracts_method_for_solana_request() {
+        let body = br#"{"id":"abc","method":"getSignatureStatuses","params":[["sig"]]}"#;
+        let probe = parse_rpc_tier_probe(body).expect("probe should parse method for tiering");
+
+        assert_eq!(probe.method, "getSignatureStatuses");
+        assert_eq!(probe.id, Some(serde_json::json!("abc")));
+    }
+
+    #[test]
+    fn test_l01_rejects_too_many_instructions_on_incoming_transaction() {
+        let instruction = moltchain_core::Instruction {
+            program_id: moltchain_core::SYSTEM_PROGRAM_ID,
+            accounts: Vec::new(),
+            data: vec![0],
+        };
+        let tx = moltchain_core::Transaction {
+            signatures: vec![[1u8; 64]],
+            message: moltchain_core::Message {
+                instructions: vec![
+                    instruction;
+                    moltchain_core::transaction::MAX_INSTRUCTIONS_PER_TX + 1
+                ],
+                recent_blockhash: moltchain_core::Hash([7u8; 32]),
+            },
+        };
+
+        let err = validate_incoming_transaction_limits(&tx).expect_err("must reject oversized instruction count");
+        assert_eq!(err.code, -32003);
+        assert!(err.message.contains("Too many instructions"));
+    }
+
+    #[test]
+    fn test_l01_rejects_oversized_instruction_data_on_incoming_transaction() {
+        let tx = moltchain_core::Transaction {
+            signatures: vec![[2u8; 64]],
+            message: moltchain_core::Message {
+                instructions: vec![moltchain_core::Instruction {
+                    program_id: moltchain_core::SYSTEM_PROGRAM_ID,
+                    accounts: Vec::new(),
+                    data: vec![
+                        0u8;
+                        moltchain_core::transaction::MAX_INSTRUCTION_DATA + 1
+                    ],
+                }],
+                recent_blockhash: moltchain_core::Hash([9u8; 32]),
+            },
+        };
+
+        let err = validate_incoming_transaction_limits(&tx)
+            .expect_err("must reject oversized instruction data");
+        assert_eq!(err.code, -32003);
+        assert!(err.message.contains("data too large"));
+    }
+
+    #[test]
+    fn test_l04_get_block_rejects_hash_like_string_param() {
+        let hash_param = serde_json::json!(["0xdeadbeef"]);
+        let err = parse_get_block_slot_param(Some(&hash_param), false)
+            .expect_err("hash-like string must be rejected for getBlock slot param");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("block hash is not supported"));
+    }
+
+    #[test]
+    fn test_l04_get_block_accepts_slot_u64_param() {
+        let params = serde_json::json!([123u64]);
+        let slot = parse_get_block_slot_param(Some(&params), false)
+            .expect("u64 slot param should be accepted");
+        assert_eq!(slot, 123u64);
     }
 
     // ── AUDIT-FIX A11-01: eth_gasPrice must return 1, not base_fee ──

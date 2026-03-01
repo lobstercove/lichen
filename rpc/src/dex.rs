@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use crate::RpcState;
@@ -26,6 +26,7 @@ use crate::RpcState;
 
 const PRICE_SCALE: u64 = 1_000_000_000;
 const PNL_BIAS: u64 = 1u64 << 63;
+const SLOT_DURATION_MS: u64 = 400;
 
 // Contract storage key maps — must match genesis symbol registry (uppercase, alphanumeric only)
 const DEX_CORE_PROGRAM: &str = "DEX";
@@ -191,6 +192,7 @@ pub struct PoolJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_b_symbol: Option<String>,
     pub sqrt_price: u64,
+    pub price: f64,
     pub tick: i32,
     pub liquidity: u64,
     pub fee_tier: &'static str,
@@ -509,6 +511,69 @@ const SYMBOL_CACHE_TTL_SECS: u64 = 30;
 static TICKERS_CACHE: Mutex<Option<(Instant, Vec<TickerJson>, u64)>> = Mutex::new(None);
 const TICKERS_CACHE_TTL_SECS: u64 = 2;
 
+#[derive(Clone, Default)]
+struct PairOrderIndex {
+    order_ids: Vec<u64>,
+    scanned_order_count: u64,
+}
+
+/// Pair -> known order IDs cache. Reduces repeated O(total_orders) scans in hot paths.
+static PAIR_ORDER_INDEX_CACHE: LazyLock<Mutex<HashMap<u64, PairOrderIndex>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_pair_order_ids(state: &crate::RpcState, pair_id: u64) -> Vec<u64> {
+    let latest_order_count = read_u64(state, DEX_CORE_PROGRAM, "dex_order_count");
+
+    let (mut known_ids, mut scanned_order_count) = {
+        let mut cache = PAIR_ORDER_INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = cache.entry(pair_id).or_default();
+        (entry.order_ids.clone(), entry.scanned_order_count)
+    };
+
+    if scanned_order_count == 0 {
+        for order_id in 1..=latest_order_count {
+            let key = format!("dex_order_{}", order_id);
+            if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
+                if let Some(order) = decode_order(&data) {
+                    if order.pair_id == pair_id {
+                        known_ids.push(order_id);
+                    }
+                }
+            }
+        }
+        scanned_order_count = latest_order_count;
+    } else if latest_order_count > scanned_order_count {
+        for order_id in (scanned_order_count + 1)..=latest_order_count {
+            let key = format!("dex_order_{}", order_id);
+            if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
+                if let Some(order) = decode_order(&data) {
+                    if order.pair_id == pair_id {
+                        known_ids.push(order_id);
+                    }
+                }
+            }
+        }
+        scanned_order_count = latest_order_count;
+    }
+
+    {
+        let mut cache = PAIR_ORDER_INDEX_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cache.insert(
+            pair_id,
+            PairOrderIndex {
+                order_ids: known_ids.clone(),
+                scanned_order_count,
+            },
+        );
+    }
+
+    known_ids
+}
+
 /// Build a hex-address→display-symbol map for known token contracts.
 /// Uses the symbol registry to resolve contract names to pubkey addresses,
 /// then maps to human-readable token symbols.
@@ -682,6 +747,8 @@ fn decode_pool(data: &[u8]) -> Option<PoolJson> {
         _ => "100bps",
     };
     let protocol_fee = data[93];
+    let sqrt = sqrt_price as f64 / ((1u64 << 32) as f64);
+    let price = sqrt * sqrt;
 
     Some(PoolJson {
         pool_id,
@@ -690,6 +757,7 @@ fn decode_pool(data: &[u8]) -> Option<PoolJson> {
         token_a_symbol: None,
         token_b_symbol: None,
         sqrt_price,
+        price,
         tick,
         liquidity,
         fee_tier,
@@ -1086,8 +1154,7 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
 }
 
 /// GET /api/v1/pairs/:id/orderbook — L2 order book
-/// Uses per-pair time-based cache (1s TTL) to avoid O(total_orders) scans per request.
-/// The first request triggers a full scan; subsequent requests within 1 second return cached data.
+/// Uses per-pair cache + persistent pair-order index to avoid repeated O(total_orders) scans.
 async fn get_orderbook(
     State(state): State<Arc<RpcState>>,
     Path(pair_id): Path<u64>,
@@ -1117,20 +1184,16 @@ async fn get_orderbook(
         }
     }
 
-    // Cache miss or stale: scan and rebuild
+    // Cache miss or stale: rebuild using pair-specific order-id index
     let mut bids: HashMap<u64, (u64, u32)> = HashMap::new(); // price → (total_qty, order_count)
     let mut asks: HashMap<u64, (u64, u32)> = HashMap::new();
 
-    let order_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count");
-    let scan_limit = order_count.min(10_000);
+    let pair_order_ids = get_pair_order_ids(&state, pair_id);
 
-    for i in 1..=scan_limit {
-        let key = format!("dex_order_{}", i);
+    for order_id in pair_order_ids {
+        let key = format!("dex_order_{}", order_id);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
-                if order.pair_id != pair_id {
-                    continue;
-                }
                 if order.status != "open" && order.status != "partial" {
                     continue;
                 }
@@ -1228,7 +1291,7 @@ async fn get_trades(
         1
     };
     // Genesis timestamp: use chain start time for slot→timestamp conversion
-    // Slot duration: ~400ms
+    // Slot duration: 400ms
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1253,8 +1316,8 @@ async fn get_trades(
                         }
                     }
                     // F3.3: Approximate timestamp from slot delta
-                    // timestamp_ms ≈ now - (current_slot - trade_slot) * 400ms
-                    let slot_age_ms = slot.saturating_sub(trade.slot) * 400;
+                    // timestamp_ms ≈ now - (current_slot - trade_slot) * SLOT_DURATION_MS
+                    let slot_age_ms = slot.saturating_sub(trade.slot) * SLOT_DURATION_MS;
                     trade.timestamp = now_ms.saturating_sub(slot_age_ms);
                     trades.push(trade);
                     if trades.len() >= limit {
@@ -1289,8 +1352,15 @@ async fn get_candles(
     let now_sec = now_ms / 1000;
 
     let mut candles = Vec::new();
-    // Candle IDs are 0-based; candle_count is the number of stored candles
-    let start = candle_count.saturating_sub(limit as u64);
+    // Candle IDs are 0-based; candle_count is the number of stored candles.
+    // Scale scan range for small intervals so 1m charts (~60s) cover the same
+    // wall-clock duration as 5m charts (~300s).  Base: limit × 300s = 25h.
+    let effective_limit = if interval > 0 && interval < 300 {
+        ((limit as u64) * 300 / interval).min(candle_count)
+    } else {
+        (limit as u64).min(candle_count)
+    };
+    let start = candle_count.saturating_sub(effective_limit);
 
     for i in start..candle_count {
         let key = format!("ana_c_{}_{}_{}", pair_id, interval, i);
@@ -1302,8 +1372,8 @@ async fn get_candles(
                 if candle.slot >= 1_000_000_000 {
                     candle.timestamp = candle.slot;
                 } else {
-                    // Legacy: approximate timestamp from slot delta (~0.4s/slot)
-                    let slot_age_sec = slot.saturating_sub(candle.slot) * 400 / 1000;
+                    // Legacy: approximate timestamp from slot delta (0.4s/slot)
+                    let slot_age_sec = slot.saturating_sub(candle.slot) * SLOT_DURATION_MS / 1000;
                     candle.timestamp = now_sec.saturating_sub(slot_age_sec);
                 }
                 // F5.2: Filter by from/to (seconds) if provided
@@ -1836,19 +1906,14 @@ fn quote_clob_swap(
     let is_buying_base = token_in_lower != pair.base_token.to_lowercase();
 
     // Collect open orders on the opposing side, sorted by best price
-    let order_count = read_u64(state, DEX_CORE_PROGRAM, "dex_order_count");
-    let scan_limit = order_count.min(10_000);
-
-    // (price_raw, remaining_qty, order_id) — sorted by best price
+    // (price_raw, remaining_qty) — sorted by best price
     let mut opposing_orders: Vec<(u64, u64)> = Vec::new();
 
-    for i in 1..=scan_limit {
-        let key = format!("dex_order_{}", i);
+    let pair_order_ids = get_pair_order_ids(state, pair_id);
+    for order_id in pair_order_ids {
+        let key = format!("dex_order_{}", order_id);
         if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
-                if order.pair_id != pair_id {
-                    continue;
-                }
                 if order.status != "open" && order.status != "partial" {
                     continue;
                 }
@@ -2748,6 +2813,8 @@ async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
             "activeProposals": active,
             "totalVotes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
             "voterCount": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
+            "minQuorum": 3,
+            "min_quorum": 3,
         }),
         slot,
     )

@@ -222,6 +222,26 @@ async fn test_rpc_get_shielded_pool_state_populated() {
     );
 }
 
+#[tokio::test]
+async fn test_rpc_get_shielded_pool_stats_alias_matches_state() {
+    let app = create_populated_app(4, &[]);
+
+    let state_resp = rpc_call(&app, "getShieldedPoolState").await.unwrap();
+    let stats_resp = rpc_call(&app, "getShieldedPoolStats").await.unwrap();
+
+    let state_result = &state_resp["result"];
+    let stats_result = &stats_resp["result"];
+
+    assert_eq!(stats_result["commitmentCount"], state_result["commitmentCount"]);
+    assert_eq!(stats_result["totalShielded"], state_result["totalShielded"]);
+    assert_eq!(stats_result["merkleRoot"], state_result["merkleRoot"]);
+
+    // Wallet compatibility keys
+    assert_eq!(stats_result["commitment_count"], state_result["commitmentCount"]);
+    assert_eq!(stats_result["pool_balance"], state_result["totalShielded"]);
+    assert_eq!(stats_result["merkle_root"], state_result["merkleRoot"]);
+}
+
 // ── getShieldedMerkleRoot ────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -325,6 +345,22 @@ async fn test_rpc_is_nullifier_spent_is_spent() {
     let result = &resp["result"];
 
     assert_eq!(result["spent"], true);
+}
+
+#[tokio::test]
+async fn test_rpc_check_nullifier_alias_matches_is_nullifier_spent() {
+    let null0 = test_nullifier(0);
+    let app = create_populated_app(1, &[null0]);
+    let null_hex = hex::encode(null0);
+
+    let canonical = rpc_call_with_params(&app, "isNullifierSpent", json!([null_hex.clone()]))
+        .await
+        .unwrap();
+    let alias = rpc_call_with_params(&app, "checkNullifier", json!([null_hex]))
+        .await
+        .unwrap();
+
+    assert_eq!(alias["result"], canonical["result"]);
 }
 
 #[tokio::test]

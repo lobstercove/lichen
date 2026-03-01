@@ -45,6 +45,13 @@ class MoltChainRPC {
     constructor(url) {
         this.url = url;
     }
+
+    /**
+     * @template T
+     * @param {string} method
+     * @param {unknown[]} [params=[]]
+     * @returns {Promise<T | null>}
+     */
     
     async call(method, params = []) {
         try {
@@ -754,6 +761,10 @@ async function updateLatestTransactions() {
             const amountShells = tx.amount_shells || (tx.amount !== undefined ? Math.round(tx.amount * SHELLS_PER_MOLT) : 0);
             const amountDisplay = amountShells ? formatMolt(amountShells) : '-';
             const timestamp = tx.timestamp || 0;
+            const isError = isFailedTransactionStatus(tx);
+            const statusClass = isError ? 'error' : 'success';
+            const statusIcon = isError ? 'times' : 'check';
+            const statusLabel = isError ? 'Error' : 'Success';
             
             return `
             <tr>
@@ -762,7 +773,7 @@ async function updateLatestTransactions() {
                     <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(signature)}" onclick="safeCopy(this)" title="Copy signature"></i>
                 </td>
                 <td><span class="pill pill-${escapeExplorerHtml(pillClass)}">${escapeExplorerHtml(type)}</span></td>
-                <td><span class="pill pill-success"><i class="fas fa-check"></i> Success</span></td>
+                <td><span class="pill pill-${statusClass}"><i class="fas fa-${statusIcon}"></i> ${statusLabel}</span></td>
                 <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${amountDisplay}</span></td>
                 <td>${formatTime(timestamp)}</td>
             </tr>
@@ -772,6 +783,20 @@ async function updateLatestTransactions() {
         console.error('Failed to update transactions:', error);
         txsTable.innerHTML = '<tr><td colspan="5" style="text-align:center; color: #FF6B6B;">Failed to load transactions</td></tr>';
     }
+}
+
+function isFailedTransactionStatus(tx) {
+    const statusValue = String(tx?.status || '').trim().toLowerCase();
+    if (statusValue === 'error' || statusValue === 'failed' || statusValue === 'fail') {
+        return true;
+    }
+    if (tx?.success === false) {
+        return true;
+    }
+    if (tx?.error || tx?.err || tx?.meta?.err) {
+        return true;
+    }
+    return false;
 }
 
 function getTransactionPillClass(type) {
@@ -807,11 +832,21 @@ function getTransactionPillClass(type) {
 function setupSearch() {
     const searchInput = document.getElementById('searchInput');
     if (!searchInput) return;
+
+    searchInput.addEventListener('input', () => {
+        searchInput.setCustomValidity('');
+    });
     
-    searchInput.addEventListener('keypress', async (e) => {
+    searchInput.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
+            e.preventDefault();
             const query = searchInput.value.trim();
-            if (!query) return;
+            if (!query) {
+                searchInput.setCustomValidity('Enter a block slot, transaction hash, or address.');
+                searchInput.reportValidity();
+                return;
+            }
+            searchInput.setCustomValidity('');
             await navigateExplorerSearch(query);
         }
     });

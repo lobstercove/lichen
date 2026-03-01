@@ -9,14 +9,14 @@
     <meta name="apple-mobile-web-app-title" content="MoltWallet">
     <title>MoltWallet - Your Gateway to MoltChain</title>
     <meta name="description" content="Secure, fast, and agent-friendly wallet for MoltChain. Create, import, send, and receive MOLT tokens.">
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="wallet.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#FF6B35">
-    <script src="../shared/utils.js"></script>
+    <script src="shared/utils.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
@@ -529,7 +529,7 @@
                             <label class="shield-key-label">Shielded Address</label>
                             <div class="address-display">
                                 <code id="shieldedAddressDisplay" class="shield-key-value">Not initialized</code>
-                                <button class="btn-icon" onclick="copyShieldedAddress()" title="Copy shielded address">
+                                <button class="btn-icon" onclick="copyShieldedAddress(this)" title="Copy shielded address">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -537,9 +537,12 @@
                         <div class="shield-key-row">
                             <label class="shield-key-label">Viewing Key</label>
                             <div class="address-display">
-                                <code class="shield-key-value">Share with auditors for selective disclosure</code>
-                                <button class="btn-icon" onclick="copyViewingKey()" title="Copy viewing key">
-                                    <i class="fas fa-eye"></i>
+                                <code id="viewingKeyDisplay" class="shield-key-value">Click eye icon to reveal</code>
+                                <button class="btn-icon" onclick="toggleViewingKey(this)" title="Show / hide viewing key">
+                                    <i class="fas fa-eye-slash"></i>
+                                </button>
+                                <button class="btn-icon" onclick="copyViewingKey(this)" title="Copy viewing key">
+                                    <i class="fas fa-copy"></i>
                                 </button>
                             </div>
                         </div>
@@ -627,7 +630,7 @@
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>
-                    <span>0.001 MOLT</span>
+                    <span id="sendNetworkFeeDisplay">Loading...</span>
                 </div>
             </div>
             <div class="modal-footer">
@@ -680,7 +683,7 @@
                     </div>
                     
                     <!-- EVM Address (0x) -->
-                    <div style="margin-bottom: 1rem;">
+                    <div id="evmAddressSection" style="margin-bottom: 1rem;">
                         <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
                             <i class="fab fa-ethereum"></i> EVM Address (MetaMask Compatible)
                         </label>
@@ -690,6 +693,10 @@
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
+                    </div>
+
+                    <div id="evmAddressInfo" style="display:none; margin-bottom:1rem; padding:0.65rem 0.75rem; border-radius:8px; background: rgba(148, 163, 184, 0.1); color: var(--text-secondary); font-size: 0.85rem;">
+                        <i class="fas fa-info-circle"></i> EVM address appears here after on-chain registration confirms.
                     </div>
                     
                     <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">

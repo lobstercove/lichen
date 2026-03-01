@@ -27,6 +27,8 @@ const SHELLS_PER_MOLT: f64 = 1_000_000_000.0;
 const BASE_PRICE: u64 = 1_000;
 const SLOPE: u64 = 1;
 const SLOPE_SCALE: u64 = 1_000_000;
+const CREATION_FEE_MOLT: f64 = 10.0;
+const PLATFORM_FEE_PCT: u64 = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -109,7 +111,7 @@ fn market_cap(supply: u64) -> f64 {
 }
 
 /// Graduation threshold in MOLT
-const GRADUATION_MCAP_MOLT: f64 = 1_000_000.0;
+const GRADUATION_MCAP_MOLT: f64 = 100_000.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Types
@@ -124,6 +126,16 @@ struct PlatformStatsJson {
     creation_fee: f64,
     platform_fee_pct: u64,
     current_slot: u64,
+}
+
+#[derive(Serialize)]
+struct LaunchpadConfigJson {
+    creation_fee: f64,
+    graduation_threshold: f64,
+    platform_fee_pct: u64,
+    base_price_raw: u64,
+    slope: u64,
+    slope_scale: u64,
 }
 
 #[derive(Serialize)]
@@ -219,9 +231,25 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
             fees_collected: fees_raw as f64 / SHELLS_PER_MOLT,
             total_graduated: graduated,
             graduation_threshold: GRADUATION_MCAP_MOLT,
-            creation_fee: 10.0,
-            platform_fee_pct: 1,
+            creation_fee: CREATION_FEE_MOLT,
+            platform_fee_pct: PLATFORM_FEE_PCT,
             current_slot: slot,
+        },
+        slot,
+    )
+}
+
+/// GET /config — Launchpad protocol constants used by frontend bootstrap UI
+async fn get_config(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
+    let slot = current_slot(&state);
+    ApiResponse::ok(
+        LaunchpadConfigJson {
+            creation_fee: CREATION_FEE_MOLT,
+            graduation_threshold: GRADUATION_MCAP_MOLT,
+            platform_fee_pct: PLATFORM_FEE_PCT,
+            base_price_raw: BASE_PRICE,
+            slope: SLOPE,
+            slope_scale: SLOPE_SCALE,
         },
         slot,
     )
@@ -482,6 +510,7 @@ async fn get_holder_balance(
 /// Build the /api/v1/launchpad/* router.
 pub(crate) fn build_launchpad_router() -> Router<Arc<RpcState>> {
     Router::new()
+    .route("/config", get(get_config))
         .route("/stats", get(get_stats))
         .route("/tokens", get(get_tokens))
         .route("/tokens/:id", get(get_token))

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Validator Guide - MoltChain Developer Portal</title>
-    <link rel="stylesheet" href="../shared-base-styles.css">
-    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -264,11 +264,11 @@ cargo build --release
             <!-- ========== 3. CONFIGURATION ========== -->
             <h2 id="configuration">Configuration</h2>
 
-            <p>MoltChain validators are currently configured via <strong>CLI flags</strong> when starting the binary. The table below documents the available settings and their CLI equivalents. A <code>config.toml</code> file format is planned for a future release.</p>
+            <p>MoltChain validators are currently configured via <strong>CLI flags</strong> when starting the binary. The section labels below (for example <code>[network]</code> and <code>[rpc]</code>) are conceptual groupings for readability, not literal TOML sections consumed by the validator today. A real <code>config.toml</code> input format is planned for a future release.</p>
 
             <div class="callout callout-warning">
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
-                These settings are passed as command-line flags: <code>--network</code>, <code>--p2p-port</code>, <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>, <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>, <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>, <code>--dev-mode</code>, <code>--import-key</code>. See the Installation section above for examples.
+                These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>, <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>, <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>, <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>, <code>--dev-mode</code>, <code>--import-key</code>. They are documentation aliases, not direct TOML keys parsed by the current binary.
             </div>
 
             <!-- [validator] -->
@@ -760,6 +760,7 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
             </div>
 
             <!-- ========== 5. MONITORING ========== -->
+            <div id="operations"></div>
             <h2 id="monitoring">Monitoring</h2>
 
             <h3>Prometheus Metrics</h3>

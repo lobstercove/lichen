@@ -12,7 +12,7 @@ use axum::{
     routing::get,
     Router,
 };
-use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
+use moltchain_core::{Block, Hash, MarketActivity, Pubkey, StateStore, Transaction};
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ impl PredictionEventBroadcaster {
         });
     }
 }
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -159,6 +159,8 @@ static IP_CONNECTIONS: std::sync::LazyLock<Mutex<HashMap<IpAddr, u32>>> =
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 /// DDoS protection: max concurrent WebSocket connections
 const MAX_WS_CONNECTIONS: usize = 500;
+/// RPC-L03: Increased base WS event channel capacity to reduce lagged receivers under bursty traffic.
+const WS_EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 /// WebSocket subscription request
 #[derive(Debug, Deserialize)]
@@ -377,7 +379,7 @@ impl WsState {
         Arc<DexEventBroadcaster>,
         Arc<PredictionEventBroadcaster>,
     ) {
-        let (event_tx, _) = broadcast::channel(1000);
+        let (event_tx, _) = broadcast::channel(WS_EVENT_CHANNEL_CAPACITY);
         let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
         let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
         let ws_state = Self {
@@ -672,6 +674,100 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         }
     });
 
+    // Task to resolve signature subscriptions into status notifications.
+    // RPC-C04: signatureSubscribe previously never fired because no producer emitted
+    // SignatureStatus events. This poller checks indexed tx signatures and pushes
+    // one-shot notifications when signatures are observed.
+    let tx_sig = tx.clone();
+    let sig_subscription_manager = subscription_manager.clone();
+    let sig_state = state.state.clone();
+    let signature_event_task = tokio::spawn(async move {
+        let mut sent_once: HashSet<u64> = HashSet::new();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+
+            let last_slot = match sig_state.get_last_slot() {
+                Ok(slot) => slot,
+                Err(_) => continue,
+            };
+
+            let targets: Vec<(u64, String)> = {
+                let subs = sig_subscription_manager.subscriptions.read().await;
+                subs.iter()
+                    .filter_map(|(sub_id, sub_type)| {
+                        if let SubscriptionType::SignatureStatus(sig) = sub_type {
+                            Some((*sub_id, sig.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            let mut completed_subs = Vec::new();
+
+            for (sub_id, signature) in targets {
+                if sent_once.contains(&sub_id) {
+                    continue;
+                }
+
+                let hash = if let Ok(bytes) = bs58::decode(&signature).into_vec() {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(Hash(arr))
+                    } else {
+                        None
+                    }
+                } else {
+                    Hash::from_hex(&signature).ok()
+                };
+
+                let Some(hash) = hash else {
+                    continue;
+                };
+
+                let slot_opt = sig_state.get_tx_slot(&hash).ok().flatten();
+                let tx_exists = sig_state.get_transaction(&hash).ok().flatten().is_some();
+
+                let Some((status, slot)) = (match (slot_opt, tx_exists) {
+                    (Some(slot), _) => {
+                        let status = if last_slot >= slot.saturating_add(32) {
+                            "finalized"
+                        } else {
+                            "confirmed"
+                        };
+                        Some((status, slot))
+                    }
+                    (None, true) => Some(("processed", last_slot)),
+                    (None, false) => None,
+                }) else {
+                    continue;
+                };
+
+                let event = Event::SignatureStatus {
+                    signature: signature.clone(),
+                    status: status.to_string(),
+                    slot,
+                    err: None,
+                };
+                let notification = create_notification(sub_id, &event);
+                if let Ok(json) = serde_json::to_string(&notification) {
+                    let _ = tx_sig.send(json).await;
+                    sent_once.insert(sub_id);
+                    completed_subs.push(sub_id);
+                }
+            }
+
+            for sub_id in completed_subs {
+                let _ = sig_subscription_manager.unsubscribe(sub_id).await;
+            }
+        }
+    });
+
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -709,6 +805,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     event_task.abort();
     dex_event_task.abort();
     prediction_event_task.abort();
+    signature_event_task.abort();
     // DDoS protection: decrement active connection counter
     conn_guard.fetch_sub(1, Ordering::SeqCst);
 
@@ -1142,7 +1239,11 @@ async fn handle_subscription_request(
         // ─── New subscriptions ───
         "subscribeSignatureStatus" | "signatureSubscribe" => {
             if let Some(params) = req.params {
-                if let Some(sig) = params.as_str() {
+                if let Some(sig) = params
+                    .as_str()
+                    .or_else(|| params.as_array().and_then(|arr| arr.first()).and_then(|v| v.as_str()))
+                    .or_else(|| params.get("signature").and_then(|v| v.as_str()))
+                {
                     subscription_manager
                         .subscribe(SubscriptionType::SignatureStatus(sig.to_string()))
                         .await
@@ -1162,7 +1263,11 @@ async fn handle_subscription_request(
         }
         "unsubscribeSignatureStatus" | "signatureUnsubscribe" => {
             if let Some(params) = req.params {
-                if let Some(sub_id) = params.as_u64() {
+                if let Some(sub_id) = params
+                    .as_u64()
+                    .or_else(|| params.as_array().and_then(|arr| arr.first()).and_then(|v| v.as_u64()))
+                    .or_else(|| params.get("subscription").and_then(|v| v.as_u64()))
+                {
                     Ok(serde_json::json!(
                         subscription_manager.unsubscribe(sub_id).await
                     ))

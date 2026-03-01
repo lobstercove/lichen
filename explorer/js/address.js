@@ -12,6 +12,10 @@ let activeAddressTab = 'overview';
 let currentMoltyProfile = null;
 let currentAccountData = null;
 let moltyIdProgramAddress = null;
+let addressPolling = null;
+let addressRefreshTimer = null;
+let addressRefreshInFlight = false;
+let accountSubRegistered = false;
 
 const AGENT_TYPE_OPTIONS = [
     { value: 0, label: 'General ⚡' },
@@ -81,8 +85,79 @@ document.addEventListener('DOMContentLoaded', () => {
         switchAddressTab(initialTab);
     }
     loadAddressData();
+    initAddressRealtime();
     setupSearch();
 });
+
+async function refreshAddressData() {
+    if (addressRefreshInFlight) return;
+    addressRefreshInFlight = true;
+    try {
+        await loadAddressData();
+    } finally {
+        addressRefreshInFlight = false;
+    }
+}
+
+function scheduleAddressRefresh(delayMs = 800) {
+    if (addressRefreshTimer) return;
+    addressRefreshTimer = setTimeout(async () => {
+        addressRefreshTimer = null;
+        await refreshAddressData();
+    }, delayMs);
+}
+
+function startAddressPolling() {
+    if (addressPolling) return;
+    addressPolling = setInterval(() => {
+        scheduleAddressRefresh(0);
+    }, 10000);
+}
+
+function stopAddressPolling() {
+    if (!addressPolling) return;
+    clearInterval(addressPolling);
+    addressPolling = null;
+}
+
+function ensureAccountSubscription() {
+    if (accountSubRegistered || !currentAddress || typeof ws === 'undefined') return;
+    accountSubRegistered = true;
+
+    ws.subscribe('subscribeAccount', (event) => {
+        const eventPubkey = String(event?.pubkey || '').toLowerCase();
+        if (eventPubkey && eventPubkey !== String(currentAddress).toLowerCase()) {
+            return;
+        }
+        scheduleAddressRefresh(600);
+    }, currentAddress).catch(() => {
+        accountSubRegistered = false;
+        startAddressPolling();
+    });
+}
+
+function initAddressRealtime() {
+    if (typeof ws === 'undefined') {
+        startAddressPolling();
+        return;
+    }
+
+    ws.onOpen(() => {
+        stopAddressPolling();
+        ensureAccountSubscription();
+    });
+
+    ws.onClose(() => {
+        startAddressPolling();
+    });
+
+    ws.connect();
+    setTimeout(() => {
+        if (!ws.isConnected()) {
+            startAddressPolling();
+        }
+    }, 2000);
+}
 
 // ===== Load Address Data =====
 async function loadAddressData() {
@@ -236,11 +311,13 @@ async function loadMoltyIdentityData(address) {
         };
         renderSummaryIdentity(currentMoltyProfile);
         renderIdentityPane(currentMoltyProfile);
+        bindIdentityActionButtons();
     } catch (error) {
         console.warn('Failed to load MoltyID data:', error);
         currentMoltyProfile = null;
         renderSummaryIdentity(null);
         renderIdentityPane(null);
+        bindIdentityActionButtons();
     }
 }
 
@@ -589,23 +666,21 @@ function formatTimestamp(value) {
 // Convert a slot number to an approximate human-readable expiry date.
 // Uses MS_PER_SLOT and SLOTS_PER_YEAR from shared/utils.js.
 // If currentSlot is provided (from RPC getSlot), use it for accurate calculation.
-let _explorerCurrentSlot = null;
+let _explorerCurrentSlot = 0;
 let _explorerSlotTime = 0;
 
 async function fetchCurrentSlot() {
-    if (_explorerCurrentSlot && Date.now() - _explorerSlotTime < 30000) return _explorerCurrentSlot;
+    if (Number.isFinite(_explorerCurrentSlot) && _explorerCurrentSlot > 0 && Date.now() - _explorerSlotTime < 30000) {
+        return _explorerCurrentSlot;
+    }
     try {
-        const res = await fetch(RPC_URL, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSlot', params: [] })
-        });
-        const data = await res.json();
-        if (typeof data.result === 'number' && data.result > 0) {
-            _explorerCurrentSlot = data.result;
+        const slot = await rpcCall('getSlot', []);
+        if (typeof slot === 'number' && slot > 0) {
+            _explorerCurrentSlot = slot;
             _explorerSlotTime = Date.now();
         }
     } catch (_) {}
-    return _explorerCurrentSlot || 0;
+    return Number.isFinite(_explorerCurrentSlot) ? _explorerCurrentSlot : 0;
 }
 
 function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
@@ -617,7 +692,7 @@ function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
     const durationYears = Math.max(1, Math.round(durationSlots / SLOTS_PER_YEAR));
 
     // Use chain's current slot for accurate date calculation
-    const curSlot = currentSlot || _explorerCurrentSlot;
+    const curSlot = Number((currentSlot ?? _explorerCurrentSlot) || 0);
     if (curSlot && curSlot > 0) {
         const remainingSlots = slot - curSlot;
         const remainingMs = remainingSlots * MS_PER_SLOT;
@@ -1514,9 +1589,11 @@ async function loadValidatorRewards(address) {
 // ===== Treasury Stats =====
 async function loadTreasuryStats(address) {
     try {
+        const TREASURY_SCAN_LIMIT = 400;
         // Fetch treasury's transaction history to count airdrops
-        const result = await rpcCall('getTransactionsByAddress', [address, { limit: 500 }]);
-        const transactions = result?.transactions || (Array.isArray(result) ? result : []);
+        const result = await rpcCall('getTransactionsByAddress', [address, { limit: TREASURY_SCAN_LIMIT }]);
+        const rawTransactions = result?.transactions || (Array.isArray(result) ? result : []);
+        const transactions = rawTransactions.slice(0, TREASURY_SCAN_LIMIT);
 
         let airdropCount = 0;
         let totalAirdropped = 0;
@@ -1695,28 +1772,6 @@ function displayAddressData(data) {
 
     document.getElementById('rawData').textContent = JSON.stringify(data, null, 2);
 
-    const summaryAddress = document.getElementById('summaryAddress');
-    const summaryEvmAddress = document.getElementById('summaryEvmAddress');
-    const summaryBalance = document.getElementById('summaryBalance');
-    const summarySpendable = document.getElementById('summarySpendable');
-    const summaryStaked = document.getElementById('summaryStaked');
-    const summaryLocked = document.getElementById('summaryLocked');
-
-    if (summaryAddress) {
-        summaryAddress.textContent = formatHash(data.base58);
-        summaryAddress.title = data.base58;
-    }
-    if (summaryEvmAddress) {
-        summaryEvmAddress.textContent = data.evm ? formatHash(data.evm) : 'Unavailable';
-        if (data.evm) summaryEvmAddress.title = data.evm;
-    }
-    if (summaryBalance) summaryBalance.textContent = `${formatNumber(data.molt)} MOLT`;
-    if (summarySpendable) summarySpendable.textContent = `Spendable: ${formatNumber(data.spendable)} MOLT`;
-    if (summaryStaked) {
-        const totalStaked = (data.staked || 0) + (data.reefValue || data.reefStaked || 0);
-        summaryStaked.textContent = `Staked: ${formatNumber(totalStaked)} MOLT`;
-    }
-    if (summaryLocked) summaryLocked.textContent = `Locked: ${formatNumber(data.locked)} MOLT`;
     enforceAddressViewOnlyMode();
 }
 

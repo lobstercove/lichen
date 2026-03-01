@@ -79,6 +79,23 @@ const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 /// never produces, eventually getting killed by the watchdog.
 const MAX_FREEZE_DURATION_SECS: u64 = 30;
 
+/// Heartbeat (empty block) production is allowed only after this duration
+/// since the last observed user-transaction block anywhere on the node.
+const HEARTBEAT_GLOBAL_IDLE_SECS: u64 = 5;
+
+/// Sync request fanout: send block-range requests to top-N peers by score
+/// instead of broadcasting to all peers.
+const SYNC_REQUEST_FANOUT: usize = 3;
+
+/// QoS: per-peer block-range serving token bucket, measured in blocks.
+const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 1200;
+const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 200;
+
+/// QoS: per-peer snapshot serving token bucket, measured in request units.
+const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
+const SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC: u64 = 8;
+const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
+
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
@@ -179,6 +196,40 @@ fn collect_machine_fingerprint() -> [u8; 32] {
     let mut fingerprint = [0u8; 32];
     fingerprint.copy_from_slice(&result);
     fingerprint
+}
+
+#[derive(Debug, Clone)]
+struct TokenBucket {
+    capacity: f64,
+    tokens: f64,
+    refill_per_sec: f64,
+    last_refill: std::time::Instant,
+}
+
+impl TokenBucket {
+    fn new(capacity: u64, refill_per_sec: u64) -> Self {
+        Self {
+            capacity: capacity as f64,
+            tokens: capacity as f64,
+            refill_per_sec: refill_per_sec as f64,
+            last_refill: std::time::Instant::now(),
+        }
+    }
+
+    fn try_consume(&mut self, cost: u64) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+
+        let cost_f = cost as f64;
+        if self.tokens >= cost_f {
+            self.tokens -= cost_f;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,6 +544,35 @@ fn block_has_user_transactions(block: &Block) -> bool {
         .any(|tx| !is_reward_or_debt_tx(tx))
 }
 
+fn validate_p2p_transaction_signatures(tx: &Transaction) -> bool {
+    if tx.signatures.is_empty() || tx.message.instructions.is_empty() {
+        return false;
+    }
+
+    let mut required_signers: HashSet<Pubkey> = HashSet::new();
+    for ix in &tx.message.instructions {
+        let Some(first_acc) = ix.accounts.first() else {
+            return false;
+        };
+        required_signers.insert(*first_acc);
+    }
+
+    let message_bytes = tx.message.serialize();
+    let mut verified_signers: HashSet<Pubkey> = HashSet::new();
+    for sig in &tx.signatures {
+        for signer in &required_signers {
+            if !verified_signers.contains(signer)
+                && Keypair::verify(signer, &message_bytes, sig)
+            {
+                verified_signers.insert(*signer);
+                break;
+            }
+        }
+    }
+
+    verified_signers.len() == required_signers.len()
+}
+
 /// AUDIT-FIX 3.14: Returns count of indexing errors so callers can track failure rate.
 fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
     let mut activity_seq: u32 = 0;
@@ -602,9 +682,20 @@ fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
                     activity_seq = activity_seq.saturating_add(1);
 
                     let market_kind = match function.as_str() {
-                        "list_nft" => Some(MarketActivityKind::Listing),
+                        "list_nft" | "list_nft_with_royalty" => Some(MarketActivityKind::Listing),
                         "buy_nft" => Some(MarketActivityKind::Sale),
                         "cancel_listing" => Some(MarketActivityKind::Cancel),
+                        "make_offer" | "make_offer_with_expiry" => Some(MarketActivityKind::Offer),
+                        "accept_offer" => Some(MarketActivityKind::OfferAccepted),
+                        "cancel_offer" => Some(MarketActivityKind::OfferCancelled),
+                        "update_listing_price" => Some(MarketActivityKind::PriceUpdate),
+                        "create_auction" => Some(MarketActivityKind::AuctionCreated),
+                        "place_bid" => Some(MarketActivityKind::AuctionBid),
+                        "settle_auction" => Some(MarketActivityKind::AuctionSettled),
+                        "cancel_auction" => Some(MarketActivityKind::AuctionCancelled),
+                        "make_collection_offer" => Some(MarketActivityKind::CollectionOffer),
+                        "accept_collection_offer" => Some(MarketActivityKind::CollectionOfferAccepted),
+                        "cancel_collection_offer" => Some(MarketActivityKind::OfferCancelled),
                         _ => None,
                     };
 
@@ -732,6 +823,7 @@ fn build_market_activity(
             (parsed.seller.or(Some(caller)), parsed.buyer)
         }
         MarketActivityKind::Sale => (parsed.seller, parsed.buyer.or(Some(caller))),
+        _ => (parsed.seller, parsed.buyer),
     };
 
     MarketActivity {
@@ -1721,6 +1813,7 @@ fn emit_program_and_nft_events(
                                             })
                                         }
                                         MarketActivityKind::Cancel => Ok(0),
+                                        _ => Ok(0),
                                     };
                                 }
 
@@ -2343,6 +2436,7 @@ async fn apply_block_effects(
         if let Some(val_info) = vs.get_validator_mut(&producer) {
             if !reward_already {
                 val_info.blocks_proposed += 1;
+                val_info.transactions_processed += block.transactions.len() as u64;
             }
             val_info.last_active_slot = slot;
             val_info.update_reputation(true);
@@ -2366,6 +2460,7 @@ async fn apply_block_effects(
                     joined_slot: slot,
                     last_active_slot: slot,
                     commission_rate: 500,
+                    transactions_processed: if reward_already { 0 } else { block.transactions.len() as u64 },
                 };
                 vs.add_validator(new_validator);
             }
@@ -3127,7 +3222,7 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
 }
 
 // ========================================================================
-//  GENESIS PHASE 2 — Initialize all 26 contracts by executing their
+//  GENESIS PHASE 2 — Initialize all 29 contracts by executing their
 //  initialize() function via the WASM runtime.
 // ========================================================================
 
@@ -7312,6 +7407,7 @@ async fn run_validator() {
                     last_active_slot: 0,
                     joined_slot: 0,
                     commission_rate: 500,
+                    transactions_processed: 0,
                 };
 
                 set.add_validator(validator);
@@ -7338,6 +7434,7 @@ async fn run_validator() {
                         last_active_slot: 0,
                         joined_slot: 0,
                         commission_rate: 500,
+                        transactions_processed: 0,
                     });
                 }
             } else {
@@ -7359,6 +7456,7 @@ async fn run_validator() {
                 last_active_slot: 0,
                 joined_slot: 0,
                 commission_rate: 500,
+                transactions_processed: 0,
             });
         }
 
@@ -7652,7 +7750,9 @@ async fn run_validator() {
     // Create channels for P2P communication
     // M11: Bounded channels prevent memory exhaustion from slow consumers.
     // Capacity tiers: high-throughput (txs/votes) → larger, control msgs → smaller.
-    let (block_tx, mut block_rx) = mpsc::channel(500);
+    // Block channel sized at 2000 to absorb sync bursts without backpressure
+    // killing the P2P message loop (the old 500 was too small during catch-up).
+    let (block_tx, mut block_rx) = mpsc::channel(10_000);
     let (vote_tx, mut vote_rx) = mpsc::channel(2_000);
     let (transaction_tx, mut transaction_rx) = mpsc::channel(5_000);
     let (validator_announce_tx, mut validator_announce_rx) = mpsc::channel(100);
@@ -7726,6 +7826,9 @@ async fn run_validator() {
     let last_block_time = Arc::new(Mutex::new(std::time::Instant::now()));
     let last_block_time_for_blocks = last_block_time.clone();
     let last_block_time_for_local = last_block_time.clone();
+    let global_last_user_tx_activity = Arc::new(Mutex::new(std::time::Instant::now()));
+    let global_last_user_tx_activity_for_blocks = global_last_user_tx_activity.clone();
+    let global_last_user_tx_activity_for_producer = global_last_user_tx_activity.clone();
 
     // PERF-OPT 1: Tip-advance notification.  The block receiver task signals
     // this Notify whenever a new block advances the chain tip.  The production
@@ -7931,6 +8034,7 @@ async fn run_validator() {
         let vote_agg_for_effects = vote_aggregator.clone();
         let local_addr = p2p_config.listen_addr;
         let last_block_time_for_blocks = last_block_time_for_blocks.clone();
+        let global_last_user_tx_activity_for_blocks = global_last_user_tx_activity_for_blocks.clone();
         let genesis_config_for_blocks = genesis_config.clone();
         // genesis_time_secs_for_blocks and slot_duration_ms_for_blocks removed:
         // Timestamp validation now uses wall-clock only, not slot-derived timestamps.
@@ -7956,6 +8060,7 @@ async fn run_validator() {
             let mut prune_below_slot: u64 = 0;
             while let Some(block) = block_rx.recv().await {
                 let block_slot = block.header.slot;
+                let block_has_user_transactions = !block.transactions.is_empty();
 
                 // ── Block validation (T2.2) ──────────────────────────
                 // Verify producer signature and structural limits BEFORE
@@ -8095,6 +8200,10 @@ async fn run_validator() {
                 // receiving and queuing blocks but can't apply them yet because
                 // intermediate blocks are still missing.
                 *last_block_time_for_blocks.lock().await = std::time::Instant::now();
+                if block_has_user_transactions {
+                    *global_last_user_tx_activity_for_blocks.lock().await =
+                        std::time::Instant::now();
+                }
 
                 // FIX-FORK-1: Record that this slot has a valid network block.
                 // The production loop checks this set right before creating its
@@ -8551,19 +8660,55 @@ async fn run_validator() {
                         while chunk_start <= end {
                             let chunk_end =
                                 std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
-                            let request_msg = P2PMessage::new(
-                                MessageType::BlockRangeRequest {
-                                    start_slot: chunk_start,
-                                    end_slot: chunk_end,
-                                },
-                                local_addr,
-                            );
-                            peer_mgr_for_sync.broadcast(request_msg).await;
+                            let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
+                            peer_infos.sort_by(|a, b| {
+                                b.1.cmp(&a.1)
+                                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                            });
+                            let selected_peers: Vec<std::net::SocketAddr> = peer_infos
+                                .into_iter()
+                                .take(SYNC_REQUEST_FANOUT.max(1))
+                                .map(|(addr, _)| addr)
+                                .collect();
+
+                            if selected_peers.is_empty() {
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: chunk_start,
+                                        end_slot: chunk_end,
+                                    },
+                                    local_addr,
+                                );
+                                peer_mgr_for_sync.broadcast(request_msg).await;
+                            } else {
+                                for peer_addr in &selected_peers {
+                                    let request_msg = P2PMessage::new(
+                                        MessageType::BlockRangeRequest {
+                                            start_slot: chunk_start,
+                                            end_slot: chunk_end,
+                                        },
+                                        local_addr,
+                                    );
+                                    if let Err(e) = peer_mgr_for_sync
+                                        .send_to_peer(peer_addr, request_msg)
+                                        .await
+                                    {
+                                        warn!(
+                                            "⚠️  Failed sync request {}-{} to {}: {}",
+                                            chunk_start, chunk_end, peer_addr, e
+                                        );
+                                        peer_mgr_for_sync.record_violation(peer_addr);
+                                    } else {
+                                        peer_mgr_for_sync.record_success(peer_addr);
+                                    }
+                                }
+                            }
                             info!(
-                                "📡 Sent block range request: {} to {} (chunk of {})",
+                                "📡 Sent block range request: {} to {} (chunk {}, fanout {})",
                                 chunk_start,
                                 chunk_end,
-                                chunk_end - chunk_start + 1
+                                chunk_end - chunk_start + 1,
+                                selected_peers.len().max(1)
                             );
                             chunk_start = chunk_end + 1;
                         }
@@ -8814,41 +8959,27 @@ async fn run_validator() {
             while let Some(tx) = transaction_rx.recv().await {
                 info!("📥 Received transaction from P2P");
                 // AUDIT-FIX 1.6: Validate transaction before adding to mempool
-                // 1. Verify signature — fee payer signs the serialized message
+                // 1. Verify all required signatures (first account of each instruction)
                 let sender_pubkey = tx
                     .message
                     .instructions
                     .first()
                     .and_then(|ix| ix.accounts.first())
                     .copied();
-                let sig_valid = match (&sender_pubkey, tx.signatures.first()) {
-                    (Some(sender), Some(sig)) => {
-                        let msg_bytes = tx.message.serialize();
-                        Keypair::verify(sender, &msg_bytes, sig)
-                    }
-                    _ => false,
-                };
-                if !sig_valid {
+                if !validate_p2p_transaction_signatures(&tx) {
                     info!("❌ P2P transaction rejected: invalid or missing signature");
                     continue;
                 }
-                // 2. Verify sender exists with minimum balance for fee
-                if let Some(sender) = &sender_pubkey {
-                    match state_for_p2p_txs.get_account(sender) {
-                        Ok(Some(acct)) if acct.spendable >= BASE_FEE => {}
-                        _ => {
-                            info!("❌ P2P transaction rejected: sender missing or insufficient balance");
-                            continue;
-                        }
-                    }
-                }
-                // 3. Validate transaction structure (size limits, instruction count)
+                // 2. Validate transaction structure (size limits, instruction count)
                 if let Err(e) = tx.validate_structure() {
                     info!("❌ P2P transaction rejected: {}", e);
                     continue;
                 }
                 // AUDIT-FIX V5.3: Look up on-chain MoltyID reputation
                 // so express-lane priority works for P2P-received transactions.
+                // Do not reject based on local account balance here: peers can be
+                // briefly behind in state sync, and strict pre-checks cause mempool
+                // imbalance (one validator receives TXs, others drop them).
                 let reputation = sender_pubkey
                     .as_ref()
                     .and_then(|pk| state_for_p2p_txs.get_reputation(pk).ok())
@@ -9171,6 +9302,7 @@ async fn run_validator() {
                         joined_slot: announcement.current_slot,
                         last_active_slot: announcement.current_slot,
                         commission_rate: 500,
+                        transactions_processed: 0,
                     };
                     vs.add_validator(new_validator);
 
@@ -9353,9 +9485,12 @@ async fn run_validator() {
         let local_addr_for_responses = p2p_config.listen_addr;
         tokio::spawn(async move {
             info!("🔄 Block range request handler started");
+            const RATE_LIMIT_WINDOW_SECS: u64 = 10;
+            const MAX_REQUESTS_PER_WINDOW: u64 = 30;
             let mut rate_limits: HashMap<std::net::SocketAddr, (u64, std::time::Instant)> =
                 HashMap::new();
             let mut strikes: HashMap<std::net::SocketAddr, u32> = HashMap::new();
+            let mut serve_tokens: HashMap<std::net::SocketAddr, TokenBucket> = HashMap::new();
             let mut last_prune = std::time::Instant::now();
             while let Some(request) = block_range_request_rx.recv().await {
                 // M5 fix: Prune stale rate_limits and strikes entries every 60s
@@ -9366,8 +9501,22 @@ async fn run_validator() {
                     if strikes.len() > 500 {
                         strikes.clear();
                     }
+                    if serve_tokens.len() > 1000 {
+                        serve_tokens.clear();
+                    }
                     last_prune = std::time::Instant::now();
                 }
+
+                // Ignore accidental self-targeted requests (e.g. looped topology)
+                // without penalizing local peer score.
+                if request.requester == local_addr_for_responses {
+                    debug!(
+                        "Skipping self block range request {}-{}",
+                        request.start_slot, request.end_slot
+                    );
+                    continue;
+                }
+
                 if !peer_mgr_for_responses
                     .get_peers()
                     .contains(&request.requester)
@@ -9376,7 +9525,6 @@ async fn run_validator() {
                         "⚠️  Ignoring block range request from unknown peer {}",
                         request.requester
                     );
-                    peer_mgr_for_responses.record_violation(&request.requester);
                     continue;
                 }
 
@@ -9402,17 +9550,35 @@ async fn run_validator() {
 
                 let now = std::time::Instant::now();
                 let entry = rate_limits.entry(request.requester).or_insert((0, now));
-                if now.duration_since(entry.1).as_secs() >= 10 {
+                if now.duration_since(entry.1).as_secs() >= RATE_LIMIT_WINDOW_SECS {
                     *entry = (0, now);
                 }
                 entry.0 = entry.0.saturating_add(1);
-                if entry.0 > 5 {
-                    warn!("⚠️  Rate limit exceeded for {}", request.requester);
-                    peer_mgr_for_responses.record_violation(&request.requester);
+                if entry.0 > MAX_REQUESTS_PER_WINDOW {
+                    debug!(
+                        "Rate limit exceeded for {} ({} requests / {}s)",
+                        request.requester,
+                        entry.0,
+                        RATE_LIMIT_WINDOW_SECS
+                    );
                     continue;
                 }
 
                 let range_size = request.end_slot.saturating_sub(request.start_slot) + 1;
+
+                let bucket = serve_tokens.entry(request.requester).or_insert_with(|| {
+                    TokenBucket::new(
+                        BLOCK_RANGE_SERVE_BURST_BLOCKS,
+                        BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC,
+                    )
+                });
+                if !bucket.try_consume(range_size.max(1)) {
+                    debug!(
+                        "Rate limited block serve for {} ({} blocks requested)",
+                        request.requester, range_size
+                    );
+                    continue;
+                }
 
                 // Rate limiting: prevent excessive requests
                 if range_size > 1000 {
@@ -9613,6 +9779,11 @@ async fn run_validator() {
         let data_dir_for_snapshot = data_dir.clone();
         tokio::spawn(async move {
             info!("🔄 Snapshot request handler started");
+            let mut snapshot_tokens: HashMap<std::net::SocketAddr, TokenBucket> = HashMap::new();
+            let mut snapshot_export_cursors: std::collections::HashMap<
+                (std::net::SocketAddr, String, u64),
+                (u64, Option<Vec<u8>>, u64),
+            > = std::collections::HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
                 if !peer_mgr_for_snapshot
                     .get_peers()
@@ -9623,6 +9794,27 @@ async fn run_validator() {
                         request.requester
                     );
                     peer_mgr_for_snapshot.record_violation(&request.requester);
+                    continue;
+                }
+
+                let snapshot_cost = if request.is_meta_request {
+                    1
+                } else if let Some((_, _, chunk_size)) = request.state_snapshot_params {
+                    (chunk_size.min(MAX_SNAPSHOT_CHUNK_SIZE) / 256).max(1)
+                } else {
+                    2
+                };
+                let bucket = snapshot_tokens.entry(request.requester).or_insert_with(|| {
+                    TokenBucket::new(
+                        SNAPSHOT_SERVE_BURST_UNITS,
+                        SNAPSHOT_SERVE_REFILL_UNITS_PER_SEC,
+                    )
+                });
+                if !bucket.try_consume(snapshot_cost) {
+                    debug!(
+                        "Rate limited snapshot serve for {} (cost {})",
+                        request.requester, snapshot_cost
+                    );
                     continue;
                 }
 
@@ -9678,31 +9870,98 @@ async fn run_validator() {
                         };
 
                     if let Some((store, meta)) = checkpoint_store {
-                        // P10-CORE-03 FIX: Use paginated export to avoid loading
-                        // the entire column family into memory.
-                        let chunk_sz = chunk_size.max(1);
-                        let offset = chunk_index * chunk_sz;
+                        // RPC-M06 FIX: Use cursor-paginated export so serving
+                        // chunk N no longer rescans O(N*chunk_size) from start.
+                        let chunk_sz = chunk_size.clamp(1, MAX_SNAPSHOT_CHUNK_SIZE);
+
+                        let cache_key = (request.requester, category.clone(), chunk_sz);
+                        if chunk_index == 0 {
+                            snapshot_export_cursors.remove(&cache_key);
+                        }
+
+                        let total_entries = match category.as_str() {
+                            "accounts" => meta.total_accounts,
+                            "contract_storage" => {
+                                store.count_contract_storage_entries().unwrap_or(0)
+                            }
+                            "programs" => store.get_program_count(),
+                            _ => 0,
+                        };
+                        let total_chunks = total_entries.div_ceil(chunk_sz).max(1);
+
+                        let entry = snapshot_export_cursors
+                            .entry(cache_key.clone())
+                            .or_insert((0, None, total_chunks));
+                        entry.2 = total_chunks;
+
+                        if chunk_index != entry.0 {
+                            // Rebuild cursor position for out-of-order requests.
+                            let mut replay_cursor: Option<Vec<u8>> = None;
+                            let mut replay_index = 0u64;
+                            while replay_index < chunk_index {
+                                let replay_page = match category.as_str() {
+                                    "accounts" => {
+                                        store.export_accounts_cursor(replay_cursor.as_deref(), chunk_sz)
+                                    }
+                                    "contract_storage" => {
+                                        store.export_contract_storage_cursor(
+                                            replay_cursor.as_deref(),
+                                            chunk_sz,
+                                        )
+                                    }
+                                    "programs" => {
+                                        store.export_programs_cursor(replay_cursor.as_deref(), chunk_sz)
+                                    }
+                                    _ => Ok(moltchain_core::state::KvPage {
+                                        entries: Vec::new(),
+                                        total: 0,
+                                        next_cursor: None,
+                                        has_more: false,
+                                    }),
+                                }
+                                .unwrap_or_else(|_| moltchain_core::state::KvPage {
+                                    entries: Vec::new(),
+                                    total: 0,
+                                    next_cursor: None,
+                                    has_more: false,
+                                });
+
+                                replay_cursor = replay_page.next_cursor;
+                                replay_index = replay_index.saturating_add(1);
+                                if !replay_page.has_more {
+                                    break;
+                                }
+                            }
+                            entry.0 = replay_index;
+                            entry.1 = replay_cursor;
+                        }
 
                         let page = match category.as_str() {
-                            "accounts" => store.export_accounts_iter(offset, chunk_sz),
+                            "accounts" => store.export_accounts_cursor(entry.1.as_deref(), chunk_sz),
                             "contract_storage" => {
-                                store.export_contract_storage_iter(offset, chunk_sz)
+                                store.export_contract_storage_cursor(entry.1.as_deref(), chunk_sz)
                             }
-                            "programs" => store.export_programs_iter(offset, chunk_sz),
+                            "programs" => store.export_programs_cursor(entry.1.as_deref(), chunk_sz),
                             _ => Ok(moltchain_core::state::KvPage {
                                 entries: Vec::new(),
                                 total: 0,
+                                next_cursor: None,
+                                has_more: false,
                             }),
                         }
-                        .unwrap_or_else(|_| {
-                            moltchain_core::state::KvPage {
-                                entries: Vec::new(),
-                                total: 0,
-                            }
+                        .unwrap_or_else(|_| moltchain_core::state::KvPage {
+                            entries: Vec::new(),
+                            total: 0,
+                            next_cursor: None,
+                            has_more: false,
                         });
 
-                        let total_entries = page.total;
-                        let total_chunks = total_entries.div_ceil(chunk_sz).max(1);
+                        entry.0 = chunk_index.saturating_add(1);
+                        entry.1 = page.next_cursor.clone();
+                        if !page.has_more {
+                            snapshot_export_cursors.remove(&cache_key);
+                        }
+
                         let chunk = page.entries;
 
                         let entries_bytes = bincode::serialize(&chunk).unwrap_or_default();
@@ -9995,6 +10254,7 @@ async fn run_validator() {
                                                 joined_slot: remote_val.joined_slot,
                                                 last_active_slot: remote_val.last_active_slot,
                                                 commission_rate: 500,
+                                                transactions_processed: 0,
                                             };
                                             vs.add_validator(new_val);
                                             merged_count += 1;
@@ -10497,14 +10757,22 @@ async fn run_validator() {
         info!("🔒 Single-validator mode: No P2P network");
     }
 
-    // Periodic mempool cleanup
+    // Periodic mempool cleanup (expired + stale blockhash eviction)
     let mempool_for_cleanup = mempool.clone();
+    let state_for_mempool_cleanup = state.clone();
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(60));
+        let mut interval = time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
             let mut pool = mempool_for_cleanup.lock().await;
             pool.cleanup_expired();
+            // Prune transactions referencing blockhashes older than 300 slots
+            if let Ok(valid_hashes) = state_for_mempool_cleanup.get_recent_blockhashes(300) {
+                let evicted = pool.prune_stale_blockhashes(&valid_hashes);
+                if evicted > 0 {
+                    warn!("🧹 Mempool pruned {} stale-blockhash transactions", evicted);
+                }
+            }
             info!("🧹 Mempool cleaned (size: {})", pool.size());
         }
     });
@@ -11281,6 +11549,11 @@ async fn run_validator() {
         // heartbeats from multiple validators.
         let is_heartbeat_time =
             last_block_time_for_local.lock().await.elapsed() >= Duration::from_secs(5);
+        let is_global_idle_for_heartbeat = global_last_user_tx_activity_for_producer
+            .lock()
+            .await
+            .elapsed()
+            >= Duration::from_secs(HEARTBEAT_GLOBAL_IDLE_SECS);
 
         // Peek at mempool to determine if this would be a heartbeat or tx block
         let has_pending = {
@@ -11292,7 +11565,7 @@ async fn run_validator() {
             // No transactions — this will be a heartbeat block.
             // ALL heartbeats respect the 5-second timer, even primary leaders.
             // Only exception: deadlock breaker must produce to unstick a frozen chain.
-            if !is_heartbeat_time && !is_deadlock_breaker {
+            if (!is_heartbeat_time || !is_global_idle_for_heartbeat) && !is_deadlock_breaker {
                 continue;
             }
         } else if !should_produce && !is_deadlock_breaker {
@@ -11302,6 +11575,20 @@ async fn run_validator() {
         }
 
         // parent_hash already refreshed at top of loop (LEADER-SEED-FIX)
+
+        // Prune stale-blockhash transactions before draining mempool.
+        // This avoids the death-spiral where a behind-validator collects
+        // transactions with expired blockhashes, tries to include them,
+        // drops them all, and produces only empty heartbeats.
+        {
+            let mut pool = mempool.lock().await;
+            if let Ok(valid_hashes) = state.get_recent_blockhashes(300) {
+                let evicted = pool.prune_stale_blockhashes(&valid_hashes);
+                if evicted > 0 {
+                    warn!("🧹 Pre-production prune: evicted {} stale-blockhash txs", evicted);
+                }
+            }
+        }
 
         // Collect pending transactions from mempool
         let pending_transactions = {
@@ -11331,6 +11618,26 @@ async fn run_validator() {
         }
 
         let has_user_transactions = !transactions.is_empty();
+        if has_user_transactions {
+            *global_last_user_tx_activity_for_producer.lock().await = std::time::Instant::now();
+        }
+
+        // HEARTBEAT-RETROACTIVE: If the mempool looked non-empty (bypassed the
+        // heartbeat gate) but all transactions failed processing, this block
+        // would be a 0-tx heartbeat produced at the 400ms tx-rate instead of the
+        // 5s heartbeat interval.  Re-apply the heartbeat gate here so spurious
+        // empty blocks don't flood the chain during active tx submission.
+        if !has_user_transactions && has_pending && !is_deadlock_breaker {
+            if !is_heartbeat_time || !is_global_idle_for_heartbeat {
+                // Clean up the failed txs from mempool so they don't cause
+                // the same bypass on the next iteration.
+                if !processed_hashes.is_empty() {
+                    let mut pool = mempool.lock().await;
+                    pool.remove_transactions_bulk(&processed_hashes);
+                }
+                continue;
+            }
+        }
 
         // ── FIX-FORK-1: Second guard right before block creation ──
         // Between the early `get_block_by_slot` check and here, the block
@@ -11347,6 +11654,51 @@ async fn run_validator() {
                     "⏭️  Slot {} already has a network block, skipping production",
                     slot
                 );
+
+                // ANTI-SPIN-FIX: Remove drained transactions from mempool NOW.
+                // Without this, the same stale/already-processed transactions stay
+                // in the mempool and get re-drained every loop iteration, flooding
+                // the log with "Dropping transaction" warnings.
+                if !processed_hashes.is_empty() {
+                    let mut pool = mempool.lock().await;
+                    pool.remove_transactions_bulk(&processed_hashes);
+                }
+
+                // ANTI-SPIN-FIX: When the deadlock breaker can't produce because
+                // a network block already occupies this slot, try to advance the
+                // chain tip to incorporate stored network blocks. This breaks the
+                // infinite spin loop where get_last_slot() stays behind while the
+                // deadlock breaker keeps retrying the same slot.
+                if is_deadlock_breaker {
+                    // Scan forward from current tip to find consecutive stored blocks
+                    // that we can adopt (advancing last_slot through the gap).
+                    let mut advance_slot = tip_slot;
+                    let max_scan = 200u64; // don't scan forever
+                    for probe in 1..=max_scan {
+                        let candidate = tip_slot + probe;
+                        if state.get_block_by_slot(candidate).ok().flatten().is_some() {
+                            advance_slot = candidate;
+                        } else {
+                            break;
+                        }
+                    }
+                    if advance_slot > tip_slot {
+                        if let Err(e) = state.set_last_slot(advance_slot) {
+                            warn!("⚠️  Failed to advance last_slot to {}: {}", advance_slot, e);
+                        } else {
+                            info!(
+                                "🔄 Deadlock breaker: advanced chain tip {} → {} (adopted network blocks)",
+                                tip_slot, advance_slot
+                            );
+                        }
+                    } else {
+                        // Can't advance yet — sleep to prevent tight spin loop
+                        // (without this, the loop spins at ~3ms per iteration,
+                        //  generating 28,000+ log lines per minute)
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+
                 continue;
             }
         }

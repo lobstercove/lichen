@@ -76,6 +76,27 @@ function decodeShieldedInstruction(inst) {
     return null;
 }
 
+function isShieldedType(typeRaw) {
+    return typeRaw === 'Shield' || typeRaw === 'Unshield' || typeRaw === 'ShieldedTransfer';
+}
+
+function redactShieldedTransaction(tx) {
+    if (!tx || typeof tx !== 'object') return tx;
+    const clone = JSON.parse(JSON.stringify(tx));
+    clone.from = null;
+    clone.to = null;
+    if (clone.message && Array.isArray(clone.message.instructions)) {
+        clone.message.instructions = clone.message.instructions.map((inst) => {
+            const instClone = { ...inst };
+            if (Array.isArray(instClone.accounts) && instClone.accounts.length > 0) {
+                instClone.accounts = [`<redacted:${instClone.accounts.length}>`];
+            }
+            return instClone;
+        });
+    }
+    return clone;
+}
+
 // Get transaction hash from URL
 function getTxHash() {
     const params = new URLSearchParams(window.location.search);
@@ -345,6 +366,7 @@ async function displayTransaction(tx) {
         'GenesisMint':      'Genesis Mint',
     };
     const type = typeDisplayMap[typeRaw] || typeRaw;
+    const shieldedTx = isShieldedType(typeRaw);
     const slot = tx.slot;
     const timestamp = tx.block_time || Math.floor(Date.now() / 1000);
     const fee = tx.fee_shells !== undefined ? tx.fee_shells : (tx.fee || BASE_FEE_SHELLS);
@@ -499,19 +521,21 @@ async function displayTransaction(tx) {
                     <div class="detail-row">
                         <div class="detail-label">Accounts</div>
                         <div class="detail-value">
-                            ${inst.accounts.map(acc => {
-                                const accountDisplay = (typeof formatAddressWithMoltName === 'function')
-                                    ? formatAddressWithMoltName(acc, nameMap[acc], { includeAddressInLabel: true })
-                                    : acc;
-                                return `
-                                <div>
-                                    <code>${accountDisplay}</code>
-                                    <a href="address.html?address=${acc}" class="detail-link">
-                                        <i class="fas fa-external-link-alt"></i>
-                                    </a>
-                                </div>
-                                `;
-                            }).join('')}
+                            ${shieldedTx
+                                ? '<div><code>Redacted for shielded transaction privacy</code></div>'
+                                : inst.accounts.map(acc => {
+                                    const accountDisplay = (typeof formatAddressWithMoltName === 'function')
+                                        ? formatAddressWithMoltName(acc, nameMap[acc], { includeAddressInLabel: true })
+                                        : acc;
+                                    return `
+                                    <div>
+                                        <code>${accountDisplay}</code>
+                                        <a href="address.html?address=${acc}" class="detail-link">
+                                            <i class="fas fa-external-link-alt"></i>
+                                        </a>
+                                    </div>
+                                    `;
+                                }).join('')}
                         </div>
                     </div>
                     <div class="detail-row">
@@ -556,7 +580,8 @@ async function displayTransaction(tx) {
     }
     
     // Raw data
-    document.getElementById('rawData').textContent = JSON.stringify(tx, null, 2);
+    const rawTx = shieldedTx ? redactShieldedTransaction(tx) : tx;
+    document.getElementById('rawData').textContent = JSON.stringify(rawTx, null, 2);
 }
 
 // Search functionality
