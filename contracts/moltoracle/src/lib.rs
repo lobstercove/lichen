@@ -197,9 +197,11 @@ pub extern "C" fn get_price(
     match storage_get(key.as_bytes()) {
         Some(feed) if feed.len() >= PRICE_FEED_SIZE => {
             // Check staleness (reject if > 1 hour old)
+            // AUDIT-FIX CON-01: get_timestamp() returns slot number, not seconds.
+            // At 400ms/slot, 1 hour = 3_600_000ms / 400ms = 9_000 slots.
             let timestamp = bytes_to_u64(&feed[8..16]);
             let now = get_timestamp();
-            if now - timestamp > 3600 {
+            if now.saturating_sub(timestamp) > 9_000 {
                 log_info(" Price data stale");
                 // AUDIT-FIX M20: return 2 for stale (distinct from 0 = not found)
                 return 2;
@@ -825,7 +827,8 @@ pub extern "C" fn get_aggregated_price(
                 let now = get_timestamp();
                 
                 // Only include fresh feeds (< 1 hour)
-                if now - timestamp <= 3600 {
+                // AUDIT-FIX CON-01: slot-based threshold (9000 slots ≈ 1h at 400ms/slot)
+                if now.saturating_sub(timestamp) <= 9_000 {
                     let price = bytes_to_u64(&feed[0..8]);
                     total_price += price as u128;
                     valid_feeds += 1;

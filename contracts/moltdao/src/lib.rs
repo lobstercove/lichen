@@ -308,13 +308,15 @@ fn governance_voting_power(token_balance: u64, reputation: u64) -> u64 {
     (base as u128 * capped as u128 / 1000) as u64
 }
 
-// Proposal layout: 210 bytes
+// Proposal layout: 212 bytes
 // proposer (32) + title_hash (32) + description_hash (32) +
 // target_contract (32) + action (32) + start_time (8) + 
 // end_time (8) + votes_for (8) + votes_against (8) +
 // executed (1) + cancelled (1) + quorum_met (1) +
 // proposal_type (1) + veto_votes (8) + stake_amount (8)
-const PROPOSAL_SIZE: usize = 210;
+// AUDIT-FIX CON-07: Was 210 but actual layout sums to 212 bytes
+// (5×32 + 6×8 + 4×1 = 160 + 48 + 4 = 212)
+const PROPOSAL_SIZE: usize = 212;
 
 #[no_mangle]
 pub extern "C" fn create_proposal(

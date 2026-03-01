@@ -193,8 +193,11 @@ fn transfer_molt_out(recipient: &[u8; 32], amount: u64) -> bool {
     let token_data = match storage_get(MOLT_TOKEN_KEY) {
         Some(data) if data.len() == 32 && data.iter().any(|&x| x != 0) => data,
         _ => {
-            log_info("MOLT token address not configured — skipping transfer");
-            return true; // graceful degradation for unconfigured deployments
+            // AUDIT-FIX CON-05: MUST fail when MOLT token address is not configured.
+            // Returning true here would silently succeed without transferring funds,
+            // causing sells/withdrawals to appear successful with no actual payout.
+            log_info("CRITICAL: MOLT token address not configured — transfer REJECTED");
+            return false;
         }
     };
     let mut token = [0u8; 32];

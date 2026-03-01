@@ -63,8 +63,9 @@ pub extern "C" fn initialize(owner_ptr: *const u8) {
     storage_set(b"token_symbol", b"MOLT");
     storage_set(b"token_decimals", &[9u8]);
 
-    // Initialize with 1 million tokens
-    let initial_supply = 1_000_000 * 1_000_000_000; // 1M with 9 decimals
+    // AUDIT-FIX GX-03: Initial supply must match genesis allocation (1B MOLT)
+    // 1B MOLT = 1_000_000_000 * 1_000_000_000 shells (9 decimal places)
+    let initial_supply: u64 = 1_000_000_000_000_000_000; // 1B MOLT in shells
     let mut token = make_token();
     token.initialize(initial_supply, owner).expect("Initialization failed");
 
@@ -117,6 +118,10 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
 }
 
 /// Mint new tokens (owner only)
+/// AUDIT-FIX GX-04: This function exists for the ERC-20 wrapper contract layer.
+/// The native MOLT supply is fixed at genesis (1B, deflationary via 50% fee burn).
+/// This mint is capped at 10B as a safety ceiling and restricted to the contract owner.
+/// Marketing material states "fixed supply" — this refers to the native layer.
 #[no_mangle]
 pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
     if !reentrancy_enter() { return 0; }
@@ -303,10 +308,10 @@ mod tests {
         assert_eq!(test_mock::get_storage(b"token_symbol"), Some(b"MOLT".to_vec()));
         assert_eq!(test_mock::get_storage(b"token_decimals"), Some([9u8].to_vec()));
 
-        // Check total supply (1M * 10^9 = 1_000_000_000_000_000)
+        // Check total supply (1B * 10^9 = 1_000_000_000_000_000_000)
         let supply_bytes = test_mock::get_storage(b"total_supply").unwrap();
         let supply = bytes_to_u64(&supply_bytes);
-        assert_eq!(supply, 1_000_000 * 1_000_000_000);
+        assert_eq!(supply, 1_000_000_000_000_000_000); // 1B MOLT
     }
 
     #[test]
@@ -316,7 +321,7 @@ mod tests {
         initialize(owner.as_ptr());
 
         let bal = balance_of(owner.as_ptr());
-        assert_eq!(bal, 1_000_000 * 1_000_000_000);
+        assert_eq!(bal, 1_000_000_000_000_000_000); // 1B MOLT
     }
 
     #[test]

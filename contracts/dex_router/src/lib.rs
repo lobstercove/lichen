@@ -388,20 +388,20 @@ pub fn swap(
             execute_clob_swap(amount_in, pool_id)
         }
         ROUTE_DIRECT_AMM => {
-            execute_amm_swap(amount_in, pool_id)
+            execute_amm_swap(&t, amount_in, pool_id, min_amount_out, deadline)
         }
         ROUTE_SPLIT => {
             let leg1_amount = amount_in * split_pct as u64 / 100;
             let leg2_amount = amount_in - leg1_amount;
             let out1 = execute_clob_swap(leg1_amount, pool_id);
-            let out2 = execute_amm_swap(leg2_amount, secondary);
+            let out2 = execute_amm_swap(&t, leg2_amount, secondary, 0, deadline);
             out1 + out2
         }
         ROUTE_MULTI_HOP => {
-            // First hop
-            let mid_amount = execute_amm_swap(amount_in, pool_id);
-            // Second hop
-            execute_amm_swap(mid_amount, secondary)
+            // First hop (no min_out for intermediate hops)
+            let mid_amount = execute_amm_swap(&t, amount_in, pool_id, 0, deadline);
+            // Second hop (final leg — apply min_amount_out)
+            execute_amm_swap(&t, mid_amount, secondary, min_amount_out, deadline)
         }
         ROUTE_LEGACY_SWAP => {
             execute_legacy_swap(amount_in, pool_id)
@@ -461,7 +461,7 @@ pub fn multi_hop_swap(
             core::ptr::copy_nonoverlapping(path_ptr.add(offset), pool_bytes.as_mut_ptr(), 8);
         }
         let pool_id = u64::from_le_bytes(pool_bytes);
-        current_amount = execute_amm_swap(current_amount, pool_id);
+        current_amount = execute_amm_swap(&t, current_amount, pool_id, 0, deadline);
         if current_amount == 0 { reentrancy_exit(); return 4; }
     }
 
@@ -527,13 +527,22 @@ fn execute_clob_swap(amount_in: u64, pair_id: u64) -> u64 {
 }
 
 /// Execute swap via AMM (dex_amm) — cross-contract call
-fn execute_amm_swap(amount_in: u64, pool_id: u64) -> u64 {
+/// AUDIT-FIX DEX-02: Pass all required fields to AMM swap dispatch:
+///   trader(32) + pool_id(8) + is_token_a_in(1) + amount_in(8) + min_out(8) + deadline(8)
+fn execute_amm_swap(trader: &[u8; 32], amount_in: u64, pool_id: u64, min_out: u64, deadline: u64) -> u64 {
     let amm_addr = load_addr(AMM_ADDRESS_KEY);
     if !is_zero(&amm_addr) {
-        let mut args = Vec::with_capacity(16);
+        // Build args for AMM dispatch action 6 (swap_exact_in):
+        // [action_byte(1)] + [trader(32)] + [pool_id(8)] + [is_token_a_in(1)] + [amount_in(8)] + [min_out(8)] + [deadline(8)] = 66 bytes
+        let mut args = Vec::with_capacity(66);
+        args.push(6u8); // action byte for swap_exact_in
+        args.extend_from_slice(trader);
         args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.push(1u8); // is_token_a_in = true (direction resolved by route config)
         args.extend_from_slice(&u64_to_bytes(amount_in));
-        let call = CrossCall::new(Address(amm_addr), "swap_exact_in", args)
+        args.extend_from_slice(&u64_to_bytes(min_out));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        let call = CrossCall::new(Address(amm_addr), "call", args)
             .with_value(0);
         if let Ok(result) = call_contract(call) {
             if result.len() >= 8 {
