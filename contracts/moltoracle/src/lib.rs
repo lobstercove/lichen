@@ -519,49 +519,16 @@ fn is_mo_paused() -> bool {
         .unwrap_or(false)
 }
 
-/// Legacy compatibility: request_randomness now creates a commit+reveal in one step
-/// using the seed as both secret and seed (less secure but backward compatible)
+/// DEPRECATED — request_randomness is front-runnable (CON-08).
+/// Use commit_randomness + reveal_randomness for secure randomness.
+/// This function now logs a deprecation warning and returns 0 (failure).
 #[no_mangle]
 pub extern "C" fn request_randomness(
-    requester_ptr: *const u8,
-    seed: u64,
+    _requester_ptr: *const u8,
+    _seed: u64,
 ) -> u32 {
-    // AUDIT-FIX P2: Enforce pause
-    if is_mo_paused() {
-        log_info("Oracle is paused");
-        return 0;
-    }
-    
-    let mut requester = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32); }
-    
-    // AUDIT-FIX P2: Verify caller matches requester
-    let real_caller = get_caller();
-    if real_caller.0 != requester {
-        log_info("request_randomness rejected: caller mismatch");
-        return 0;
-    }
-    
-    let timestamp = get_timestamp();
-    
-    // Self-reveal mode: derive randomness from seed + timestamp directly
-    // For proper security, use commit_randomness + reveal_randomness
-    let mut input = Vec::with_capacity(48);
-    input.extend_from_slice(&requester);
-    input.extend_from_slice(&u64_to_bytes(seed));
-    input.extend_from_slice(&u64_to_bytes(timestamp));
-    let hash = simple_hash(&input);
-    let random_value = u64::from_le_bytes(hash[0..8].try_into().unwrap_or([0; 8]));
-    
-    let key = alloc::format!("random_{}", hex_encode(&requester));
-    let mut random_data = Vec::with_capacity(48);
-    random_data.extend_from_slice(&u64_to_bytes(random_value));
-    random_data.extend_from_slice(&u64_to_bytes(timestamp));
-    random_data.extend_from_slice(&requester);
-    storage_set(key.as_bytes(), &random_data);
-    
-    log_info("Random number generated (legacy mode — use commit-reveal for security)");
-    1
+    log_info("DEPRECATED: request_randomness is disabled (CON-08). Use commit_randomness + reveal_randomness instead.");
+    0
 }
 
 #[no_mangle]

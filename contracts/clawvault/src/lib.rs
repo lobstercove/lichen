@@ -562,6 +562,7 @@ pub extern "C" fn harvest() -> u32 {
 
     let strategy_count = load_u64(b"cv_strategy_count") as usize;
     let mut total_yield: u64 = 0;
+    let mut missing_addresses: u32 = 0;
 
     // Yield from each strategy — use real protocol data only (G25-02: no simulated fallback)
     for i in 0..strategy_count {
@@ -574,14 +575,27 @@ pub extern "C" fn harvest() -> u32 {
         let deployed = total_assets * allocation / 100;
 
         // G25-02: Only real yield from connected protocols — no phantom inflation
+        // CON-10: Track missing addresses so we can report rather than silently skip
         let strategy_yield = match strategy_type {
             STRATEGY_LENDING => {
-                query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", deployed, elapsed_slots)
-                    .unwrap_or(0)
+                match query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", deployed, elapsed_slots) {
+                    Some(y) => y,
+                    None => {
+                        log_info("harvest: LobsterLend address not configured — skipping lending yield");
+                        missing_addresses += 1;
+                        0
+                    }
+                }
             }
             STRATEGY_LP => {
-                query_protocol_yield(MOLTSWAP_ADDRESS_KEY, "get_lp_rewards", deployed, elapsed_slots)
-                    .unwrap_or(0)
+                match query_protocol_yield(MOLTSWAP_ADDRESS_KEY, "get_lp_rewards", deployed, elapsed_slots) {
+                    Some(y) => y,
+                    None => {
+                        log_info("harvest: MoltSwap address not configured — skipping LP yield");
+                        missing_addresses += 1;
+                        0
+                    }
+                }
             }
             STRATEGY_STAKING => {
                 // Staking yield requires a real staking protocol endpoint
@@ -612,6 +626,15 @@ pub extern "C" fn harvest() -> u32 {
         store_u64(b"cv_total_earned", earned.saturating_add(net_yield));
 
         log_info("Harvest & auto-compound complete");
+    }
+
+    // CON-10: If ALL yield-producing strategies had missing addresses,
+    // do NOT update last_harvest — the harvest interval is not consumed
+    // and the next call can retry once addresses are configured.
+    if missing_addresses > 0 && total_yield == 0 && strategy_count > 0 {
+        log_info("harvest: no yield collected due to missing protocol addresses");
+        reentrancy_exit();
+        return 2; // Distinct code: partial configuration, harvest not applied
     }
 
     store_u64(b"cv_last_harvest", now);

@@ -356,6 +356,33 @@ class MoltChainRPC {
     async getLatestBlock() { return this.call('getLatestBlock'); }
     async getTokenBalance(tokenProgram, holder) { return this.call('getTokenBalance', [tokenProgram, holder]); }
     async getContractInfo(contractId) { return this.call('getContractInfo', [contractId]); }
+
+    // WL-07: Poll for transaction confirmation after submission.
+    // Avoids fire-and-forget pattern — callers can await confirmation.
+    async confirmTransaction(signature, timeoutMs = 30000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            try {
+                const statuses = await this.call('getSignatureStatuses', [[signature]]);
+                const status = statuses?.value?.[0];
+                if (status && status.confirmationStatus === 'confirmed') {
+                    return { confirmed: true, status };
+                }
+                if (status && status.err) {
+                    return { confirmed: false, error: status.err };
+                }
+            } catch { /* retry */ }
+            await new Promise(r => setTimeout(r, 800));
+        }
+        return { confirmed: false, error: 'Timeout waiting for confirmation' };
+    }
+
+    // WL-07: Send + confirm in one call
+    async sendAndConfirmTransaction(txData, timeoutMs = 30000) {
+        const sig = await this.sendTransaction(txData);
+        const result = await this.confirmTransaction(sig, timeoutMs);
+        return { signature: sig, ...result };
+    }
 }
 
 const rpc = new MoltChainRPC(getRpcEndpoint());
@@ -515,9 +542,10 @@ document.addEventListener('DOMContentLoaded', () => {
     initNetworkSelector();
 });
 
-// Load wallet state from localStorage
+// WL-09: Load wallet state from sessionStorage (not localStorage) to limit
+// the attack window — state is cleared when browser tab closes.
 function loadWalletState() {
-    const stored = localStorage.getItem('moltWalletState');
+    const stored = sessionStorage.getItem('moltWalletState');
     if (stored) {
         try {
             const parsed = JSON.parse(stored);
@@ -541,9 +569,9 @@ function loadWalletState() {
     }
 }
 
-// Save wallet state to localStorage
+// WL-09: Save wallet state to sessionStorage
 function saveWalletState() {
-    localStorage.setItem('moltWalletState', JSON.stringify(walletState));
+    sessionStorage.setItem('moltWalletState', JSON.stringify(walletState));
 }
 
 // Check if wallet exists and show appropriate screen
@@ -3172,6 +3200,16 @@ async function confirmSend() {
         // Send transaction
         showToast('Sending transaction...');
         const txSignature = await rpc.sendTransaction(txBase64);
+        
+        // WL-07: Confirm transaction instead of fire-and-forget
+        rpc.confirmTransaction(txSignature, 15000).then(result => {
+            if (result.confirmed) {
+                showToast(`✅ Transaction confirmed on-chain`);
+            } else if (result.error) {
+                showToast(`⚠️ Transaction may have failed: ${result.error}`);
+            }
+            refreshBalance();
+        }).catch(() => { /* confirmation polling failed, balance will refresh anyway */ });
         
         showToast(`✅ ${amount} ${selectedToken} sent! Signature: ${String(txSignature).slice(0, 16)}...`);
         closeModal('sendModal');
