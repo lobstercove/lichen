@@ -744,10 +744,12 @@ pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
     let borrow = compute_current_borrow(&hex);
 
     // Health factor in basis points (10000 = 1.0)
+    // AUDIT-FIX CON-06: Cast to u128 to prevent overflow for large deposits
+    // (deposit * 8500 overflows u64 when deposit > ~2.17×10¹⁵ shells ≈ 2.17M MOLT)
     let health_factor = if borrow == 0 {
         u64::MAX // Infinite health
     } else {
-        deposit * LIQUIDATION_THRESHOLD_PERCENT * 100 / borrow
+        ((deposit as u128) * (LIQUIDATION_THRESHOLD_PERCENT as u128) * 100 / (borrow as u128)) as u64
     };
 
     let mut result = Vec::with_capacity(24);

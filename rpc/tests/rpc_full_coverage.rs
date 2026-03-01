@@ -307,7 +307,8 @@ async fn test_native_health() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "health").await.unwrap();
     assert_valid_rpc(&resp);
-    assert_eq!(resp["result"]["status"], "ok");
+    // Fresh app has no blocks (slot 0) → health correctly reports "behind"
+    assert_eq!(resp["result"]["status"], "behind");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1923,17 +1924,21 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
     let tx_sig_hex = tx.signature().to_hex();
 
     // 4. Genesis block at slot 0 (empty, set parent for slot-1 block)
-    let genesis = Block::genesis(Hash::default(), 1_700_000_000, vec![]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
     state.put_block(&genesis).expect("put genesis");
 
-    // 5. Block at slot 1 containing the transaction
+    // 5. Block at slot 1 containing the transaction (uses current timestamp so health = "ok")
     let block = Block::new_with_timestamp(
         1,
         genesis.hash(),
         Hash::hash(b"state_root_1"),
         val_pk.0,
         vec![tx],
-        1_700_000_001,
+        now,
     );
     let block_hash_hex = block.hash().to_hex();
     state.put_block(&block).expect("put block");
@@ -2066,9 +2071,15 @@ async fn test_native_get_block_with_stored_block() {
     let result = &resp["result"];
     assert!(!result.is_null(), "block at slot 1 should exist");
     assert_eq!(result["slot"], 1, "block slot should be 1");
-    assert_eq!(
-        result["timestamp"], 1_700_000_001u64,
-        "timestamp should match"
+    // Timestamp is set to current time in app_with_rich_state (GX-07 health check fix)
+    let ts = result["timestamp"].as_u64().expect("timestamp should be u64");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    assert!(
+        now.saturating_sub(ts) <= 5,
+        "block timestamp should be within 5 seconds of now (got {ts}, now {now})"
     );
     assert_eq!(
         result["transaction_count"], 1,

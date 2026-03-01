@@ -1520,8 +1520,12 @@ fn tx_to_rpc_json(
         "signatures": signatures,
         "slot": slot,
         "block_time": timestamp,
+        // AUDIT-FIX GX-02: Status is "Success" because the block producer only includes
+        // transactions where TxResult.success == true (see validator block production loop).
+        // Failed transactions are dropped from the mempool before block creation.
+        // If/when we add receipt storage, this should use the actual execution result.
         "status": "Success",
-        "error": null,
+        "error": serde_json::Value::Null,
         "fee": fee,
         "fee_shells": fee,
         "fee_molt": fee as f64 / 1_000_000_000.0,

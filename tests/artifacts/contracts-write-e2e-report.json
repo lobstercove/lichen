@@ -27,1296 +27,1296 @@
       "action": "expected_contract_set",
       "status": "PASS",
       "detail": "matched",
-      "timestamp": 1772300126
+      "timestamp": 1772380387
     },
     {
       "contract": "moltcoin",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=2e2497d83555f822235d33fb7d18072e3477c166c0b62af8d1fbaafe71107475",
-      "timestamp": 1772300127
+      "detail": "sig=ce3347acb69449b49958a346292a35c94ca35ab8135497020ba35db676ece7cc",
+      "timestamp": 1772380387
     },
     {
       "contract": "moltcoin",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=cb3a9fa4cd92bd512938188af7359a6283d0c8acfebe6193c78ffb2d5cc6db49",
-      "timestamp": 1772300127
+      "detail": "sig=47c5448808e313d0818a89f810bc539b426bdbf3677557db34f565758e87e2ab",
+      "timestamp": 1772380388
     },
     {
       "contract": "moltcoin",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=bf970583271bd61df4f3f29de6038e7461577429014919f6f9b25c4855bd06e3",
-      "timestamp": 1772300128
+      "detail": "sig=ccb9c23197aebc94ce8f4116ad92cec3c4722e9fbc71773c538e8fc6657cc36b",
+      "timestamp": 1772380388
     },
     {
       "contract": "moltcoin",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=81ddcdcaddcd587ebf8a4e6ef0781f68b0c3f9a0fd27c5bb0b3274568fb6e458",
-      "timestamp": 1772300128
+      "detail": "sig=07e9a6e6aedec8ae5d94327653dbaacacff90b7e4d65add85cdd90111544d7f0",
+      "timestamp": 1772380389
     },
     {
       "contract": "moltcoin",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=2,required=0",
-      "timestamp": 1772300128
+      "detail": "delta=1,required=0",
+      "timestamp": 1772380389
     },
     {
       "contract": "clawpump",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=269be3a7345c3d82367428085c95c09e3b32f15179068f857d0663a57ae23801",
-      "timestamp": 1772300129
+      "detail": "sig=ebb76896bc548f77df150d39a9d5e7a3156c279ff0b90be07b8b3637cbd4c46c",
+      "timestamp": 1772380389
     },
     {
       "contract": "clawpump",
       "action": "create_token",
       "status": "PASS",
-      "detail": "sig=97e8ac1dbeef972bd1915c09fbdb527f1ad7244377521557038e1565d4c01612",
-      "timestamp": 1772300129
+      "detail": "sig=92a575429e7dddb774f30d5e3d19506fbb792d234c5cd8a2bb4b18f751617d0a",
+      "timestamp": 1772380390
     },
     {
       "contract": "clawpump",
       "action": "buy",
       "status": "PASS",
-      "detail": "sig=0b48cf546fffe9d1e98f1a12f97b1902669755d3773f5124e0457f620e4ec59f",
-      "timestamp": 1772300129
+      "detail": "sig=441687fdd03ed7b183a1c09e2a7fd279ae044602edb4598a0aba2db4b43c4288",
+      "timestamp": 1772380390
     },
     {
       "contract": "clawpump",
       "action": "get_platform_stats",
       "status": "PASS",
-      "detail": "sig=908195fea9f42ec7adc589065ec2800e3fdd55214336c539855a6dadbd1528eb",
-      "timestamp": 1772300130
+      "detail": "sig=d6b1cedade78b61be05d50ffab61070bc48b2f414559d9759a016517381871af",
+      "timestamp": 1772380391
     },
     {
       "contract": "clawpump",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=2,required=0",
-      "timestamp": 1772300130
+      "detail": "delta=1,required=0",
+      "timestamp": 1772380391
     },
     {
       "contract": "lobsterlend",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=35ad2830974252436b39b6a96d4bf92a6187de45cefceb13dd9b09c1eb202cb6",
-      "timestamp": 1772300130
+      "detail": "sig=3156386edeaa066002e14a88d64f971d80976bd1ccf2151a49dbb7678def842f",
+      "timestamp": 1772380391
     },
     {
       "contract": "lobsterlend",
       "action": "deposit",
       "status": "PASS",
-      "detail": "sig=67067556af99c8c5e739e7d704ad0c29f9579fcb31ff3e849f4008c582b06669",
-      "timestamp": 1772300131
+      "detail": "sig=ecca0a4db95355bb88ff60a63fac3d6bb0dc725fba78fecf4e3fabd9d6029b6d",
+      "timestamp": 1772380392
     },
     {
       "contract": "lobsterlend",
       "action": "borrow",
       "status": "PASS",
-      "detail": "sig=2c27a4cfce17a843f8b1d01b796c6b6893e2481955967584099a86cdf76bbad3",
-      "timestamp": 1772300131
+      "detail": "sig=b67e09ef40cf2b5797c7905b0c60d2521904c98d69503ab3a1dcd255e399a050",
+      "timestamp": 1772380392
     },
     {
       "contract": "lobsterlend",
       "action": "repay",
       "status": "PASS",
-      "detail": "sig=717fbeb8edb6d0424add177dec4dfc6d453f24f2ffff4fc34af323d235d24bae",
-      "timestamp": 1772300132
+      "detail": "sig=a0cdaac02d87c6468593ad27c15d567f4f22b5da9071e0dee3911488cdc586bc",
+      "timestamp": 1772380393
     },
     {
       "contract": "lobsterlend",
       "action": "get_protocol_stats",
       "status": "PASS",
-      "detail": "sig=4e4f5d243552ccd8c4619c3698eedc6340f21c2c8090c559160ca9bb27cd2f4c",
-      "timestamp": 1772300132
+      "detail": "sig=006a97f48114e2a84a00d6178276943ad50614d13f22d926f0cff5c2a4b1d1cf",
+      "timestamp": 1772380393
     },
     {
       "contract": "lobsterlend",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=1,required=0",
-      "timestamp": 1772300132
+      "detail": "delta=3,required=0",
+      "timestamp": 1772380393
     },
     {
       "contract": "moltmarket",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=201ee30274b10d9425361c76cddf5a9be0ef5358b5eb6b91620b29ba5f6a5c64",
-      "timestamp": 1772300133
+      "detail": "sig=7c24057b901bc60b5c435a36d32a9d0a5f5376e3674fe109d5925f8bafa2e8b6",
+      "timestamp": 1772380394
     },
     {
       "contract": "moltmarket",
       "action": "list_nft",
       "status": "PASS",
-      "detail": "sig=e6e934cbaaa75d169bb537bdd0d8689151429f12f0b3aa60ed4b791e1850c71b",
-      "timestamp": 1772300133
+      "detail": "sig=2f22defcf96e8234dcb78dea01cc62b2bc912100cc2c7a44808f714d55d97752",
+      "timestamp": 1772380394
     },
     {
       "contract": "moltmarket",
       "action": "cancel_listing",
       "status": "PASS",
-      "detail": "sig=169f8efaa46bcc1bb7634fb2c0cf0db6208fdf04f4b4720385c6e9befdca4150",
-      "timestamp": 1772300134
+      "detail": "sig=022b84595c4d6387056f2ecf459c2795097713b4c8496282a3d29566a98c8ce0",
+      "timestamp": 1772380394
     },
     {
       "contract": "moltmarket",
       "action": "get_marketplace_stats",
       "status": "PASS",
-      "detail": "sig=e41f01047f91f1c982b9ed63ae7c29d88d21fd77352d5652cc9e7bda1bf45e93",
-      "timestamp": 1772300134
+      "detail": "sig=ef7b054363799839a4714278111b840f65d243fa95b4f06c3b31dbb4e9a620c4",
+      "timestamp": 1772380395
     },
     {
       "contract": "moltmarket",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=1,required=0",
-      "timestamp": 1772300134
+      "detail": "delta=3,required=0",
+      "timestamp": 1772380395
     },
     {
       "contract": "moltauction",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=7e2444991e3cefe49de36ba72dbf931cb2d162201333660a3a9f95dc003b75bc",
-      "timestamp": 1772300135
+      "detail": "sig=cf171ebd9b7d6661e9739c6ba5fa1f4c78c9a3c9fc6d27c0b468c60b908ced77",
+      "timestamp": 1772380396
     },
     {
       "contract": "moltauction",
       "action": "create_auction",
       "status": "PASS",
-      "detail": "sig=241adc5526fa4f7128ac875fe4495532d90969c8031dbb2c214fa4e8816d6019",
-      "timestamp": 1772300135
+      "detail": "sig=addd4c018a603464f69f0ca0517791dc38b3f42d3324b9bcb49484aab23d0d14",
+      "timestamp": 1772380396
     },
     {
       "contract": "moltauction",
       "action": "place_bid",
       "status": "PASS",
-      "detail": "sig=9480cd9432453bf2119d6491debf0ac546ead574e0f8dec9d301b81dd98d2c98",
-      "timestamp": 1772300136
+      "detail": "sig=ffa1442768601fa3afc29e1d84af066789e2ca0ce5c3a1ce6659715c9b277be0",
+      "timestamp": 1772380397
     },
     {
       "contract": "moltauction",
       "action": "cancel_auction",
       "status": "PASS",
-      "detail": "sig=229152a7d59bf49ba54f4ce8d1c8d833c49faddbc5f70743591fea688aa9b27c",
-      "timestamp": 1772300136
+      "detail": "sig=80a6aa960e07c1c254c83eeb9f6e88690fd2919613ee410773bf53eb219a0159",
+      "timestamp": 1772380397
     },
     {
       "contract": "moltauction",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=2,required=0",
-      "timestamp": 1772300136
+      "detail": "delta=1,required=0",
+      "timestamp": 1772380397
     },
     {
       "contract": "moltbridge",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=e56406ffb275f1b2a923d020b175bdbe135eabf2c173cda19d9e01fa988fa71d",
-      "timestamp": 1772300137
+      "detail": "sig=e26d78614dc094d9d1ad7e61a9cd781ade4412e44362e742bedc07343227574b",
+      "timestamp": 1772380398
     },
     {
       "contract": "moltbridge",
       "action": "set_required_confirmations",
       "status": "PASS",
-      "detail": "sig=b629f245dfd32dd172e4157080a6c9db1b1aeb0b37f49c91323ce7db31c45285",
-      "timestamp": 1772300137
+      "detail": "sig=0e9a2c5f6bf45eba87ac194cf37f670f5a4526fcc64b7f543b32acd8bb5839f6",
+      "timestamp": 1772380398
     },
     {
       "contract": "moltbridge",
       "action": "set_request_timeout",
       "status": "PASS",
-      "detail": "sig=dcc0d61983b7d4244bd5c37ce9524ae2d94c0a50b54daa2ec848e33da54176d7",
-      "timestamp": 1772300138
+      "detail": "sig=7d624abcb4927a03f44d7343c6e323b58b7b555062aaea883a7751560c98f2cf",
+      "timestamp": 1772380399
     },
     {
       "contract": "moltbridge",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=0,required=0",
-      "timestamp": 1772300138
+      "timestamp": 1772380399
     },
     {
       "contract": "reef_storage",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=b3c1439a8cf39a60e201779f4eb8b4ed1b84b87a2afc8fb6c76edf92cc1ed99a",
-      "timestamp": 1772300138
+      "detail": "sig=f4dd3a9abaf4ca19e8cadad2094e3be5a7aa27fa1e22d5a7d51a610d3043bd21",
+      "timestamp": 1772380399
     },
     {
       "contract": "reef_storage",
       "action": "register_provider",
       "status": "PASS",
-      "detail": "sig=fadb484d74ce892c77fc5c3a74461ac8a9467c081995ff1b93925b39084ffc0a",
-      "timestamp": 1772300138
+      "detail": "sig=ccdd1359abdf1aac5b370a77e04805514e9270876a928bd82132f2ba4fcd0bc3",
+      "timestamp": 1772380400
     },
     {
       "contract": "reef_storage",
       "action": "set_storage_price",
       "status": "PASS",
-      "detail": "sig=44a45591325c9ae76eea160ccae66368c9fdbeb1617f3299a03c4a38e47b16a3",
-      "timestamp": 1772300139
+      "detail": "sig=47ba95cba09d919e3afa9fd0d8f45861fd5f3aef05ad14510e22590cd987849c",
+      "timestamp": 1772380400
     },
     {
       "contract": "reef_storage",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=1,required=0",
-      "timestamp": 1772300139
+      "timestamp": 1772380400
     },
     {
       "contract": "clawvault",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=29f0af5849812a202fc7a01a0dc145a5977a60f39a5308ce9ef1bc0ffdacac61",
-      "timestamp": 1772300139
+      "detail": "sig=b8555effcad10519ab6bf68e8889dabb49faa4a5be3670b2db12fd062977ccf2",
+      "timestamp": 1772380401
     },
     {
       "contract": "clawvault",
       "action": "deposit",
       "status": "PASS",
-      "detail": "sig=7189e6b3aa11f973bf86dedc37e397aef4e0380abc5f121a8cc72b9340bf378d",
-      "timestamp": 1772300140
+      "detail": "sig=979963de6bd94d3e81067c8f0d70dcc7cd1facea4db7f8add251854cfa5dad8e",
+      "timestamp": 1772380401
     },
     {
       "contract": "clawvault",
       "action": "withdraw",
       "status": "PASS",
-      "detail": "sig=509fe45e2f400686ce20d140427c5afe09fee500cd2c273ca23856a7e67eb963",
-      "timestamp": 1772300140
+      "detail": "sig=dcde75b3ac88278aecec8332ec85cd975ce64ebc13b6bad7d4e01bc07d2aef31",
+      "timestamp": 1772380401
     },
     {
       "contract": "clawvault",
       "action": "get_vault_stats",
       "status": "PASS",
-      "detail": "sig=6a4f48eb2c50562b5c2ee8b62de311c10f1e96670d882a5a10a81c9c9eec5125",
-      "timestamp": 1772300141
+      "detail": "sig=a8e340a7b5787233496bd2131dd859cc393a942a42dfe004fa73914b1258d0a4",
+      "timestamp": 1772380402
     },
     {
       "contract": "clawvault",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=2,required=0",
-      "timestamp": 1772300141
+      "detail": "delta=1,required=0",
+      "timestamp": 1772380402
     },
     {
       "contract": "clawpay",
       "action": "initialize_cp_admin",
       "status": "PASS",
-      "detail": "sig=1db69e5d20539daf365faa466acf6736acafb94fdd04c2871998b03bea6cc204",
-      "timestamp": 1772300141
+      "detail": "sig=5a8f1a133385a8b2831e410239adf3bf4ab0af245d6084e34ad5f7236f74f851",
+      "timestamp": 1772380402
     },
     {
       "contract": "clawpay",
       "action": "create_stream",
       "status": "PASS",
-      "detail": "sig=fbdd134379e7ad74223e4f9037876dda1edf6fab1f423c8f07ad1d580de3483f",
-      "timestamp": 1772300142
+      "detail": "sig=5efa6469b4c2ddba6d0be8aab258d0a1e9c173907698b5fd6bd889a6550f2f91",
+      "timestamp": 1772380403
     },
     {
       "contract": "clawpay",
       "action": "get_stream_info",
       "status": "PASS",
-      "detail": "sig=c0a2b14bf9a949beffe3cd4633c9beb953ff77a3ef3999be401de67cee354042",
-      "timestamp": 1772300142
+      "detail": "sig=a90982fbfc70fd7f35f461eae4789d5778cec62fb879f7b2e6a772e75fd3a695",
+      "timestamp": 1772380403
     },
     {
       "contract": "clawpay",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=1,required=0",
-      "timestamp": 1772300142
+      "timestamp": 1772380403
     },
     {
       "contract": "moltyid",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=5b3730e1a125a9631eb7f21691bb7d58eac986089dfce2d33b06766e8648da18",
-      "timestamp": 1772300143
+      "detail": "sig=9b5fb1dd924b7c5e4c464beabf0c701017e320e6f558a2e2b69cbfaa68de6634",
+      "timestamp": 1772380404
     },
     {
       "contract": "moltyid",
       "action": "register_identity",
       "status": "PASS",
-      "detail": "sig=481d2bf7253395516b4cb4263e9b7aa3e369e7b35c250cb0f833d8d1c96ad917",
-      "timestamp": 1772300143
+      "detail": "sig=d366c36f6aa66d5ee101a5306b89b16b4b79759143dd6af0e869953d1ce2720d",
+      "timestamp": 1772380404
     },
     {
       "contract": "moltyid",
       "action": "set_endpoint",
       "status": "PASS",
-      "detail": "sig=f5fc43ffea5e8ddfc9a007cb56b963c41c7016460db9927e7ea06abb9fa63831",
-      "timestamp": 1772300144
+      "detail": "sig=efd66993af0d0addf7e784e23682de8802b3c7f387e06d5b63286e74b5485ddd",
+      "timestamp": 1772380405
     },
     {
       "contract": "moltyid",
       "action": "set_metadata",
       "status": "PASS",
-      "detail": "sig=823edb40e1be246165ead735694f7c574e3b3f27f7881bbc70751ed1affc0714",
-      "timestamp": 1772300144
+      "detail": "sig=cb7c730b8943a34656f14ca24f1628fc04ec55d9a3891cb68896a3aa464c69c4",
+      "timestamp": 1772380405
     },
     {
       "contract": "moltyid",
       "action": "set_availability",
       "status": "PASS",
-      "detail": "sig=79527e2391afbab5dc28eef2f1de05323dc66e91911f3cadf159a5214699be34",
-      "timestamp": 1772300145
+      "detail": "sig=3dc1468985bdf3921405e49629fbc262da0189e8f889a056b86d7062d62ba08b",
+      "timestamp": 1772380406
     },
     {
       "contract": "moltyid",
       "action": "set_rate",
       "status": "PASS",
-      "detail": "sig=40fc4dccef6672d55984cafbd48cd5b459207bb6e636f17c07c403982ea030ee",
-      "timestamp": 1772300145
+      "detail": "sig=9dce6b6a6d0acdfc03ac0428008a0387e79640a6552aafd96eeea33c252ec9b5",
+      "timestamp": 1772380406
     },
     {
       "contract": "moltyid",
       "action": "add_skill",
       "status": "PASS",
-      "detail": "sig=4d8bd0deeda48926170065f73bb77dcc65cc3f9a78ec3d70b1459e635c80d40e",
-      "timestamp": 1772300146
+      "detail": "sig=48d48c301783c5ceaec5cbecfe5dadf06690898764933818a7a2527976999839",
+      "timestamp": 1772380407
     },
     {
       "contract": "moltyid",
       "action": "vouch",
       "status": "PASS",
-      "detail": "sig=54c49fae44f3537913ccee069ebcd9283c42f7513fd9d0c5c556d307b022412f",
-      "timestamp": 1772300146
+      "detail": "sig=7a4bbc1f511e928aed9087ae018b362201f37cb9584366dc2b17721c6158c32b",
+      "timestamp": 1772380408
     },
     {
       "contract": "moltyid",
       "action": "set_delegate",
       "status": "PASS",
-      "detail": "sig=a2ce68f7e9dd5252fc64acbe72f00186ccd63670d8a983514a49ead5f7c8a0a9",
-      "timestamp": 1772300147
+      "detail": "sig=3cdf8dca510a8331db7cee104da2f72b1ec0d371547639c7193d0286821d2042",
+      "timestamp": 1772380408
     },
     {
       "contract": "moltyid",
       "action": "revoke_delegate",
       "status": "PASS",
-      "detail": "sig=a5470764be473b8f7061c394e85b7c3736ad63976aa748d1d94a40c09c65743f",
-      "timestamp": 1772300147
+      "detail": "sig=e03875b6513a0f7661a0b145369d973e55c4b307abcd1e839aa6ff41701bc710",
+      "timestamp": 1772380409
     },
     {
       "contract": "moltyid",
       "action": "register_identity",
       "status": "PASS",
-      "detail": "sig=7e2680696e16b5df098601ce23bec13d4cf494cf7a64fccd2217b50f8437ba2b",
-      "timestamp": 1772300148
+      "detail": "sig=8d4010ccc2b05eec2e7ec63ae8695f4633ce01045a6fb693e0b424da0db59f9c",
+      "timestamp": 1772380409
     },
     {
       "contract": "moltyid",
       "action": "get_agent_profile",
       "status": "PASS",
-      "detail": "sig=16cf98983c67fff0412a60c31736d63de066b19c352e5b43331baf6952c5a4ff",
-      "timestamp": 1772300148
+      "detail": "sig=2cb7b517d83b194cd396f4935b1990a70f837dfae1e33a91beb55d18190c60ed",
+      "timestamp": 1772380410
     },
     {
       "contract": "moltyid",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=5,required=0",
-      "timestamp": 1772300148
+      "detail": "delta=3,required=0",
+      "timestamp": 1772380410
     },
     {
       "contract": "moltdao",
       "action": "initialize_dao",
       "status": "PASS",
-      "detail": "sig=691f160be10269ca8272a4067bcdcc1dc92c8a505b1c7a1bdc847362866d28a4",
-      "timestamp": 1772300149
+      "detail": "sig=7b313dc51bf2298ebb1ee503fdf8963a6cd668866fa9cbbcedff9e5aaa8f3ddb",
+      "timestamp": 1772380410
     },
     {
       "contract": "moltdao",
       "action": "create_proposal_typed",
       "status": "PASS",
-      "detail": "sig=8fc7b7bf704035067f76af757e0d9ca50b6dba254e25dd29c3afb9b073e6c446",
-      "timestamp": 1772300149
+      "detail": "sig=c6d61c87f1f4e392abb5acc4ff1984b299efc64c6b8d6cc5187149c8b66718c8",
+      "timestamp": 1772380411
     },
     {
       "contract": "moltdao",
       "action": "vote",
       "status": "PASS",
-      "detail": "sig=3ad5453dfa5ec8940d21f3f6a0bfa2e2f939131e21a610e62a5beac308e1b572",
-      "timestamp": 1772300150
+      "detail": "sig=f901be8eca82842e1940046f241dfcbcd9ccf1f67bb6c16ccb628a8516e198d9",
+      "timestamp": 1772380411
     },
     {
       "contract": "moltdao",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=0,required=0",
-      "timestamp": 1772300150
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380411
     },
     {
       "contract": "prediction_market",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=e377bf423c3baddeddee881a760aad4589ccf8c8fd2eb37c1429099418db79bb",
-      "timestamp": 1772300150
+      "detail": "sig=3c1d166f3d5697c94e2d4dd9a2b79fc8d789d3b9e62f336f9a982825132ee300",
+      "timestamp": 1772380412
     },
     {
       "contract": "prediction_market",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=3fa2f2520df34734dcf331dd24785e9306774e7a545f0f420ad6850d1230aaec",
-      "timestamp": 1772300151
+      "detail": "sig=d87d3718b66c322db66b94abcd12c2ecc713d210e7cdf0afa9cb4d086d8ae810",
+      "timestamp": 1772380412
     },
     {
       "contract": "prediction_market",
       "action": "set_musd_address",
       "status": "PASS",
-      "detail": "sig=f596c1be38bdab935b557fe92e8bc0f0328c25406dc422896996357884f63f72",
-      "timestamp": 1772300151
+      "detail": "sig=30aedc0725289e895a62f98c036ea0214880e830a560fc909a70839be5547501",
+      "timestamp": 1772380413
     },
     {
       "contract": "prediction_market",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=0,required=0",
-      "timestamp": 1772300151
+      "timestamp": 1772380413
     },
     {
       "contract": "compute_market",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=58ee1939cec029604b4baaa3619da169e3787d2aadd0d8b707809d8a19156e94",
-      "timestamp": 1772300152
+      "detail": "sig=4caee282309c12a544e1b887d361c635c3ef65c45285923abc7432530959dd77",
+      "timestamp": 1772380413
     },
     {
       "contract": "compute_market",
       "action": "register_provider",
       "status": "PASS",
-      "detail": "sig=4774b2344a13400eec293155f3286d9ff20be47221de80344a642cebd16ec70b",
-      "timestamp": 1772300152
+      "detail": "sig=0474b00ac49d4e36b155b831ceb28e0f5def3ddb0ceebdc6590c6a5d423606a2",
+      "timestamp": 1772380414
     },
     {
       "contract": "compute_market",
       "action": "submit_job",
       "status": "PASS",
-      "detail": "sig=534c4a7a0fa9a5a83919ad302444af6111ecd8acc94be20521d8e6ef93d9b75c",
-      "timestamp": 1772300153
+      "detail": "sig=b9baf9c5b674f2ce3a3eea085bc67e0d2efcc2a9a4cd7a5f7cf1589792d201fb",
+      "timestamp": 1772380414
     },
     {
       "contract": "compute_market",
       "action": "get_job",
       "status": "PASS",
-      "detail": "sig=e72c67783a1438cecd3959e1090ae2d2e57d19af05155a39400f30c54eecb9d4",
-      "timestamp": 1772300153
+      "detail": "sig=63118d9b648492236b89181b0b8464a27c6bbe8445dc523bcafc05baf59c657f",
+      "timestamp": 1772380415
     },
     {
       "contract": "compute_market",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=2,required=0",
-      "timestamp": 1772300153
+      "detail": "delta=0,required=0",
+      "timestamp": 1772380415
     },
     {
       "contract": "bountyboard",
       "action": "set_identity_admin",
       "status": "PASS",
-      "detail": "sig=a2e173a7525bdbb84c47e9879e023f8cdc80d57ef05aef362e6387192564236b",
-      "timestamp": 1772300154
+      "detail": "sig=5a510b5ebe3ce76e9a8637041051b62ece47c15d2a245a0f6c7ef3362d830ef6",
+      "timestamp": 1772380415
     },
     {
       "contract": "bountyboard",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=14c0cf681e5b59b83b07b72e8e64a6086b9d5e16288b9cc7f581851808596ea0",
-      "timestamp": 1772300155
+      "detail": "sig=36ea2943103fc774f5a4b439891757f253d0c73eacaf6457b1de5fbeed9a9237",
+      "timestamp": 1772380416
     },
     {
       "contract": "bountyboard",
       "action": "set_token_address",
       "status": "PASS",
-      "detail": "sig=9348750bf62fadb187ad940e73551303f74df3c1310209c0cefce6d09eccd512",
-      "timestamp": 1772300155
+      "detail": "sig=d4f359b8091b019fa8a27edcd1f9789e38ff914578a42b672389fed5e47ab6ff",
+      "timestamp": 1772380416
     },
     {
       "contract": "bountyboard",
       "action": "create_bounty",
       "status": "PASS",
-      "detail": "sig=8ab92ce33de443b5145cf929e7b0ea8c8031872db56ebbdb57e49132cca89f3e",
-      "timestamp": 1772300156
+      "detail": "sig=ed618297644104eb94a7ca3ee41e979c885d3a73c89cfa72d47a297094ad3a28",
+      "timestamp": 1772380416
     },
     {
       "contract": "bountyboard",
       "action": "submit_work",
       "status": "PASS",
-      "detail": "sig=0468b60bc3754867c85a423e20ee967f8bf78bddd00b5b208b545755c8756429",
-      "timestamp": 1772300156
+      "detail": "sig=e16f68f1e263c0b9e08b8189e8d291c14e8a939f1d3b19f72f4e4d38e3ee8849",
+      "timestamp": 1772380417
     },
     {
       "contract": "bountyboard",
       "action": "get_bounty",
       "status": "PASS",
-      "detail": "sig=5f914671a922d7e2713e818f6aac75cb225859033a9c6b2472ca64fdb9ddf585",
-      "timestamp": 1772300157
+      "detail": "sig=96cfe3a216c9fa9940360271354ac8b4002df08f994ed1037a76f80dd4c0d9e1",
+      "timestamp": 1772380417
     },
     {
       "contract": "bountyboard",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=0",
-      "timestamp": 1772300157
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380417
     },
     {
       "contract": "moltoracle",
       "action": "initialize_oracle",
       "status": "PASS",
-      "detail": "sig=44ba01569e93952bfe2afba6222b4b624f3496ad5be5d53664947c5df066ebd8",
-      "timestamp": 1772300157
+      "detail": "sig=d136ada92fb195e0aa27647d0f04e42118bdf879382401e80aa60bca670cd6cd",
+      "timestamp": 1772380418
     },
     {
       "contract": "moltoracle",
       "action": "add_price_feeder",
       "status": "PASS",
-      "detail": "sig=10d77e50106efac51aff745d644bdc2d7224955dc0f610334af2832c5a6c52a8",
-      "timestamp": 1772300158
+      "detail": "sig=0783c0cb4e80bd1f00bc3a9209436639d97f03ee81ac1d20bf7d3674b1a4d211",
+      "timestamp": 1772380418
     },
     {
       "contract": "moltoracle",
       "action": "submit_price",
       "status": "PASS",
-      "detail": "sig=3fff9d73eb2df5e43ed94da46f72b0f6b5029dfad7efaf111bfcce979df59092",
-      "timestamp": 1772300158
+      "detail": "sig=6f1cbc6808c27aae2fb1197fce86f931a12b4a3ce74437d4cedfbebdd99a2eb2",
+      "timestamp": 1772380419
     },
     {
       "contract": "moltoracle",
       "action": "submit_price",
       "status": "PASS",
-      "detail": "sig=9c10a32481d2ba573e1f214e9ef9b315023ca1949f24757233f1a855ada10b07",
-      "timestamp": 1772300159
+      "detail": "sig=5ff8748c2640f02ed2da99c2702236fe2337755be741ce38395f61a548138187",
+      "timestamp": 1772380419
     },
     {
       "contract": "moltoracle",
       "action": "commit_randomness",
       "status": "PASS",
-      "detail": "sig=ff9b7bc922b12b2bad7b77b02ecb04d50ff8e354773a1d3ca543ca29c0128c00",
-      "timestamp": 1772300159
+      "detail": "sig=55945197199f57021606167d204497c2e9a8de94d1cbdfa82f4eeeccd16c4f22",
+      "timestamp": 1772380420
     },
     {
       "contract": "moltoracle",
       "action": "request_randomness",
       "status": "PASS",
-      "detail": "sig=f9e2dcc4a1d3f832d1d82c2c42a8a6d35a9b023d72822d48d202a835652e7195",
-      "timestamp": 1772300160
+      "detail": "sig=e95894c401d7529a2db047f91e68cb9e7140f28c6878a23867c587eb65cbc3d0",
+      "timestamp": 1772380421
     },
     {
       "contract": "moltoracle",
       "action": "get_oracle_stats",
       "status": "PASS",
-      "detail": "sig=555633857de42a8d03a6ec99d9bbc4ff2898a54ff2f97b8059cc26b1ede236ea",
-      "timestamp": 1772300160
+      "detail": "sig=bd187025c8c9b95a9581ae6ad997ee526fb4d7c568fb241a12f43718274f0fc7",
+      "timestamp": 1772380421
     },
     {
       "contract": "moltoracle",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=5,required=0",
-      "timestamp": 1772300160
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380421
     },
     {
       "contract": "moltpunks",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=7bc9de6b3c1b77ec10a038700556a3d9352249ce5913b001ab6212fcac5df04e",
-      "timestamp": 1772300160
+      "detail": "sig=d5ffa91c32c09e60df4b43c1a28696eb268e00bcb0b6af3426eeeb2122e2d3e4",
+      "timestamp": 1772380422
     },
     {
       "contract": "moltpunks",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=fcbc656276b0b601ec298710eee69698cb8ef047e7412c276a30bca1488909e2",
-      "timestamp": 1772300161
+      "detail": "sig=5b7d490e2d792647151db60849ca09f6600b59feae2c950110b014ed432daaaf",
+      "timestamp": 1772380422
     },
     {
       "contract": "moltpunks",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=7137dde6b2212a0eb3c085a473855f5f3d567c6bcdd8dc69dfc5dd5859666d93",
-      "timestamp": 1772300161
+      "detail": "sig=55fe1be07ae6cb29c190a6d0f51b5bd8f88e2b785c425d7b76f67dca263b677e",
+      "timestamp": 1772380423
     },
     {
       "contract": "moltpunks",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=107ab77097e1a08056a042cc1ac25690a513341c9ed939ca0a1cd04d10ea05d5",
-      "timestamp": 1772300162
+      "detail": "sig=d0e7a73f8c75236eec5b9e621f2afce31df148024a1b3aa24dcef73ff9b6c568",
+      "timestamp": 1772380423
     },
     {
       "contract": "moltpunks",
       "action": "transfer_from",
       "status": "PASS",
-      "detail": "sig=f0f284d103786775a6c419bdbe516015f1e30d9ab75ce2039d3a8bb1c296d577",
-      "timestamp": 1772300162
+      "detail": "sig=c0017a184aae8591e748b438f009b9a1961e1a4bf5e787744dc746c50d2ca337",
+      "timestamp": 1772380423
     },
     {
       "contract": "moltpunks",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=859666eef01480d21e44f1a69fbd693e5c730333f7988f67975b1621bcc559e3",
-      "timestamp": 1772300163
+      "detail": "sig=71d1ba612e24dc76961eba9d6e1c37cb673fa6ca183bef138f8a689877a3eb29",
+      "timestamp": 1772380424
     },
     {
       "contract": "moltpunks",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=2,required=0",
-      "timestamp": 1772300163
+      "timestamp": 1772380424
     },
     {
       "contract": "moltswap",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=27575ef787cec448763eb5798dab80f2dd9e96aa2679bec99cd3eec242156f54",
-      "timestamp": 1772300163
+      "detail": "sig=c1be55b5dbb07792de6dbaa02f61b6f53070563909168035d76bcf84c26e67ec",
+      "timestamp": 1772380424
     },
     {
       "contract": "moltswap",
       "action": "set_identity_admin",
       "status": "PASS",
-      "detail": "sig=0b7d9fa9a3d5c94097dd3193e376cb651600fe3155f40c4ffd2e7e061e1c5e56",
-      "timestamp": 1772300164
+      "detail": "sig=918c2bf9f7cf4bbf07e514feb41f78f43b40620e1646691f91068f00d00ade95",
+      "timestamp": 1772380424
     },
     {
       "contract": "moltswap",
       "action": "add_liquidity",
       "status": "PASS",
-      "detail": "sig=0c9b018a36584e42207f393ef95c4e15a5a875e49cd35d0b63323e405640a895",
-      "timestamp": 1772300164
+      "detail": "sig=b7eace31fc292bdb5dfe1583243be1245b304d7da3915b9b935c0f5ed50b4352",
+      "timestamp": 1772380425
     },
     {
       "contract": "moltswap",
       "action": "swap_a_for_b",
       "status": "PASS",
-      "detail": "sig=5946c2b1cb6e517424c215317249e58b5288db2ff617187a7c93d9a04445d97b",
-      "timestamp": 1772300165
+      "detail": "sig=8af785165a79dc867fc5591edc19b88cac0a778d19a7a3d0000f0e886318f255",
+      "timestamp": 1772380425
     },
     {
       "contract": "moltswap",
       "action": "set_protocol_fee",
       "status": "PASS",
-      "detail": "sig=96d0c9535acd6a16282eafc5731692ca60dfa08fe4cb3e33c1472661f04f9caa",
-      "timestamp": 1772300165
+      "detail": "sig=28e81ff0a786e731a9f226ba4a37a1e68a2e3fe6f53adab79856ffba3b572ec8",
+      "timestamp": 1772380426
     },
     {
       "contract": "moltswap",
       "action": "set_protocol_fee",
       "status": "PASS",
-      "detail": "sig=12ca1f8fefde32556faf80d71a2a2170a02f03aaeed48a5d3e967de8b9fa2d66",
-      "timestamp": 1772300165
+      "detail": "sig=a628813b906f566d295993c247f75b45b471505507eae03d36c195c68714db07",
+      "timestamp": 1772380426
     },
     {
       "contract": "moltswap",
       "action": "ms_pause",
       "status": "PASS",
-      "detail": "sig=2d1370e1f5d812c12b68f611801bfc3a8cda57cf196fea72f3d93b217d878978",
-      "timestamp": 1772300166
+      "detail": "sig=85e8da63dda704266ee32a781ea50d098c8bba895ed35df783357b68c3e47829",
+      "timestamp": 1772380427
     },
     {
       "contract": "moltswap",
       "action": "ms_unpause",
       "status": "PASS",
-      "detail": "sig=ced591928b94826d0d8169044756a6bc124ef75158e29f98beea090dce53287c",
-      "timestamp": 1772300166
+      "detail": "sig=19d7822e9269123a96588fe3aeb404793abfd39e1c68944a3a733b3475915b8b",
+      "timestamp": 1772380427
     },
     {
       "contract": "moltswap",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=1,required=0",
-      "timestamp": 1772300166
+      "detail": "delta=4,required=0",
+      "timestamp": 1772380427
     },
     {
       "contract": "musd_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=d4ba83cc43b656aae1e55df37b548660387a195515b206386208186eb151247b",
-      "timestamp": 1772300167
+      "detail": "sig=aab3b161b5fe16391e9a5977e651ab144e76c3e555271c7e0f2a107b8b14b19c",
+      "timestamp": 1772380427
     },
     {
       "contract": "musd_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=d00594d4be2aaa9f18cd085b55a69f4370a062564f3f1abb6280b6c24835b199",
-      "timestamp": 1772300167
+      "detail": "sig=81f71507730ce8d5c18c1437c323b08c8deac7232a0b39828464605ae76d87e9",
+      "timestamp": 1772380428
     },
     {
       "contract": "musd_token",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=06ddad2755a0f62071ddce96c2339db973b295ba39fd7db226f1709e91cac516",
-      "timestamp": 1772300167
+      "detail": "sig=c8f52e1291f1a3f666965fabac8cd1265a94327c948165178456a1e8bfee5730",
+      "timestamp": 1772380428
     },
     {
       "contract": "musd_token",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=ed6002f2ead0b87d9130046dd7f651a8957370b075dcd5faac1d4462d771cf4e",
-      "timestamp": 1772300168
+      "detail": "sig=ea9b41849dd31f758a52ed2a2039b7fa499cdaee632edfed7a4f6618898194be",
+      "timestamp": 1772380429
     },
     {
       "contract": "musd_token",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=23d20358bb011c072acf820d9d28d7b09fe704c365be241ecb0c953e5e0775aa",
-      "timestamp": 1772300169
+      "detail": "sig=deca8e3221908a0d1a3e7e92f5639c201e4347c1ec263bca4d50499ed2da147e",
+      "timestamp": 1772380429
     },
     {
       "contract": "musd_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=6020491654957575ef23fe3fff669999d00fa64da87671e8b5fe7e393da6b4b1",
-      "timestamp": 1772300169
+      "detail": "sig=d6fc289fed8f0370584e3d7125909c91af69869da1b4516d506badc9ffc1e5bc",
+      "timestamp": 1772380429
     },
     {
       "contract": "musd_token",
       "action": "get_transfer_count",
       "status": "PASS",
-      "detail": "sig=5c78c2278c1a8dd1d7379576efcd0e240c69df22458c598b70c8e402198d57e9",
-      "timestamp": 1772300170
+      "detail": "sig=e5406c247b019247454451615ff0c62e713d75e1515fa1e7ed75b6a9514c80d0",
+      "timestamp": 1772380430
     },
     {
       "contract": "musd_token",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=4,required=0",
-      "timestamp": 1772300170
+      "timestamp": 1772380430
     },
     {
       "contract": "weth_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=549e54358e7ceb2cd8fe9f6252edda5d1522bb780e9109b7685f353bde08c44d",
-      "timestamp": 1772300170
+      "detail": "sig=99a0b3a8813fb273f590ff67a046318d22fd53def7cfc913347c02315f322031",
+      "timestamp": 1772380430
     },
     {
       "contract": "weth_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=61bd0c68cf03e1530e81f52f7b189613ffd8a0dd37859f0e453beb50b5a69da8",
-      "timestamp": 1772300170
+      "detail": "sig=77c70a4a35ddd44218f368467ff27ae0b6665756eb76fe1199f434d147b5cf91",
+      "timestamp": 1772380431
     },
     {
       "contract": "weth_token",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=23d6bbff1dcd94fc92752f36be3a30e2ad26174590e89090e270a94c67253ea0",
-      "timestamp": 1772300171
+      "detail": "sig=8fac5a476ec0aa82487b2afd1db07b6ecff54435b34014fc705d25c2cc680c03",
+      "timestamp": 1772380431
     },
     {
       "contract": "weth_token",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=36f59f270f84469c938caed04697e7e68016e2d9d6b017f453d3f62f7bf73257",
-      "timestamp": 1772300171
+      "detail": "sig=3b5a8ec895650b192f605620e7a7307bf4065d4e67dc6c29edfa9915d4b746f1",
+      "timestamp": 1772380432
     },
     {
       "contract": "weth_token",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=c2b96c65e467eebf8183e104eebcbde95125ca556cf68e22e6e6a4c0afecc478",
-      "timestamp": 1772300171
+      "detail": "sig=9d017096c031966470343cb5119085b1cb5fe6584e9dd091a21287fb93228151",
+      "timestamp": 1772380432
     },
     {
       "contract": "weth_token",
       "action": "get_transfer_count",
       "status": "PASS",
-      "detail": "sig=cde29cbc6eb8e289589a1e8fc7ab59c9ec781c72f2c584e56f14769a7be64f13",
-      "timestamp": 1772300172
+      "detail": "sig=010ddc2a359be6a21ae91c16a947831aad0832468a71c56527d620881d04cb5c",
+      "timestamp": 1772380433
     },
     {
       "contract": "weth_token",
+      "action": "activity_floor",
+      "status": "PASS",
+      "detail": "delta=1,required=0",
+      "timestamp": 1772380433
+    },
+    {
+      "contract": "wsol_token",
+      "action": "initialize",
+      "status": "PASS",
+      "detail": "sig=42a3b8ef2c827889b7c08552b0532ea35e4fd485c27fb07a24ba7bad32e63fd4",
+      "timestamp": 1772380433
+    },
+    {
+      "contract": "wsol_token",
+      "action": "mint",
+      "status": "PASS",
+      "detail": "sig=d1c95c5c21d4726bcef478cfb3d650e1a3295ed507361be4ecb8b9578d74974b",
+      "timestamp": 1772380434
+    },
+    {
+      "contract": "wsol_token",
+      "action": "transfer",
+      "status": "PASS",
+      "detail": "sig=910a790ae3d5ee8a5aa60f0ac6a9fc723a033e976485acc061b052b3470f2d33",
+      "timestamp": 1772380435
+    },
+    {
+      "contract": "wsol_token",
+      "action": "approve",
+      "status": "PASS",
+      "detail": "sig=c6fd8e08d9bd6651a199fc9c85cdf7affe29260e39926003e6fdc5b55f76db3d",
+      "timestamp": 1772380435
+    },
+    {
+      "contract": "wsol_token",
+      "action": "burn",
+      "status": "PASS",
+      "detail": "sig=8adf62b2f61d64ea4339ed2a69f61a4ece204b65c9e9268a21beb9465b90edfe",
+      "timestamp": 1772380436
+    },
+    {
+      "contract": "wsol_token",
+      "action": "get_transfer_count",
+      "status": "PASS",
+      "detail": "sig=28cf9cfb1374378de378661f0989a3cf248f870bd2cec8e45395e98e5374439a",
+      "timestamp": 1772380436
+    },
+    {
+      "contract": "wsol_token",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=2,required=0",
-      "timestamp": 1772300172
-    },
-    {
-      "contract": "wsol_token",
-      "action": "initialize",
-      "status": "PASS",
-      "detail": "sig=82949f372185f2c72a02e75d01835db3d1bea082742a75efbfc34e5c451e99af",
-      "timestamp": 1772300172
-    },
-    {
-      "contract": "wsol_token",
-      "action": "mint",
-      "status": "PASS",
-      "detail": "sig=fed7707965b5425adacadf46b80bad54f203cf9d9cdc2c6d78b366daa1dfc265",
-      "timestamp": 1772300173
-    },
-    {
-      "contract": "wsol_token",
-      "action": "transfer",
-      "status": "PASS",
-      "detail": "sig=59a0b3c2f61a3d9c8dac3e5d43827c9a5489877cbc68ff783592ece5394614be",
-      "timestamp": 1772300173
-    },
-    {
-      "contract": "wsol_token",
-      "action": "approve",
-      "status": "PASS",
-      "detail": "sig=e9cf926eff39948dd888753dc48f45b90dd4bf531c9cf164a011aefe90e87d6e",
-      "timestamp": 1772300174
-    },
-    {
-      "contract": "wsol_token",
-      "action": "burn",
-      "status": "PASS",
-      "detail": "sig=51149e4f5bb856e0bff6b27d6f85b9a6dff53fa154dcc91dda8162ceca35c9a0",
-      "timestamp": 1772300174
-    },
-    {
-      "contract": "wsol_token",
-      "action": "get_transfer_count",
-      "status": "PASS",
-      "detail": "sig=971cc55512fbc7718a4f029755836b3a58339fb17e81301016ca68f331f9cddc",
-      "timestamp": 1772300175
-    },
-    {
-      "contract": "wsol_token",
-      "action": "activity_floor",
-      "status": "PASS",
-      "detail": "delta=3,required=0",
-      "timestamp": 1772300175
+      "timestamp": 1772380436
     },
     {
       "contract": "dex_core",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=88553491a0f904bcbe0391921a4a2fb4dace5c8a1169c35e8823d466cdee17da",
-      "timestamp": 1772300175
+      "detail": "sig=d20514e063adcc6edf81991ab741f5f181f52b8f781067bb952aada708607d76",
+      "timestamp": 1772380437
     },
     {
       "contract": "dex_core",
       "action": "set_preferred_quote",
       "status": "PASS",
-      "detail": "sig=3a7b8a5409b6059557692e38be597f510b323ef6371650a32b947b656406df30",
-      "timestamp": 1772300176
+      "detail": "sig=241e80ebb32c78904993697d844704905121247d1a7e433509c7a4a9293acf62",
+      "timestamp": 1772380437
     },
     {
       "contract": "dex_core",
       "action": "create_pair",
       "status": "PASS",
-      "detail": "sig=473cd75e2d275e3dbc7618fa391903a84d215fa9998fc1eae45bdbcda9b9cf31",
-      "timestamp": 1772300176
+      "detail": "sig=8f76593a25f1813cc5b18c7119b68e9a03191f8f2dff08cd784a85b87c9c5824",
+      "timestamp": 1772380437
     },
     {
       "contract": "dex_core",
       "action": "update_pair_fees",
       "status": "PASS",
-      "detail": "sig=b4b9694da39eeca2fd6553e7ddec4464e764f83a18a0dce03a8a3d4827e74146",
-      "timestamp": 1772300177
+      "detail": "sig=19bb37e6c69b787423599f1c05a7d979705af74f981bfcdb75279d9869d03e4f",
+      "timestamp": 1772380438
     },
     {
       "contract": "dex_core",
       "action": "place_order",
       "status": "PASS",
-      "detail": "sig=92fefc68b351aaae817a1dd316274e9c314dad7a00cf1ec71dd2abf812ff18ee",
-      "timestamp": 1772300177
+      "detail": "sig=c4e8dd1c88e89a93ce2bc4ab609c29b5227fab506e4c02ed5bb504bb9816a451",
+      "timestamp": 1772380438
     },
     {
       "contract": "dex_core",
       "action": "modify_order",
       "status": "PASS",
-      "detail": "sig=17e927cc9588e22e9ac66b4dcffc2717c248746f30f8eccd1e8957aeab56e1a0",
-      "timestamp": 1772300178
+      "detail": "sig=db92d548f8951ca67902e40e4e7a565ae215ddf0e969b0a079d3bcc269083df9",
+      "timestamp": 1772380439
     },
     {
       "contract": "dex_core",
       "action": "cancel_all_orders",
       "status": "PASS",
-      "detail": "sig=9cd99a32bfc7abbca8fcc9a3934d4f768184aacfdfb17159268191823630ae4b",
-      "timestamp": 1772300178
+      "detail": "sig=eb75b9aa3007b752c2f54add671f8981e9f93393147c3b8b237d0d864f7597ac",
+      "timestamp": 1772380439
     },
     {
       "contract": "dex_core",
       "action": "get_pair_count",
       "status": "PASS",
-      "detail": "sig=7bcb447068f29e66e2c5ace301e7c587fd26b04d9ec990ba01ea57cf4899d387",
-      "timestamp": 1772300179
+      "detail": "sig=0569bd9eba2cfddee518a73d97b4fe43300d8aa3033df70e0fb317909a7965e0",
+      "timestamp": 1772380440
     },
     {
       "contract": "dex_core",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=0",
-      "timestamp": 1772300179
+      "detail": "delta=3,required=0",
+      "timestamp": 1772380440
     },
     {
       "contract": "dex_amm",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=0c416fdf4743e0369fcc992bbcdd25064b745bb8938ecd3503da4cee9fbaf524",
-      "timestamp": 1772300179
+      "detail": "sig=69a6bd1f2163074c695ca23bfeebb5032bc4736ab560129808fa03259da3f5d5",
+      "timestamp": 1772380440
     },
     {
       "contract": "dex_amm",
       "action": "create_pool",
       "status": "PASS",
-      "detail": "sig=4cfad2b376712caa248d8d20ed36e5e81e43886530eefc944d85d58537b62656",
-      "timestamp": 1772300180
+      "detail": "sig=639f774f5898357461d1f6475957dae08fd452f47106c0605f98d851b2c128d8",
+      "timestamp": 1772380441
     },
     {
       "contract": "dex_amm",
       "action": "add_liquidity",
       "status": "PASS",
-      "detail": "sig=01b29967397fa6982b2f80f98951fb4f3666053c12ce49b8e39fa4b52fa03cdc",
-      "timestamp": 1772300180
+      "detail": "sig=cb8e314c579048db3e507d9fde0d46acc3398e43e52725ce6a9357f899949679",
+      "timestamp": 1772380441
     },
     {
       "contract": "dex_amm",
       "action": "swap_exact_in",
       "status": "PASS",
-      "detail": "sig=b397aff9e25313af8d79aed550165c1b8c9acbc58f0bcc599728f6b0f925d352",
-      "timestamp": 1772300181
+      "detail": "sig=b95861701e67daed286c33da302e3c112c7aec2dc4cb78a923c3a26da10c5a3b",
+      "timestamp": 1772380442
     },
     {
       "contract": "dex_amm",
       "action": "remove_liquidity",
       "status": "PASS",
-      "detail": "sig=f3cb7160ad70d6a8e3f9b6ed9bc2ad01d645c19c1dfbf71697b1fc02dbd9cfea",
-      "timestamp": 1772300181
+      "detail": "sig=4e15cbe847a47b5a9f7e6ee7c35d102d91eac70b27112363a4fa9da25c0a635c",
+      "timestamp": 1772380442
     },
     {
       "contract": "dex_amm",
       "action": "get_pool_count",
       "status": "PASS",
-      "detail": "sig=428b017993e15220dc6a65b0e6c1c335dee48bc74c3ee5fa099bf4a932dc89a6",
-      "timestamp": 1772300182
+      "detail": "sig=8d5c6e3ef9f3952fabcf436895931c51ba7b75e3d068275c07f0998e8ff6cee6",
+      "timestamp": 1772380442
     },
     {
       "contract": "dex_amm",
       "action": "get_position_count",
       "status": "PASS",
-      "detail": "sig=17c731c33ee024091c89cbf8e01527da2903518aff5f57f4a073b6e7bf8d0bee",
-      "timestamp": 1772300182
+      "detail": "sig=f98e0a481015c27a05f08ce9669d9e7934234b601d3e49b03a6ccc5e203c887a",
+      "timestamp": 1772380443
     },
     {
       "contract": "dex_amm",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=0",
-      "timestamp": 1772300182
+      "detail": "delta=4,required=0",
+      "timestamp": 1772380443
     },
     {
       "contract": "dex_router",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=221d23f0b18523695abe522f474b0f600f972b459a88bf8d373b28564c6ede82",
-      "timestamp": 1772300183
+      "detail": "sig=b1d357f9c44f9fbf5b5fe3ad98b923ced18bb6cdabd34de4e7cd4d4d6665d06c",
+      "timestamp": 1772380443
     },
     {
       "contract": "dex_router",
       "action": "set_addresses",
       "status": "PASS",
-      "detail": "sig=7ae8f3c04085bf1f7d1cb2ded70f2452326467eb97af0228f3433a47dcf22b57",
-      "timestamp": 1772300183
+      "detail": "sig=fd7e296fa91e8e4b5eacbaae8d7b388f4da9ee03e40dbabdc17b06296bd5daeb",
+      "timestamp": 1772380444
     },
     {
       "contract": "dex_router",
       "action": "register_route",
       "status": "PASS",
-      "detail": "sig=0fcefc72584f1bfd157b14bd8eb2bed8fafc983e99bb1bc3bd9f4cf96a6e2962",
-      "timestamp": 1772300184
+      "detail": "sig=3831ce8910088c3134eba7fbc196719ca4a0c0343c39c5badd4d1a5f3c428fe1",
+      "timestamp": 1772380444
     },
     {
       "contract": "dex_router",
       "action": "set_route_enabled",
       "status": "PASS",
-      "detail": "sig=ee17c9471a8ff6e7447da89f1eaa4d535e28def946cace3134caf6381313f549",
-      "timestamp": 1772300184
+      "detail": "sig=6b1703f21c2ee28bd8c4028b19ab35151fafff6e99851d7c1d9e3d5198a12e87",
+      "timestamp": 1772380445
     },
     {
       "contract": "dex_router",
       "action": "get_best_route",
       "status": "PASS",
-      "detail": "sig=687be3f48f79ed7de519341cfb0f7eac1c267010d39c7b09c16ed6c003e951f7",
-      "timestamp": 1772300185
+      "detail": "sig=fe5ae1b0d10d4ca29be40f6eded2a105604b7c68f06664383360eb2774736b0f",
+      "timestamp": 1772380445
     },
     {
       "contract": "dex_router",
       "action": "get_route_count",
       "status": "PASS",
-      "detail": "sig=e9c774692ba52a251d43dae3d1c958c7defb64cc56bd9e2120b639c585272ee2",
-      "timestamp": 1772300185
+      "detail": "sig=34521173c56ad14faaf2adff39e858878a8ca8291311aeec14cff7520b201843",
+      "timestamp": 1772380446
     },
     {
       "contract": "dex_router",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=1,required=0",
-      "timestamp": 1772300185
+      "detail": "delta=0,required=0",
+      "timestamp": 1772380446
     },
     {
       "contract": "dex_margin",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=c7f85c90e199946b665f16df3ac6f3d84b3bc911b42e5150e8d3670e6cf97072",
-      "timestamp": 1772300186
+      "detail": "sig=a989366268d3c43ae1226cad0c5fc85c4ca8142a203670f3f44d16aaebfe5f0f",
+      "timestamp": 1772380446
     },
     {
       "contract": "dex_margin",
       "action": "set_mark_price",
       "status": "PASS",
-      "detail": "sig=9c36ec740818f94c3edc4653043e839fc8366fafe3d312c204b95894965d6cf5",
-      "timestamp": 1772300186
+      "detail": "sig=71022c565f40907fa5f17b1a18d6719e8e6ac2ca546c96cc30a26ae30e9990a2",
+      "timestamp": 1772380447
     },
     {
       "contract": "dex_margin",
       "action": "open_position",
       "status": "PASS",
-      "detail": "sig=52acf7ed382e095507b76351f715800364a9c33d7d596225d59cbe30e7afb163",
-      "timestamp": 1772300187
+      "detail": "sig=331706d8f7f2ae76e54933e16df2c8436f5bc46481e7c6811bf3e77f20faaae3",
+      "timestamp": 1772380447
     },
     {
       "contract": "dex_margin",
       "action": "add_margin",
       "status": "PASS",
-      "detail": "sig=6ab86ea0ee6bd1fa048ab4bfc28b86fa8a64d5727af3e5a77c3696ddc52b36fb",
-      "timestamp": 1772300187
+      "detail": "sig=d3e23b13ff251723a1851b5966c514b3f4655636274c40babb0f8737b4e4ebe7",
+      "timestamp": 1772380448
     },
     {
       "contract": "dex_margin",
       "action": "remove_margin",
       "status": "PASS",
-      "detail": "sig=b6e09b055fec4a40dc3fa599bec728ecd2cae3421755faede9c13d72f765257e",
-      "timestamp": 1772300188
+      "detail": "sig=5bd4d361c0e022ebdae85e4bcb35216cff17d8ec46e0c801e934f69b4cb02aaf",
+      "timestamp": 1772380449
     },
     {
       "contract": "dex_margin",
       "action": "close_position",
       "status": "PASS",
-      "detail": "sig=e59acc2a3cc5816c679c26c3426566387f42a6899f61088eb9340188d78159fa",
-      "timestamp": 1772300188
+      "detail": "sig=35a6d3104abf0939968e181bdb78e647bfbd38aa0722e73870fb774587698844",
+      "timestamp": 1772380449
     },
     {
       "contract": "dex_margin",
       "action": "get_margin_stats",
       "status": "PASS",
-      "detail": "sig=1b1034a0d85d50bfcef8ade132e84fab2ff836b18558572438018815f61ddaec",
-      "timestamp": 1772300189
+      "detail": "sig=ef9bdc28a491d72a8d03c4611123af7d757d646c8e51841ac72f829143e0a443",
+      "timestamp": 1772380449
     },
     {
       "contract": "dex_margin",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=0",
-      "timestamp": 1772300189
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380449
     },
     {
       "contract": "dex_rewards",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=91e120770a0cdd9c519016c368dc4065fea1667c8e98e7bc45c93c18dc88bb2f",
-      "timestamp": 1772300190
+      "detail": "sig=aea25432250ae2a76900c054710fe52c862a107fbb6ccc422cc07a088a463041",
+      "timestamp": 1772380450
     },
     {
       "contract": "dex_rewards",
       "action": "set_moltcoin_address",
       "status": "PASS",
-      "detail": "sig=cbd7efa666e03dc50b28856b71692e358faf5e9ff7934945460fe60fee880f7d",
-      "timestamp": 1772300190
+      "detail": "sig=9ea4ecd952dc1412fedbdef7cea56ac8df258042661afcbbfa094c705833db32",
+      "timestamp": 1772380450
     },
     {
       "contract": "dex_rewards",
       "action": "set_rewards_pool",
       "status": "PASS",
-      "detail": "sig=15f9cb00d2fab3dd5e420163b2aae898f14152e56d409f268d81cd0bba701387",
-      "timestamp": 1772300191
+      "detail": "sig=6e57d0563e9ca91d80a21ebecaf8e012f5cde19c90d357598d42fbb96f013f39",
+      "timestamp": 1772380451
     },
     {
       "contract": "dex_rewards",
       "action": "set_reward_rate",
       "status": "PASS",
-      "detail": "sig=ef85d5815a14a720329031d2906026a73248ffc3e76cf99385d6a4d3eb761405",
-      "timestamp": 1772300191
+      "detail": "sig=f66141c4eef2320ae819817c72c11b5b5699915ea77172ef453275a56084b647",
+      "timestamp": 1772380451
     },
     {
       "contract": "dex_rewards",
       "action": "record_trade",
       "status": "PASS",
-      "detail": "sig=7c2fb7e66b98edffb10e7ab95a26cce671d285c1ec145b96f79ed4e2d76986bd",
-      "timestamp": 1772300192
+      "detail": "sig=71e88dea9a979491c118ce9c30c8d294edd30ff1794a69095522b7959c5c9da5",
+      "timestamp": 1772380452
     },
     {
       "contract": "dex_rewards",
       "action": "register_referral",
       "status": "PASS",
-      "detail": "sig=14a8ee0eb1a2a2712a5b731e5ff14bce6ef116c6f14959f28cad5c3231f68e74",
-      "timestamp": 1772300192
+      "detail": "sig=ed39dbe414ed3ed93422cacd33af3fa64c5303ecb763ad2cf0bb324ed513a594",
+      "timestamp": 1772380452
     },
     {
       "contract": "dex_rewards",
       "action": "get_total_distributed",
       "status": "PASS",
-      "detail": "sig=17d7106715714c4c233ceabc2393ad720d8d650915420c18fb4b35ccb964368b",
-      "timestamp": 1772300193
+      "detail": "sig=0edbc4fdc6f00dd5926141bd477a7447973448864b8030f1877f16f1bfc81542",
+      "timestamp": 1772380453
     },
     {
       "contract": "dex_rewards",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=0",
-      "timestamp": 1772300193
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380453
     },
     {
       "contract": "dex_governance",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=d67fda2bce8f93241e4ef397a42e9b821bfe06f71baafe5d81bc8e6e27222afa",
-      "timestamp": 1772300193
+      "detail": "sig=de1814a45700a7640dc6069b0b74ef7daf3b80c76b2e5754ca44d1f98ad55a03",
+      "timestamp": 1772380453
     },
     {
       "contract": "dex_governance",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=8f1f5e9950a115c3cecc399b5605fb01982ab64ff0459532b9b6bdc767262fd8",
-      "timestamp": 1772300194
+      "detail": "sig=3da8140a3a4b65919e0ced97780c96b425b4a45ca5745a5d368cfae2c99e281f",
+      "timestamp": 1772380454
     },
     {
       "contract": "dex_governance",
       "action": "set_preferred_quote",
       "status": "PASS",
-      "detail": "sig=d3a8c7efa1086cab5e4bc3e829a30ad666b0130d9e998c0546a2f72b14711ec9",
-      "timestamp": 1772300194
+      "detail": "sig=401d4ec83cafa3fbb09d6ddefc91d334e19976021ef7d213eca638a3548c0b23",
+      "timestamp": 1772380454
     },
     {
       "contract": "dex_governance",
       "action": "set_listing_requirements",
       "status": "PASS",
-      "detail": "sig=5a06b1496fb9cdf92cf0d188bfa912948f6a5128807ced4154bf9d7267fafaa1",
-      "timestamp": 1772300195
+      "detail": "sig=6d6ca0e42323dbe9d6d451fd3b59dd57a234e8de262d9dbb825d31fe1373565e",
+      "timestamp": 1772380455
     },
     {
       "contract": "dex_governance",
       "action": "propose_fee_change",
       "status": "PASS",
-      "detail": "sig=d2a9bac5a9202170b9cbe07e9e4a5322ccbbe42a35c259111a8d0abe15ae460c",
-      "timestamp": 1772300195
+      "detail": "sig=2c9c2443021f097c2164b4729aa8964ec69f3aed83250ef1116ee8f281f86ce1",
+      "timestamp": 1772380455
     },
     {
       "contract": "dex_governance",
       "action": "get_proposal_count",
       "status": "PASS",
-      "detail": "sig=ccccd92d6fe119b2fbfd97a4cbd2da71f370f98f93254826a8f4787d663dd748",
-      "timestamp": 1772300195
+      "detail": "sig=415cf5e59a9b5934f9b5f5ba5fda9435feea6cf1b93b8959ccc1ec0b12e1b3ec",
+      "timestamp": 1772380456
     },
     {
       "contract": "dex_governance",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=2,required=0",
-      "timestamp": 1772300195
+      "timestamp": 1772380456
     },
     {
       "contract": "dex_analytics",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=d6c3cffa62985bd168ce0d3fad8deba5efa5116c8ac67af195bde7923c7b2489",
-      "timestamp": 1772300196
+      "detail": "sig=9c07d249a0fb5abd966fa456e691a01eac3e5c38f2ddad29e46b88a838284a49",
+      "timestamp": 1772380456
     },
     {
       "contract": "dex_analytics",
       "action": "record_trade",
       "status": "PASS",
-      "detail": "sig=378b94cba990de40a2656a212284453a4a9d6142e703b718fff684d84889b501",
-      "timestamp": 1772300196
+      "detail": "sig=22e00f97ecddd9f379b157c71283643197b64f00547bfc97d30505e4cd5183a6",
+      "timestamp": 1772380457
     },
     {
       "contract": "dex_analytics",
       "action": "get_record_count",
       "status": "PASS",
-      "detail": "sig=312d877ac9014fd1bbaf20057284eb15b574c4ef1759250e0aa6a4b9ff9fe7da",
-      "timestamp": 1772300197
+      "detail": "sig=5d787747de4ee8e205aeecca8538622b9a390f0b0de946d3185baee81ad5ff93",
+      "timestamp": 1772380457
     },
     {
       "contract": "dex_analytics",
       "action": "get_last_price",
       "status": "PASS",
-      "detail": "sig=bcb535b0931ccb834f6296d56e5a99fb0c176f998e84de2504f378eee8810cb3",
-      "timestamp": 1772300197
+      "detail": "sig=fff2d4906e87aa3386c0337a0dfa942db83e46e1ac23e35d3dcf21efe7a5e08c",
+      "timestamp": 1772380457
     },
     {
       "contract": "dex_analytics",
       "action": "get_24h_stats",
       "status": "PASS",
-      "detail": "sig=cfa95e43eef083cb1272455c588c081d7725be1386e8b082d4212b0804a4c112",
-      "timestamp": 1772300198
+      "detail": "sig=772106463a90ea347b69e338d9c4d799266001215fbaf5c26e22fa87634dc65f",
+      "timestamp": 1772380458
     },
     {
       "contract": "dex_analytics",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=7,required=0",
-      "timestamp": 1772300198
+      "timestamp": 1772380458
     },
     {
       "contract": "shielded_pool",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=7f751e9c5733ede916618b5ce02f12266cc5bc79159c525e286a175db48fa2dc",
-      "timestamp": 1772300198
+      "detail": "sig=6d9211a66b4a3813f1eb242a8f99479749ad0483d2c2415e6f2582386abdffa2",
+      "timestamp": 1772380458
     },
     {
       "contract": "shielded_pool",
       "action": "get_pool_stats",
       "status": "PASS",
-      "detail": "sig=bebea28098c9de69654c50837ccb40152d87b1ed85f8bcee045f7518cdf2d45f",
-      "timestamp": 1772300199
+      "detail": "sig=ef75bee680b9c0242c022d830483690ac32f7344624622f6ffaf9ab518a4dce3",
+      "timestamp": 1772380459
     },
     {
       "contract": "shielded_pool",
       "action": "get_merkle_root",
       "status": "PASS",
-      "detail": "sig=3632b0d2a745c12e13f6dc0afc9ce10cff270bdfcaea1158301dbb19cac1eb70",
-      "timestamp": 1772300199
+      "detail": "sig=b3eb9ea1857be55e8f57f9be21528bbcde5bc66cb4807b14703418b07b04b5c0",
+      "timestamp": 1772380459
     },
     {
       "contract": "shielded_pool",
       "action": "activity_floor",
       "status": "PASS",
       "detail": "delta=0,required=0",
-      "timestamp": 1772300199
+      "timestamp": 1772380459
     },
     {
       "contract": "wbnb_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=ca12d6d79d56f643db6de109b092aefdb9aa7a4fea1941653c55c39b52ff97ad",
-      "timestamp": 1772300200
+      "detail": "sig=58c46408c0d06b11a22befb02e13873536adb62b909dca73cf7de5cf238f6b55",
+      "timestamp": 1772380460
     },
     {
       "contract": "wbnb_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=9530500d139bbd0fb34f163d48b31634f183b89a8ee56bcc7eee4bb9f8ffc586",
-      "timestamp": 1772300200
+      "detail": "sig=4f972efa74b544818ec1549a3ce6cdc8699047fb48574212fb5436f15915b444",
+      "timestamp": 1772380460
     },
     {
       "contract": "wbnb_token",
       "action": "balance_of",
       "status": "PASS",
-      "detail": "sig=454c9a501d83aa3c30d0c5f4395ed29e200677de78368192e09aa4e1c5b853c9",
-      "timestamp": 1772300201
+      "detail": "sig=42a4bf98cf47912e07e9045c025ad43eb1f6fcd11b695487f15ea621ccee4142",
+      "timestamp": 1772380461
     },
     {
       "contract": "wbnb_token",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=1,required=0",
-      "timestamp": 1772300201
+      "detail": "delta=2,required=0",
+      "timestamp": 1772380461
     },
     {
       "contract": "global",
       "action": "negative_assertion_floor",
       "status": "PASS",
       "detail": "executed=5,required=5",
-      "timestamp": 1772300201
+      "timestamp": 1772380461
     }
   ],
-  "generated_at": 1772300201
+  "generated_at": 1772380461
 }

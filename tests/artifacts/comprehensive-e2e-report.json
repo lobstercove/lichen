@@ -4,3472 +4,3472 @@
     "fail": 0,
     "skip": 4
   },
-  "elapsed_seconds": 142.2,
+  "elapsed_seconds": 150.8,
   "results": [
     {
       "status": "PASS",
       "msg": "validator healthy",
-      "ts": 1772300564
+      "ts": 1772380808
     },
     {
       "status": "PASS",
-      "msg": "current slot: 411",
-      "ts": 1772300564
+      "msg": "current slot: 402",
+      "ts": 1772380808
     },
     {
       "status": "SKIP",
       "msg": "deployer airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
-      "ts": 1772300564
+      "ts": 1772380808
     },
     {
       "status": "SKIP",
       "msg": "secondary airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
-      "ts": 1772300564
+      "ts": 1772380808
     },
     {
       "status": "PASS",
       "msg": "secondary funded via transfer (10000000000 shells)",
-      "ts": 1772300564
+      "ts": 1772380809
     },
     {
       "status": "PASS",
       "msg": "discovered 27/27 contracts",
-      "ts": 1772300564
+      "ts": 1772380809
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.initialize sig=9b214dfb874ede65...",
-      "ts": 1772300564
+      "msg": "moltcoin.initialize sig=5a2c2fe6e16a5296...",
+      "ts": 1772380809
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.mint sig=930738e354fdd123...",
-      "ts": 1772300564
+      "msg": "moltcoin.mint sig=edbeb4f4dc1c4061...",
+      "ts": 1772380809
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.transfer sig=1ae5c06bdedda77a...",
-      "ts": 1772300565
+      "msg": "moltcoin.transfer sig=980dd24aa71cc858...",
+      "ts": 1772380809
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.burn sig=acd4c35e0d5c5b09...",
-      "ts": 1772300565
+      "msg": "moltcoin.burn sig=0a1dfef354f8ff85...",
+      "ts": 1772380809
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.approve sig=eb077059703ccd64...",
-      "ts": 1772300565
+      "msg": "moltcoin.approve sig=c9df6fdb0b6f74fa...",
+      "ts": 1772380810
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.balance_of sig=f7aa879e03efb09d...",
-      "ts": 1772300566
+      "msg": "moltcoin.balance_of sig=7ae7b27135924c74...",
+      "ts": 1772380810
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.total_supply sig=8275232efc217812...",
-      "ts": 1772300566
+      "msg": "moltcoin.total_supply sig=80e1367ddb175853...",
+      "ts": 1772380810
     },
     {
       "status": "PASS",
-      "msg": "musd_token.initialize sig=3bc06c52db8d4669...",
-      "ts": 1772300566
+      "msg": "musd_token.initialize sig=c15dd1332868f02c...",
+      "ts": 1772380810
     },
     {
       "status": "PASS",
-      "msg": "musd_token.mint sig=5d6121f2a0e05f89...",
-      "ts": 1772300566
+      "msg": "musd_token.mint sig=7ebee24d9033e117...",
+      "ts": 1772380811
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer sig=40fd1543fe3b691a...",
-      "ts": 1772300567
+      "msg": "musd_token.transfer sig=94e3d5115c2a6f3c...",
+      "ts": 1772380811
     },
     {
       "status": "PASS",
-      "msg": "musd_token.approve sig=a821460854bff8b3...",
-      "ts": 1772300567
+      "msg": "musd_token.approve sig=b3e011a974f4e208...",
+      "ts": 1772380811
     },
     {
       "status": "PASS",
-      "msg": "musd_token.burn sig=e3581c4b394b568f...",
-      "ts": 1772300567
+      "msg": "musd_token.burn sig=bca6426754c011df...",
+      "ts": 1772380811
     },
     {
       "status": "PASS",
-      "msg": "musd_token.balance_of sig=e64a578cb6d99afa...",
-      "ts": 1772300567
+      "msg": "musd_token.balance_of sig=abf608cad201aa10...",
+      "ts": 1772380812
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_supply sig=f77caef6cad289f7...",
-      "ts": 1772300567
+      "msg": "musd_token.total_supply sig=77a9ba8138987619...",
+      "ts": 1772380812
     },
     {
       "status": "PASS",
-      "msg": "musd_token.allowance sig=5b1f678d9a40c360...",
-      "ts": 1772300568
+      "msg": "musd_token.allowance sig=608028cb054032d8...",
+      "ts": 1772380812
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_minted sig=72cfa4423a38ff96...",
-      "ts": 1772300568
+      "msg": "musd_token.total_minted sig=d8f0d483f6065e72...",
+      "ts": 1772380812
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_burned sig=32138254bf9bd6db...",
-      "ts": 1772300568
+      "msg": "musd_token.total_burned sig=261c9c1304b5850e...",
+      "ts": 1772380812
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer_from sig=c3f3e952c9e6672b...",
-      "ts": 1772300568
+      "msg": "musd_token.transfer_from sig=28a7cec5e454535a...",
+      "ts": 1772380813
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_pause sig=8a9cea16d9d62c92...",
-      "ts": 1772300568
+      "msg": "musd_token.emergency_pause sig=3427f2dd08826f3d...",
+      "ts": 1772380813
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_unpause sig=a1e76946b94d23c2...",
-      "ts": 1772300569
+      "msg": "musd_token.emergency_unpause sig=3ec293b53987efb0...",
+      "ts": 1772380813
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_transfer_count sig=88465690660015b7...",
-      "ts": 1772300569
+      "msg": "musd_token.get_transfer_count sig=e4daa4c675848bd9...",
+      "ts": 1772380813
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_attestation_count sig=b2d0cea558c0c90c...",
-      "ts": 1772300569
+      "msg": "musd_token.get_attestation_count sig=1b117d6b327cd192...",
+      "ts": 1772380813
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_epoch_remaining sig=19ddc6f8ef539015...",
-      "ts": 1772300569
+      "msg": "musd_token.get_epoch_remaining sig=b80421b6a67596be...",
+      "ts": 1772380814
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_last_attestation_slot sig=923550eb318ef8f8...",
-      "ts": 1772300570
+      "msg": "musd_token.get_last_attestation_slot sig=6411b9142969d310...",
+      "ts": 1772380814
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_reserve_ratio sig=ab9528c3856befc5...",
-      "ts": 1772300570
+      "msg": "musd_token.get_reserve_ratio sig=92043aae5677e9e6...",
+      "ts": 1772380814
     },
     {
       "status": "PASS",
-      "msg": "musd_token.attest_reserves sig=d39baaab2402b824...",
-      "ts": 1772300570
+      "msg": "musd_token.attest_reserves sig=b8a016e92ac35f90...",
+      "ts": 1772380814
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer_admin sig=eb51a9b3a1836d2a...",
-      "ts": 1772300570
+      "msg": "musd_token.transfer_admin sig=280ce4559966fcf9...",
+      "ts": 1772380815
     },
     {
       "status": "PASS",
-      "msg": "weth_token.initialize sig=927032c5ca34a712...",
-      "ts": 1772300570
+      "msg": "weth_token.initialize sig=d75cc75a2b7a121c...",
+      "ts": 1772380815
     },
     {
       "status": "PASS",
-      "msg": "weth_token.mint sig=bc444abd430245cc...",
-      "ts": 1772300570
+      "msg": "weth_token.mint sig=ca7374659472e5b3...",
+      "ts": 1772380815
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer sig=aac760f0a96a1330...",
-      "ts": 1772300571
+      "msg": "weth_token.transfer sig=ea2674600a9fe078...",
+      "ts": 1772380815
     },
     {
       "status": "PASS",
-      "msg": "weth_token.approve sig=f7a0f8f63b374da1...",
-      "ts": 1772300571
+      "msg": "weth_token.approve sig=4ea0376746641333...",
+      "ts": 1772380816
     },
     {
       "status": "PASS",
-      "msg": "weth_token.burn sig=003003fa6476f896...",
-      "ts": 1772300571
+      "msg": "weth_token.burn sig=77f5372f51094a58...",
+      "ts": 1772380816
     },
     {
       "status": "PASS",
-      "msg": "weth_token.balance_of sig=47043eccedb23680...",
-      "ts": 1772300571
+      "msg": "weth_token.balance_of sig=c64e47cbe08b89ac...",
+      "ts": 1772380816
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_supply sig=88bd5ad6d0324790...",
-      "ts": 1772300571
+      "msg": "weth_token.total_supply sig=e7599827e4a9e93e...",
+      "ts": 1772380817
     },
     {
       "status": "PASS",
-      "msg": "weth_token.allowance sig=4cc258ddc86851fc...",
-      "ts": 1772300572
+      "msg": "weth_token.allowance sig=54a5b64fb84f2190...",
+      "ts": 1772380817
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_minted sig=aeb8f80c5e595734...",
-      "ts": 1772300572
+      "msg": "weth_token.total_minted sig=1211f867f20658e6...",
+      "ts": 1772380817
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_burned sig=385ff76674c0e858...",
-      "ts": 1772300572
+      "msg": "weth_token.total_burned sig=f25ada46da8314fa...",
+      "ts": 1772380817
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer_from sig=886b3ff06ff3255d...",
-      "ts": 1772300572
+      "msg": "weth_token.transfer_from sig=87d7104384f8cd48...",
+      "ts": 1772380817
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_pause sig=a185782794f7e311...",
-      "ts": 1772300573
+      "msg": "weth_token.emergency_pause sig=d3923006d715afa2...",
+      "ts": 1772380818
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_unpause sig=550b207c890047d1...",
-      "ts": 1772300573
+      "msg": "weth_token.emergency_unpause sig=6964f04f8aeec07a...",
+      "ts": 1772380818
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_transfer_count sig=8690f95127e8a999...",
-      "ts": 1772300573
+      "msg": "weth_token.get_transfer_count sig=706fe011167b6884...",
+      "ts": 1772380818
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_attestation_count sig=70bbd81df32b7432...",
-      "ts": 1772300573
+      "msg": "weth_token.get_attestation_count sig=7f56a240e2e0586c...",
+      "ts": 1772380818
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_epoch_remaining sig=4e082ef2e3479f6c...",
-      "ts": 1772300574
+      "msg": "weth_token.get_epoch_remaining sig=5d800aacac66a984...",
+      "ts": 1772380819
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_last_attestation_slot sig=80d23b7fded849a5...",
-      "ts": 1772300574
+      "msg": "weth_token.get_last_attestation_slot sig=beaff1d4a1e82d90...",
+      "ts": 1772380819
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_reserve_ratio sig=e83c1fd934a92caf...",
-      "ts": 1772300574
+      "msg": "weth_token.get_reserve_ratio sig=ce143892f93b7c45...",
+      "ts": 1772380819
     },
     {
       "status": "PASS",
-      "msg": "weth_token.attest_reserves sig=7ed5731eaf64d2a9...",
-      "ts": 1772300574
+      "msg": "weth_token.attest_reserves sig=13aa14554ca07152...",
+      "ts": 1772380819
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer_admin sig=654aafe1e6c71319...",
-      "ts": 1772300574
+      "msg": "weth_token.transfer_admin sig=3a92ee8f8d3ff2d4...",
+      "ts": 1772380819
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.initialize sig=9ff4d40818233dd1...",
-      "ts": 1772300575
+      "msg": "wsol_token.initialize sig=e0d99ada05d11537...",
+      "ts": 1772380820
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.mint sig=d1723971abc5099b...",
-      "ts": 1772300575
+      "msg": "wsol_token.mint sig=b0a88a48438ce147...",
+      "ts": 1772380820
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer sig=7354e84d5bad856e...",
-      "ts": 1772300575
+      "msg": "wsol_token.transfer sig=155b5361f96763fa...",
+      "ts": 1772380820
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.approve sig=d6732a2825664935...",
-      "ts": 1772300575
+      "msg": "wsol_token.approve sig=892091e852a9b1dd...",
+      "ts": 1772380820
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.burn sig=7b5962e85d187ce2...",
-      "ts": 1772300576
+      "msg": "wsol_token.burn sig=0975fa251a19cd7f...",
+      "ts": 1772380821
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.balance_of sig=1a9d5e8d9cac414f...",
-      "ts": 1772300576
+      "msg": "wsol_token.balance_of sig=d797113e597309c5...",
+      "ts": 1772380821
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_supply sig=4381c0f7a9bcd91f...",
-      "ts": 1772300576
+      "msg": "wsol_token.total_supply sig=18e3dfc3d97f5c76...",
+      "ts": 1772380821
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.allowance sig=40cb7c2009148fe4...",
-      "ts": 1772300577
+      "msg": "wsol_token.allowance sig=1a0784d0be67a232...",
+      "ts": 1772380821
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_minted sig=c92ee0dfe8b13468...",
-      "ts": 1772300577
+      "msg": "wsol_token.total_minted sig=269f8fb14c7a30ab...",
+      "ts": 1772380821
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_burned sig=420ea744e1938864...",
-      "ts": 1772300577
+      "msg": "wsol_token.total_burned sig=07166ae30c03ffa2...",
+      "ts": 1772380822
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer_from sig=2f310b1b17e47d9d...",
-      "ts": 1772300577
+      "msg": "wsol_token.transfer_from sig=2b88a0a3e60c0920...",
+      "ts": 1772380822
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_pause sig=0b92caf0cdf5ce12...",
-      "ts": 1772300578
+      "msg": "wsol_token.emergency_pause sig=6d1632c292620460...",
+      "ts": 1772380822
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_unpause sig=b919bb9436134ab2...",
-      "ts": 1772300578
+      "msg": "wsol_token.emergency_unpause sig=b0b2c9a17d533fe3...",
+      "ts": 1772380822
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_transfer_count sig=fd0e82dc9e8ddbe7...",
-      "ts": 1772300578
+      "msg": "wsol_token.get_transfer_count sig=ca07692b0108706a...",
+      "ts": 1772380823
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_attestation_count sig=3c4dee379b3a2386...",
-      "ts": 1772300578
+      "msg": "wsol_token.get_attestation_count sig=0a9563c58ab2359d...",
+      "ts": 1772380823
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_epoch_remaining sig=babab65fd0b030d1...",
-      "ts": 1772300578
+      "msg": "wsol_token.get_epoch_remaining sig=306f3c918da98613...",
+      "ts": 1772380823
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_last_attestation_slot sig=6ff3582840faa63d...",
-      "ts": 1772300579
+      "msg": "wsol_token.get_last_attestation_slot sig=eb2d449351d5d755...",
+      "ts": 1772380823
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_reserve_ratio sig=f5cd1773c3fdb896...",
-      "ts": 1772300579
+      "msg": "wsol_token.get_reserve_ratio sig=08556dab179bc05f...",
+      "ts": 1772380824
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.attest_reserves sig=d49b32412d375955...",
-      "ts": 1772300579
+      "msg": "wsol_token.attest_reserves sig=f39b9b474c1ebb0b...",
+      "ts": 1772380824
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer_admin sig=941a363d8cc56928...",
-      "ts": 1772300579
+      "msg": "wsol_token.transfer_admin sig=e3601e0bff2a4968...",
+      "ts": 1772380825
     },
     {
       "status": "PASS",
-      "msg": "clawpump.initialize sig=c9cfb566fba152e1...",
-      "ts": 1772300579
+      "msg": "clawpump.initialize sig=1e813741aee5955f...",
+      "ts": 1772380825
     },
     {
       "status": "PASS",
-      "msg": "clawpump.create_token sig=8ec3660b5904a78b...",
-      "ts": 1772300580
+      "msg": "clawpump.create_token sig=e193f64c187c4511...",
+      "ts": 1772380825
     },
     {
       "status": "PASS",
-      "msg": "clawpump.buy sig=59b7f2f604bb49a6...",
-      "ts": 1772300580
+      "msg": "clawpump.buy sig=87107ec3c2ad58f2...",
+      "ts": 1772380826
     },
     {
       "status": "PASS",
-      "msg": "clawpump.sell sig=0c3865c94c11ea88...",
-      "ts": 1772300580
+      "msg": "clawpump.sell sig=2f2745e68f1ddc8c...",
+      "ts": 1772380826
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_token_info sig=e558c1914fa263b3...",
-      "ts": 1772300580
+      "msg": "clawpump.get_token_info sig=118d79dd37b17fef...",
+      "ts": 1772380826
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_token_count sig=71ae1d8d0d98ec74...",
-      "ts": 1772300580
+      "msg": "clawpump.get_token_count sig=7132bfe311ccf121...",
+      "ts": 1772380826
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_platform_stats sig=8e9027e75c1f715d...",
-      "ts": 1772300580
+      "msg": "clawpump.get_platform_stats sig=67a137cd74eb21bf...",
+      "ts": 1772380827
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_buy_quote sig=2fdfb3888f15af3e...",
-      "ts": 1772300581
+      "msg": "clawpump.get_buy_quote sig=dd27aa0999e8e790...",
+      "ts": 1772380827
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_graduation_info sig=e6962b4282dd3560...",
-      "ts": 1772300581
+      "msg": "clawpump.get_graduation_info sig=2b05dd4e76d46e0a...",
+      "ts": 1772380827
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_buy_cooldown sig=d357ded17955f1ee...",
-      "ts": 1772300581
+      "msg": "clawpump.set_buy_cooldown sig=2199d22c872ebb5f...",
+      "ts": 1772380827
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_sell_cooldown sig=44fed52791be893b...",
-      "ts": 1772300581
+      "msg": "clawpump.set_sell_cooldown sig=ab89814910d44b22...",
+      "ts": 1772380827
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_max_buy sig=a8e76d87e334c4d3...",
-      "ts": 1772300581
+      "msg": "clawpump.set_max_buy sig=09253ff5e21e0424...",
+      "ts": 1772380828
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_creator_royalty sig=f0abf76c7a12a52c...",
-      "ts": 1772300582
+      "msg": "clawpump.set_creator_royalty sig=172ed1af942f45fe...",
+      "ts": 1772380828
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_dex_addresses sig=a9fdade54c5c8e1a...",
-      "ts": 1772300582
+      "msg": "clawpump.set_dex_addresses sig=da09189e72d8f08f...",
+      "ts": 1772380828
     },
     {
       "status": "PASS",
-      "msg": "clawpump.pause sig=02477a732de0cb3f...",
-      "ts": 1772300582
+      "msg": "clawpump.pause sig=0b5edac2f863c9f6...",
+      "ts": 1772380828
     },
     {
       "status": "PASS",
-      "msg": "clawpump.unpause sig=619f7102a4c05762...",
-      "ts": 1772300582
+      "msg": "clawpump.unpause sig=b38595ffc7334afd...",
+      "ts": 1772380828
     },
     {
       "status": "PASS",
-      "msg": "clawpump.withdraw_fees sig=628f95e796417033...",
-      "ts": 1772300582
+      "msg": "clawpump.withdraw_fees sig=31a8af7499b6c18f...",
+      "ts": 1772380829
     },
     {
       "status": "PASS",
-      "msg": "clawpump.freeze_token sig=5749480605993ee4...",
-      "ts": 1772300583
+      "msg": "clawpump.freeze_token sig=2974176403e0bc63...",
+      "ts": 1772380829
     },
     {
       "status": "PASS",
-      "msg": "clawpump.unfreeze_token sig=7eacba4082231e08...",
-      "ts": 1772300583
+      "msg": "clawpump.unfreeze_token sig=530bc0dde7fa0cc9...",
+      "ts": 1772380829
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.initialize sig=f6fb65618ed1183d...",
-      "ts": 1772300583
+      "msg": "lobsterlend.initialize sig=174a3c7e6946b427...",
+      "ts": 1772380830
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.deposit sig=1baa20a0e9be71d2...",
-      "ts": 1772300583
+      "msg": "lobsterlend.deposit sig=eed55776771abc50...",
+      "ts": 1772380830
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.borrow sig=1e5e6468581b2296...",
-      "ts": 1772300583
+      "msg": "lobsterlend.borrow sig=5f6c2b3413b43a59...",
+      "ts": 1772380830
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.repay sig=642afb5f3aac58f0...",
-      "ts": 1772300583
+      "msg": "lobsterlend.repay sig=8254b64f504b46ce...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.withdraw sig=c532764b14023a82...",
-      "ts": 1772300584
+      "msg": "lobsterlend.withdraw sig=a26b375b8754013d...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_protocol_stats sig=2d8862bfb9b180f3...",
-      "ts": 1772300584
+      "msg": "lobsterlend.get_protocol_stats sig=0a0b6ad70ff35899...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_account_info sig=bfaca2dd5832a5f7...",
-      "ts": 1772300584
+      "msg": "lobsterlend.get_account_info sig=b2f10ede5b96f7f6...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_interest_rate sig=2aaf070a18370592...",
-      "ts": 1772300584
+      "msg": "lobsterlend.get_interest_rate sig=c64bd6a7371ea55b...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.set_deposit_cap sig=0a4f2acf6fe18a1d...",
-      "ts": 1772300585
+      "msg": "lobsterlend.set_deposit_cap sig=667d90a1d832c50a...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.set_reserve_factor sig=06d80787ee2a6a94...",
-      "ts": 1772300585
+      "msg": "lobsterlend.set_reserve_factor sig=806af86cc716a3f8...",
+      "ts": 1772380831
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.pause sig=55180bbd1eb8553b...",
-      "ts": 1772300585
+      "msg": "lobsterlend.pause sig=6aca4f3b71ff4748...",
+      "ts": 1772380832
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.unpause sig=fc9141350908289b...",
-      "ts": 1772300585
+      "msg": "lobsterlend.unpause sig=509788792cf0112d...",
+      "ts": 1772380832
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.withdraw_reserves sig=b572f7742f8213e8...",
-      "ts": 1772300585
+      "msg": "lobsterlend.withdraw_reserves sig=4088d2f3c72c7cb4...",
+      "ts": 1772380832
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.liquidate sig=fa40dc8c3b483973...",
-      "ts": 1772300586
+      "msg": "lobsterlend.liquidate sig=d6c28cfb0b5cac3a...",
+      "ts": 1772380833
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.flash_borrow sig=31c587de9b9bbb1c...",
-      "ts": 1772300586
+      "msg": "lobsterlend.flash_borrow sig=69c01d82313b09dd...",
+      "ts": 1772380833
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.flash_repay sig=53251fca50ade9b0...",
-      "ts": 1772300586
+      "msg": "lobsterlend.flash_repay sig=6fd3de63f4b7ecba...",
+      "ts": 1772380833
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_deposit_count sig=19226366644efb2f...",
-      "ts": 1772300586
+      "msg": "lobsterlend.get_deposit_count sig=a9fcf3e5b6e49c51...",
+      "ts": 1772380833
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_borrow_count sig=2e1aab546d67151e...",
-      "ts": 1772300586
+      "msg": "lobsterlend.get_borrow_count sig=ee6a34a999c23c93...",
+      "ts": 1772380834
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_liquidation_count sig=987e2582080d1a21...",
-      "ts": 1772300587
+      "msg": "lobsterlend.get_liquidation_count sig=56fd3cc102b5b5c7...",
+      "ts": 1772380834
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_platform_stats sig=c72e5944a85281ab...",
-      "ts": 1772300587
+      "msg": "lobsterlend.get_platform_stats sig=26c8d0df1e3761f5...",
+      "ts": 1772380834
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.initialize sig=365553737b274224...",
-      "ts": 1772300587
+      "msg": "moltmarket.initialize sig=2b02838ba4b5105b...",
+      "ts": 1772380834
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.list_nft sig=742500fb60bdce81...",
-      "ts": 1772300587
+      "msg": "moltmarket.list_nft sig=b31963326233c7d8...",
+      "ts": 1772380835
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.get_listing sig=e73e3973baba2d42...",
-      "ts": 1772300587
+      "msg": "moltmarket.get_listing sig=aab5073524533d33...",
+      "ts": 1772380835
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.cancel_listing sig=0d743e003f1cf1a8...",
-      "ts": 1772300588
+      "msg": "moltmarket.cancel_listing sig=7e90c8c7b30dd5df...",
+      "ts": 1772380835
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.get_marketplace_stats sig=b667f184a17b4910...",
-      "ts": 1772300588
+      "msg": "moltmarket.get_marketplace_stats sig=99dea85d002563bb...",
+      "ts": 1772380836
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.set_marketplace_fee sig=7976cc68bfb3899a...",
-      "ts": 1772300588
+      "msg": "moltmarket.set_marketplace_fee sig=f7a314799fa44ee9...",
+      "ts": 1772380836
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.list_nft_with_royalty sig=8fcbf5a11356225d...",
-      "ts": 1772300588
+      "msg": "moltmarket.list_nft_with_royalty sig=165602cbacb2ba4d...",
+      "ts": 1772380836
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.make_offer sig=aced493cee8e4632...",
-      "ts": 1772300588
+      "msg": "moltmarket.make_offer sig=613eb86ca01b2bff...",
+      "ts": 1772380836
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.cancel_offer sig=63a2713accd14f88...",
-      "ts": 1772300589
+      "msg": "moltmarket.cancel_offer sig=889747299b4dbf84...",
+      "ts": 1772380836
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.buy_nft sig=bff27fa5486ae548...",
-      "ts": 1772300589
+      "msg": "moltmarket.buy_nft sig=6f604f3ce056417f...",
+      "ts": 1772380837
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.accept_offer sig=7ae95c7634c3b878...",
-      "ts": 1772300589
+      "msg": "moltmarket.accept_offer sig=af1fd51736aaa8e9...",
+      "ts": 1772380837
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.mm_pause sig=64d4e765d2daf7f2...",
-      "ts": 1772300589
+      "msg": "moltmarket.mm_pause sig=a6b31b1251958880...",
+      "ts": 1772380837
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.mm_unpause sig=8db075526003a7aa...",
-      "ts": 1772300589
+      "msg": "moltmarket.mm_unpause sig=5205c0ed7c00de8d...",
+      "ts": 1772380837
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.get_marketplace_stats sig=402ae0202e15862a...",
-      "ts": 1772300590
+      "msg": "moltmarket.get_marketplace_stats sig=a9efedd7f19b7b28...",
+      "ts": 1772380837
     },
     {
       "status": "PASS",
-      "msg": "moltauction.initialize sig=6e4c12e9ae4ea144...",
-      "ts": 1772300590
+      "msg": "moltauction.initialize sig=d61d342fcae8dead...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.initialize_ma_admin sig=afcc5cc29e000a0a...",
-      "ts": 1772300590
+      "msg": "moltauction.initialize_ma_admin sig=52aaf494f9a84dd0...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.create_auction sig=9eb38dee9d3f6805...",
-      "ts": 1772300590
+      "msg": "moltauction.create_auction sig=dda32a0c4e3eb33a...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.place_bid sig=2ed68ac0e6eae5b9...",
-      "ts": 1772300591
+      "msg": "moltauction.place_bid sig=4720b01a2fb5a15a...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.set_reserve_price sig=1fdd7fee9d607057...",
-      "ts": 1772300591
+      "msg": "moltauction.set_reserve_price sig=f7942f296723285d...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.set_royalty sig=1d933a3525ad5ec1...",
-      "ts": 1772300592
+      "msg": "moltauction.set_royalty sig=ce2c080d4c2247b4...",
+      "ts": 1772380838
     },
     {
       "status": "PASS",
-      "msg": "moltauction.get_auction_info sig=dc2c01cb407f2197...",
-      "ts": 1772300592
+      "msg": "moltauction.get_auction_info sig=8622db1e7bfad0f9...",
+      "ts": 1772380839
     },
     {
       "status": "PASS",
-      "msg": "moltauction.get_collection_stats sig=18ae35a29ecf7dba...",
-      "ts": 1772300592
+      "msg": "moltauction.get_collection_stats sig=a17b7276e0e30ae2...",
+      "ts": 1772380839
     },
     {
       "status": "PASS",
-      "msg": "moltauction.update_collection_stats sig=b4a81bb03250b534...",
-      "ts": 1772300592
+      "msg": "moltauction.update_collection_stats sig=191a39f33fec3706...",
+      "ts": 1772380839
     },
     {
       "status": "PASS",
-      "msg": "moltauction.cancel_auction sig=5569a0d98d3c2ad5...",
-      "ts": 1772300593
+      "msg": "moltauction.cancel_auction sig=11d2e577ec3bb83c...",
+      "ts": 1772380839
     },
     {
       "status": "PASS",
-      "msg": "moltauction.finalize_auction sig=4402f6e4e9074548...",
-      "ts": 1772300593
+      "msg": "moltauction.finalize_auction sig=21542c542448681b...",
+      "ts": 1772380840
     },
     {
       "status": "PASS",
-      "msg": "moltauction.make_offer sig=a5c6bb4bd90643f0...",
-      "ts": 1772300593
+      "msg": "moltauction.make_offer sig=1ed22f9925908d50...",
+      "ts": 1772380840
     },
     {
       "status": "PASS",
-      "msg": "moltauction.accept_offer sig=6c15cedf27c1dd2b...",
-      "ts": 1772300593
+      "msg": "moltauction.accept_offer sig=62b27a56050285c1...",
+      "ts": 1772380840
     },
     {
       "status": "PASS",
-      "msg": "moltauction.ma_pause sig=7f484b98a42c2997...",
-      "ts": 1772300593
+      "msg": "moltauction.ma_pause sig=e5d54f57ff58f52c...",
+      "ts": 1772380840
     },
     {
       "status": "PASS",
-      "msg": "moltauction.ma_unpause sig=7b9ebddf94669a7a...",
-      "ts": 1772300594
+      "msg": "moltauction.ma_unpause sig=24fd801687c747b5...",
+      "ts": 1772380841
     },
     {
       "status": "PASS",
-      "msg": "moltauction.get_auction_stats sig=67ee6142089b22ae...",
-      "ts": 1772300594
+      "msg": "moltauction.get_auction_stats sig=f89a96b30b973235...",
+      "ts": 1772380841
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.initialize sig=9ad28b48b1bf05ad...",
-      "ts": 1772300594
+      "msg": "moltbridge.initialize sig=d67fc2880f3e53d2...",
+      "ts": 1772380841
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.add_bridge_validator sig=f31e57b2f37b882c...",
-      "ts": 1772300594
+      "msg": "moltbridge.add_bridge_validator sig=b6cb7e23713f4807...",
+      "ts": 1772380841
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_required_confirmations sig=86718db94f140fbb...",
-      "ts": 1772300594
+      "msg": "moltbridge.set_required_confirmations sig=fa15bc442ce12fb7...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_request_timeout sig=daa60b8edf139ed6...",
-      "ts": 1772300595
+      "msg": "moltbridge.set_request_timeout sig=05b13ec250985094...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.get_bridge_status sig=a873ae04530ed4e8...",
-      "ts": 1772300595
+      "msg": "moltbridge.get_bridge_status sig=f4647ae956e8eea9...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.remove_bridge_validator sig=bc7a8f6577f2fb27...",
-      "ts": 1772300595
+      "msg": "moltbridge.remove_bridge_validator sig=79901e273cd5e52d...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.lock_tokens sig=cecc53a54b178373...",
-      "ts": 1772300595
+      "msg": "moltbridge.lock_tokens sig=b8fa67257fcec5df...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.submit_mint sig=ef5dd0e557552af5...",
-      "ts": 1772300595
+      "msg": "moltbridge.submit_mint sig=dbb1760bdec14b45...",
+      "ts": 1772380842
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.has_confirmed_mint sig=6d51355771cab3c3...",
-      "ts": 1772300596
+      "msg": "moltbridge.has_confirmed_mint sig=005df3eecbb14b61...",
+      "ts": 1772380843
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.submit_unlock sig=be13bf752a7dd9a7...",
-      "ts": 1772300596
+      "msg": "moltbridge.submit_unlock sig=ce8e09b1bc868209...",
+      "ts": 1772380843
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.has_confirmed_unlock sig=9069378086877ebc...",
-      "ts": 1772300596
+      "msg": "moltbridge.has_confirmed_unlock sig=74ceb7c20745318e...",
+      "ts": 1772380843
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.is_source_tx_used sig=590757d9b6a3ffa1...",
-      "ts": 1772300596
+      "msg": "moltbridge.is_source_tx_used sig=c28ba77a58116158...",
+      "ts": 1772380843
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.is_burn_proof_used sig=817b5de0a88b83a3...",
-      "ts": 1772300597
+      "msg": "moltbridge.is_burn_proof_used sig=772fbb2faa40ac97...",
+      "ts": 1772380844
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.confirm_mint sig=9cffb27ba6714d85...",
-      "ts": 1772300597
+      "msg": "moltbridge.confirm_mint sig=5ddad82eb212ecc6...",
+      "ts": 1772380844
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.confirm_unlock sig=959b04d259a0d8b0...",
-      "ts": 1772300597
+      "msg": "moltbridge.confirm_unlock sig=7ce1d70a46d1db15...",
+      "ts": 1772380844
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.cancel_expired_request sig=66247139cd921ff3...",
-      "ts": 1772300597
+      "msg": "moltbridge.cancel_expired_request sig=be33a4794bd481ff...",
+      "ts": 1772380845
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_moltyid_address sig=f2fb7bf685a8b3a7...",
-      "ts": 1772300597
+      "msg": "moltbridge.set_moltyid_address sig=3e002e01d5481437...",
+      "ts": 1772380845
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_identity_gate sig=2718776ff0501eab...",
-      "ts": 1772300598
+      "msg": "moltbridge.set_identity_gate sig=ae7336f7910f93c4...",
+      "ts": 1772380845
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.mb_pause sig=8c7f815846df3502...",
-      "ts": 1772300598
+      "msg": "moltbridge.mb_pause sig=4819d4df76900d74...",
+      "ts": 1772380845
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.mb_unpause sig=33c0e05f87de6636...",
-      "ts": 1772300598
+      "msg": "moltbridge.mb_unpause sig=adb1c59b2c638f10...",
+      "ts": 1772380846
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.initialize sig=9a88a8cbbc499b2e...",
-      "ts": 1772300598
+      "msg": "reef_storage.initialize sig=60fe6db1bd368eb6...",
+      "ts": 1772380846
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.register_provider sig=b21a32558b145443...",
-      "ts": 1772300599
+      "msg": "reef_storage.register_provider sig=51f3e39ba829fc20...",
+      "ts": 1772380846
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.set_storage_price sig=35a2212b28b4a475...",
-      "ts": 1772300599
+      "msg": "reef_storage.set_storage_price sig=9948238483239955...",
+      "ts": 1772380846
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.store_data sig=8e675a9086df7993...",
-      "ts": 1772300599
+      "msg": "reef_storage.store_data sig=4162d14773e64343...",
+      "ts": 1772380846
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.confirm_storage sig=b5403eb78cacf9fb...",
-      "ts": 1772300599
+      "msg": "reef_storage.confirm_storage sig=c514413b0dc472f2...",
+      "ts": 1772380847
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_storage_info sig=ff62b77a74a0990f...",
-      "ts": 1772300600
+      "msg": "reef_storage.get_storage_info sig=5509ff40fb0eb668...",
+      "ts": 1772380847
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_storage_price sig=dcfd2134e4f4057c...",
-      "ts": 1772300600
+      "msg": "reef_storage.get_storage_price sig=270e84351d5d9241...",
+      "ts": 1772380847
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_provider_stake sig=e1b550ce16f5ac63...",
-      "ts": 1772300600
+      "msg": "reef_storage.get_provider_stake sig=19d3f22c5c3eab13...",
+      "ts": 1772380847
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.claim_storage_rewards sig=355f839eab08b01f...",
-      "ts": 1772300600
+      "msg": "reef_storage.claim_storage_rewards sig=f5d87bd3a8a3f90c...",
+      "ts": 1772380848
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.stake_collateral sig=da33b4ec7e29abba...",
-      "ts": 1772300600
+      "msg": "reef_storage.stake_collateral sig=c865201231a04350...",
+      "ts": 1772380848
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.issue_challenge sig=449a3beb5dd8d097...",
-      "ts": 1772300600
+      "msg": "reef_storage.issue_challenge sig=1650524bb8866c35...",
+      "ts": 1772380848
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.respond_challenge sig=4ce331ca1e9fb2cd...",
-      "ts": 1772300601
+      "msg": "reef_storage.respond_challenge sig=35a782e62a9790da...",
+      "ts": 1772380848
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.set_challenge_window sig=e8fd8beb18c399db...",
-      "ts": 1772300601
+      "msg": "reef_storage.set_challenge_window sig=5e13b754399546a3...",
+      "ts": 1772380849
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.set_slash_percent sig=361d787f05e5d755...",
-      "ts": 1772300601
+      "msg": "reef_storage.set_slash_percent sig=b5b381e18a90528b...",
+      "ts": 1772380849
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.slash_provider sig=6ec26d8c3df2811c...",
-      "ts": 1772300602
+      "msg": "reef_storage.slash_provider sig=a9fa13113ebe8dc0...",
+      "ts": 1772380849
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_platform_stats sig=b178ef685e873c0b...",
-      "ts": 1772300602
+      "msg": "reef_storage.get_platform_stats sig=5b93002422792c46...",
+      "ts": 1772380849
     },
     {
       "status": "PASS",
-      "msg": "clawvault.initialize sig=3d71e5720ca79a7f...",
-      "ts": 1772300602
+      "msg": "clawvault.initialize sig=35a502b46787acb7...",
+      "ts": 1772380850
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_protocol_addresses sig=aa94d3e9379944a9...",
-      "ts": 1772300602
+      "msg": "clawvault.set_protocol_addresses sig=6b6a3c475d084a06...",
+      "ts": 1772380850
     },
     {
       "status": "PASS",
-      "msg": "clawvault.add_strategy sig=e1d9d18f81e45868...",
-      "ts": 1772300602
+      "msg": "clawvault.add_strategy sig=4a2889063409441c...",
+      "ts": 1772380850
     },
     {
       "status": "PASS",
-      "msg": "clawvault.deposit sig=f0bf9c5d6efd7a28...",
-      "ts": 1772300603
+      "msg": "clawvault.deposit sig=95434db2e4526e34...",
+      "ts": 1772380850
     },
     {
       "status": "PASS",
-      "msg": "clawvault.withdraw sig=dcdb37e2178a827f...",
-      "ts": 1772300603
+      "msg": "clawvault.withdraw sig=5d4c2d93f3c22de1...",
+      "ts": 1772380850
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_vault_stats sig=138d92088ec9cb42...",
-      "ts": 1772300603
+      "msg": "clawvault.get_vault_stats sig=4b11fefe71765a63...",
+      "ts": 1772380851
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_user_position sig=ec6bb985633cab9f...",
-      "ts": 1772300603
+      "msg": "clawvault.get_user_position sig=f1c2d1b8662bebf7...",
+      "ts": 1772380851
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_strategy_info sig=b19485e37a836f39...",
-      "ts": 1772300604
+      "msg": "clawvault.get_strategy_info sig=71f4e657700e528a...",
+      "ts": 1772380851
     },
     {
       "status": "PASS",
-      "msg": "clawvault.harvest sig=853af6a4500cd4e1...",
-      "ts": 1772300604
+      "msg": "clawvault.harvest sig=052dd901918c5e2a...",
+      "ts": 1772380851
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_deposit_cap sig=b3634f45df546943...",
-      "ts": 1772300604
+      "msg": "clawvault.set_deposit_cap sig=601f18e33ec5283f...",
+      "ts": 1772380851
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_deposit_fee sig=5332403a44551edf...",
-      "ts": 1772300604
+      "msg": "clawvault.set_deposit_fee sig=9c52b492dce609be...",
+      "ts": 1772380852
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_withdrawal_fee sig=c31e6d00d7219c18...",
-      "ts": 1772300604
+      "msg": "clawvault.set_withdrawal_fee sig=d80db976e0412479...",
+      "ts": 1772380852
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_risk_tier sig=d18cdcbe4bead273...",
-      "ts": 1772300604
+      "msg": "clawvault.set_risk_tier sig=3f781a86741e9c5d...",
+      "ts": 1772380852
     },
     {
       "status": "PASS",
-      "msg": "clawvault.update_strategy_allocation sig=908cef86b32cdef4...",
-      "ts": 1772300605
+      "msg": "clawvault.update_strategy_allocation sig=4ab786cd83c6db0b...",
+      "ts": 1772380852
     },
     {
       "status": "PASS",
-      "msg": "clawvault.remove_strategy sig=76757da18b10cf10...",
-      "ts": 1772300605
+      "msg": "clawvault.remove_strategy sig=d9ec90abd08c9cb1...",
+      "ts": 1772380853
     },
     {
       "status": "PASS",
-      "msg": "clawvault.withdraw_protocol_fees sig=700bb456076cd248...",
-      "ts": 1772300605
+      "msg": "clawvault.withdraw_protocol_fees sig=5cbc47f70eacd273...",
+      "ts": 1772380853
     },
     {
       "status": "PASS",
-      "msg": "clawvault.cv_pause sig=70e7a96b70751380...",
-      "ts": 1772300605
+      "msg": "clawvault.cv_pause sig=cf17ab9015798c41...",
+      "ts": 1772380853
     },
     {
       "status": "PASS",
-      "msg": "clawvault.cv_unpause sig=158019107804ce12...",
-      "ts": 1772300606
+      "msg": "clawvault.cv_unpause sig=74c1dabd1eb73242...",
+      "ts": 1772380853
     },
     {
       "status": "PASS",
-      "msg": "clawpay.initialize_cp_admin sig=ee0bcb8446f77256...",
-      "ts": 1772300606
+      "msg": "clawpay.initialize_cp_admin sig=752c9941875e06c9...",
+      "ts": 1772380854
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_identity_admin sig=a9cf8fc625c9643c...",
-      "ts": 1772300606
+      "msg": "clawpay.set_identity_admin sig=ef8bb2fe418b19dd...",
+      "ts": 1772380854
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_moltyid_address sig=de3bb33b6efa1567...",
-      "ts": 1772300607
+      "msg": "clawpay.set_moltyid_address sig=581d47ab2930dae0...",
+      "ts": 1772380854
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_identity_gate sig=ad2da18c736b24f8...",
-      "ts": 1772300607
+      "msg": "clawpay.set_identity_gate sig=403314b1bb798bb1...",
+      "ts": 1772380854
     },
     {
       "status": "PASS",
-      "msg": "clawpay.create_stream sig=8222db0ed6acc57c...",
-      "ts": 1772300607
+      "msg": "clawpay.create_stream sig=4e001379e8083e53...",
+      "ts": 1772380855
     },
     {
       "status": "PASS",
-      "msg": "clawpay.create_stream_with_cliff sig=7a618ee99b8fa49a...",
-      "ts": 1772300608
+      "msg": "clawpay.create_stream_with_cliff sig=62a2863cee0be01f...",
+      "ts": 1772380855
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_stream sig=fa30d56741503012...",
-      "ts": 1772300608
+      "msg": "clawpay.get_stream sig=fc7fbe400179c75d...",
+      "ts": 1772380855
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_stream_info sig=a910047bf02d6bfe...",
-      "ts": 1772300608
+      "msg": "clawpay.get_stream_info sig=51aebb4c7b9b545b...",
+      "ts": 1772380856
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_withdrawable sig=9cc3563f5548d59e...",
-      "ts": 1772300609
+      "msg": "clawpay.get_withdrawable sig=12fee73e72eaf05b...",
+      "ts": 1772380856
     },
     {
       "status": "PASS",
-      "msg": "clawpay.withdraw_from_stream sig=2994343b634b44c8...",
-      "ts": 1772300609
+      "msg": "clawpay.withdraw_from_stream sig=87aa623a23bd02c2...",
+      "ts": 1772380856
     },
     {
       "status": "PASS",
-      "msg": "clawpay.transfer_stream sig=b07dc7c7ace9c948...",
-      "ts": 1772300609
+      "msg": "clawpay.transfer_stream sig=d9ffadd8a55451fb...",
+      "ts": 1772380857
     },
     {
       "status": "PASS",
-      "msg": "clawpay.cancel_stream sig=cc58f8e5716ea65a...",
-      "ts": 1772300609
+      "msg": "clawpay.cancel_stream sig=f23ed723d0393781...",
+      "ts": 1772380857
     },
     {
       "status": "PASS",
-      "msg": "clawpay.pause sig=12c28ddc3efbdeaf...",
-      "ts": 1772300609
+      "msg": "clawpay.pause sig=ddf8c81d387a16ef...",
+      "ts": 1772380857
     },
     {
       "status": "PASS",
-      "msg": "clawpay.unpause sig=d7362603aa4fee3e...",
-      "ts": 1772300610
+      "msg": "clawpay.unpause sig=d65275a72c3b7731...",
+      "ts": 1772380857
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_stream_count sig=3765900790abc294...",
-      "ts": 1772300610
+      "msg": "clawpay.get_stream_count sig=ef58c7818851c74b...",
+      "ts": 1772380857
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_platform_stats sig=1d030dc660255b0d...",
-      "ts": 1772300610
+      "msg": "clawpay.get_platform_stats sig=d088f77ee90cba79...",
+      "ts": 1772380858
     },
     {
       "status": "PASS",
-      "msg": "moltyid.initialize sig=44e5e2f575af87d2...",
-      "ts": 1772300611
+      "msg": "moltyid.initialize sig=fe9c60e6a9a47ebd...",
+      "ts": 1772380858
     },
     {
       "status": "PASS",
-      "msg": "moltyid.register_identity sig=13cf57ef7ce8f70d...",
-      "ts": 1772300611
+      "msg": "moltyid.register_identity sig=8508eaa4c5c7a83b...",
+      "ts": 1772380858
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_identity sig=71447a392e481193...",
-      "ts": 1772300611
+      "msg": "moltyid.get_identity sig=903c3bbf79fc4985...",
+      "ts": 1772380858
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_identity_count sig=dd77228ad610a783...",
-      "ts": 1772300611
+      "msg": "moltyid.get_identity_count sig=dc82904ad36f4663...",
+      "ts": 1772380859
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_endpoint sig=1a877c08311c111e...",
-      "ts": 1772300611
+      "msg": "moltyid.set_endpoint sig=512544ec191c1e06...",
+      "ts": 1772380859
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_endpoint sig=3da85d1667dfb1cb...",
-      "ts": 1772300612
+      "msg": "moltyid.get_endpoint sig=ea82edef32fdf4dc...",
+      "ts": 1772380859
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_metadata sig=a0dd196de89023ec...",
-      "ts": 1772300612
+      "msg": "moltyid.set_metadata sig=d03cfdcc8eef6093...",
+      "ts": 1772380859
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_metadata sig=d23950a6ae0c9682...",
-      "ts": 1772300612
+      "msg": "moltyid.get_metadata sig=dea7c1eabe4a2731...",
+      "ts": 1772380860
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_availability sig=b40a57d26a4ac83a...",
-      "ts": 1772300612
+      "msg": "moltyid.set_availability sig=4f057d10683408d7...",
+      "ts": 1772380860
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_availability sig=ae99dafa2fb0b1ec...",
-      "ts": 1772300613
+      "msg": "moltyid.get_availability sig=17787f39e8770506...",
+      "ts": 1772380860
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_rate sig=9f8baa63c998049d...",
-      "ts": 1772300613
+      "msg": "moltyid.set_rate sig=e78a80812005f2b0...",
+      "ts": 1772380860
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_rate sig=d8df1cb93afd3c5e...",
-      "ts": 1772300613
+      "msg": "moltyid.get_rate sig=32ed4b7c631bfde7...",
+      "ts": 1772380861
     },
     {
       "status": "PASS",
-      "msg": "moltyid.add_skill sig=316491b10ecede7d...",
-      "ts": 1772300614
+      "msg": "moltyid.add_skill sig=60d19d07e0a72115...",
+      "ts": 1772380861
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_skills sig=1799f2cdafa4190a...",
-      "ts": 1772300614
+      "msg": "moltyid.get_skills sig=bbf7f2f63051357f...",
+      "ts": 1772380861
     },
     {
       "status": "PASS",
-      "msg": "moltyid.vouch sig=e8c6f73961d2af56...",
-      "ts": 1772300614
+      "msg": "moltyid.vouch sig=8fd1dc27e8f2a062...",
+      "ts": 1772380861
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_vouches sig=9b0d60dc6b3c1d65...",
-      "ts": 1772300614
+      "msg": "moltyid.get_vouches sig=cbffc3e3965ca604...",
+      "ts": 1772380862
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_delegate sig=1b8780a3fef4907e...",
-      "ts": 1772300615
+      "msg": "moltyid.set_delegate sig=be19b7223a1b2ebe...",
+      "ts": 1772380862
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_delegate sig=eda4a3ee6e6090ed...",
-      "ts": 1772300615
+      "msg": "moltyid.get_delegate sig=d4b5ffab79611c9f...",
+      "ts": 1772380862
     },
     {
       "status": "PASS",
-      "msg": "moltyid.revoke_delegate sig=87ec19c7cde7c717...",
-      "ts": 1772300615
+      "msg": "moltyid.revoke_delegate sig=ebc7af3e65e7c7ad...",
+      "ts": 1772380862
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_reputation sig=8d11853747d72e7f...",
-      "ts": 1772300615
+      "msg": "moltyid.update_reputation sig=25acdb96b08095da...",
+      "ts": 1772380862
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_reputation_typed sig=304f37ec966ae73c...",
-      "ts": 1772300615
+      "msg": "moltyid.update_reputation_typed sig=a34e98dd5cbc5ad7...",
+      "ts": 1772380863
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_reputation sig=bc1d42cd8e9e8ece...",
-      "ts": 1772300616
+      "msg": "moltyid.get_reputation sig=85842236bc85b3a0...",
+      "ts": 1772380863
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_trust_tier sig=aa5afec9ff8b527a...",
-      "ts": 1772300616
+      "msg": "moltyid.get_trust_tier sig=38196806507c9c71...",
+      "ts": 1772380863
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_agent_type sig=2ebd9ce6d3aef5c4...",
-      "ts": 1772300616
+      "msg": "moltyid.update_agent_type sig=2bd8100594462805...",
+      "ts": 1772380864
     },
     {
       "status": "PASS",
-      "msg": "moltyid.deactivate_identity sig=f3507c7be73b4e70...",
-      "ts": 1772300616
+      "msg": "moltyid.deactivate_identity sig=07c482311cc6b0e1...",
+      "ts": 1772380864
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_agent_profile sig=19922e4d31e43d47...",
-      "ts": 1772300616
+      "msg": "moltyid.get_agent_profile sig=b52bc53ca8332835...",
+      "ts": 1772380864
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_recovery_guardians sig=1957298b4f882b20...",
-      "ts": 1772300616
+      "msg": "moltyid.set_recovery_guardians sig=dcb84720df1ee218...",
+      "ts": 1772380865
     },
     {
       "status": "PASS",
-      "msg": "moltyid.register_name sig=1c620a5860720388...",
-      "ts": 1772300617
+      "msg": "moltyid.register_name sig=21566e2ef00465d5...",
+      "ts": 1772380865
     },
     {
       "status": "PASS",
-      "msg": "moltyid.resolve_name sig=a7434889393f70aa...",
-      "ts": 1772300617
+      "msg": "moltyid.resolve_name sig=777b47071904544b...",
+      "ts": 1772380865
     },
     {
       "status": "PASS",
-      "msg": "moltyid.reverse_resolve sig=f7a76e144e196338...",
-      "ts": 1772300617
+      "msg": "moltyid.reverse_resolve sig=123acb9d10212c05...",
+      "ts": 1772380865
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_achievements sig=f019cf7f91c935e7...",
-      "ts": 1772300617
+      "msg": "moltyid.get_achievements sig=04a49adcf5de62ce...",
+      "ts": 1772380865
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_attestations sig=cd3a1db5d59347f0...",
-      "ts": 1772300617
+      "msg": "moltyid.get_attestations sig=8342461814ccd3c4...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.add_skill_as sig=50932524a629a10e...",
-      "ts": 1772300618
+      "msg": "moltyid.add_skill_as sig=e26a9e1f332a932b...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_endpoint_as sig=9c9dfd90f3795b86...",
-      "ts": 1772300618
+      "msg": "moltyid.set_endpoint_as sig=72e43d1f078aa2ed...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_metadata_as sig=18771dd24154319a...",
-      "ts": 1772300618
+      "msg": "moltyid.set_metadata_as sig=a8f50cfa080d70a4...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_availability_as sig=f863ce57bc60befd...",
-      "ts": 1772300618
+      "msg": "moltyid.set_availability_as sig=997f3dfe0bf56ad4...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_rate_as sig=88d2553bac45d2d1...",
-      "ts": 1772300618
+      "msg": "moltyid.set_rate_as sig=73ee84b3ab04fdcd...",
+      "ts": 1772380866
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_agent_type_as sig=1607378c457d71a8...",
-      "ts": 1772300619
+      "msg": "moltyid.update_agent_type_as sig=d327008a6b0abd70...",
+      "ts": 1772380867
     },
     {
       "status": "PASS",
-      "msg": "moltyid.attest_skill sig=c19c59deb9c2f9a2...",
-      "ts": 1772300619
+      "msg": "moltyid.attest_skill sig=dea1207cf088c3bd...",
+      "ts": 1772380867
     },
     {
       "status": "PASS",
-      "msg": "moltyid.revoke_attestation sig=2bf04a535acfcf64...",
-      "ts": 1772300619
+      "msg": "moltyid.revoke_attestation sig=fe5ecd6511c1fd0f...",
+      "ts": 1772380867
     },
     {
       "status": "PASS",
-      "msg": "moltyid.approve_recovery sig=9391435bba407633...",
-      "ts": 1772300619
+      "msg": "moltyid.approve_recovery sig=fe19f51cdc2ce34b...",
+      "ts": 1772380867
     },
     {
       "status": "PASS",
-      "msg": "moltyid.execute_recovery sig=2a3d1e85c40ea8c8...",
-      "ts": 1772300620
+      "msg": "moltyid.execute_recovery sig=72066a56622a2b7f...",
+      "ts": 1772380867
     },
     {
       "status": "PASS",
-      "msg": "moltyid.award_contribution_achievement sig=f3a9ae690e39000a...",
-      "ts": 1772300620
+      "msg": "moltyid.award_contribution_achievement sig=17f16f2496db1df5...",
+      "ts": 1772380868
     },
     {
       "status": "PASS",
-      "msg": "moltyid.create_name_auction sig=6d30f95ede3330ce...",
-      "ts": 1772300620
+      "msg": "moltyid.create_name_auction sig=6bc43f1c544590f4...",
+      "ts": 1772380868
     },
     {
       "status": "PASS",
-      "msg": "moltyid.bid_name_auction sig=0ab69cf6f7d08af4...",
-      "ts": 1772300620
+      "msg": "moltyid.bid_name_auction sig=5a7fd2d87297f8ac...",
+      "ts": 1772380868
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_name_auction sig=480848a456e4ed67...",
-      "ts": 1772300621
+      "msg": "moltyid.get_name_auction sig=98e86880b96edb3d...",
+      "ts": 1772380868
     },
     {
       "status": "PASS",
-      "msg": "moltyid.finalize_name_auction sig=afc6462ef32a1403...",
-      "ts": 1772300621
+      "msg": "moltyid.finalize_name_auction sig=ad18bf040f3d1bd9...",
+      "ts": 1772380868
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_name sig=2c3039f90c7814a4...",
-      "ts": 1772300621
+      "msg": "moltyid.transfer_name sig=8abde8a841b473bd...",
+      "ts": 1772380869
     },
     {
       "status": "PASS",
-      "msg": "moltyid.renew_name sig=c2fd94d330b47473...",
-      "ts": 1772300622
+      "msg": "moltyid.renew_name sig=f20e786bdb2e5264...",
+      "ts": 1772380869
     },
     {
       "status": "PASS",
-      "msg": "moltyid.release_name sig=a3fcdc6f41c674d0...",
-      "ts": 1772300622
+      "msg": "moltyid.release_name sig=27e0dfe73a88723f...",
+      "ts": 1772380869
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_name_as sig=eac4d25029b2b1ea...",
-      "ts": 1772300622
+      "msg": "moltyid.transfer_name_as sig=6677d2a0238c4447...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.renew_name_as sig=6ca06c42533800ae...",
-      "ts": 1772300622
+      "msg": "moltyid.renew_name_as sig=8798921a545b1367...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.release_name_as sig=889b9f7aa28008fb...",
-      "ts": 1772300622
+      "msg": "moltyid.release_name_as sig=5a00c5e478601a92...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.admin_register_reserved_name sig=19dc215ff672f435...",
-      "ts": 1772300622
+      "msg": "moltyid.admin_register_reserved_name sig=25ba1f74b0b0115c...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_admin sig=d6acd60ff615a764...",
-      "ts": 1772300623
+      "msg": "moltyid.transfer_admin sig=0b9f2c48816c57d2...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.mid_pause sig=12942b9b90b961f2...",
-      "ts": 1772300623
+      "msg": "moltyid.mid_pause sig=3bc9a14686666610...",
+      "ts": 1772380870
     },
     {
       "status": "PASS",
-      "msg": "moltyid.mid_unpause sig=2d3d7d09f9a5c165...",
-      "ts": 1772300623
+      "msg": "moltyid.mid_unpause sig=084e9dfdbc4d88f4...",
+      "ts": 1772380871
     },
     {
       "status": "PASS",
-      "msg": "moltswap.initialize sig=430099d64723a409...",
-      "ts": 1772300623
+      "msg": "moltswap.initialize sig=eee8d6b58130bc4f...",
+      "ts": 1772380871
     },
     {
       "status": "PASS",
-      "msg": "moltswap.set_protocol_fee sig=ff43e02f2aa4b046...",
-      "ts": 1772300624
+      "msg": "moltswap.set_protocol_fee sig=fa2d30e43f033f31...",
+      "ts": 1772380871
     },
     {
       "status": "PASS",
-      "msg": "moltswap.set_platform_fee sig=17606206f91f69c9...",
-      "ts": 1772300624
+      "msg": "moltswap.set_platform_fee sig=64a8d470cd1a5990...",
+      "ts": 1772380872
     },
     {
       "status": "PASS",
-      "msg": "moltswap.create_pool sig=40bba3fc93c3043f...",
-      "ts": 1772300624
+      "msg": "moltswap.create_pool sig=9f1fe97deb3b9e12...",
+      "ts": 1772380872
     },
     {
       "status": "PASS",
-      "msg": "moltswap.add_liquidity sig=e1c663b84878ccdd...",
-      "ts": 1772300624
+      "msg": "moltswap.add_liquidity sig=8952582ce9d277b2...",
+      "ts": 1772380872
     },
     {
       "status": "PASS",
-      "msg": "moltswap.swap sig=7124e83c45d03ba4...",
-      "ts": 1772300624
+      "msg": "moltswap.swap sig=e7d6c53b99a39c28...",
+      "ts": 1772380872
     },
     {
       "status": "PASS",
-      "msg": "moltswap.swap_a_for_b sig=96dcee7bfb8c86fd...",
-      "ts": 1772300625
+      "msg": "moltswap.swap_a_for_b sig=ec5f559553e6353e...",
+      "ts": 1772380872
     },
     {
       "status": "PASS",
-      "msg": "moltswap.swap_b_for_a sig=ff20f097095c6e9b...",
-      "ts": 1772300625
+      "msg": "moltswap.swap_b_for_a sig=3d15963e0ca5dabc...",
+      "ts": 1772380873
     },
     {
       "status": "PASS",
-      "msg": "moltswap.swap_a_for_b_with_deadline sig=79751db7fa7cbd48...",
-      "ts": 1772300625
+      "msg": "moltswap.swap_a_for_b_with_deadline sig=c6fa5818e1c90049...",
+      "ts": 1772380873
     },
     {
       "status": "PASS",
-      "msg": "moltswap.swap_b_for_a_with_deadline sig=97116068c0db44d8...",
-      "ts": 1772300625
+      "msg": "moltswap.swap_b_for_a_with_deadline sig=82c0a41f75fcbaa3...",
+      "ts": 1772380873
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_pool_info sig=5865e138979aa5af...",
-      "ts": 1772300626
+      "msg": "moltswap.get_pool_info sig=7c5c195658447a96...",
+      "ts": 1772380873
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_pool_count sig=c162e772acb755a5...",
-      "ts": 1772300626
+      "msg": "moltswap.get_pool_count sig=814b38d65199cf7d...",
+      "ts": 1772380874
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_quote sig=9db1303157630901...",
-      "ts": 1772300626
+      "msg": "moltswap.get_quote sig=22bd741b647995d4...",
+      "ts": 1772380874
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_reserves sig=6dfc450942500d30...",
-      "ts": 1772300626
+      "msg": "moltswap.get_reserves sig=e9ac116654c49ee1...",
+      "ts": 1772380874
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_liquidity_balance sig=a4f01a33c8bb8640...",
-      "ts": 1772300626
+      "msg": "moltswap.get_liquidity_balance sig=e5e15e0da3e60c89...",
+      "ts": 1772380874
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_total_liquidity sig=476caf4077bff53a...",
-      "ts": 1772300627
+      "msg": "moltswap.get_total_liquidity sig=8514c2657b808abd...",
+      "ts": 1772380874
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_protocol_fees sig=5d9cbf9e78450d01...",
-      "ts": 1772300627
+      "msg": "moltswap.get_protocol_fees sig=3b4212dec5d59fab...",
+      "ts": 1772380875
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_flash_loan_fee sig=3c06b1543fa0a94f...",
-      "ts": 1772300627
+      "msg": "moltswap.get_flash_loan_fee sig=271b735e0f4195a5...",
+      "ts": 1772380875
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_twap_cumulatives sig=f712339fa6e08684...",
-      "ts": 1772300627
+      "msg": "moltswap.get_twap_cumulatives sig=587aaef458a7de81...",
+      "ts": 1772380875
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_twap_snapshot_count sig=5e540654133f286f...",
-      "ts": 1772300628
+      "msg": "moltswap.get_twap_snapshot_count sig=b5026a320c1856dd...",
+      "ts": 1772380875
     },
     {
       "status": "PASS",
-      "msg": "moltswap.flash_loan_borrow sig=52dbc18fd281b6b2...",
-      "ts": 1772300628
+      "msg": "moltswap.flash_loan_borrow sig=d19418b24009240f...",
+      "ts": 1772380876
     },
     {
       "status": "PASS",
-      "msg": "moltswap.flash_loan_repay sig=b9006bff84074e24...",
-      "ts": 1772300628
+      "msg": "moltswap.flash_loan_repay sig=f1018f6c20d5e53e...",
+      "ts": 1772380876
     },
     {
       "status": "PASS",
-      "msg": "moltswap.flash_loan_abort sig=081db5e380e407a4...",
-      "ts": 1772300629
+      "msg": "moltswap.flash_loan_abort sig=1cd7900c16acafc9...",
+      "ts": 1772380876
     },
     {
       "status": "PASS",
-      "msg": "moltswap.remove_liquidity sig=befbbd6a22f1a15d...",
-      "ts": 1772300629
+      "msg": "moltswap.remove_liquidity sig=8882f4567b6effb8...",
+      "ts": 1772380877
     },
     {
       "status": "PASS",
-      "msg": "moltswap.ms_pause sig=5a599b47bf21f0c6...",
-      "ts": 1772300629
+      "msg": "moltswap.ms_pause sig=461da09633fa3d4d...",
+      "ts": 1772380877
     },
     {
       "status": "PASS",
-      "msg": "moltswap.ms_unpause sig=c6894c128ed0c19f...",
-      "ts": 1772300629
+      "msg": "moltswap.ms_unpause sig=2f09ea807824076d...",
+      "ts": 1772380877
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_swap_count sig=9c95a02d71e84c69...",
-      "ts": 1772300629
+      "msg": "moltswap.get_swap_count sig=4bc04909c5abd874...",
+      "ts": 1772380878
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_total_volume sig=affa5b3d1b0082f7...",
-      "ts": 1772300630
+      "msg": "moltswap.get_total_volume sig=466dc899f5e9e4c1...",
+      "ts": 1772380878
     },
     {
       "status": "PASS",
-      "msg": "moltswap.get_swap_stats sig=15de17d616c0c083...",
-      "ts": 1772300630
+      "msg": "moltswap.get_swap_stats sig=d363e7e443cef8ca...",
+      "ts": 1772380878
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.initialize sig=f434e1c925eb3e66...",
-      "ts": 1772300630
+      "msg": "moltoracle.initialize sig=1930507013d5cfba...",
+      "ts": 1772380878
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.register_feed sig=945c60fb3de65bdd...",
-      "ts": 1772300631
+      "msg": "moltoracle.register_feed sig=b905eed81cb9ac95...",
+      "ts": 1772380879
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.submit_price sig=337fd12662b2ecd5...",
-      "ts": 1772300631
+      "msg": "moltoracle.submit_price sig=cbee942e9882b486...",
+      "ts": 1772380879
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.get_price sig=bc9e56cd9a636fe2...",
-      "ts": 1772300631
+      "msg": "moltoracle.get_price sig=36c49fd24fb7e073...",
+      "ts": 1772380879
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.register_feed sig=6cecddadbca72d5d...",
-      "ts": 1772300631
+      "msg": "moltoracle.register_feed sig=6e72ca736e1dacb4...",
+      "ts": 1772380880
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.submit_price sig=5243d5a52838575f...",
-      "ts": 1772300632
+      "msg": "moltoracle.submit_price sig=c8adb98df87b0e28...",
+      "ts": 1772380880
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.get_price sig=6e277fda3c0dac6f...",
-      "ts": 1772300632
+      "msg": "moltoracle.get_price sig=92fcde22e5d9161a...",
+      "ts": 1772380880
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.get_feed_count sig=e5759404addf8421...",
-      "ts": 1772300632
+      "msg": "moltoracle.get_feed_count sig=c523fd219a87d93a...",
+      "ts": 1772380880
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.get_feed_list sig=8892626074652935...",
-      "ts": 1772300632
+      "msg": "moltoracle.get_feed_list sig=9ab9c697c8c1a0a3...",
+      "ts": 1772380881
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.set_update_interval sig=1119d9779041e2af...",
-      "ts": 1772300633
+      "msg": "moltoracle.set_update_interval sig=5716f1dd224f72ea...",
+      "ts": 1772380881
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.add_reporter sig=31d0f0464bf842ba...",
-      "ts": 1772300633
+      "msg": "moltoracle.add_reporter sig=1434bffe5c23d3e4...",
+      "ts": 1772380881
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.remove_reporter sig=7c3b6b03648e6d38...",
-      "ts": 1772300633
+      "msg": "moltoracle.remove_reporter sig=274c7187a6249776...",
+      "ts": 1772380881
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.get_oracle_stats sig=dbec22ba55375ab3...",
-      "ts": 1772300634
+      "msg": "moltoracle.get_oracle_stats sig=56cdd7cafc90476a...",
+      "ts": 1772380882
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.mo_pause sig=a8650813f7f43fa9...",
-      "ts": 1772300634
+      "msg": "moltoracle.mo_pause sig=68958d493b9aa079...",
+      "ts": 1772380882
     },
     {
       "status": "PASS",
-      "msg": "moltoracle.mo_unpause sig=c166eb914158b971...",
-      "ts": 1772300634
+      "msg": "moltoracle.mo_unpause sig=6f5bfa9560a276ad...",
+      "ts": 1772380882
     },
     {
       "status": "PASS",
-      "msg": "moltdao.initialize sig=01aef615c8e36918...",
-      "ts": 1772300634
+      "msg": "moltdao.initialize sig=d2b432a4a3b6fce4...",
+      "ts": 1772380882
     },
     {
       "status": "PASS",
-      "msg": "moltdao.set_quorum sig=e99ad4f3db48dd44...",
-      "ts": 1772300634
+      "msg": "moltdao.set_quorum sig=9bd8c63fedd542d9...",
+      "ts": 1772380883
     },
     {
       "status": "PASS",
-      "msg": "moltdao.set_voting_period sig=9db8d8c11dd98124...",
-      "ts": 1772300635
+      "msg": "moltdao.set_voting_period sig=138e21dadab8529c...",
+      "ts": 1772380883
     },
     {
       "status": "PASS",
-      "msg": "moltdao.create_proposal sig=aed4e471e856862b...",
-      "ts": 1772300635
+      "msg": "moltdao.create_proposal sig=003a87250bd81919...",
+      "ts": 1772380883
     },
     {
       "status": "PASS",
-      "msg": "moltdao.cast_vote sig=80850e2ef99c9879...",
-      "ts": 1772300635
+      "msg": "moltdao.cast_vote sig=16929af779a65f00...",
+      "ts": 1772380883
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_proposal sig=5e5a22348324ea3f...",
-      "ts": 1772300636
+      "msg": "moltdao.get_proposal sig=0c5fb2b1d6affa96...",
+      "ts": 1772380884
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_proposal_count sig=51e105928b29d6f4...",
-      "ts": 1772300636
+      "msg": "moltdao.get_proposal_count sig=a2cc1794bef847ae...",
+      "ts": 1772380884
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_vote sig=f8bfe69f9e5b7c0c...",
-      "ts": 1772300636
+      "msg": "moltdao.get_vote sig=e6ba3c52775524d3...",
+      "ts": 1772380884
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_vote_count sig=74e69b35f1c9129a...",
-      "ts": 1772300636
+      "msg": "moltdao.get_vote_count sig=bd0e88f0b6d9e407...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.finalize_proposal sig=c38e79bf2708ad2d...",
-      "ts": 1772300637
+      "msg": "moltdao.finalize_proposal sig=0d213910b2f79550...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.set_timelock_delay sig=134bf3d1c0ec1997...",
-      "ts": 1772300637
+      "msg": "moltdao.set_timelock_delay sig=3c9284be007932a4...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.execute_proposal sig=bff7f582860faf9a...",
-      "ts": 1772300637
+      "msg": "moltdao.execute_proposal sig=50b9071801fb1c5e...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_dao_stats sig=054035873dcf65d1...",
-      "ts": 1772300637
+      "msg": "moltdao.get_dao_stats sig=6b61953918368b75...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_active_proposals sig=57a818e0c34296c0...",
-      "ts": 1772300638
+      "msg": "moltdao.get_active_proposals sig=3c30a893bc8ecbca...",
+      "ts": 1772380885
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_total_supply sig=12c99d6a2cf3c9e4...",
-      "ts": 1772300638
+      "msg": "moltdao.get_total_supply sig=9de00a65580712c9...",
+      "ts": 1772380886
     },
     {
       "status": "PASS",
-      "msg": "moltdao.get_treasury_balance sig=b378a853133d8054...",
-      "ts": 1772300638
+      "msg": "moltdao.get_treasury_balance sig=a3b34aac99c4f557...",
+      "ts": 1772380886
     },
     {
       "status": "PASS",
-      "msg": "moltdao.veto_proposal sig=c99b7c5cd10a7b72...",
-      "ts": 1772300638
+      "msg": "moltdao.veto_proposal sig=185a34e4489ec310...",
+      "ts": 1772380886
     },
     {
       "status": "PASS",
-      "msg": "moltdao.cancel_proposal sig=dad1289024622415...",
-      "ts": 1772300638
+      "msg": "moltdao.cancel_proposal sig=52abf1cb55c33080...",
+      "ts": 1772380886
     },
     {
       "status": "PASS",
-      "msg": "moltdao.treasury_transfer sig=316715cf95fef60f...",
-      "ts": 1772300638
+      "msg": "moltdao.treasury_transfer sig=82a9a268e2fd3e6f...",
+      "ts": 1772380886
     },
     {
       "status": "PASS",
-      "msg": "moltdao.dao_pause sig=c7af9456a7427793...",
-      "ts": 1772300639
+      "msg": "moltdao.dao_pause sig=76a56604fd10c850...",
+      "ts": 1772380887
     },
     {
       "status": "PASS",
-      "msg": "moltdao.dao_unpause sig=1d65faac3e1498a7...",
-      "ts": 1772300639
+      "msg": "moltdao.dao_unpause sig=3b78e3e624516c83...",
+      "ts": 1772380887
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.initialize sig=8faa9c507f9ddc2f...",
-      "ts": 1772300639
+      "msg": "moltpunks.initialize sig=90605c1eb80a83e3...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.mint_punk sig=141c7b1581fffb80...",
-      "ts": 1772300640
+      "msg": "moltpunks.mint_punk sig=03633a6efaada50b...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.transfer_punk sig=2095caaeb9bd6d32...",
-      "ts": 1772300640
+      "msg": "moltpunks.transfer_punk sig=3aa76bcfc1b3bf3a...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.get_punk_metadata sig=e697375f8884dffa...",
-      "ts": 1772300640
+      "msg": "moltpunks.get_punk_metadata sig=a3bcdf181e15d2e6...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.get_total_supply sig=2eda3a23f5d02179...",
-      "ts": 1772300641
+      "msg": "moltpunks.get_total_supply sig=d0d23637fcbadfc8...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.get_owner_of sig=5af3f192acbffef9...",
-      "ts": 1772300641
+      "msg": "moltpunks.get_owner_of sig=7e335d86b9f0a812...",
+      "ts": 1772380888
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.set_base_uri sig=2bde8b90ed2a96d5...",
-      "ts": 1772300641
+      "msg": "moltpunks.set_base_uri sig=3dc0437099b20757...",
+      "ts": 1772380889
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.set_max_supply sig=cb56ead1b22c43cd...",
-      "ts": 1772300641
+      "msg": "moltpunks.set_max_supply sig=e596243e7b5a639f...",
+      "ts": 1772380889
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.get_punks_by_owner sig=6f4e45f032077662...",
-      "ts": 1772300641
+      "msg": "moltpunks.get_punks_by_owner sig=2bbce46095959a20...",
+      "ts": 1772380889
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.set_royalty sig=2970095a15ba64d6...",
-      "ts": 1772300642
+      "msg": "moltpunks.set_royalty sig=9633c60bee913745...",
+      "ts": 1772380889
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.balance_of sig=b86602640471abf3...",
-      "ts": 1772300642
+      "msg": "moltpunks.balance_of sig=4f25fba85b6de520...",
+      "ts": 1772380889
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.approve sig=04f87c82234da498...",
-      "ts": 1772300642
+      "msg": "moltpunks.approve sig=674becf76ec86afa...",
+      "ts": 1772380890
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.burn sig=4e66e9f9723acce2...",
-      "ts": 1772300643
+      "msg": "moltpunks.burn sig=3567de720ad5da96...",
+      "ts": 1772380890
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.mp_pause sig=495b7d48c6beb38b...",
-      "ts": 1772300643
+      "msg": "moltpunks.mp_pause sig=db1bfdf85c68b6f1...",
+      "ts": 1772380890
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.mp_unpause sig=071974a79bcca35e...",
-      "ts": 1772300643
+      "msg": "moltpunks.mp_unpause sig=8b7f14d9c34c640e...",
+      "ts": 1772380890
     },
     {
       "status": "PASS",
-      "msg": "moltpunks.get_collection_stats sig=acf160db2bb7ec27...",
-      "ts": 1772300643
+      "msg": "moltpunks.get_collection_stats sig=951ea3233fc6468e...",
+      "ts": 1772380891
     },
     {
       "status": "PASS",
-      "msg": "compute_market.initialize sig=e044496659c660a5...",
-      "ts": 1772300643
+      "msg": "compute_market.initialize sig=912d3fa511885c6b...",
+      "ts": 1772380891
     },
     {
       "status": "PASS",
-      "msg": "compute_market.register_provider sig=31d1573c4645d9a6...",
-      "ts": 1772300644
+      "msg": "compute_market.register_provider sig=6fe9dec2c2bc5b43...",
+      "ts": 1772380891
     },
     {
       "status": "PASS",
-      "msg": "compute_market.create_job sig=ed1085e5eb932e01...",
-      "ts": 1772300644
+      "msg": "compute_market.create_job sig=9dbf5a0c43520dc5...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.accept_job sig=4c904990b6ad172e...",
-      "ts": 1772300644
+      "msg": "compute_market.accept_job sig=ad8c76df6830e7d8...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.submit_result sig=5e7cc3548d7dccac...",
-      "ts": 1772300644
+      "msg": "compute_market.submit_result sig=82c51abd9932dd7a...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.confirm_result sig=fbc91468594a7b3d...",
-      "ts": 1772300644
+      "msg": "compute_market.confirm_result sig=107baedea1643d50...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.get_job_info sig=13f58dabb48bdac5...",
-      "ts": 1772300645
+      "msg": "compute_market.get_job_info sig=5617128d994e8d0b...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.get_provider_info sig=18b3c63deb8fd613...",
-      "ts": 1772300645
+      "msg": "compute_market.get_provider_info sig=70c1db9eee868cdb...",
+      "ts": 1772380892
     },
     {
       "status": "PASS",
-      "msg": "compute_market.get_job_count sig=0d55945887d05781...",
-      "ts": 1772300645
+      "msg": "compute_market.get_job_count sig=5f53709db82ed448...",
+      "ts": 1772380893
     },
     {
       "status": "PASS",
-      "msg": "compute_market.set_platform_fee sig=a0680e56f9e32607...",
-      "ts": 1772300645
+      "msg": "compute_market.set_platform_fee sig=3c3a23495df45ee5...",
+      "ts": 1772380893
     },
     {
       "status": "PASS",
-      "msg": "compute_market.cm_pause sig=eb698b937d919c1f...",
-      "ts": 1772300646
+      "msg": "compute_market.cm_pause sig=404aa5a7f6799794...",
+      "ts": 1772380893
     },
     {
       "status": "PASS",
-      "msg": "compute_market.cm_unpause sig=1c8d9469a5997e9f...",
-      "ts": 1772300646
+      "msg": "compute_market.cm_unpause sig=8eb90e614abf62ee...",
+      "ts": 1772380893
     },
     {
       "status": "PASS",
-      "msg": "compute_market.get_platform_stats sig=27a13b6abaa47037...",
-      "ts": 1772300646
+      "msg": "compute_market.get_platform_stats sig=893cb90dbc8a6934...",
+      "ts": 1772380894
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.initialize sig=66d1202d94cbc701...",
-      "ts": 1772300646
+      "msg": "bountyboard.initialize sig=5927b27006428582...",
+      "ts": 1772380894
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.create_bounty sig=db37bbc2f0737096...",
-      "ts": 1772300646
+      "msg": "bountyboard.create_bounty sig=57ec527b1fad8a9e...",
+      "ts": 1772380894
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.get_bounty sig=acd69baa58c983b4...",
-      "ts": 1772300647
+      "msg": "bountyboard.get_bounty sig=fccee296af504047...",
+      "ts": 1772380894
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.get_bounty_count sig=ac0c62d56832e2cf...",
-      "ts": 1772300647
+      "msg": "bountyboard.get_bounty_count sig=b8918dc6622da9ed...",
+      "ts": 1772380895
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.submit_work sig=ac5ffb26ac0b1a7c...",
-      "ts": 1772300647
+      "msg": "bountyboard.submit_work sig=393c37adb07acbcf...",
+      "ts": 1772380895
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.approve_submission sig=bfb65826bb06a215...",
-      "ts": 1772300647
+      "msg": "bountyboard.approve_submission sig=ef6c16126a90db20...",
+      "ts": 1772380895
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.cancel_bounty sig=df744a7eb2fec0f4...",
-      "ts": 1772300647
+      "msg": "bountyboard.cancel_bounty sig=dc448b8c3c9a9569...",
+      "ts": 1772380895
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.set_platform_fee sig=bc0d727bb00acad0...",
-      "ts": 1772300648
+      "msg": "bountyboard.set_platform_fee sig=230612524039ab72...",
+      "ts": 1772380895
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.bb_pause sig=099de1ffe4fac85f...",
-      "ts": 1772300648
+      "msg": "bountyboard.bb_pause sig=a86172bd00e616f8...",
+      "ts": 1772380896
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.bb_unpause sig=a91e237589484574...",
-      "ts": 1772300648
+      "msg": "bountyboard.bb_unpause sig=886f78c0d3eee2d6...",
+      "ts": 1772380896
     },
     {
       "status": "PASS",
-      "msg": "bountyboard.get_platform_stats sig=03311e8a6606d365...",
-      "ts": 1772300648
+      "msg": "bountyboard.get_platform_stats sig=4ee61127aae7a4c3...",
+      "ts": 1772380896
     },
     {
       "status": "PASS",
-      "msg": "dex_core.initialize sig=4fa14fdf10def035...",
-      "ts": 1772300649
+      "msg": "dex_core.initialize sig=e1ee86b6058008d6...",
+      "ts": 1772380897
     },
     {
       "status": "PASS",
-      "msg": "dex_core.create_pair sig=cd635992d679d661...",
-      "ts": 1772300649
+      "msg": "dex_core.create_pair sig=cec2e08eabec35e4...",
+      "ts": 1772380897
     },
     {
       "status": "PASS",
-      "msg": "dex_core.set_preferred_quote sig=03fd93497d9a73dc...",
-      "ts": 1772300649
+      "msg": "dex_core.set_preferred_quote sig=ea3b14d7614de9bf...",
+      "ts": 1772380897
     },
     {
       "status": "PASS",
-      "msg": "dex_core.add_allowed_quote sig=32a015acde19ff9a...",
-      "ts": 1772300649
+      "msg": "dex_core.add_allowed_quote sig=15e9dc27aa2fc224...",
+      "ts": 1772380897
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_allowed_quote_count sig=63b3640894124375...",
-      "ts": 1772300650
+      "msg": "dex_core.get_allowed_quote_count sig=3a0d92718d48e7ea...",
+      "ts": 1772380898
     },
     {
       "status": "PASS",
-      "msg": "dex_core.remove_allowed_quote sig=960dbb87e12259c1...",
-      "ts": 1772300650
+      "msg": "dex_core.remove_allowed_quote sig=0df5acd3ca74dd61...",
+      "ts": 1772380898
     },
     {
       "status": "PASS",
-      "msg": "dex_core.update_pair_fees sig=889db837b4eae632...",
-      "ts": 1772300650
+      "msg": "dex_core.update_pair_fees sig=58af3c46113df65f...",
+      "ts": 1772380898
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_pair_count sig=aa613b12f6db36f6...",
-      "ts": 1772300650
+      "msg": "dex_core.get_pair_count sig=24138e66ef22cca9...",
+      "ts": 1772380898
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_preferred_quote sig=a22d0f7a8eb0108b...",
-      "ts": 1772300651
+      "msg": "dex_core.get_preferred_quote sig=d315f80e4284adf6...",
+      "ts": 1772380899
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_pair_info sig=65baa01f93f844bf...",
-      "ts": 1772300651
+      "msg": "dex_core.get_pair_info sig=5134cdf520ab6104...",
+      "ts": 1772380899
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_trade_count sig=f16b3cca04492f20...",
-      "ts": 1772300651
+      "msg": "dex_core.get_trade_count sig=de7827d491bc9a59...",
+      "ts": 1772380899
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_fee_treasury sig=6008843f93727eb3...",
-      "ts": 1772300651
+      "msg": "dex_core.get_fee_treasury sig=5089f27c100f9fbd...",
+      "ts": 1772380899
     },
     {
       "status": "PASS",
-      "msg": "dex_core.place_order sig=466b19edd15f6dfc...",
-      "ts": 1772300651
+      "msg": "dex_core.place_order sig=1a5125ac8fd22652...",
+      "ts": 1772380899
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_order sig=620bf061ffff5803...",
-      "ts": 1772300652
+      "msg": "dex_core.get_order sig=49633d310671e31e...",
+      "ts": 1772380900
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_best_bid sig=c9fd8691102b1b51...",
-      "ts": 1772300652
+      "msg": "dex_core.get_best_bid sig=de88eac6c11937d6...",
+      "ts": 1772380900
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_best_ask sig=8870a804b364eae6...",
-      "ts": 1772300652
+      "msg": "dex_core.get_best_ask sig=eccd682d7af19ee6...",
+      "ts": 1772380900
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_spread sig=5417cb129e994400...",
-      "ts": 1772300652
+      "msg": "dex_core.get_spread sig=9675ddacc0598641...",
+      "ts": 1772380900
     },
     {
       "status": "PASS",
-      "msg": "dex_core.modify_order sig=5097c6dc7f78e1df...",
-      "ts": 1772300653
+      "msg": "dex_core.modify_order sig=3d969e496310d058...",
+      "ts": 1772380901
     },
     {
       "status": "PASS",
-      "msg": "dex_core.cancel_order sig=bcfe93b98af1719a...",
-      "ts": 1772300653
+      "msg": "dex_core.cancel_order sig=0fdf3f048757208b...",
+      "ts": 1772380901
     },
     {
       "status": "PASS",
-      "msg": "dex_core.cancel_all_orders sig=7b4bfe9e7a85b54b...",
-      "ts": 1772300653
+      "msg": "dex_core.cancel_all_orders sig=3825ef23bf078656...",
+      "ts": 1772380901
     },
     {
       "status": "PASS",
-      "msg": "dex_core.pause_pair sig=ed3077db239ca864...",
-      "ts": 1772300653
+      "msg": "dex_core.pause_pair sig=6fc4d2649d54a45a...",
+      "ts": 1772380902
     },
     {
       "status": "PASS",
-      "msg": "dex_core.unpause_pair sig=8c4465e17d76e3ee...",
-      "ts": 1772300654
+      "msg": "dex_core.unpause_pair sig=2ea8a11303165b7b...",
+      "ts": 1772380902
     },
     {
       "status": "PASS",
-      "msg": "dex_core.emergency_pause sig=03ca716fde890fee...",
-      "ts": 1772300654
+      "msg": "dex_core.emergency_pause sig=71adb095b7a8d3bf...",
+      "ts": 1772380902
     },
     {
       "status": "PASS",
-      "msg": "dex_core.emergency_unpause sig=5b030bdfaef3549d...",
-      "ts": 1772300654
+      "msg": "dex_core.emergency_unpause sig=73e3c265a2e3fdcd...",
+      "ts": 1772380902
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_total_volume sig=252a80d3b89a1a08...",
-      "ts": 1772300654
+      "msg": "dex_core.get_total_volume sig=cb2433ff2d68ebfe...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_user_orders sig=4fff48a15ccf184e...",
-      "ts": 1772300654
+      "msg": "dex_core.get_user_orders sig=94debe0cf598784d...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_core.get_open_order_count sig=20651897dea9ac40...",
-      "ts": 1772300654
+      "msg": "dex_core.get_open_order_count sig=2e5578474af6aec5...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.initialize sig=108fe334c9cb8d41...",
-      "ts": 1772300655
+      "msg": "dex_amm.initialize sig=3b44aa227afa9119...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.create_pool sig=78888fd82ff77f54...",
-      "ts": 1772300655
+      "msg": "dex_amm.create_pool sig=1f894e41c807aeb9...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.set_protocol_fee sig=2ae15781107bbc3b...",
-      "ts": 1772300655
+      "msg": "dex_amm.set_protocol_fee sig=19d5ec9be8e87520...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.add_liquidity sig=13de9f56b2451a6d...",
-      "ts": 1772300656
+      "msg": "dex_amm.add_liquidity sig=99772885165e45d4...",
+      "ts": 1772380903
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_pool_info sig=43420abe49b15164...",
-      "ts": 1772300656
+      "msg": "dex_amm.get_pool_info sig=e60a9fc5ebf188cc...",
+      "ts": 1772380904
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_position sig=0ffd7d722b024a51...",
-      "ts": 1772300656
+      "msg": "dex_amm.get_position sig=766e6f188b197045...",
+      "ts": 1772380904
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_pool_count sig=523ae67a743ee733...",
-      "ts": 1772300656
+      "msg": "dex_amm.get_pool_count sig=4ae292e67124cacd...",
+      "ts": 1772380904
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_position_count sig=9b5056f56db9d12c...",
-      "ts": 1772300657
+      "msg": "dex_amm.get_position_count sig=0385864a510520a7...",
+      "ts": 1772380904
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_tvl sig=d7dd8e08ba0ed27a...",
-      "ts": 1772300657
+      "msg": "dex_amm.get_tvl sig=42d9cc05d0d7a7ad...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.quote_swap sig=72654e9ec37227f4...",
-      "ts": 1772300657
+      "msg": "dex_amm.quote_swap sig=d948fbf592e937b4...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.swap_exact_in sig=d6d57f3c4626b9b1...",
-      "ts": 1772300657
+      "msg": "dex_amm.swap_exact_in sig=a71aaf42d7137e0c...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.swap_exact_out sig=8d1a2d0eb6d8a771...",
-      "ts": 1772300658
+      "msg": "dex_amm.swap_exact_out sig=b4300133b36f335f...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.collect_fees sig=51defbe31fe199dd...",
-      "ts": 1772300658
+      "msg": "dex_amm.collect_fees sig=abf7e7c37d11beb0...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.remove_liquidity sig=c8d4c6d888b7806c...",
-      "ts": 1772300658
+      "msg": "dex_amm.remove_liquidity sig=dfae78e121c7b1b1...",
+      "ts": 1772380905
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.emergency_pause sig=33b2f276c3542a75...",
-      "ts": 1772300658
+      "msg": "dex_amm.emergency_pause sig=a934bf17b2c515fb...",
+      "ts": 1772380906
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.emergency_unpause sig=2b54391709934e9a...",
-      "ts": 1772300658
+      "msg": "dex_amm.emergency_unpause sig=2b0fc65c7b2dc463...",
+      "ts": 1772380906
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_total_volume sig=09f4dcb259293d9e...",
-      "ts": 1772300659
+      "msg": "dex_amm.get_total_volume sig=5b92df8d786c83f7...",
+      "ts": 1772380906
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_swap_count sig=428723c8df2ed817...",
-      "ts": 1772300659
+      "msg": "dex_amm.get_swap_count sig=9caa1b7b9965c998...",
+      "ts": 1772380907
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_total_fees_collected sig=d8120e7a33034538...",
-      "ts": 1772300659
+      "msg": "dex_amm.get_total_fees_collected sig=ba6a78cfda5fda76...",
+      "ts": 1772380907
     },
     {
       "status": "PASS",
-      "msg": "dex_amm.get_amm_stats sig=bf49a127feb46c97...",
-      "ts": 1772300659
+      "msg": "dex_amm.get_amm_stats sig=f6ce4d2db7638358...",
+      "ts": 1772380907
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.initialize sig=ee8309cafa1b8eb2...",
-      "ts": 1772300659
+      "msg": "dex_analytics.initialize sig=844208e0579185a6...",
+      "ts": 1772380907
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.record_trade sig=2de3ca785aace7d8...",
-      "ts": 1772300659
+      "msg": "dex_analytics.record_trade sig=c7cf023ac69b25a9...",
+      "ts": 1772380908
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_ohlcv sig=f32b5642945f5b03...",
-      "ts": 1772300660
+      "msg": "dex_analytics.get_ohlcv sig=0335bae756c3bf6a...",
+      "ts": 1772380908
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_24h_stats sig=9cbf6685f328a557...",
-      "ts": 1772300660
+      "msg": "dex_analytics.get_24h_stats sig=5fca109c7a4b5bce...",
+      "ts": 1772380908
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_trader_stats sig=94ebc68b99eafe51...",
-      "ts": 1772300660
+      "msg": "dex_analytics.get_trader_stats sig=a68d487a5ce3c4e4...",
+      "ts": 1772380908
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_last_price sig=31aa72790c50f587...",
-      "ts": 1772300661
+      "msg": "dex_analytics.get_last_price sig=5ef3d2b4168f2fe6...",
+      "ts": 1772380909
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_record_count sig=0c4b0d5cffa8f8cd...",
-      "ts": 1772300661
+      "msg": "dex_analytics.get_record_count sig=8c0c38d9c01b2113...",
+      "ts": 1772380909
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.emergency_pause sig=4c253dd32be0de45...",
-      "ts": 1772300661
+      "msg": "dex_analytics.emergency_pause sig=dbe0bfb457c1e986...",
+      "ts": 1772380909
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.emergency_unpause sig=887c359ca096cdf5...",
-      "ts": 1772300661
+      "msg": "dex_analytics.emergency_unpause sig=fe1e309d98867ca5...",
+      "ts": 1772380909
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_trader_count sig=a2d0b96fbede8a1b...",
-      "ts": 1772300662
+      "msg": "dex_analytics.get_trader_count sig=d9d1793f6d464b7f...",
+      "ts": 1772380910
     },
     {
       "status": "PASS",
-      "msg": "dex_analytics.get_global_stats sig=5909fefc12ad9ca5...",
-      "ts": 1772300662
+      "msg": "dex_analytics.get_global_stats sig=341be373ae4ea9a4...",
+      "ts": 1772380910
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.initialize sig=4922757ca6133de3...",
-      "ts": 1772300662
+      "msg": "dex_governance.initialize sig=f12aba26ea7ba840...",
+      "ts": 1772380910
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.set_preferred_quote sig=6e05c8f5b816a9b2...",
-      "ts": 1772300662
+      "msg": "dex_governance.set_preferred_quote sig=7bfdfcba3a9d2517...",
+      "ts": 1772380911
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.add_allowed_quote sig=990d46a10217289a...",
-      "ts": 1772300662
+      "msg": "dex_governance.add_allowed_quote sig=279a3119e96332c0...",
+      "ts": 1772380911
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_allowed_quote_count sig=be1e2ee95db4783d...",
-      "ts": 1772300662
+      "msg": "dex_governance.get_allowed_quote_count sig=3ff7c8576fb86dc8...",
+      "ts": 1772380911
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.remove_allowed_quote sig=75ffc3dafc4f174e...",
-      "ts": 1772300663
+      "msg": "dex_governance.remove_allowed_quote sig=3f2fed0af1868d75...",
+      "ts": 1772380911
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.set_moltyid_address sig=011d6be9f93e3ab3...",
-      "ts": 1772300663
+      "msg": "dex_governance.set_moltyid_address sig=92111fbfa4f72017...",
+      "ts": 1772380911
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.set_listing_requirements sig=34866052094f6b9f...",
-      "ts": 1772300663
+      "msg": "dex_governance.set_listing_requirements sig=10b1ee8b40cd3df8...",
+      "ts": 1772380912
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.propose_new_pair sig=7fbc22323bbe0b03...",
-      "ts": 1772300663
+      "msg": "dex_governance.propose_new_pair sig=c70e0aa08aabd922...",
+      "ts": 1772380912
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.propose_fee_change sig=b922c263bd76cd6e...",
-      "ts": 1772300663
+      "msg": "dex_governance.propose_fee_change sig=690d554fc254faf7...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.vote sig=c64877b323762366...",
-      "ts": 1772300664
+      "msg": "dex_governance.vote sig=8661c9bd5f2e8295...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_proposal_count sig=75b210d93382615b...",
-      "ts": 1772300664
+      "msg": "dex_governance.get_proposal_count sig=16e367541d062e4b...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_preferred_quote sig=05cc368361040329...",
-      "ts": 1772300664
+      "msg": "dex_governance.get_preferred_quote sig=faeedd7a7046a48e...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_proposal_info sig=91709e25dab3cf4b...",
-      "ts": 1772300665
+      "msg": "dex_governance.get_proposal_info sig=7f4c34409fdf7b23...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.finalize_proposal sig=42311393da4d724b...",
-      "ts": 1772300665
+      "msg": "dex_governance.finalize_proposal sig=b77bf0ff5aca3566...",
+      "ts": 1772380913
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.execute_proposal sig=ac8a52238041764f...",
-      "ts": 1772300665
+      "msg": "dex_governance.execute_proposal sig=f1ecc17ad3f88291...",
+      "ts": 1772380914
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.emergency_delist sig=b7365e249e2ea477...",
-      "ts": 1772300665
+      "msg": "dex_governance.emergency_delist sig=e03d41a1185b7409...",
+      "ts": 1772380914
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.emergency_pause sig=cb484b3459fc89d9...",
-      "ts": 1772300665
+      "msg": "dex_governance.emergency_pause sig=e063556419cfb225...",
+      "ts": 1772380914
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.emergency_unpause sig=646ce7ba7b8b980c...",
-      "ts": 1772300666
+      "msg": "dex_governance.emergency_unpause sig=68cada4ac409232b...",
+      "ts": 1772380915
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_governance_stats sig=0cc650c5cacc7f4f...",
-      "ts": 1772300666
+      "msg": "dex_governance.get_governance_stats sig=1f009d26546e6af9...",
+      "ts": 1772380915
     },
     {
       "status": "PASS",
-      "msg": "dex_governance.get_voter_count sig=89760f44a832b98e...",
-      "ts": 1772300666
+      "msg": "dex_governance.get_voter_count sig=f997cb0580ad621f...",
+      "ts": 1772380915
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.initialize sig=49048d0e85bb013c...",
-      "ts": 1772300666
+      "msg": "dex_margin.initialize sig=5f61efe09e7d3793...",
+      "ts": 1772380915
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.set_moltcoin_address sig=d581db350ff1b41b...",
-      "ts": 1772300666
+      "msg": "dex_margin.set_moltcoin_address sig=20c975b1878ff2b7...",
+      "ts": 1772380916
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.set_mark_price sig=362696834b6d65fa...",
-      "ts": 1772300666
+      "msg": "dex_margin.set_mark_price sig=02294cf330ab25ed...",
+      "ts": 1772380916
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.set_max_leverage sig=b62471dc977e3483...",
-      "ts": 1772300667
+      "msg": "dex_margin.set_max_leverage sig=b23e5698c1d40135...",
+      "ts": 1772380916
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.set_maintenance_margin sig=fc0badd039bf856a...",
-      "ts": 1772300667
+      "msg": "dex_margin.set_maintenance_margin sig=b6158f78b4656422...",
+      "ts": 1772380917
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.open_position sig=b6ca219ecac7dda0...",
-      "ts": 1772300667
+      "msg": "dex_margin.open_position sig=b2f6f49982f8aa53...",
+      "ts": 1772380917
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_position_info sig=bfc3970f7ae11b68...",
-      "ts": 1772300667
+      "msg": "dex_margin.get_position_info sig=367d5a99109138fa...",
+      "ts": 1772380917
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_margin_ratio sig=e5c59fd381e37b1d...",
-      "ts": 1772300668
+      "msg": "dex_margin.get_margin_ratio sig=d3667385b3b902d6...",
+      "ts": 1772380918
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_tier_info sig=3a82a41b77d15e7b...",
-      "ts": 1772300668
+      "msg": "dex_margin.get_tier_info sig=d90b90256268b8a5...",
+      "ts": 1772380918
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.add_margin sig=c09180be0f1a0518...",
-      "ts": 1772300668
+      "msg": "dex_margin.add_margin sig=3c0b6b8def26cc07...",
+      "ts": 1772380918
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.remove_margin sig=38697ade70894a77...",
-      "ts": 1772300668
+      "msg": "dex_margin.remove_margin sig=1395306b3b7b77c1...",
+      "ts": 1772380918
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.liquidate sig=ea73af6d03c6c7cf...",
-      "ts": 1772300669
+      "msg": "dex_margin.liquidate sig=73b909996ef331c2...",
+      "ts": 1772380919
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.close_position sig=0a1e5745a32f983f...",
-      "ts": 1772300669
+      "msg": "dex_margin.close_position sig=0641311667513e0e...",
+      "ts": 1772380919
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.withdraw_insurance sig=85ee8bd2333a152a...",
-      "ts": 1772300669
+      "msg": "dex_margin.withdraw_insurance sig=e7da9ba7a2e1b475...",
+      "ts": 1772380919
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.emergency_pause sig=ff43ae9addfa9318...",
-      "ts": 1772300669
+      "msg": "dex_margin.emergency_pause sig=fd712d9829309aa7...",
+      "ts": 1772380919
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.emergency_unpause sig=7633b7ae56fd6255...",
-      "ts": 1772300669
+      "msg": "dex_margin.emergency_unpause sig=1b73bdab0f14cb6c...",
+      "ts": 1772380919
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_total_volume sig=ce8bf77696ebf1b8...",
-      "ts": 1772300670
+      "msg": "dex_margin.get_total_volume sig=b63797a95830cc91...",
+      "ts": 1772380920
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_user_positions sig=9d053e31a07ab536...",
-      "ts": 1772300670
+      "msg": "dex_margin.get_user_positions sig=98da817d6f43bcf5...",
+      "ts": 1772380920
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_total_pnl sig=abb770c07fbb0a50...",
-      "ts": 1772300670
+      "msg": "dex_margin.get_total_pnl sig=3d9aa9d3a5f716dc...",
+      "ts": 1772380920
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_liquidation_count sig=056848b63c9fc8e3...",
-      "ts": 1772300670
+      "msg": "dex_margin.get_liquidation_count sig=35b1097479b044e9...",
+      "ts": 1772380921
     },
     {
       "status": "PASS",
-      "msg": "dex_margin.get_margin_stats sig=cec2d93a560607c1...",
-      "ts": 1772300670
+      "msg": "dex_margin.get_margin_stats sig=9f832396ecdd60f4...",
+      "ts": 1772380921
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.initialize sig=2201a8d4d04473e6...",
-      "ts": 1772300670
+      "msg": "dex_rewards.initialize sig=97940b4c3050fcd1...",
+      "ts": 1772380921
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.set_moltcoin_address sig=865b0ce69b2708c6...",
-      "ts": 1772300671
+      "msg": "dex_rewards.set_moltcoin_address sig=cea1868a2bd69bb5...",
+      "ts": 1772380921
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.set_rewards_pool sig=f9d2815b1d2c22dd...",
-      "ts": 1772300671
+      "msg": "dex_rewards.set_rewards_pool sig=e5dfc1f45f98b143...",
+      "ts": 1772380922
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.set_reward_rate sig=683a07e46e13dba3...",
-      "ts": 1772300671
+      "msg": "dex_rewards.set_reward_rate sig=2ff8d700c3ecfadb...",
+      "ts": 1772380922
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.set_referral_rate sig=fa44a472fc5a82ca...",
-      "ts": 1772300672
+      "msg": "dex_rewards.set_referral_rate sig=64010f1c3953dd39...",
+      "ts": 1772380922
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.register_referral sig=d412eb9478a597d4...",
-      "ts": 1772300672
+      "msg": "dex_rewards.register_referral sig=d55d0df1a0a17d4b...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.record_trade sig=77362072bd3c6944...",
-      "ts": 1772300672
+      "msg": "dex_rewards.record_trade sig=86440c78a51350eb...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.accrue_lp_rewards sig=4855bb5e1c25c3f6...",
-      "ts": 1772300672
+      "msg": "dex_rewards.accrue_lp_rewards sig=ab3c1af4a3c151a6...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.claim_trading_rewards sig=5bbb1b07abf33114...",
-      "ts": 1772300672
+      "msg": "dex_rewards.claim_trading_rewards sig=73126aefca98c52e...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.claim_lp_rewards sig=c9ac50dd3cebe88c...",
-      "ts": 1772300673
+      "msg": "dex_rewards.claim_lp_rewards sig=77d7e6009636b5a2...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_pending_rewards sig=6d2d86bc4f815ac3...",
-      "ts": 1772300673
+      "msg": "dex_rewards.get_pending_rewards sig=48d625c91acfeec3...",
+      "ts": 1772380923
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_trading_tier sig=2065b5aa4d9f7f93...",
-      "ts": 1772300673
+      "msg": "dex_rewards.get_trading_tier sig=f699a57ad0ca76be...",
+      "ts": 1772380924
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_referral_rate sig=e531ba216b4e5320...",
-      "ts": 1772300673
+      "msg": "dex_rewards.get_referral_rate sig=a402eb62110f2b31...",
+      "ts": 1772380924
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_total_distributed sig=1d6650db483cc13f...",
-      "ts": 1772300673
+      "msg": "dex_rewards.get_total_distributed sig=2279c94b45ec1e1c...",
+      "ts": 1772380924
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.emergency_pause sig=794efbf73e105148...",
-      "ts": 1772300674
+      "msg": "dex_rewards.emergency_pause sig=e722ab7c1ca52c2f...",
+      "ts": 1772380924
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.emergency_unpause sig=262df8e463bdb0cc...",
-      "ts": 1772300674
+      "msg": "dex_rewards.emergency_unpause sig=53376a1a8306aa0b...",
+      "ts": 1772380925
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_trader_count sig=a63317ac6232a97a...",
-      "ts": 1772300674
+      "msg": "dex_rewards.get_trader_count sig=e61a9ab2fcc9155f...",
+      "ts": 1772380925
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_total_volume sig=c2b7e051af76dc01...",
-      "ts": 1772300675
+      "msg": "dex_rewards.get_total_volume sig=a5efa0644ba07122...",
+      "ts": 1772380925
     },
     {
       "status": "PASS",
-      "msg": "dex_rewards.get_reward_stats sig=77afe73fbb4ea1b4...",
-      "ts": 1772300675
+      "msg": "dex_rewards.get_reward_stats sig=0d323dcfad0e21cd...",
+      "ts": 1772380925
     },
     {
       "status": "PASS",
-      "msg": "dex_router.initialize sig=9a8905600dcbb17f...",
-      "ts": 1772300675
+      "msg": "dex_router.initialize sig=93c7c8718cde1d5e...",
+      "ts": 1772380926
     },
     {
       "status": "PASS",
-      "msg": "dex_router.set_addresses sig=a4fe4a3c707be2c3...",
-      "ts": 1772300675
+      "msg": "dex_router.set_addresses sig=8d5e0950ea9b4863...",
+      "ts": 1772380926
     },
     {
       "status": "PASS",
-      "msg": "dex_router.register_route sig=233ab7bb10e1a84c...",
-      "ts": 1772300675
+      "msg": "dex_router.register_route sig=83819bd42ea678f0...",
+      "ts": 1772380926
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_route_count sig=384638e32d8e9cde...",
-      "ts": 1772300675
+      "msg": "dex_router.get_route_count sig=9f99005f07042e02...",
+      "ts": 1772380926
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_swap_count sig=dd13f388b44e314b...",
-      "ts": 1772300676
+      "msg": "dex_router.get_swap_count sig=155f59cf843069e8...",
+      "ts": 1772380926
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_route_info sig=38af7af9136f8234...",
-      "ts": 1772300676
+      "msg": "dex_router.get_route_info sig=3a32b760121fb7d8...",
+      "ts": 1772380927
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_best_route sig=393d73ce2ef92a03...",
-      "ts": 1772300676
+      "msg": "dex_router.get_best_route sig=9c6a05779bb9eee1...",
+      "ts": 1772380927
     },
     {
       "status": "PASS",
-      "msg": "dex_router.set_route_enabled sig=3a2c773ae1415c38...",
-      "ts": 1772300676
+      "msg": "dex_router.set_route_enabled sig=559418e6b0dcc8f2...",
+      "ts": 1772380927
     },
     {
       "status": "PASS",
-      "msg": "dex_router.swap sig=9a79b3bf45507d7f...",
-      "ts": 1772300676
+      "msg": "dex_router.swap sig=f1ffb3008f32a07f...",
+      "ts": 1772380927
     },
     {
       "status": "PASS",
-      "msg": "dex_router.multi_hop_swap sig=cd8201ff936c1e3b...",
-      "ts": 1772300677
+      "msg": "dex_router.multi_hop_swap sig=1627622522486725...",
+      "ts": 1772380928
     },
     {
       "status": "PASS",
-      "msg": "dex_router.emergency_pause sig=ab57e06bf207b7be...",
-      "ts": 1772300677
+      "msg": "dex_router.emergency_pause sig=891ce49b28e1aaad...",
+      "ts": 1772380928
     },
     {
       "status": "PASS",
-      "msg": "dex_router.emergency_unpause sig=8c3ccf4b4dba181e...",
-      "ts": 1772300677
+      "msg": "dex_router.emergency_unpause sig=884ec2d58224ac55...",
+      "ts": 1772380928
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_total_volume_routed sig=1f2eebda3c6dd15d...",
-      "ts": 1772300677
+      "msg": "dex_router.get_total_volume_routed sig=af909ca295ecf86e...",
+      "ts": 1772380928
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_router_stats sig=93dade2aa86f0ed6...",
-      "ts": 1772300677
+      "msg": "dex_router.get_router_stats sig=f0feae4bfce77e9d...",
+      "ts": 1772380929
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.initialize sig=4578bf7a1cc75391...",
-      "ts": 1772300677
+      "msg": "prediction_market.initialize sig=f8b43040ec22bed1...",
+      "ts": 1772380929
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.set_moltyid_address sig=ab1840fd79ac0492...",
-      "ts": 1772300678
+      "msg": "prediction_market.set_moltyid_address sig=6611530e2ec1d54e...",
+      "ts": 1772380929
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.set_oracle_address sig=93453e1fa499f8a8...",
-      "ts": 1772300678
+      "msg": "prediction_market.set_oracle_address sig=37832f3047fd6645...",
+      "ts": 1772380929
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.set_musd_address sig=e9032b9aedf75a6b...",
-      "ts": 1772300678
+      "msg": "prediction_market.set_musd_address sig=e164603edf903f0a...",
+      "ts": 1772380929
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.set_dex_gov_address sig=a23c2b20e366519d...",
-      "ts": 1772300678
+      "msg": "prediction_market.set_dex_gov_address sig=8b679a9d91127bc9...",
+      "ts": 1772380930
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.create_market sig=6737f26599bfb240...",
-      "ts": 1772300678
+      "msg": "prediction_market.create_market sig=0f6679c6d4268cb9...",
+      "ts": 1772380930
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_market_count sig=02146db7e6250490...",
-      "ts": 1772300678
+      "msg": "prediction_market.get_market_count sig=ae39bbd6bbb50767...",
+      "ts": 1772380930
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_market sig=11272939e8378e1b...",
-      "ts": 1772300679
+      "msg": "prediction_market.get_market sig=f5cd4cb958249061...",
+      "ts": 1772380930
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_price sig=5477b60ad5a9b4e5...",
-      "ts": 1772300679
+      "msg": "prediction_market.get_price sig=a208b753e1fa8dc0...",
+      "ts": 1772380930
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_outcome_pool sig=2b5bdb0126f15060...",
-      "ts": 1772300679
+      "msg": "prediction_market.get_outcome_pool sig=2136b5220299d4e4...",
+      "ts": 1772380931
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_pool_reserves sig=35d54880ac3d2516...",
-      "ts": 1772300679
+      "msg": "prediction_market.get_pool_reserves sig=36b1ea623d4fc367...",
+      "ts": 1772380931
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_platform_stats sig=0928fc87ffdb52eb...",
-      "ts": 1772300680
+      "msg": "prediction_market.get_platform_stats sig=35b8f28bc24562e9...",
+      "ts": 1772380931
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.quote_buy sig=0d605fa5ee314ce8...",
-      "ts": 1772300680
+      "msg": "prediction_market.quote_buy sig=e69d01746c273b8b...",
+      "ts": 1772380931
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.quote_sell sig=7d2d792b481cbbf1...",
-      "ts": 1772300680
+      "msg": "prediction_market.quote_sell sig=b7badbc693c971a5...",
+      "ts": 1772380932
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.add_initial_liquidity sig=e9b592431cdca7f5...",
-      "ts": 1772300680
+      "msg": "prediction_market.add_initial_liquidity sig=20c2f040ad0493cb...",
+      "ts": 1772380932
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.add_liquidity sig=9140a662ba735fed...",
-      "ts": 1772300680
+      "msg": "prediction_market.add_liquidity sig=37099d8d19f1f61e...",
+      "ts": 1772380932
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.buy_shares sig=0f4895416c8e39e8...",
-      "ts": 1772300680
+      "msg": "prediction_market.buy_shares sig=28b78c0ae8ae35ef...",
+      "ts": 1772380933
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.sell_shares sig=ab1d3fa95ecbf987...",
-      "ts": 1772300681
+      "msg": "prediction_market.sell_shares sig=7e42230194ae74e1...",
+      "ts": 1772380933
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_price_history sig=e48116c15a44185f...",
-      "ts": 1772300681
+      "msg": "prediction_market.get_price_history sig=689d522ee16d3315...",
+      "ts": 1772380933
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.mint_complete_set sig=35d7d84ffaa9da4c...",
-      "ts": 1772300681
+      "msg": "prediction_market.mint_complete_set sig=d8b370a24ec3876c...",
+      "ts": 1772380933
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.redeem_complete_set sig=e6655faf1c4c8c47...",
-      "ts": 1772300681
+      "msg": "prediction_market.redeem_complete_set sig=43429454f4ad2e39...",
+      "ts": 1772380934
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_position sig=fbbed54f96d8206b...",
-      "ts": 1772300681
+      "msg": "prediction_market.get_position sig=6b6517ce06f54e03...",
+      "ts": 1772380934
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_user_markets sig=c6516b8dcd010718...",
-      "ts": 1772300682
+      "msg": "prediction_market.get_user_markets sig=099b6e5fed9b685a...",
+      "ts": 1772380934
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.get_lp_balance sig=e021f0a7fd09dabf...",
-      "ts": 1772300682
+      "msg": "prediction_market.get_lp_balance sig=fef34e50d705fd70...",
+      "ts": 1772380934
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.withdraw_liquidity sig=bd9317f70781466b...",
-      "ts": 1772300682
+      "msg": "prediction_market.withdraw_liquidity sig=1ab0d8c507f8159c...",
+      "ts": 1772380935
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.submit_resolution sig=f6f15d126cce094a...",
-      "ts": 1772300682
+      "msg": "prediction_market.submit_resolution sig=8209e14e78de2f22...",
+      "ts": 1772380935
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.challenge_resolution sig=795d954040d8d0e7...",
-      "ts": 1772300683
+      "msg": "prediction_market.challenge_resolution sig=7aa5dd56a2c92754...",
+      "ts": 1772380936
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.finalize_resolution sig=f95fab248a65aa09...",
-      "ts": 1772300683
+      "msg": "prediction_market.finalize_resolution sig=56eaa6249e726fd4...",
+      "ts": 1772380936
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.dao_resolve sig=1d61d4bc5c3f365d...",
-      "ts": 1772300683
+      "msg": "prediction_market.dao_resolve sig=2866b24b3eb3c908...",
+      "ts": 1772380936
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.dao_void sig=a3c5a821b2c50d87...",
-      "ts": 1772300683
+      "msg": "prediction_market.dao_void sig=64c49a95a69a1186...",
+      "ts": 1772380936
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.redeem_shares sig=b1eb080d336a1adb...",
-      "ts": 1772300683
+      "msg": "prediction_market.redeem_shares sig=662ae388e69a3193...",
+      "ts": 1772380937
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.reclaim_collateral sig=898526c355d93ca2...",
-      "ts": 1772300684
+      "msg": "prediction_market.reclaim_collateral sig=6d842b42dc0e9000...",
+      "ts": 1772380937
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.close_market sig=2e9846081f77dc4a...",
-      "ts": 1772300684
+      "msg": "prediction_market.close_market sig=8cd314cf17a57db6...",
+      "ts": 1772380937
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.emergency_pause sig=b69729bdb04243a1...",
-      "ts": 1772300684
+      "msg": "prediction_market.emergency_pause sig=7af9be3f2ed9d371...",
+      "ts": 1772380938
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.emergency_unpause sig=0c415c0b9c3b397b...",
-      "ts": 1772300684
+      "msg": "prediction_market.emergency_unpause sig=6ec45f64c7099335...",
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "prediction_market.rest_price_history count=0 (no trades yet)",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexCoreStats -> {'pair_count': 7, 'order_count': 56, 'trade_count': 17, 'total_volume': 225937200000, 'fee_treasury': 67781160, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexAmmStats -> {'pool_count': 7, 'position_count': 0, 'swap_count': 3, 'total_volume': 500011000, 'total_fees': 1500033, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexMarginStats -> {'position_count': 0, 'total_volume': 0, 'liquidation_count': 0, 'total_pnl_profit': 0, 'total_pnl_loss': 0, 'insurance_fund': 0, 'max_leverage': 100, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexRewardsStats -> {'trade_count': 0, 'trader_count': 0, 'total_volume': 0, 'total_distributed': 0, 'epoch': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexRouterStats -> {'route_count': 14, 'swap_count': 0, 'total_volume': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
-      "msg": "rpc.getDexAnalyticsStats -> {'record_count': 2, 'trader_count': 1, 'total_volume': 15000, 'total_candles': 164, 'tracked_pairs': 14, 'paused': False}",
-      "ts": 1772300684
+      "msg": "rpc.getDexAnalyticsStats -> {'record_count': 2, 'trader_count': 1, 'total_volume': 15000, 'total_candles': 189, 'tracked_pairs': 14, 'paused': False}",
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getDexGovernanceStats -> {'proposal_count': 4, 'total_votes': 3, 'voter_count': 3, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltswapStats -> {'swap_count': 0, 'volume_a': 0, 'volume_b': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getLobsterLendStats -> {'total_deposits': 0, 'total_borrows': 0, 'reserves': 0, 'deposit_count': 0, 'borrow_count': 0, 'liquidation_count': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getClawPayStats -> {'stream_count': 0, 'total_streamed': 0, 'total_withdrawn': 0, 'cancel_count': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getBountyBoardStats -> {'bounty_count': 0, 'completed_count': 0, 'reward_volume': 0, 'cancel_count': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getComputeMarketStats -> {'job_count': 0, 'completed_count': 0, 'payment_volume': 0, 'dispute_count': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getReefStorageStats -> {'data_count': 0, 'total_bytes': 0, 'challenge_count': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltMarketStats -> {'listing_count': 0, 'sale_count': 0, 'sale_volume': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltAuctionStats -> {'auction_count': 0, 'total_volume': 0, 'total_sales': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltPunksStats -> {'total_minted': 0, 'transfer_count': 0, 'burn_count': 0, 'paused': False}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/core -> {'pairCount': 7, 'orderCount': 56, 'tradeCount': 17, 'totalVolume': 225937200000, 'feeTreasury': 67781160}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/amm -> {'poolCount': 7, 'positionCount': 0, 'swapCount': 3, 'totalVolume': 500011000, 'totalFees': 1500033}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/margin -> {'positionCount': 0, 'totalVolume': 0, 'liquidationCount': 0, 'insuranceFund': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/router -> {'routeCount': 14, 'swapCount': 0, 'totalVolume': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/rewards -> {'tradeCount': 0, 'traderCount': 0, 'totalVolume': 0, 'totalDistributed': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/analytics -> {'recordCount': 2, 'traderCount': 1, 'totalVolume': 15000}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/governance -> {'proposalCount': 4, 'activeProposals': 4, 'totalVotes': 3, 'voterCount': 3, 'minQuorum': 3, 'min_quorum': 3}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest/api/v1/stats/moltswap -> {'swapCount': 0, 'volumeA': 0, 'volumeB': 0}",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getBlock -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getLatestBlock -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getAccount -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getAccountInfo -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTransactionsByAddress -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getAccountTxCount -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getRecentTransactions -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTokenAccounts -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTotalBurned -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getValidators -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMetrics -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTreasuryInfo -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getGenesisAccounts -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getFeeConfig -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getRentParams -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPeers -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getNetworkInfo -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getClusterInfo -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getValidatorInfo accepted (code=-32602)",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getValidatorPerformance accepted (code=-32602)",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getChainStatus -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getStakingStatus -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getStakingRewards -> ok",
-      "ts": 1772300684
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getStakingPosition -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getReefStakePoolInfo -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getUnstakingQueue -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getRewardAdjustmentInfo -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getAllContracts -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getContractInfo -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getContractLogs -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPrograms -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getProgramStats accepted (code=-32602)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdStats -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdIdentity -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdReputation -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdSkills -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdProfile -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdAchievements -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMoltyIdAgentDirectory -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.resolveMoltName -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.searchMoltNames -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getEvmRegistration -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getSymbolRegistry -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getCollection accepted (code=-32602)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getNFTsByOwner -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getNFTsByCollection accepted (code=-32602)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getNFTActivity -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMarketListings -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getMarketSales -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTokenBalance accepted (code=-32602)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTokenHolders accepted (code=-32602)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getTokenTransfers -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPredictionMarketStats -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPredictionMarkets -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPredictionLeaderboard -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rpc.getPredictionTrending -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/pairs -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/tickers -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/pools -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/orders accepted (HTTP 400)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/leaderboard -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/routes -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/governance/proposals -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/prediction-market/stats -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/prediction-market/markets -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/prediction-market/leaderboard -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "rest.GET/api/v1/prediction-market/trending -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Slots) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Blocks) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Transactions) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Validators) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Epochs) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(NftMints) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(NftTransfers) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(MarketListings) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(MarketSales) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(BridgeLocks) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(BridgeMints) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(Governance) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "ws.subscribe(TokenBalance) -> handshake returned non-101 (WS may not be enabled)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getAccountInfo -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getBalance -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getBlockHeight accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getBlockTime accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getEpochInfo accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getSlot -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getVersion accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getHealth accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getRecentBlockhash -> ok",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getSignaturesForAddress accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getTransaction accepted (code=-32001)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getMinimumBalanceForRentExemption accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "sol_compat.getFeeForMessage accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_blockNumber accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_chainId accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_getBalance accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_getBlockByNumber accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_gasPrice accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.net_version accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.web3_clientVersion accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_getCode accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "evm_compat.eth_estimateGas accepted (code=-32601)",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.binary zk-prove found",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.keys found at /Users/johnrobin/.moltchain/zk",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.rpc.getShieldedPoolState total=0 count=0",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.rpc.getShieldedMerkleRoot root=86c365bf02da2998...",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.rest.pool balance=0",
-      "ts": 1772300685
+      "ts": 1772380938
     },
     {
       "status": "PASS",
-      "msg": "zk.prove.shield commitment=f95f5976ae705697...",
-      "ts": 1772300685
+      "msg": "zk.prove.shield commitment=e56aaad52bfb3ef4...",
+      "ts": 1772380938
     },
     {
       "status": "PASS",
-      "msg": "zk.tx.shield confirmed sig=00fb2acbe4341916...",
-      "ts": 1772300685
+      "msg": "zk.tx.shield confirmed sig=0de0e55433d86898...",
+      "ts": 1772380938
     },
     {
       "status": "PASS",
       "msg": "zk.verify.commitment_count 0 -> 1",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
       "msg": "zk.verify.total_shielded 0 -> 500000000",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
       "msg": "zk.rpc.getShieldedCommitments count=1",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
       "msg": "zk.rest.commitments count=1",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
       "msg": "zk.rpc.getShieldedMerklePath siblings=20",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
       "msg": "zk.rest.merkle-path siblings=20",
-      "ts": 1772300686
+      "ts": 1772380939
     },
     {
       "status": "PASS",
-      "msg": "zk.rpc.merkle_root_post_shield root=6c779a20ef4b2eef...",
-      "ts": 1772300686
+      "msg": "zk.rpc.merkle_root_post_shield root=c0cd89aceea4699b...",
+      "ts": 1772380939
     },
     {
       "status": "PASS",
-      "msg": "zk.prove.unshield nullifier=38305fa1e83f05bb...",
-      "ts": 1772300688
+      "msg": "zk.prove.unshield nullifier=3a0d5bc654541312...",
+      "ts": 1772380941
     },
     {
       "status": "PASS",
       "msg": "zk.rpc.isNullifierSpent pre-unshield=false",
-      "ts": 1772300688
+      "ts": 1772380941
     },
     {
       "status": "PASS",
       "msg": "zk.rest.nullifier pre-unshield=false",
-      "ts": 1772300688
+      "ts": 1772380941
     },
     {
       "status": "PASS",
-      "msg": "zk.tx.unshield confirmed sig=ccbb20a7266fc714...",
-      "ts": 1772300688
+      "msg": "zk.tx.unshield confirmed sig=b707a6519912a089...",
+      "ts": 1772380941
     },
     {
       "status": "PASS",
       "msg": "zk.verify.total_after_unshield back to 0",
-      "ts": 1772300689
+      "ts": 1772380942
     },
     {
       "status": "PASS",
       "msg": "zk.verify.nullifier_spent post-unshield=true",
-      "ts": 1772300689
+      "ts": 1772380942
     },
     {
       "status": "PASS",
       "msg": "zk.verify.double_spend rejected (not confirmed)",
-      "ts": 1772300694
+      "ts": 1772380947
     },
     {
       "status": "PASS",
       "msg": "zk.verify.zero_amount_shield rejected",
-      "ts": 1772300699
+      "ts": 1772380953
     },
     {
       "status": "PASS",
       "msg": "zk.rest.merkle-root ok",
-      "ts": 1772300699
+      "ts": 1772380953
     },
     {
       "status": "SKIP",
       "msg": "zk.transfer.shield_b not confirmed (intermittent in multi-validator profile)",
-      "ts": 1772300703
+      "ts": 1772380956
     },
     {
       "status": "SKIP",
       "msg": "zk.transfer.shield_c not confirmed (intermittent in multi-validator profile)",
-      "ts": 1772300706
+      "ts": 1772380959
     }
   ]
 }

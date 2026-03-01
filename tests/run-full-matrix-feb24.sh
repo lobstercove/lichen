@@ -272,6 +272,8 @@ commands=(
   "node tests/test_wallet_modal_parity.js"
   "node tests/test_programs_override_wiring.js"
   "node tests/test_marketplace_audit.js"
+  "bash tests/test-mkt-featured-filter.sh"
+  "bash tests/test-critical-security.sh"
   "node tests/test_developers_audit.js"
   "node tests/test_website_audit.js"
   "node tests/test_cross_cutting_audit.js"

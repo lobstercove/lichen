@@ -513,10 +513,47 @@ pub enum ShieldedPoolInstruction {
 #[cfg(target_arch = "wasm32")]
 mod wasm_abi {
     use super::*;
-    use moltchain_sdk::{storage_get, storage_set, log_info, set_return_data, get_slot};
+    use moltchain_sdk::{storage_get, storage_set, log_info, set_return_data, get_slot, get_caller};
 
     const STATE_KEY: &[u8] = b"pool_state";
     const OWNER_KEY: &[u8] = b"owner";
+    const PAUSED_KEY: &[u8] = b"sp_paused";
+    const REENTRANCY_KEY: &[u8] = b"sp_reentrancy";
+
+    // AUDIT-FIX CON-02: Reentrancy guard (prevents double-spend via reentrant calls)
+    fn reentrancy_enter() -> bool {
+        if storage_get(REENTRANCY_KEY)
+            .map(|v| v.first().copied() == Some(1))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        storage_set(REENTRANCY_KEY, &[1u8]);
+        true
+    }
+
+    fn reentrancy_exit() {
+        storage_set(REENTRANCY_KEY, &[0u8]);
+    }
+
+    // AUDIT-FIX CON-04: Pause mechanism
+    fn is_paused() -> bool {
+        storage_get(PAUSED_KEY)
+            .map(|v| v.first().copied() == Some(1))
+            .unwrap_or(false)
+    }
+
+    // AUDIT-FIX CON-03: Require caller to be the owner/admin
+    fn require_admin() -> bool {
+        let caller = get_caller();
+        match storage_get(OWNER_KEY) {
+            Some(owner) if owner.len() == 32 && owner[..] == caller.0[..] => true,
+            _ => {
+                log_info("ShieldedPool: unauthorized caller (not admin)");
+                false
+            }
+        }
+    }
 
     fn load_state() -> ShieldedPoolState {
         match storage_get(STATE_KEY) {
@@ -553,6 +590,24 @@ mod wasm_abi {
         save_state(&state);
 
         log_info("ShieldedPool initialized");
+        0
+    }
+
+    /// AUDIT-FIX CON-04: Pause the pool (admin only)
+    #[no_mangle]
+    pub extern "C" fn pause() -> u32 {
+        if !require_admin() { return 1; }
+        storage_set(PAUSED_KEY, &[1u8]);
+        log_info("ShieldedPool PAUSED");
+        0
+    }
+
+    /// AUDIT-FIX CON-04: Unpause the pool (admin only)
+    #[no_mangle]
+    pub extern "C" fn unpause() -> u32 {
+        if !require_admin() { return 1; }
+        storage_set(PAUSED_KEY, &[0u8]);
+        log_info("ShieldedPool UNPAUSED");
         0
     }
 
@@ -607,17 +662,23 @@ mod wasm_abi {
     /// args: JSON-serialized ShieldRequest.
     #[no_mangle]
     pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
+        // AUDIT-FIX CON-04: Pause check
+        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        // AUDIT-FIX CON-02: Reentrancy guard
+        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: ShieldRequest = match serde_json::from_slice(slice) {
             Ok(r) => r,
             Err(_) => {
                 log_info("shield: invalid request");
+                reentrancy_exit();
                 return 1;
             }
         };
         let slot = get_slot();
         let mut state = load_state();
-        match state.shield(&request, slot) {
+        let result = match state.shield(&request, slot) {
             Ok(index) => {
                 save_state(&state);
                 set_return_data(&index.to_le_bytes());
@@ -627,23 +688,31 @@ mod wasm_abi {
                 log_info(&format!("shield failed: {}", e));
                 1
             }
-        }
+        };
+        reentrancy_exit();
+        result
     }
 
     /// Unshield (withdraw) MOLT from the shielded pool.
     /// args: JSON-serialized UnshieldRequest.
     #[no_mangle]
     pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
+        // AUDIT-FIX CON-04: Pause check
+        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        // AUDIT-FIX CON-02: Reentrancy guard
+        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: UnshieldRequest = match serde_json::from_slice(slice) {
             Ok(r) => r,
             Err(_) => {
                 log_info("unshield: invalid request");
+                reentrancy_exit();
                 return 1;
             }
         };
         let mut state = load_state();
-        match state.unshield(&request) {
+        let result = match state.unshield(&request) {
             Ok(amount) => {
                 save_state(&state);
                 set_return_data(&amount.to_le_bytes());
@@ -653,24 +722,32 @@ mod wasm_abi {
                 log_info(&format!("unshield failed: {}", e));
                 1
             }
-        }
+        };
+        reentrancy_exit();
+        result
     }
 
     /// Shielded transfer between notes.
     /// args: JSON-serialized TransferRequest.
     #[no_mangle]
     pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
+        // AUDIT-FIX CON-04: Pause check
+        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        // AUDIT-FIX CON-02: Reentrancy guard
+        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: TransferRequest = match serde_json::from_slice(slice) {
             Ok(r) => r,
             Err(_) => {
                 log_info("transfer: invalid request");
+                reentrancy_exit();
                 return 1;
             }
         };
         let slot = get_slot();
         let mut state = load_state();
-        match state.transfer(&request, slot) {
+        let result = match state.transfer(&request, slot) {
             Ok(indices) => {
                 save_state(&state);
                 if let Ok(json) = serde_json::to_vec(&indices) {
@@ -682,7 +759,9 @@ mod wasm_abi {
                 log_info(&format!("transfer failed: {}", e));
                 1
             }
-        }
+        };
+        reentrancy_exit();
+        result
     }
 }
 

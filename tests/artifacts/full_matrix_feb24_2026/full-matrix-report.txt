@@ -1,54 +1,45 @@
-[31/41] PASS (111s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/load-test-5k-traders.py
-[32/41] PASS (0s) bash tests/matrix-sdk-cluster.sh status
-[33/41] PASS (55s) python3 sdk/python/test_sdk_live.py
-[34/41] PASS (5s) python3 sdk/python/test_websocket_sdk.py
-[1/41] PASS (1s) bash tests/test-rpc-comprehensive.sh
-[2/41] PASS (0s) bash tests/test-websocket.sh
-[3/41] PASS (0s) bash tests/test-cli-comprehensive.sh
-[35/41] PASS (30s) python3 sdk/python/test_websocket_simple.py
-[36/41] PASS (0s) python3 sdk/python/test_cross_sdk_compat.py
-[37/41] PASS (1s) npx --yes ts-node sdk/js/test-all-features.ts
-[38/41] PASS (0s) node sdk/js/test_cross_sdk_compat.js
-[39/41] PASS (11s) node sdk/js/test-subscriptions.js
-[40/41] PASS (4s) cargo run --manifest-path sdk/rust/Cargo.toml --example test_transactions
-[41/41] PASS (3s) bash tests/matrix-sdk-cluster.sh stop
-[4/41] PASS (94s) bash tests/live-e2e-test.sh
-[5/41] PASS (38s) REQUIRE_ALL_CONTRACTS=0 bash tests/services-deep-e2e.sh
-[6/41] PASS (75s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' HUMAN_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/community_treasury-moltchain-testnet-1.json' REQUIRE_FULL_WRITE_ACTIVITY=0 STRICT_WRITE_ASSERTIONS=0 ENFORCE_DOMAIN_ASSERTIONS=0 MIN_CONTRACT_ACTIVITY_DELTA=0 python3 tests/contracts-write-e2e.py
-[7/41] PASS (0s) bash tests/test-contract-deployment.sh
-[8/41] PASS (7s) bash scripts/test-all-sdks.sh
-[9/41] PASS (34s) node tests/e2e-dex.js
-[10/41] PASS (59s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/e2e-dex-trading.py
-[11/41] PASS (49s) node tests/e2e-launchpad.js
-[12/41] PASS (56s) node tests/e2e-prediction.js
-[13/41] PASS (14s) PREDICTION_MULTI_OUTCOME_ONLY=1 node tests/e2e-prediction.js
-[14/41] PASS (113s) node tests/e2e-volume.js
-[15/41] PASS (3s) bash tests/test-dex-api-comprehensive.sh
-[16/41] PASS (10s) node tests/test-ws-dex.js
-[17/41] PASS (0s) node tests/test_wallet_audit.js
-[18/41] PASS (0s) node tests/test_wallet_extension_audit.js
-[19/41] PASS (0s) node tests/test_wallet_modal_parity.js
-[20/41] PASS (0s) node tests/test_programs_override_wiring.js
-[21/41] PASS (0s) node tests/test_marketplace_audit.js
-[22/41] PASS (0s) node tests/test_developers_audit.js
-[23/41] PASS (1s) node tests/test_website_audit.js
-[24/41] PASS (0s) node tests/test_cross_cutting_audit.js
-[25/41] PASS (0s) node tests/test_coverage_audit.js
-[26/41] PASS (0s) python3 tests/e2e-genesis-wiring.py
-[27/41] PASS (16s) bash tests/multi-validator-e2e.sh
-[28/41] PASS (142s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' REQUIRE_FUNDED_DEPLOYER=0 RPC_ENDPOINTS='http://127.0.0.1:8899' python3 tests/comprehensive-e2e.py
-[29/41] PASS (30s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' REQUIRE_FUNDED_DEPLOYER=0 RPC_ENDPOINTS='http://127.0.0.1:8899' python3 tests/comprehensive-e2e-parallel.py
-[30/41] PASS (88s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/e2e-websocket-upgrade.py
-[31/41] PASS (56s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/load-test-5k-traders.py
-[32/41] PASS (1s) bash tests/matrix-sdk-cluster.sh status
-[33/41] PASS (116s) python3 sdk/python/test_sdk_live.py
-[34/41] PASS (5s) python3 sdk/python/test_websocket_sdk.py
-[35/41] PASS (30s) python3 sdk/python/test_websocket_simple.py
-[36/41] PASS (0s) python3 sdk/python/test_cross_sdk_compat.py
-[37/41] PASS (1s) npx --yes ts-node sdk/js/test-all-features.ts
-[38/41] PASS (0s) node sdk/js/test_cross_sdk_compat.js
-[39/41] PASS (10s) node sdk/js/test-subscriptions.js
-[40/41] PASS (1s) cargo run --manifest-path sdk/rust/Cargo.toml --example test_transactions
-[41/41] PASS (3s) bash tests/matrix-sdk-cluster.sh stop
-TOTAL=41 PASS=41 FAIL=0
+[1/43] PASS (0s) bash tests/test-rpc-comprehensive.sh
+[2/43] PASS (0s) bash tests/test-websocket.sh
+[3/43] PASS (1s) bash tests/test-cli-comprehensive.sh
+[4/43] PASS (38s) bash tests/live-e2e-test.sh
+[5/43] PASS (12s) REQUIRE_ALL_CONTRACTS=0 bash tests/services-deep-e2e.sh
+[6/43] PASS (74s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' HUMAN_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/community_treasury-moltchain-testnet-1.json' REQUIRE_FULL_WRITE_ACTIVITY=0 STRICT_WRITE_ASSERTIONS=0 ENFORCE_DOMAIN_ASSERTIONS=0 MIN_CONTRACT_ACTIVITY_DELTA=0 python3 tests/contracts-write-e2e.py
+[7/43] PASS (0s) bash tests/test-contract-deployment.sh
+[8/43] PASS (5s) bash scripts/test-all-sdks.sh
+[9/43] PASS (33s) node tests/e2e-dex.js
+[10/43] PASS (50s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/e2e-dex-trading.py
+[11/43] PASS (49s) node tests/e2e-launchpad.js
+[12/43] PASS (53s) node tests/e2e-prediction.js
+[13/43] PASS (15s) PREDICTION_MULTI_OUTCOME_ONLY=1 node tests/e2e-prediction.js
+[14/43] PASS (113s) node tests/e2e-volume.js
+[15/43] PASS (2s) bash tests/test-dex-api-comprehensive.sh
+[16/43] PASS (10s) node tests/test-ws-dex.js
+[17/43] PASS (0s) node tests/test_wallet_audit.js
+[18/43] PASS (1s) node tests/test_wallet_extension_audit.js
+[19/43] PASS (0s) node tests/test_wallet_modal_parity.js
+[20/43] PASS (0s) node tests/test_programs_override_wiring.js
+[21/43] PASS (0s) node tests/test_marketplace_audit.js
+[22/43] PASS (0s) bash tests/test-mkt-featured-filter.sh
+[23/43] PASS (0s) bash tests/test-critical-security.sh
+[24/43] PASS (0s) node tests/test_developers_audit.js
+[25/43] PASS (0s) node tests/test_website_audit.js
+[26/43] PASS (0s) node tests/test_cross_cutting_audit.js
+[27/43] PASS (0s) node tests/test_coverage_audit.js
+[28/43] PASS (1s) python3 tests/e2e-genesis-wiring.py
+[29/43] PASS (15s) bash tests/multi-validator-e2e.sh
+[30/43] PASS (151s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' REQUIRE_FUNDED_DEPLOYER=0 RPC_ENDPOINTS='http://127.0.0.1:8899' python3 tests/comprehensive-e2e.py
+[31/43] PASS (29s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' REQUIRE_FUNDED_DEPLOYER=0 RPC_ENDPOINTS='http://127.0.0.1:8899' python3 tests/comprehensive-e2e-parallel.py
+[32/43] PASS (88s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/e2e-websocket-upgrade.py
+[33/43] PASS (54s) AGENT_KEYPAIR='/Users/johnrobin/.openclaw/workspace/moltchain/data/state-8000/genesis-keys/builder_grants-moltchain-testnet-1.json' python3 tests/load-test-5k-traders.py
+[34/43] PASS (0s) bash tests/matrix-sdk-cluster.sh status
+[35/43] PASS (91s) python3 sdk/python/test_sdk_live.py
+[36/43] PASS (5s) python3 sdk/python/test_websocket_sdk.py
+[37/43] PASS (40s) python3 sdk/python/test_websocket_simple.py
+[38/43] PASS (0s) python3 sdk/python/test_cross_sdk_compat.py
+[39/43] PASS (1s) npx --yes ts-node sdk/js/test-all-features.ts
+[40/43] PASS (0s) node sdk/js/test_cross_sdk_compat.js
+[41/43] PASS (10s) node sdk/js/test-subscriptions.js
+[42/43] PASS (1s) cargo run --manifest-path sdk/rust/Cargo.toml --example test_transactions
+[43/43] PASS (3s) bash tests/matrix-sdk-cluster.sh stop
+TOTAL=43 PASS=43 FAIL=0
 LOG=tests/artifacts/full_matrix_feb24_2026/full-matrix.log
