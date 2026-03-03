@@ -82,7 +82,12 @@ function getSelectedNetwork() {
 }
 
 function getRpcEndpoint() {
-    return NETWORKS[getSelectedNetwork()] || NETWORKS['local-testnet'];
+    // AUDIT-FIX W-7: Use custom RPC URLs from settings if configured
+    const net = getSelectedNetwork();
+    const settings = walletState.settings || {};
+    if (net === 'mainnet' && settings.mainnetRPC) return settings.mainnetRPC;
+    if (net === 'testnet' && settings.testnetRPC) return settings.testnetRPC;
+    return NETWORKS[net] || NETWORKS['local-testnet'];
 }
 
 function getWsEndpoint() {
@@ -936,6 +941,11 @@ async function finishCreateWallet() {
     showToast('Wallet created successfully!');
     showDashboard();
     
+    // AUDIT-FIX W-9: Zero sensitive globals immediately after use
+    if (createdKeypair && createdKeypair.secretKey) zeroBytes(createdKeypair.secretKey);
+    createdKeypair = null;
+    createdMnemonic = '';
+    
     // Auto-register EVM address for MetaMask compatibility (non-blocking)
     registerEvmAddress(wallet, password);
 }
@@ -1116,14 +1126,24 @@ async function importWalletJson() {
         try {
             const keystore = JSON.parse(e.target.result);
             
-            if (!keystore.secretKey && !keystore.privateKey) {
+            if (!keystore.secretKey && !keystore.privateKey && !keystore.encryptedSecretKey) {
                 showToast('Invalid keystore format: no key data found', 'error');
                 return;
             }
             
             // Extract private key (seed) from keystore
             let seedHex;
-            if (keystore.secretKey) {
+            if (keystore.encryptedSecretKey) {
+                // AUDIT-FIX K-1b: Handle v2 encrypted export format
+                const importPw = document.getElementById('importPasswordJson').value;
+                const decryptedHex = await MoltCrypto.decryptPrivateKey(keystore.encryptedSecretKey, importPw);
+                if (!decryptedHex) {
+                    showToast('Invalid password for this keystore', 'error');
+                    return;
+                }
+                // decryptedHex is the full 64-byte secretKey hex — take first 32 bytes (seed)
+                seedHex = decryptedHex.slice(0, 64);
+            } else if (keystore.secretKey) {
                 // Full 64-byte secretKey — first 32 bytes are the seed
                 const secretBytes = new Uint8Array(keystore.secretKey);
                 seedHex = MoltCrypto.bytesToHex(secretBytes.slice(0, 32));
@@ -1192,7 +1212,17 @@ async function initShieldedForActiveWallet() {
     const wallet = getActiveWallet();
     if (!wallet || !wallet.encryptedKey || typeof initShielded !== 'function') return;
 
-    const password = window.prompt('Enter wallet password to initialize shielded wallet');
+    // AUDIT-FIX W-2: Use secure password modal instead of window.prompt()
+    const values = await showPasswordModal({
+        title: 'Initialize Shielded Wallet',
+        message: 'Enter your wallet password to initialize the shielded pool',
+        icon: 'fas fa-shield-alt',
+        confirmText: 'Initialize',
+        fields: [
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password' }
+        ]
+    });
+    const password = values ? values.password : null;
     if (!password) {
         showToast('Shielded initialization cancelled');
         return;
@@ -1242,7 +1272,10 @@ async function initShieldedForActiveWallet() {
     }
 }
 
+let _dashboardTabsInitialized = false;
 function setupDashboardTabs() {
+    if (_dashboardTabsInitialized) return;
+    _dashboardTabsInitialized = true;
     const tabs = document.querySelectorAll('.dashboard-tab');
     const contents = document.querySelectorAll('.tab-content');
     
@@ -2808,11 +2841,13 @@ async function refreshNFTs() {
 }
 
 function showNFTDetail(mintId) {
-    showToast('NFT details - launching with mainnet');
+    // Navigate to marketplace item detail page
+    const id = encodeURIComponent(mintId || '');
+    window.open('../marketplace/item.html?id=' + id, '_blank');
 }
 
 function openMarketplace() {
-    showToast('MoltChain NFT Marketplace - launching with mainnet');
+    window.open('../marketplace/index.html', '_blank');
 }
 
 function formatMolt(shells) {
@@ -3029,6 +3064,11 @@ async function setMaxAmount() {
             // Reserve base fee for gas
             const maxAmount = Math.max(0, molt - getNetworkBaseFeeMolt());
             document.getElementById('sendAmount').value = maxAmount.toFixed(6);
+        } else if (selectedToken === 'stMOLT') {
+            // AUDIT-FIX W-3: Fetch stMOLT balance from staking position
+            const position = await rpc.call('getStakingPosition', [wallet.address]);
+            const stMolt = (position?.st_molt_amount || 0) / SHELLS_PER_MOLT;
+            document.getElementById('sendAmount').value = stMolt.toFixed(6);
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
             document.getElementById('sendAmount').value = bal.toFixed(6);
@@ -3963,8 +4003,14 @@ function resetLockTimer() {
     }
 }
 
+// AUDIT-FIX W-5: Register all interaction events for auto-lock reset
 document.addEventListener('mousemove', resetLockTimer);
 document.addEventListener('keypress', resetLockTimer);
+document.addEventListener('keydown', resetLockTimer);
+document.addEventListener('click', resetLockTimer);
+document.addEventListener('touchstart', resetLockTimer);
+document.addEventListener('touchmove', resetLockTimer);
+document.addEventListener('scroll', resetLockTimer, true);
 
 // ===== NETWORK SELECTOR=====
 const NETWORK_LABELS = {
@@ -4133,27 +4179,30 @@ async function changePasswordStep2(oldPassword) {
             return;
         }
         
-        // Re-encrypt with new password
-        wallet.encryptedKey = await MoltCrypto.encryptKeypair(keypair, values.newPassword);
-        
-        // Re-encrypt mnemonic if it exists
-        if (wallet.encryptedMnemonic) {
-            const mnemonic = await MoltCrypto.decryptPrivateKey(wallet.encryptedMnemonic, oldPassword);
-            wallet.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(mnemonic, values.newPassword);
-        } else if (wallet.mnemonic) {
-            // Migrate plaintext mnemonic
-            wallet.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(wallet.mnemonic, values.newPassword);
-            wallet.hasMnemonic = true;
-            delete wallet.mnemonic;
+        // AUDIT-FIX W-10: Re-encrypt ALL wallets, not just active
+        for (let i = 0; i < walletState.wallets.length; i++) {
+            const w = walletState.wallets[i];
+            try {
+                const wKeypair = await MoltCrypto.decryptKeypair(w.encryptedKey, oldPassword);
+                if (wKeypair) {
+                    w.encryptedKey = await MoltCrypto.encryptKeypair(wKeypair, values.newPassword);
+                    zeroBytes(wKeypair.secretKey);
+                }
+                if (w.encryptedMnemonic) {
+                    const wMnemonic = await MoltCrypto.decryptPrivateKey(w.encryptedMnemonic, oldPassword);
+                    if (wMnemonic) w.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(wMnemonic, values.newPassword);
+                } else if (w.mnemonic) {
+                    w.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(w.mnemonic, values.newPassword);
+                    w.hasMnemonic = true;
+                    delete w.mnemonic;
+                }
+            } catch (reEncryptErr) {
+                console.error(`Failed to re-encrypt wallet ${w.id}:`, reEncryptErr);
+            }
         }
         
-        // Update in state
-        const walletIndex = walletState.wallets.findIndex(w => w.id === wallet.id);
-        if (walletIndex !== -1) {
-            walletState.wallets[walletIndex] = wallet;
-            saveWalletState();
-            showToast('✅ Password changed successfully!');
-        }
+        saveWalletState();
+        showToast('✅ Password changed for all wallets!');
     });
 }
 

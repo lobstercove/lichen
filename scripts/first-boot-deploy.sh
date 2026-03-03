@@ -200,7 +200,7 @@ async def go():
 
     # Build pubkey bytes from hex or base58 address strings in manifest
     from moltchain import PublicKey
-    amm_pk = PublicKey.from_string(amm) if isinstance(amm, str) else amm
+    amm_pk = PublicKey.from_base58(amm) if isinstance(amm, str) else amm
     deployer_bytes = bytes(deployer.public_key().to_bytes())
 
     # Resolve token addresses from manifest
@@ -214,7 +214,7 @@ async def go():
     for sym, contract_name in token_names.items():
         addr_str = addrs.get(contract_name)
         if addr_str:
-            token_pks[sym] = bytes(PublicKey.from_string(addr_str).to_bytes()) if isinstance(addr_str, str) else bytes(addr_str.to_bytes())
+            token_pks[sym] = bytes(PublicKey.from_base58(addr_str).to_bytes()) if isinstance(addr_str, str) else bytes(addr_str.to_bytes())
         else:
             print(f'  ⚠  {contract_name} not in manifest, skipping pools with {sym}')
 

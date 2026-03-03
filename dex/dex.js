@@ -5486,7 +5486,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const disputeEndSlot = m.dispute_end_slot || m.disputeEndSlot || 0;
                 const currentSlot = m.current_slot || m.currentSlot || 0;
                 const slotsRemaining = disputeEndSlot > currentSlot ? disputeEndSlot - currentSlot : 0;
-                const secondsRemaining = slotsRemaining * 0.5; // 0.5s per slot
+                const secondsRemaining = slotsRemaining * 0.4; // DEX-09: 400ms per slot
                 const hoursRemaining = Math.floor(secondsRemaining / 3600);
                 const minutesRemaining = Math.floor((secondsRemaining % 3600) / 60);
                 const disputeExpired = slotsRemaining <= 0;
@@ -6081,7 +6081,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // F11.2 FIX: Compute close_slot from date input or default 7 days
             // F12.6 FIX: Validate close date is in the future
             const closeDateInput = document.getElementById('predictCloseDate')?.value;
-            let durationSlots = 7 * 24 * 60 * 60 * 2; // default 7 days at 0.5s/slot = 1_209_600
+            let durationSlots = 7 * 24 * 60 * 60 * 2.5; // default 7 days at 0.4s/slot = 1_512_000
             if (closeDateInput) {
                 const closeMs = new Date(closeDateInput).getTime();
                 const nowMs = Date.now();
@@ -6090,7 +6090,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     predictCreateBtn.disabled = false; predictCreateBtn.textContent = 'Create Market';
                     return;
                 }
-                durationSlots = Math.round((closeMs - nowMs) / 500); // 0.5s per slot
+                durationSlots = Math.round((closeMs - nowMs) / 400); // DEX-09: 400ms per slot
             }
             // Fetch current slot from stats to compute absolute close_slot
             let currentSlot = 0;

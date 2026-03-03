@@ -255,7 +255,9 @@ async function shieldMolt(amountMolt) {
 
         // Encrypt note for ourselves
         const noteBytes = new Uint8Array(104);
-        noteBytes.set(hexToBytes(shieldedState.shieldedAddress.padStart(64, '0')).slice(0, 32), 0);
+        // AUDIT-FIX SH-1: shieldedAddress is Base58, decode it properly (not hex)
+        const ownerBytes = bs58.decode(shieldedState.shieldedAddress);
+        noteBytes.set(ownerBytes.slice(0, 32), 0);
         new DataView(noteBytes.buffer).setBigUint64(32, BigInt(amountShells), true);
         noteBytes.set(blinding, 40);
         noteBytes.set(serial, 72);
@@ -1055,12 +1057,29 @@ function copyViewingKey(btnEl) {
     }
 }
 
-function toggleViewingKey(btnEl) {
+async function toggleViewingKey(btnEl) {
     const display = document.getElementById('viewingKeyDisplay');
     if (!display) return;
     const icon = btnEl ? btnEl.querySelector('i') : null;
     const isHidden = display.dataset.revealed !== 'true';
     if (isHidden && shieldedState.viewingKey) {
+        // AUDIT-FIX SH-2: Require password before revealing viewing key
+        if (typeof showPasswordModal === 'function') {
+            const values = await showPasswordModal({
+                title: 'Reveal Viewing Key',
+                message: 'Enter your wallet password to reveal the viewing key',
+                icon: 'fas fa-eye',
+                confirmText: 'Reveal',
+                fields: [{ id: 'password', label: 'Password', type: 'password', placeholder: 'Wallet password' }]
+            });
+            if (!values || !values.password) return;
+            const wallet = typeof getActiveWallet === 'function' ? getActiveWallet() : null;
+            if (wallet && wallet.encryptedKey) {
+                const kp = await MoltCrypto.decryptKeypair(wallet.encryptedKey, values.password);
+                if (!kp) { showToast('Invalid password', 'error'); return; }
+                if (kp.secretKey) zeroBytes(kp.secretKey);
+            }
+        }
         display.textContent = bytesToHex(shieldedState.viewingKey);
         display.dataset.revealed = 'true';
         if (icon) { icon.className = 'fas fa-eye'; }

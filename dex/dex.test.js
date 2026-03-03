@@ -5002,8 +5002,8 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P8.1n: Dispute countdown shows hours and minutes remaining
     assert(dexJs.includes('hoursRemaining') && dexJs.includes('minutesRemaining'), 'P8.1n: Dispute countdown computes hours/minutes');
 
-    // P8.1o: Dispute countdown uses 0.5s per slot conversion
-    assert(dexJs.includes('slotsRemaining * 0.5') || dexJs.includes('* 0.5'), 'P8.1o: Slot-to-seconds conversion at 0.5s/slot');
+    // P8.1o: Dispute countdown uses 0.4s per slot conversion (DEX-09: MoltChain slot time is 400ms)
+    assert(dexJs.includes('slotsRemaining * 0.4') || dexJs.includes('* 0.4'), 'P8.1o: Slot-to-seconds conversion at 0.4s/slot');
 
     // P8.1p: Disputed market shows "awaiting DAO resolution" message
     assert(dexJs.includes('awaiting DAO resolution'), 'P8.1p: Disputed market shows DAO message');

@@ -158,7 +158,11 @@ function updatePoolStatsUI(stats) {
     // VK status
     const vkText = el('vkStatusText');
     if (!vkText) return;
-    if (stats.vk_initialized) {
+    const ZERO_HASH = '0'.repeat(64);
+    const vkLoaded = stats.vk_shield_hash && stats.vk_shield_hash !== ZERO_HASH
+        && stats.vk_unshield_hash && stats.vk_unshield_hash !== ZERO_HASH
+        && stats.vk_transfer_hash && stats.vk_transfer_hash !== ZERO_HASH;
+    if (vkLoaded) {
         vkText.textContent = 'Initialized';
         vkText.style.background = 'rgba(6, 214, 160, 0.2)';
         vkText.style.color = '#06d6a0';

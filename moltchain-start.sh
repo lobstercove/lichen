@@ -131,12 +131,19 @@ TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
 BIN_PATH="./target/release/moltchain-validator"
 SUPERVISOR_PATH="${REPO_ROOT}/scripts/validator-supervisor.sh"
 VALIDATOR_HOME="${DB_PATH}/home"
+REAL_HOME="$HOME"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$VALIDATOR_HOME"
 
 # Keep node identity/fingerprint state isolated per validator data directory.
 export HOME="$VALIDATOR_HOME"
+
+# Preserve ZK verification key paths from the real home directory so the
+# validator can find them even though HOME was overridden above.
+export MOLTCHAIN_ZK_SHIELD_VK_PATH="${MOLTCHAIN_ZK_SHIELD_VK_PATH:-${REAL_HOME}/.moltchain/zk/vk_shield.bin}"
+export MOLTCHAIN_ZK_UNSHIELD_VK_PATH="${MOLTCHAIN_ZK_UNSHIELD_VK_PATH:-${REAL_HOME}/.moltchain/zk/vk_unshield.bin}"
+export MOLTCHAIN_ZK_TRANSFER_VK_PATH="${MOLTCHAIN_ZK_TRANSFER_VK_PATH:-${REAL_HOME}/.moltchain/zk/vk_transfer.bin}"
 
 # ── Banner ──
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"

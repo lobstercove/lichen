@@ -1159,17 +1159,17 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
     }
 
     // --- Part 2: Check margin position SL/TP ---
-    let margin_pk = match state.get_symbol_registry("MARGIN") {
+    let margin_pk = match state.get_symbol_registry("DEXMARGIN") {
         Ok(Some(entry)) => entry.program,
         _ => return,
     };
 
-    let pos_count = state.get_program_storage_u64("MARGIN", b"position_count");
+    let pos_count = state.get_program_storage_u64("DEXMARGIN", b"mrg_pos_count");
     let mut sltp_closed: u64 = 0;
 
     for pid in 1..=pos_count {
-        let pk = format!("margin_pos_{}", pid);
-        let data = match state.get_program_storage("MARGIN", pk.as_bytes()) {
+        let pk = format!("mrg_pos_{}", pid);
+        let data = match state.get_program_storage("DEXMARGIN", pk.as_bytes()) {
             Some(d) if d.len() >= 114 => d,
             _ => continue,
         };
@@ -1233,7 +1233,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         // P9-VAL-08: Re-read position status to prevent double-close race.
         // A user transaction processed in the same block may have already closed
         // this position between our initial read and this write.
-        let fresh_data = match state.get_program_storage("MARGIN", pk.as_bytes()) {
+        let fresh_data = match state.get_program_storage("DEXMARGIN", pk.as_bytes()) {
             Some(d) if d.len() >= 114 => d,
             _ => continue,
         };
@@ -1253,8 +1253,8 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
 
         // PnL = (exit_price - entry_price) * size / 1e9 for longs
         // PnL = (entry_price - exit_price) * size / 1e9 for shorts
-        // Stored as biased: actual_pnl + BIAS where BIAS = 1 << 62
-        const BIAS: u64 = 1u64 << 62;
+        // Stored as biased: actual_pnl + BIAS where BIAS = 1 << 63 (matches dex_margin contract)
+        const BIAS: u64 = 1u64 << 63;
         let pnl_raw: i64 = if side == 0 {
             // Long
             ((last_price as i128 - entry_price as i128) * size as i128 / 1_000_000_000i128) as i64
@@ -1274,7 +1274,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         let abs_pnl = pnl_raw.unsigned_abs();
 
         // Read current insurance fund balance
-        let insurance_fund = state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+        let insurance_fund = state.get_program_storage_u64("DEXMARGIN", b"mrg_insurance");
 
         let return_amount = if pnl_raw >= 0 {
             // Profitable close: pay profit from insurance fund (cap at fund balance)
@@ -1286,7 +1286,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
                 &insurance_fund.saturating_sub(capped_profit).to_le_bytes(),
             );
             // Track cumulative profit
-            let prev_profit = state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+            let prev_profit = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_profit");
             let _ = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_profit",
@@ -1302,7 +1302,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
                 &insurance_fund.saturating_add(loss).to_le_bytes(),
             );
             // Track cumulative loss
-            let prev_loss = state.get_program_storage_u64("MARGIN", b"mrg_pnl_loss");
+            let prev_loss = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_loss");
             let _ = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_loss",
