@@ -132,7 +132,6 @@ deploy-manifest.json
 
 # ── Archives ───────────────────────────────────────────────
 archive/
-docs/archive/
 
 # ── Browser automation data ────────────────────────────────
 browser/
@@ -155,8 +154,10 @@ shared-theme.css
 skills/
 
 # ── Local-only dev/runtime surfaces (not open source) ───────────
-docs/
 faucet/
 monitoring/
 keypairs/
 moltchain/
+
+# ── Docs: track organized subdirs, ignore archive/internal ──────
+docs/archive/
