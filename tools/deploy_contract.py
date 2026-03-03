@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Deploy a single WASM contract to MoltChain validator."""
+"""Deploy a single WASM contract to MoltChain validator.
+
+Uses system program instruction type 17 (consensus deploy):
+  data = [17 | code_length(4 LE) | code_bytes | init_data_json]
+  accounts = [deployer, treasury]
+"""
 
 import sys
 import os
 import json
+import struct
 import asyncio
 import hashlib
 from pathlib import Path
@@ -14,7 +20,7 @@ from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instru
 RPC_URL = os.environ.get("CUSTODY_MOLT_RPC_URL", "http://127.0.0.1:8899")
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
 DEPLOYER_PATH = KEYPAIR_DIR / "deployer.json"
-CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)
+SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)
 
 
 def load_or_create_deployer() -> Keypair:
@@ -36,7 +42,23 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
     return PublicKey(h[:32])
 
 
-async def deploy(wasm_path: str):
+def find_treasury_keypair() -> str:
+    """Discover treasury pubkey from genesis state."""
+    repo_root = Path(__file__).resolve().parent.parent
+    # Try common locations for treasury keypair
+    candidates = list(repo_root.glob("data/*/genesis-keys/treasury-*.json"))
+    for c in candidates:
+        try:
+            d = json.loads(c.read_text())
+            pk = d.get("pubkey", d.get("address", ""))
+            if pk:
+                return pk
+        except Exception:
+            continue
+    return ""
+
+
+async def deploy(wasm_path: str, init_data: dict = None):
     wasm_file = Path(wasm_path)
     if not wasm_file.exists():
         print(f"\u274c WASM file not found: {wasm_file}")
@@ -56,15 +78,30 @@ async def deploy(wasm_path: str):
         print(f"\u274c Cannot reach validator at {RPC_URL}: {e}")
         sys.exit(1)
 
+    # Resolve treasury pubkey
+    treasury_b58 = os.environ.get("TREASURY_PUBKEY", "") or find_treasury_keypair()
+    if not treasury_b58:
+        print("\u274c Cannot resolve treasury pubkey. Set TREASURY_PUBKEY env or ensure data/*/genesis-keys/treasury-*.json exists.")
+        sys.exit(1)
+    treasury_pubkey = PublicKey(treasury_b58)
+    print(f"\U0001f3e6 Treasury: {treasury_pubkey}")
+
     program_pubkey = derive_program_address(deployer.public_key(), wasm_bytes)
     print(f"\U0001f4cd Derived program address: {program_pubkey}")
 
-    # Build deploy instruction
-    payload = json.dumps({"Deploy": {"code": list(wasm_bytes), "init_data": []}})
+    # Build deploy instruction data:
+    # [17 | code_length(4 LE) | raw_wasm_bytes | optional_init_data_json]
+    data = bytearray()
+    data.append(17)  # instruction type: deploy
+    data.extend(struct.pack('<I', len(wasm_bytes)))  # code length, little-endian u32
+    data.extend(wasm_bytes)  # raw WASM bytecode
+    if init_data:
+        data.extend(json.dumps(init_data).encode('utf-8'))
+
     ix = Instruction(
-        program_id=CONTRACT_PROGRAM,
-        accounts=[deployer.public_key(), program_pubkey],
-        data=payload.encode(),
+        program_id=SYSTEM_PROGRAM,
+        accounts=[deployer.public_key(), treasury_pubkey],
+        data=bytes(data),
     )
 
     blockhash = await conn.get_recent_blockhash()
@@ -75,7 +112,7 @@ async def deploy(wasm_path: str):
         .build_and_sign(deployer)
     )
 
-    print("\U0001f680 Sending deploy transaction...")
+    print(f"\U0001f680 Sending deploy transaction ({len(data)} bytes)...")
     try:
         sig = await conn.send_transaction(tx)
         print(f"\u2705 Transaction sent \u2014 signature: {sig}")
@@ -98,6 +135,10 @@ async def deploy(wasm_path: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python deploy_contract.py <path/to/contract.wasm>")
+        print("Usage: python deploy_contract.py <path/to/contract.wasm> [--init-data '{\"symbol\":\"...\"}']")
         sys.exit(1)
-    asyncio.run(deploy(sys.argv[1]))
+    init = None
+    for i, a in enumerate(sys.argv):
+        if a == "--init-data" and i + 1 < len(sys.argv):
+            init = json.loads(sys.argv[i + 1])
+    asyncio.run(deploy(sys.argv[1], init))

@@ -4,6 +4,7 @@
 import sys
 import os
 import json
+import struct
 import asyncio
 import hashlib
 from pathlib import Path
@@ -15,7 +16,8 @@ from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instru
 RPC_URL = "http://127.0.0.1:8899"
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
 DEPLOYER_PATH = KEYPAIR_DIR / "deployer.json"
-CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)
+CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)  # for Call instructions
+SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)   # for Deploy instructions (type 17)
 
 CONTRACTS = [
     {"name": "MoltCoin",  "wasm": "moltcoin.wasm"},
@@ -56,15 +58,22 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
 
 
 async def deploy_contract(
-    conn: Connection, deployer: Keypair, name: str, wasm_bytes: bytes
+    conn: Connection, deployer: Keypair, name: str, wasm_bytes: bytes,
+    treasury_pubkey: PublicKey = None
 ) -> tuple:
-    """Deploy a single contract. Returns (signature, program_pubkey)."""
+    """Deploy a single contract via system program instruction type 17.
+    Returns (signature, program_pubkey)."""
     program_pubkey = derive_program_address(deployer.public_key(), wasm_bytes)
-    payload = json.dumps({"Deploy": {"code": list(wasm_bytes), "init_data": []}})
+    if treasury_pubkey is None:
+        treasury_pubkey = deployer.public_key()
+    data = bytearray()
+    data.append(17)
+    data.extend(struct.pack('<I', len(wasm_bytes)))
+    data.extend(wasm_bytes)
     ix = Instruction(
-        program_id=CONTRACT_PROGRAM,
-        accounts=[deployer.public_key(), program_pubkey],
-        data=payload.encode(),
+        program_id=SYSTEM_PROGRAM,
+        accounts=[deployer.public_key(), treasury_pubkey],
+        data=bytes(data),
     )
     blockhash = await conn.get_recent_blockhash()
     tx = (

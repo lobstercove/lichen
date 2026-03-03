@@ -29,6 +29,7 @@ Usage:
 import sys
 import os
 import json
+import struct
 import asyncio
 import hashlib
 from pathlib import Path
@@ -44,7 +45,8 @@ from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instru
 RPC_URL = "http://127.0.0.1:8899"
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
 DEPLOYER_PATH = KEYPAIR_DIR / "deployer.json"
-CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)   # contract runtime program address
+CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)   # contract runtime program address (for Call instructions)
+SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)       # system program (for Deploy instructions, type 17)
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "deploy-manifest.json"
 
 # Contracts in deployment order
@@ -115,15 +117,23 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
 
 
 async def deploy_contract(
-    conn: Connection, deployer: Keypair, name: str, wasm_bytes: bytes
+    conn: Connection, deployer: Keypair, name: str, wasm_bytes: bytes,
+    treasury_pubkey: PublicKey = None
 ) -> tuple:
-    """Deploy a single contract. Returns (signature, program_pubkey)."""
+    """Deploy a single contract via system program instruction type 17.
+    Returns (signature, program_pubkey)."""
     program_pubkey = derive_program_address(deployer.public_key(), wasm_bytes)
-    payload = json.dumps({"Deploy": {"code": list(wasm_bytes), "init_data": []}})
+    if treasury_pubkey is None:
+        treasury_pubkey = deployer.public_key()
+    # Instruction type 17: [17 | code_length(4 LE) | raw_wasm_bytes]
+    data = bytearray()
+    data.append(17)
+    data.extend(struct.pack('<I', len(wasm_bytes)))
+    data.extend(wasm_bytes)
     ix = Instruction(
-        program_id=CONTRACT_PROGRAM,
-        accounts=[deployer.public_key(), program_pubkey],
-        data=payload.encode(),
+        program_id=SYSTEM_PROGRAM,
+        accounts=[deployer.public_key(), treasury_pubkey],
+        data=bytes(data),
     )
     blockhash = await conn.get_recent_blockhash()
     tx = (
@@ -184,7 +194,8 @@ async def call_contract_raw(
 # ===========================================================================
 
 async def phase_deploy(
-    conn: Connection, deployer: Keypair, contracts: list, label: str
+    conn: Connection, deployer: Keypair, contracts: list, label: str,
+    treasury_pubkey: PublicKey = None
 ) -> Dict[str, PublicKey]:
     """Deploy a batch of contracts. Returns {name: pubkey}."""
     print(f"\n{'═' * 60}")
@@ -199,7 +210,7 @@ async def phase_deploy(
         wasm_bytes = wasm_path.read_bytes()
         print(f"\n  📦 {c['name']} — {len(wasm_bytes):,} bytes")
         try:
-            sig, pubkey = await deploy_contract(conn, deployer, c["name"], wasm_bytes)
+            sig, pubkey = await deploy_contract(conn, deployer, c["name"], wasm_bytes, treasury_pubkey)
             deployed[c["name"]] = pubkey
             print(f"     ✅ Deployed  sig={sig}")
             print(f"     📍 Address   {pubkey}")
@@ -551,23 +562,26 @@ async def main():
     all_addrs: Dict[str, PublicKey] = {}
 
     # ── Phase 1: Wrapped Tokens ──
-    addrs = await phase_deploy(conn, deployer, PHASE_1_TOKENS, "PHASE 1 — WRAPPED TOKEN CONTRACTS")
+    # Resolve treasury pubkey for deploy instruction accounts
+    treasury_pubkey = admin_pubkey
+
+    addrs = await phase_deploy(conn, deployer, PHASE_1_TOKENS, "PHASE 1 — WRAPPED TOKEN CONTRACTS", treasury_pubkey)
     all_addrs.update(addrs)
     await phase_initialize_tokens(conn, deployer, all_addrs, admin_pubkey)
 
     # ── Phase 2: DEX Core ──
-    addrs = await phase_deploy(conn, deployer, PHASE_2_DEX_CORE, "PHASE 2 — DEX CORE CONTRACTS")
+    addrs = await phase_deploy(conn, deployer, PHASE_2_DEX_CORE, "PHASE 2 — DEX CORE CONTRACTS", treasury_pubkey)
     all_addrs.update(addrs)
 
     # ── Phase 3: DEX Modules ──
-    addrs = await phase_deploy(conn, deployer, PHASE_3_DEX_MODULES, "PHASE 3 — DEX MODULE CONTRACTS")
+    addrs = await phase_deploy(conn, deployer, PHASE_3_DEX_MODULES, "PHASE 3 — DEX MODULE CONTRACTS", treasury_pubkey)
     all_addrs.update(addrs)
 
     # Initialize DEX + wire everything together
     await phase_initialize_dex(conn, deployer, all_addrs, admin_pubkey)
 
     # ── Phase 4: Prediction Market ──
-    addrs = await phase_deploy(conn, deployer, PHASE_4_PREDICTION, "PHASE 4 — PREDICTION MARKET")
+    addrs = await phase_deploy(conn, deployer, PHASE_4_PREDICTION, "PHASE 4 — PREDICTION MARKET", treasury_pubkey)
     all_addrs.update(addrs)
 
     # Initialize prediction market + wire cross-references

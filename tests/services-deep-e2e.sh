@@ -116,8 +116,9 @@ resolve_contract_id_by_name() {
 import json,sys,re
 kw=sys.argv[1]
 raw=sys.argv[2]
-def norm(v:str)->str:
-    return re.sub(r'[_\-\s]+','',v.lower())
+def norm(v)->str:
+    if not v: return ""
+    return re.sub(r'[_\-\s]+','',str(v).lower())
 # Also try stripping "token" suffix for wrapped token directories (musd_token → musd)
 kw_short=re.sub(r'token$','',kw)
 try:

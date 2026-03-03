@@ -117,8 +117,8 @@ console.log('\n── M-2: profile.js XSS fix ──');
 assert(profileJs.includes('escapeHtml('), 'M-2.1  escapeHtml helper used');
 assert(profileJs.includes('function safeImageUrl('), 'M-2.2  safeImageUrl function added');
 
-// renderNFTGrid escaping
-assert(profileJs.includes("escapeHtml(nft.id || nft.token || '')"), 'M-2.3  nft.id escaped in onclick');
+// renderNFTGrid escaping — nft.id in hidden onclick uses encodeURIComponent (URL context)
+assert(profileJs.includes("encodeURIComponent(nft.id || nft.token || '')"), 'M-2.3  nft.id escaped in onclick');
 assert(profileJs.includes("escapeHtml(nft.collection || nft.collection_name || 'Unknown')"), 'M-2.4  nft.collection escaped');
 assert(profileJs.includes("escapeHtml(name)"), 'M-2.5  nft name escaped');
 assert(profileJs.includes("escapeHtml(price)"), 'M-2.6  nft price escaped');
@@ -155,8 +155,8 @@ console.log('\n── M-3: browse.js list view XSS fix ──');
 
 assert(browseJs.includes('escapeHtml('), 'M-3.1  browse.js uses escapeHtml');
 
-// List view escaping — search in the full browse.js source
-assert(browseJs.includes("escapeHtml(nft.id)"), 'M-3.2  list view nft.id escaped in onclick');
+// List view escaping — search in the full browse.js source (nft.id in onclick uses escapeJsAttr)
+assert(browseJs.includes("escapeJsAttr(nft.id)") || browseJs.includes("encodeURIComponent(nft.id)"), 'M-3.2  list view nft.id escaped in onclick');
 assert(browseJs.includes("escapeHtml(nft.collection || 'Unknown')"), 'M-3.3  list view nft.collection escaped');
 assert(browseJs.includes("escapeHtml(nft.name || 'NFT #'"), 'M-3.4  list view nft.name escaped (NFT # fallback)');
 assert(browseJs.includes("escapeHtml(priceInMolt)"), 'M-3.5  list view price escaped');
@@ -276,12 +276,12 @@ console.log('\n── Cross-cutting verification ──');
 
 // marketplace.js: all 4 render functions should use escapeHtml
 const mkTrendingSection = marketplaceJs.slice(marketplaceJs.indexOf('loadTrendingNFTs'));
-assert(mkTrendingSection.includes("escapeHtml(nft.id)"), 'CC-1  loadTrendingNFTs nft.id is escaped');
+assert(mkTrendingSection.includes("escapeJsAttr(nft.id)") || mkTrendingSection.includes("escapeHtml(nft.id)"), 'CC-1  loadTrendingNFTs nft.id is escaped');
 assert(mkTrendingSection.includes("escapeHtml(nft.collection)"), 'CC-2  loadTrendingNFTs nft.collection is escaped');
 
 // browse.js grid view (already fixed in prior audit) still works
 const gridViewSection = browseJs.slice(browseJs.indexOf("currentView === 'grid'"));
-assert(gridViewSection.includes("escapeHtml(nft.id)"), 'CC-3  grid view nft.id is escaped');
+assert(gridViewSection.includes("escapeJsAttr(nft.id)") || gridViewSection.includes("escapeHtml(nft.id)"), 'CC-3  grid view nft.id is escaped');
 assert(gridViewSection.includes("escapeHtml(nft.collection || 'Unknown')"), 'CC-4  grid view nft.collection is escaped');
 
 // item.js renderNFTDetail uses escapeHtml for image src

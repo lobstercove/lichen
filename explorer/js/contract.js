@@ -315,9 +315,10 @@ async function loadContract() {
 
         const metaSection = document.getElementById('metadataSection');
         const metaGrid = document.getElementById('metadataGrid');
+        const INTERNAL_KEYS = ['icon_class', 'genesis_deploy', 'wasm_size', 'is_native'];
         const skipKeys = isToken
-            ? ['decimals', 'total_supply', 'supply', 'mintable', 'burnable', ...PROFILE_KEYS]
-            : [...PROFILE_KEYS];
+            ? ['decimals', 'total_supply', 'supply', 'mintable', 'burnable', ...PROFILE_KEYS, ...INTERNAL_KEYS]
+            : [...PROFILE_KEYS, ...INTERNAL_KEYS];
         const entries = Object.entries(registry?.metadata || {}).filter(([k]) => !skipKeys.includes(k));
 
         if (entries.length > 0) {
