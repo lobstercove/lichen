@@ -24,6 +24,7 @@ __all__ = [
     "transfer_instruction",
 ]
 
-# Default URLs
-DEFAULT_RPC_URL = "http://localhost:8899"
-DEFAULT_WS_URL = "ws://localhost:8900"
+# Default URLs (override with MOLTCHAIN_RPC_URL / MOLTCHAIN_WS_URL env vars)
+import os as _os
+DEFAULT_RPC_URL = _os.environ.get("MOLTCHAIN_RPC_URL", "http://localhost:8899")
+DEFAULT_WS_URL = _os.environ.get("MOLTCHAIN_WS_URL", "ws://localhost:8900")

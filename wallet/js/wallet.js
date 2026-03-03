@@ -10,21 +10,71 @@ function fmtUsd(value, sym = '$') {
     return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
-const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
+// Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
+// Fallback values used ONLY when RPC is unreachable (never displayed as "live").
+const _OFFLINE_FALLBACK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
+const livePrices = { MOLT: 0, mUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0 };
+let _pricesLoaded = false;
+
+async function fetchLivePrices() {
+    try {
+        const result = await rpc.call('getDexPairs', []);
+        if (result && Array.isArray(result)) {
+            for (const pair of result) {
+                const base = (pair.base || '').toUpperCase();
+                if (pair.price && livePrices.hasOwnProperty(base)) {
+                    livePrices[base] = parseFloat(pair.price) || 0;
+                }
+            }
+            // MOLT price: look for MOLT/mUSD pair
+            const moltPair = result.find(p =>
+                (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD'
+            );
+            if (moltPair && moltPair.price) livePrices.MOLT = parseFloat(moltPair.price) || 0;
+            _pricesLoaded = true;
+        }
+    } catch {
+        // RPC unavailable — try oracle endpoint as backup
+        try {
+            const oracleResult = await rpc.call('getOraclePrices', []);
+            if (oracleResult && typeof oracleResult === 'object') {
+                for (const [sym, price] of Object.entries(oracleResult)) {
+                    const key = sym.toUpperCase();
+                    if (livePrices.hasOwnProperty(key)) {
+                        livePrices[key] = parseFloat(price) || 0;
+                    }
+                }
+                _pricesLoaded = true;
+            }
+        } catch {
+            // Both sources unavailable — use offline fallbacks
+            if (!_pricesLoaded) {
+                Object.assign(livePrices, _OFFLINE_FALLBACK_PRICES);
+            }
+        }
+    }
+}
+
+// Refresh prices every 30 seconds
+setInterval(fetchLivePrices, 30000);
+
+function getPrice(symbol) {
+    return livePrices[symbol] || _OFFLINE_FALLBACK_PRICES[symbol] || 0;
+}
 
 // Network configuration
 const NETWORKS = {
     'mainnet': 'https://rpc.moltchain.network',
     'testnet': 'https://testnet-rpc.moltchain.network',
     'local-testnet': 'http://localhost:8899',
-    'local-mainnet': 'http://localhost:8899'
+    'local-mainnet': 'http://localhost:9899'
 };
 
 const WS_ENDPOINTS = {
     'mainnet': 'wss://rpc.moltchain.network/ws',
     'testnet': 'wss://testnet-rpc.moltchain.network/ws',
     'local-testnet': 'ws://localhost:8900',
-    'local-mainnet': 'ws://localhost:8900'
+    'local-mainnet': 'ws://localhost:9900'
 };
 
 function getSelectedNetwork() {
@@ -188,8 +238,6 @@ function handleBridgeLockEvent(data) {
     // Check if this lock is relevant to our wallet (recipient matches)
     if (data.recipient !== wallet.address) return;
     
-    // console.log('[Bridge] Lock event for our wallet:', data);
-
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
@@ -206,8 +254,6 @@ function handleBridgeMintEvent(data) {
     // Check if this mint is for our wallet
     if (data.recipient !== wallet.address) return;
     
-    // console.log('[Bridge] Mint event for our wallet:', data);
-
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
@@ -444,7 +490,6 @@ async function loadTokenRegistry() {
                         TOKEN_REGISTRY[symbol].address = addr;
                     }
                 }
-                // console.log('Token registry loaded from manifest');
             }
         }
     } catch (e) {
@@ -461,7 +506,6 @@ async function loadTokenRegistry() {
                     TOKEN_REGISTRY[symbol].address = addr;
                 }
             }
-            // console.log('Token registry loaded from localStorage');
         }
     } catch (e) {
         console.warn('Could not load stored token addresses:', e);
@@ -534,7 +578,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const welcomeContainer = document.querySelector('.welcome-container');
     if (welcomeContainer) _originalWelcomeHTML = welcomeContainer.innerHTML;
 
-    // console.log('MoltWallet loaded');
     loadWalletState();
     loadTokenRegistry();
     checkWalletStatus();
@@ -620,7 +663,7 @@ async function unlockWallet() {
     const password = document.getElementById('unlockPassword').value;
     
     if (!password) {
-        alert('Please enter password');
+        showToast('Please enter password', 'error');
         return;
     }
     
@@ -637,7 +680,7 @@ async function unlockWallet() {
         resetLockTimer();
         
     } catch (error) {
-        alert('Incorrect password');
+        showToast('Incorrect password', 'error');
         document.getElementById('unlockPassword').value = '';
     }
 }
@@ -687,12 +730,12 @@ async function createWalletStep2() {
     const confirm = document.getElementById('confirmPassword').value;
     
     if (!password || password.length < 8) {
-        alert('Password must be at least 8 characters');
+        showToast('Password must be at least 8 characters', 'error');
         return;
     }
     
     if (password !== confirm) {
-        alert('Passwords do not match');
+        showToast('Passwords do not match', 'error');
         return;
     }
     
@@ -823,7 +866,7 @@ function selectWord(word) {
         
         if (!correct) {
             setTimeout(() => {
-                alert('Words are in wrong order. Try again!');
+                showToast('Words are in wrong order. Try again!', 'error');
                 createWalletStep3();
             }, 500);
         }
@@ -967,7 +1010,7 @@ async function importWalletSeed() {
     const password = document.getElementById('importPassword').value;
     
     if (!MoltCrypto.isValidMnemonic(seed)) {
-        alert('Invalid seed phrase');
+        showToast('Invalid seed phrase', 'error');
         return;
     }
     
@@ -975,13 +1018,13 @@ async function importWalletSeed() {
     if (MoltCrypto.isValidMnemonicAsync) {
         const checksumValid = await MoltCrypto.isValidMnemonicAsync(seed);
         if (!checksumValid) {
-            alert('Invalid seed phrase — BIP39 checksum mismatch. Please check your words and try again.');
+            showToast('Invalid seed phrase — BIP39 checksum mismatch. Please check your words and try again.', 'error');
             return;
         }
     }
     
     if (!password || password.length < 8) {
-        alert('Password must be at least 8 characters');
+        showToast('Password must be at least 8 characters', 'error');
         return;
     }
     
@@ -1019,18 +1062,18 @@ async function importWalletPrivateKey() {
     // Accept 64 hex (32-byte seed) or 128 hex (64-byte secret key, take first 32 bytes)
     let normalizedKey = privateKey.replace(/^0x/, '');
     if (!normalizedKey || !/^[0-9a-fA-F]+$/.test(normalizedKey)) {
-        alert('Invalid private key format (must be hex characters)');
+        showToast('Invalid private key format (must be hex characters)', 'error');
         return;
     }
     if (normalizedKey.length === 128) {
         normalizedKey = normalizedKey.slice(0, 64); // Take 32-byte seed from 64-byte secret key
     } else if (normalizedKey.length !== 64) {
-        alert('Invalid private key length (must be 64 or 128 hex characters)');
+        showToast('Invalid private key length (must be 64 or 128 hex characters)', 'error');
         return;
     }
     
     if (!password || password.length < 8) {
-        alert('Password must be at least 8 characters');
+        showToast('Password must be at least 8 characters', 'error');
         return;
     }
     
@@ -1064,7 +1107,7 @@ async function importWalletJson() {
     const password = document.getElementById('importPasswordJson').value;
     
     if (!file) {
-        alert('Please select a JSON file');
+        showToast('Please select a JSON file', 'error');
         return;
     }
     
@@ -1074,7 +1117,7 @@ async function importWalletJson() {
             const keystore = JSON.parse(e.target.result);
             
             if (!keystore.secretKey && !keystore.privateKey) {
-                alert('Invalid keystore format: no key data found');
+                showToast('Invalid keystore format: no key data found', 'error');
                 return;
             }
             
@@ -1097,7 +1140,7 @@ async function importWalletJson() {
             const address = MoltCrypto.publicKeyToAddress(keypair.publicKey);
             
             if (!password || password.length < 8) {
-                alert('Password must be at least 8 characters');
+                showToast('Password must be at least 8 characters', 'error');
                 return;
             }
             
@@ -1123,7 +1166,7 @@ async function importWalletJson() {
             // Auto-register EVM address for MetaMask compatibility (non-blocking)
             registerEvmAddress(wallet, password);
         } catch (error) {
-            alert('Invalid JSON file: ' + error.message);
+            showToast('Invalid JSON file: ' + error.message, 'error');
         }
     };
     reader.readAsText(file);
@@ -1134,6 +1177,8 @@ async function showDashboard() {
     showScreen('walletDashboard');
     setupDashboardTabs();
     setupWalletSelector();
+    // Fetch live prices before rendering balances
+    await fetchLivePrices();
     await refreshBalance();
     await loadAssets();
     await loadActivity();
@@ -1304,10 +1349,10 @@ async function refreshBalance() {
         // Fetch all token balances in parallel
         const tokenBalances = await getAllTokenBalances(wallet.address);
         
-        // Calculate total USD value (using mock prices)
-        let totalUsd = molt * MOCK_PRICES.MOLT;
+        // Calculate total USD value from live prices
+        let totalUsd = molt * getPrice('MOLT');
         for (const [symbol, bal] of Object.entries(tokenBalances)) {
-            totalUsd += bal * (MOCK_PRICES[symbol] || 0);
+            totalUsd += bal * getPrice(symbol);
         }
         
         // Use saved display settings
@@ -1362,7 +1407,7 @@ async function loadAssets() {
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
     
-    // Mock prices for display (using module-level MOCK_PRICES)
+    // Live prices for display
     const settings = walletState.settings || {};
     const decimals = settings.decimals || 6;
     const currency = settings.currency || 'USD';
@@ -1373,7 +1418,7 @@ async function loadAssets() {
     let html = '';
     
     // MOLT (always first, always shown)
-    const moltUsd = molt * MOCK_PRICES.MOLT;
+    const moltUsd = molt * getPrice('MOLT');
     html += `
         <div class="asset-item" style="cursor: default;">
             <div class="asset-icon asset-icon-molt"><img src="${MOLT_LOGO_URL}" alt="MOLT" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
@@ -1391,7 +1436,7 @@ async function loadAssets() {
     // Wrapped tokens (only show when balance > 0)
     for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
         const bal = tokenBalances[symbol] || 0;
-        const usdVal = bal * (MOCK_PRICES[symbol] || 0);
+        const usdVal = bal * getPrice(symbol);
         
         if (bal > 0) {
             const tokenIcon = token.logoUrl
@@ -2962,7 +3007,6 @@ async function registerEvmAddress(wallet, password) {
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
         await rpc.sendTransaction(txBase64);
-        // console.log('EVM address registered:', evmAddress, '→', wallet.address);
 
         // 6) Cache after successful registration
         try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
@@ -3027,12 +3071,12 @@ async function confirmSend() {
     const selectedToken = document.getElementById('sendToken')?.value || 'MOLT';
     
     if (!MoltCrypto.isValidAddress(to)) {
-        alert('Invalid recipient address');
+        showToast('Invalid recipient address', 'error');
         return;
     }
     
     if (!amount || amount <= 0) {
-        alert('Invalid amount');
+        showToast('Invalid amount', 'error');
         return;
     }
     
@@ -4280,8 +4324,6 @@ showSettings = function() {
     _originalShowSettings();
     setTimeout(loadSettingsValues, 100); // Small delay to ensure modal is rendered
 };
-
-// console.log('MoltWallet fully initialized');
 
 // ═══════════════════════════════════════════════════════════════════════
 // Chain Status Bar — live block height poller

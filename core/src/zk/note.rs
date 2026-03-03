@@ -162,10 +162,12 @@ impl Note {
 
         // ChaCha20-Poly1305 authenticated encryption
         let cipher =
-            ChaCha20Poly1305::new_from_slice(&encryption_key).expect("key length is 32 bytes");
+            ChaCha20Poly1305::new_from_slice(&encryption_key)
+                .unwrap_or_else(|e| panic!("FATAL: ChaCha20 key init with 32-byte key failed: {}", e));
         let ciphertext = cipher
             .encrypt(nonce, note_bytes.as_ref())
-            .expect("encryption should not fail");
+            .map_err(|_| "note encryption failed")
+            .expect("ChaCha20-Poly1305 encrypt of well-formed plaintext");
 
         EncryptedNote {
             ciphertext,

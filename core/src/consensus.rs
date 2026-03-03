@@ -1647,8 +1647,7 @@ impl StakePool {
         fingerprint: [u8; 32],
     ) -> Result<(u64, bool), String> {
         // If validator already exists, just update amount (no new bootstrap)
-        if self.stakes.contains_key(&validator) {
-            let stake_info = self.stakes.get_mut(&validator).unwrap();
+        if let Some(stake_info) = self.stakes.get_mut(&validator) {
             // AUDIT-FIX A-2: Enforce MAX_VALIDATOR_STAKE cap
             let new_total = stake_info.amount.saturating_add(amount);
             if new_total > MAX_VALIDATOR_STAKE {

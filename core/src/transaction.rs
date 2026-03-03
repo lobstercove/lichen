@@ -35,9 +35,20 @@ impl Message {
         }
     }
 
-    /// Serialize for signing
+    /// Serialize for signing.
+    ///
+    /// Panics only on OOM or bincode internal error (neither expected for a
+    /// well-formed Message). Callers that need fallibility should use
+    /// `try_serialize()` instead.
     pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("Message serialization failed — data corruption")
+        bincode::serialize(self).unwrap_or_else(|e| {
+            panic!("FATAL: Message serialization failed ({}). This indicates data corruption or OOM.", e)
+        })
+    }
+
+    /// Fallible serialization for contexts that can propagate errors.
+    pub fn try_serialize(&self) -> Result<Vec<u8>, String> {
+        bincode::serialize(self).map_err(|e| format!("Message serialization failed: {}", e))
     }
 
     /// Hash for signing

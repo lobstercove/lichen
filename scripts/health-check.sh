@@ -2,7 +2,7 @@
 # MoltChain Validator Health Check
 # Monitors validator status and alerts on issues
 
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:9000}"
+RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
 ALERT_EMAIL="${MOLTCHAIN_ALERT_EMAIL:-}"
 SLACK_WEBHOOK="${MOLTCHAIN_SLACK_WEBHOOK:-}"
 CHECK_INTERVAL=30

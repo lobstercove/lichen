@@ -1129,24 +1129,32 @@ pub fn place_order(
             let call = CrossCall::new(Address(token_addr), "balance_of", bal_args)
                 .with_value(0);
             let bal_result = call_contract(call);
-            // If cross-contract call succeeded, parse the returned balance bytes
-            // and validate against the required amount
-            if let Ok(bal_bytes) = bal_result {
-                if bal_bytes.len() >= 8 {
-                    let balance = u64::from_le_bytes([
-                        bal_bytes[0], bal_bytes[1], bal_bytes[2], bal_bytes[3],
-                        bal_bytes[4], bal_bytes[5], bal_bytes[6], bal_bytes[7],
-                    ]);
-                    if balance > 0 {
+            // AUDIT-FIX CON-11: Fail-closed balance validation.
+            // If cross-contract call fails, reject the trade (fail-closed).
+            match bal_result {
+                Ok(bal_bytes) => {
+                    if bal_bytes.len() >= 8 {
+                        let balance = u64::from_le_bytes([
+                            bal_bytes[0], bal_bytes[1], bal_bytes[2], bal_bytes[3],
+                            bal_bytes[4], bal_bytes[5], bal_bytes[6], bal_bytes[7],
+                        ]);
                         let required = if side == SIDE_BUY { notional } else { quantity };
                         if balance < required {
                             reentrancy_exit();
                             return 11; // Insufficient token balance
                         }
+                    } else {
+                        log_info("Balance query returned insufficient data — rejecting trade");
+                        reentrancy_exit();
+                        return 11;
                     }
                 }
+                Err(_) => {
+                    log_info("Balance query cross-contract call failed — rejecting trade");
+                    reentrancy_exit();
+                    return 11;
+                }
             }
-            // If call failed or returned empty, cross-contract calls not yet supported — allow trade (fail-open)
         }
     }
 
@@ -1550,7 +1558,13 @@ fn fill_at_price_level(
                         fee_args.extend_from_slice(&u64_to_bytes(taker_fee));
                         let call = CrossCall::new(Address(quote_addr), "transfer_fee", fee_args)
                             .with_value(0);
-                        let _ = call_contract(call); // best-effort
+                        // AUDIT-FIX CON-12: Log fee transfer failures instead of silently ignoring
+                        match call_contract(call) {
+                            Ok(_) => {},
+                            Err(_) => {
+                                log_info("WARNING: Fee transfer to treasury failed — trade proceeds but fee uncollected");
+                            }
+                        }
                     }
                 }
             }
@@ -1619,7 +1633,10 @@ fn fill_at_price_level(
                 ana_args.extend_from_slice(taker);
                 let call = CrossCall::new(Address(analytics_addr), "record_trade", ana_args)
                     .with_value(0);
-                let _ = call_contract(call); // best-effort: don't fail trade if analytics unavailable
+                // Analytics recording is non-critical — log failures but don't block trade
+                if call_contract(call).is_err() {
+                    log_info("Analytics record_trade call failed — trade still valid");
+                }
             }
         }
 
@@ -2406,6 +2423,9 @@ mod tests {
             ),
             0
         );
+        // CON-11 fix: Balance check is now fail-closed. Mock a large balance so
+        // cross-contract balance queries succeed in unit tests.
+        test_mock::set_cross_call_response(Some(u64::MAX.to_le_bytes().to_vec()));
         (admin, 1)
     }
 

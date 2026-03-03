@@ -15,6 +15,11 @@ fn setup() -> [u8; 32] {
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_slot(1000);
     assert_eq!(initialize(admin.as_ptr()), 0);
+    // Configure mUSD + self addresses so transfer_musd_out succeeds (fail-closed audit fix)
+    moltchain_sdk::test_mock::set_caller(admin);
+    set_musd_address(admin.as_ptr(), &[0xAAu8; 32] as *const u8);
+    moltchain_sdk::test_mock::set_caller(admin);
+    set_self_address(admin.as_ptr(), &[0xBBu8; 32] as *const u8);
     admin
 }
 

@@ -780,6 +780,31 @@ impl RpcClient {
 
         Ok(contracts)
     }
+
+    /// Resolve a symbol (e.g., "DAO", "MOLT", "DEX") to its on-chain contract address
+    /// via the symbol registry. Returns None if the symbol is not registered.
+    pub async fn resolve_symbol(&self, symbol: &str) -> Result<Option<Pubkey>> {
+        let params = json!([symbol]);
+        let result = self.call("getSymbolRegistry", params).await;
+        match result {
+            Ok(val) => {
+                if let Some(program) = val.get("program").and_then(|v| v.as_str()) {
+                    let bytes = hex::decode(program)
+                        .map_err(|e| anyhow::anyhow!("Invalid hex in symbol registry: {}", e))?;
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Ok(Some(Pubkey::new(arr)))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 fn base64_encode(data: &[u8]) -> String {

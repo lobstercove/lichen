@@ -390,6 +390,13 @@ pub(crate) async fn require_single_validator(
             ),
         });
     }
+    // AUDIT-FIX RPC-03: Log when single-validator direct-write endpoints are used.
+    // These bypass consensus and should only be used in devnet/testing.
+    warn!(
+        "DEVNET-ONLY: {} called via direct state write (single-validator mode). \
+         This bypasses consensus and must not be used in production.",
+        endpoint
+    );
     Ok(())
 }
 

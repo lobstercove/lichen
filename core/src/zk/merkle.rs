@@ -120,10 +120,17 @@ impl MerkleTree {
         current_level[0]
     }
 
-    /// Rebuild the path from a leaf index to the root
+    /// Rebuild the path from a leaf index to the root.
+    ///
+    /// AUDIT-FIX CORE-03: This is intentionally a no-op. The tree uses full
+    /// O(n) recomputation via `root()` on demand, which is acceptable for
+    /// privacy-set trees where leaf count is bounded by shielded pool depth.
+    /// Incremental path updates add complexity without meaningful gain for
+    /// trees of depth TREE_DEPTH (20).
+    #[allow(dead_code)]
     fn rebuild_path(&mut self, _leaf_index: usize) {
-        // For efficiency, we recompute the full root on demand
-        // A production implementation would do incremental updates
+        // Full recomputation in root() — O(leaves) per call.
+        // See root() for the bottom-up rebuild.
     }
 
     /// Generate a Merkle proof for the leaf at the given index

@@ -1616,6 +1616,16 @@ async fn main() -> Result<()> {
         // GOVERNANCE COMMANDS
         // ====================================================================
         Commands::Gov(gov_cmd) => {
+            // Resolve DAO contract address from on-chain symbol registry.
+            // Falls back to well-known marker [0xDA; 32] if registry unavailable.
+            let dao_addr = match client.resolve_symbol("DAO").await {
+                Ok(Some(addr)) => addr,
+                _ => {
+                    eprintln!("⚠️  DAO contract not found in symbol registry, using well-known address");
+                    moltchain_core::Pubkey([0xDA; 32])
+                }
+            };
+
             match gov_cmd {
                 GovCommands::Propose {
                     title,
@@ -1661,7 +1671,6 @@ async fn main() -> Result<()> {
                     data.extend_from_slice(description.as_bytes());
 
                     // MoltyDAO contract address should be well-known
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]); // DAO marker address
 
                     let signature = client
                         .call_contract(
@@ -1699,7 +1708,6 @@ async fn main() -> Result<()> {
                     data.extend_from_slice(&proposal_id.to_le_bytes());
                     data.push(vote_value);
 
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let signature = client
                         .call_contract(&voter, &dao_addr, "vote".to_string(), data, 0)
                         .await?;
@@ -1713,7 +1721,6 @@ async fn main() -> Result<()> {
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     println!();
 
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let filter = if all { "all" } else { "active" };
                     let data = filter.as_bytes().to_vec();
 
@@ -1742,7 +1749,6 @@ async fn main() -> Result<()> {
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     println!();
 
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let data = proposal_id.to_le_bytes().to_vec();
 
                     // I-2: Error instead of querying with a random keypair
@@ -1778,7 +1784,6 @@ async fn main() -> Result<()> {
                     let mut data = Vec::new();
                     data.extend_from_slice(&proposal_id.to_le_bytes());
 
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let signature = client
                         .call_contract(
                             &executor,
@@ -1803,7 +1808,6 @@ async fn main() -> Result<()> {
                     let mut data = Vec::new();
                     data.extend_from_slice(&proposal_id.to_le_bytes());
 
-                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let signature = client
                         .call_contract(&vetoer, &dao_addr, "veto_proposal".to_string(), data, 0)
                         .await?;

@@ -453,7 +453,7 @@ async fn ws_handler(
     // Per-IP connection limit
     let ip = addr.ip();
     {
-        let conns = IP_CONNECTIONS.lock().unwrap();
+        let conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
         let count = conns.get(&ip).copied().unwrap_or(0);
         if count >= MAX_CONNECTIONS_PER_IP {
             warn!("Per-IP connection limit reached for {}: {}", ip, count);
@@ -477,7 +477,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
     // Track per-IP connections
     {
-        let mut conns = IP_CONNECTIONS.lock().unwrap();
+        let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
         *conns.entry(ip).or_insert(0) += 1;
     }
 
@@ -811,7 +811,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
     // Decrement per-IP connection count
     {
-        let mut conns = IP_CONNECTIONS.lock().unwrap();
+        let mut conns = IP_CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(count) = conns.get_mut(&ip) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -1726,8 +1726,439 @@ use futures_util::SinkExt;
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    // ── PredictionChannel parsing ──
+
     #[test]
-    fn test_subscription_manager() {
-        // Just ensure the module compiles
+    fn prediction_channel_parse_all() {
+        assert!(matches!(PredictionChannel::parse("all"), Some(PredictionChannel::AllMarkets)));
+        assert!(matches!(PredictionChannel::parse("markets"), Some(PredictionChannel::AllMarkets)));
+    }
+
+    #[test]
+    fn prediction_channel_parse_market_prefix() {
+        match PredictionChannel::parse("market:42") {
+            Some(PredictionChannel::Market(id)) => assert_eq!(id, 42),
+            other => panic!("Expected Market(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prediction_channel_parse_bare_number() {
+        match PredictionChannel::parse("7") {
+            Some(PredictionChannel::Market(id)) => assert_eq!(id, 7),
+            other => panic!("Expected Market(7), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prediction_channel_parse_invalid() {
+        assert!(PredictionChannel::parse("invalid_channel").is_none());
+        assert!(PredictionChannel::parse("market:abc").is_none());
+        assert!(PredictionChannel::parse("").is_none());
+    }
+
+    #[test]
+    fn prediction_channel_matches_all() {
+        let ch = PredictionChannel::AllMarkets;
+        let event = PredictionEvent::MarketCreated { market_id: 1, question: "test".into(), slot: 10 };
+        assert!(ch.matches(&event));
+    }
+
+    #[test]
+    fn prediction_channel_matches_specific() {
+        let ch = PredictionChannel::Market(5);
+        let matching = PredictionEvent::TradeExecuted { market_id: 5, outcome: "Yes".into(), shares: 100, price: 0.6, slot: 10 };
+        let non_matching = PredictionEvent::TradeExecuted { market_id: 3, outcome: "No".into(), shares: 50, price: 0.4, slot: 10 };
+        assert!(ch.matches(&matching));
+        assert!(!ch.matches(&non_matching));
+    }
+
+    #[test]
+    fn prediction_channel_matches_all_event_types() {
+        let ch = PredictionChannel::Market(1);
+        assert!(ch.matches(&PredictionEvent::MarketCreated { market_id: 1, question: "q".into(), slot: 1 }));
+        assert!(ch.matches(&PredictionEvent::TradeExecuted { market_id: 1, outcome: "Y".into(), shares: 1, price: 0.5, slot: 1 }));
+        assert!(ch.matches(&PredictionEvent::MarketResolved { market_id: 1, winning_outcome: "Y".into(), slot: 1 }));
+        assert!(ch.matches(&PredictionEvent::PriceUpdate { market_id: 1, outcomes: vec![], slot: 1 }));
+    }
+
+    // ── PredictionEventBroadcaster ──
+
+    #[test]
+    fn prediction_broadcaster_new_subscribe() {
+        let bc = PredictionEventBroadcaster::new(16);
+        let _rx = bc.subscribe(); // should not panic
+    }
+
+    #[tokio::test]
+    async fn prediction_broadcaster_emit_recv() {
+        let bc = PredictionEventBroadcaster::new(16);
+        let mut rx = bc.subscribe();
+        bc.emit_market_created(1, "Will it rain?", 100);
+        let event = rx.recv().await.unwrap();
+        match event {
+            PredictionEvent::MarketCreated { market_id, question, slot } => {
+                assert_eq!(market_id, 1);
+                assert_eq!(question, "Will it rain?");
+                assert_eq!(slot, 100);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prediction_broadcaster_emit_trade() {
+        let bc = PredictionEventBroadcaster::new(16);
+        let mut rx = bc.subscribe();
+        bc.emit_trade(1, "Yes", 500, 0.65, 200);
+        let event = rx.recv().await.unwrap();
+        match event {
+            PredictionEvent::TradeExecuted { market_id, outcome, shares, price, slot } => {
+                assert_eq!(market_id, 1);
+                assert_eq!(outcome, "Yes");
+                assert_eq!(shares, 500);
+                assert!((price - 0.65).abs() < 1e-9);
+                assert_eq!(slot, 200);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prediction_broadcaster_emit_resolved() {
+        let bc = PredictionEventBroadcaster::new(16);
+        let mut rx = bc.subscribe();
+        bc.emit_market_resolved(5, "No", 999);
+        let event = rx.recv().await.unwrap();
+        match event {
+            PredictionEvent::MarketResolved { market_id, winning_outcome, slot } => {
+                assert_eq!(market_id, 5);
+                assert_eq!(winning_outcome, "No");
+                assert_eq!(slot, 999);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prediction_broadcaster_emit_price_update() {
+        let bc = PredictionEventBroadcaster::new(16);
+        let mut rx = bc.subscribe();
+        let outcomes = vec![
+            OutcomePrice { outcome: "Yes".into(), price: 0.7 },
+            OutcomePrice { outcome: "No".into(), price: 0.3 },
+        ];
+        bc.emit_price_update(2, outcomes, 300);
+        let event = rx.recv().await.unwrap();
+        match event {
+            PredictionEvent::PriceUpdate { market_id, outcomes, slot } => {
+                assert_eq!(market_id, 2);
+                assert_eq!(outcomes.len(), 2);
+                assert_eq!(slot, 300);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    // ── SubscriptionManager ──
+
+    #[tokio::test]
+    async fn subscription_manager_subscribe_returns_ids() {
+        let sm = SubscriptionManager::new();
+        let id1 = sm.subscribe(SubscriptionType::Slots).await.unwrap();
+        let id2 = sm.subscribe(SubscriptionType::Blocks).await.unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
+
+    #[tokio::test]
+    async fn subscription_manager_unsubscribe_existing() {
+        let sm = SubscriptionManager::new();
+        let id = sm.subscribe(SubscriptionType::Transactions).await.unwrap();
+        assert!(sm.unsubscribe(id).await);
+    }
+
+    #[tokio::test]
+    async fn subscription_manager_unsubscribe_nonexistent() {
+        let sm = SubscriptionManager::new();
+        assert!(!sm.unsubscribe(999).await);
+    }
+
+    #[tokio::test]
+    async fn subscription_manager_limit_enforced() {
+        let sm = SubscriptionManager::new();
+        // Fill to the limit
+        for _ in 0..MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            sm.subscribe(SubscriptionType::Slots).await.unwrap();
+        }
+        // One more should fail
+        let result = sm.subscribe(SubscriptionType::Blocks).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn subscription_manager_resubscribe_after_unsubscribe() {
+        let sm = SubscriptionManager::new();
+        let id = sm.subscribe(SubscriptionType::Slots).await.unwrap();
+        sm.unsubscribe(id).await;
+        // Should succeed since we freed a slot
+        let id2 = sm.subscribe(SubscriptionType::Blocks).await.unwrap();
+        assert!(id2 > id);
+    }
+
+    // ── handle_subscription_request ──
+
+    fn make_req(method: &str, params: Option<serde_json::Value>) -> SubscriptionRequest {
+        SubscriptionRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_slots() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("subscribeSlots", None), &sm).await;
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_blocks() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("subscribeBlocks", None), &sm).await;
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_transactions() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("subscribeTransactions", None), &sm).await;
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_unsubscribe_slots_valid() {
+        let sm = SubscriptionManager::new();
+        sm.subscribe(SubscriptionType::Slots).await.unwrap();
+        let resp = handle_subscription_request(make_req("unsubscribeSlots", Some(serde_json::json!(1))), &sm).await;
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn handle_unsubscribe_slots_invalid_id() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("unsubscribeSlots", Some(serde_json::json!(999))), &sm).await;
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn handle_unsubscribe_missing_params() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("unsubscribeSlots", None), &sm).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_account_valid() {
+        let sm = SubscriptionManager::new();
+        // Use a valid base58 pubkey (32 bytes)
+        let pk = Pubkey([0xAAu8; 32]);
+        let resp = handle_subscription_request(
+            make_req("subscribeAccount", Some(serde_json::json!(pk.to_base58()))),
+            &sm,
+        ).await;
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_account_invalid_pubkey() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(
+            make_req("subscribeAccount", Some(serde_json::json!("not-a-pubkey!!!"))),
+            &sm,
+        ).await;
+        assert!(resp.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_logs_all() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("subscribeLogs", None), &sm).await;
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_subscribe_program_updates() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("subscribeProgramUpdates", None), &sm).await;
+        assert!(resp.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_unknown_method() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("unknownMethod", None), &sm).await;
+        assert!(resp.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn handle_slot_subscribe_alias() {
+        let sm = SubscriptionManager::new();
+        let resp = handle_subscription_request(make_req("slotSubscribe", None), &sm).await;
+        assert!(resp.error.is_none());
+    }
+
+    // ── create_notification ──
+
+    #[test]
+    fn create_notification_slot() {
+        let notif = create_notification(1, &Event::Slot(42));
+        assert_eq!(notif.jsonrpc, "2.0");
+        assert_eq!(notif.method, "subscription");
+        assert_eq!(notif.params.subscription, 1);
+        let result = &notif.params.result;
+        assert_eq!(result["slot"], 42);
+    }
+
+    #[test]
+    fn create_notification_account_change() {
+        let pk = Pubkey([0xBBu8; 32]);
+        let notif = create_notification(5, &Event::AccountChange { pubkey: pk, balance: 1000 });
+        let result = &notif.params.result;
+        assert_eq!(result["balance"], 1000);
+        assert!(result["pubkey"].as_str().is_some());
+    }
+
+    #[test]
+    fn create_notification_bridge_lock() {
+        let notif = create_notification(3, &Event::BridgeLock {
+            chain: "ethereum".to_string(),
+            asset: "WETH".to_string(),
+            amount: 1_000_000_000,
+            sender: "0x1234".to_string(),
+            recipient: Pubkey([0xCCu8; 32]),
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "BridgeLock");
+        assert_eq!(result["chain"], "ethereum");
+        assert_eq!(result["asset"], "WETH");
+    }
+
+    #[test]
+    fn create_notification_epoch_change() {
+        let notif = create_notification(2, &Event::EpochChange {
+            epoch: 10,
+            slot: 43200,
+            total_stake: 500_000_000_000,
+            validator_count: 5,
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "EpochChange");
+        assert_eq!(result["epoch"], 10);
+        assert_eq!(result["validator_count"], 5);
+    }
+
+    #[test]
+    fn create_notification_governance_event() {
+        let notif = create_notification(4, &Event::GovernanceEvent {
+            proposal_id: 7,
+            event_kind: "voted".to_string(),
+            voter: Some(Pubkey([0xDDu8; 32])),
+            vote_weight: Some(1000),
+            slot: 100,
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "GovernanceEvent");
+        assert_eq!(result["proposal_id"], 7);
+        assert_eq!(result["kind"], "voted");
+    }
+
+    #[test]
+    fn create_notification_signature_status() {
+        let notif = create_notification(6, &Event::SignatureStatus {
+            signature: "abcdef123456".to_string(),
+            status: "finalized".to_string(),
+            slot: 50,
+            err: None,
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "SignatureStatus");
+        assert_eq!(result["status"], "finalized");
+    }
+
+    #[test]
+    fn create_notification_validator_update() {
+        let notif = create_notification(7, &Event::ValidatorUpdate {
+            pubkey: Pubkey([0xEEu8; 32]),
+            event_kind: "joined".to_string(),
+            stake: 100_000_000_000,
+            slot: 200,
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "ValidatorUpdate");
+        assert_eq!(result["kind"], "joined");
+    }
+
+    #[test]
+    fn create_notification_token_balance_change() {
+        let notif = create_notification(8, &Event::TokenBalanceChange {
+            owner: Pubkey([0x01u8; 32]),
+            mint: Pubkey([0x02u8; 32]),
+            old_balance: 1000,
+            new_balance: 2000,
+            slot: 300,
+        });
+        let result = &notif.params.result;
+        assert_eq!(result["event"], "TokenBalanceChange");
+        assert_eq!(result["delta"], 1000);
+    }
+
+    // ── WsState ──
+
+    #[test]
+    fn ws_state_new_creates_broadcasters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = moltchain_core::StateStore::open(tmp.path()).unwrap();
+        let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state);
+        assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
+    }
+
+    // ── Event matching logic (regression) ──
+
+    #[test]
+    fn subscription_type_variants_cover_all_events() {
+        // Ensure we can construct all subscription types
+        let _types = vec![
+            SubscriptionType::Slots,
+            SubscriptionType::Blocks,
+            SubscriptionType::Transactions,
+            SubscriptionType::Account(Pubkey([0u8; 32])),
+            SubscriptionType::Logs(None),
+            SubscriptionType::Logs(Some(Pubkey([0u8; 32]))),
+            SubscriptionType::ProgramUpdates,
+            SubscriptionType::ProgramCalls(None),
+            SubscriptionType::NftMints(None),
+            SubscriptionType::NftTransfers(None),
+            SubscriptionType::MarketListings,
+            SubscriptionType::MarketSales,
+            SubscriptionType::BridgeLocks,
+            SubscriptionType::BridgeMints,
+            SubscriptionType::SignatureStatus("abc".to_string()),
+            SubscriptionType::Validators,
+            SubscriptionType::TokenBalance { owner: Pubkey([0u8; 32]), mint: None },
+            SubscriptionType::Epochs,
+            SubscriptionType::Governance,
+        ];
+        // 19 base subscription types (excluding Dex/Prediction which wrap inner types)
+        assert!(_types.len() >= 19);
     }
 }

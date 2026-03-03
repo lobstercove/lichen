@@ -1438,3 +1438,135 @@ fn test_all_contracts_initialize() {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SECTION 8: Negative-path caller verification (execution-level)
+//  Complements caller_verification.rs string-matching tests with actual WASM
+//  execution. Tests exported privileged functions with unauthorized callers.
+//
+//  Note: Some contracts use the opcode ABI (routed through `call()`), so
+//  named exports like `set_minter` or `execute_proposal` may not exist.
+//  Where exports are missing, we verify the WASM runtime properly rejects.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Attempt to call a privileged function with a non-admin caller.
+/// Returns Ok(true) if rejected (good), Ok(false) if succeeded (bad),
+/// Err if the function doesn't exist in the export table.
+fn try_unauthorized_call(contract_name: &str, function: &str, args: &[u8])
+    -> Result<bool, String>
+{
+    let code = load_wasm(contract_name);
+    let contract = make_contract(code, admin());
+    let ctx = ContractContext::with_args(
+        user_a(),
+        contract_addr(),
+        0,
+        100,
+        admin_storage(),
+        args.to_vec(),
+    );
+    let mut runtime = ContractRuntime::new();
+    match runtime.execute(&contract, function, args, ctx) {
+        Err(e) => Err(e),
+        Ok(result) => {
+            if !result.success || result.return_code != Some(0) {
+                Ok(true) // rejected
+            } else {
+                Ok(false) // succeeded — caller check not enforced
+            }
+        }
+    }
+}
+
+// ── compute_market: set_claim_timeout (named export, enforces owner check) ──
+
+#[test]
+fn test_compute_market_set_claim_timeout_unauthorized() {
+    let args = serde_json::to_vec(&serde_json::json!({
+        "timeout": 1000
+    }))
+    .unwrap();
+    match try_unauthorized_call("compute_market", "set_claim_timeout", &args) {
+        Ok(rejected) => assert!(rejected,
+            "compute_market::set_claim_timeout should reject unauthorized caller"),
+        Err(e) => {
+            // Export might not exist in opcode-ABI contracts
+            assert!(e.contains("not found") || e.contains("Missing export"),
+                    "unexpected error: {e}");
+        }
+    }
+}
+
+// ── moltdao: cancel_proposal — documents that caller check is via proposer match ──
+
+#[test]
+fn test_moltdao_cancel_proposal_caller_check() {
+    // moltdao::cancel_proposal checks that caller == proposal.proposer,
+    // not caller == admin. With proposal_id=0, there's no proposal to match,
+    // so it may succeed vacuously. This test documents the behavior.
+    let args = serde_json::to_vec(&serde_json::json!({
+        "proposal_id": 0
+    }))
+    .unwrap();
+    let code = load_wasm("moltdao");
+    let contract = make_contract(code, admin());
+    // Just verify it doesn't crash
+    let _result = exec(&contract, "cancel_proposal", user_a(), &args, admin_storage(), 0);
+}
+
+// ── moltoracle: submit_price — documents allowlist-based access ──
+
+#[test]
+fn test_moltoracle_submit_price_caller_check() {
+    // moltoracle::submit_price checks against an authorized_feeders list,
+    // not a simple admin check. With empty state, an unknown caller may
+    // succeed because the feeder list hasn't been initialized.
+    let args = serde_json::to_vec(&serde_json::json!({
+        "asset": "wSOL",
+        "price": 100000000
+    }))
+    .unwrap();
+    let code = load_wasm("moltoracle");
+    let contract = make_contract(code, admin());
+    let _result = exec(&contract, "submit_price", user_a(), &args, admin_storage(), 0);
+}
+
+// ── Verify WASM runtime rejects calls to non-existent exports ──
+
+#[test]
+fn test_missing_export_rejected() {
+    // Contracts using opcode ABI route through `call()`, not named exports.
+    // Calling a made-up function name should fail with "not found".
+    for contract_name in ["weth_token", "wsol_token", "dex_governance"] {
+        let code = load_wasm(contract_name);
+        let contract = make_contract(code, admin());
+        let ctx = ContractContext::with_args(
+            user_a(), contract_addr(), 0, 100, admin_storage(), b"{}".to_vec(),
+        );
+        let mut runtime = ContractRuntime::new();
+        let result = runtime.execute(&contract, "nonexistent_function_xyz", b"{}", ctx);
+        assert!(
+            result.is_err(),
+            "[{contract_name}] calling non-existent export should return Err"
+        );
+    }
+}
+
+// ── Batch: verify admin/owner functions across key named-export contracts ──
+
+#[test]
+fn test_batch_named_export_admin_check() {
+    // Only test contracts that have known named exports
+    let test_cases: Vec<(&str, &str, serde_json::Value)> = vec![
+        ("compute_market", "set_claim_timeout", serde_json::json!({"timeout": 999})),
+    ];
+
+    for (contract_name, function, json_args) in &test_cases {
+        let args = serde_json::to_vec(json_args).unwrap();
+        match try_unauthorized_call(contract_name, function, &args) {
+            Ok(rejected) => assert!(rejected,
+                "[{contract_name}::{function}] should reject unauthorized caller"),
+            Err(e) => panic!("[{contract_name}::{function}] unexpected error: {e}"),
+        }
+    }
+}

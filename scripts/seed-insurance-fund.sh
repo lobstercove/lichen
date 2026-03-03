@@ -52,8 +52,14 @@ echo "Need to add:            $NEEDED MOLT"
 # Send transaction to add to insurance fund
 # This calls dex_margin::add_to_insurance(amount)
 # Opcode 0x06 = add_to_insurance
+TX_DATA="0x06$(printf '%016x' $NEEDED)"
 echo ""
-echo "To seed the insurance fund, run:"
-echo "  moltchain tx send --to dex_margin --data 0x06$(printf '%016x' $NEEDED) --rpc $RPC_URL"
-echo ""
-echo "Or via the admin dashboard, call dex_margin::add_to_insurance($NEEDED)"
+echo "Seeding insurance fund with $NEEDED MOLT..."
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "[DRY RUN] Would execute:"
+    echo "  moltchain tx send --to dex_margin --data $TX_DATA --rpc $RPC_URL"
+else
+    moltchain tx send --to dex_margin --data "$TX_DATA" --rpc "$RPC_URL"
+    echo "✅ Insurance fund seeded with $NEEDED MOLT"
+fi

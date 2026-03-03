@@ -64,7 +64,7 @@ sleep 2
 CUSTODY_PID=$!
 
 # ── Faucet ──
-FAUCET_PORT=9100
+FAUCET_PORT=9101
 PORT=$FAUCET_PORT RPC_URL="http://127.0.0.1:${BASE_RPC}" NETWORK="$NETWORK" \
   FAUCET_KEYPAIR="$TREASURY_KEYPAIR" \
   ./target/release/moltchain-faucet >"${LOG_DIR}/faucet.log" 2>&1 &

@@ -10,10 +10,9 @@ const NETWORKS = {
     'local-mainnet': 'http://localhost:9899'
 };
 
-const VALIDATOR_RPCS = [
-    // Legacy fallback: only used if getClusterInfo is unavailable.
-    // In production, the monitoring is fully dynamic via getClusterInfo.
-];
+// INF-06: VALIDATOR_RPCS removed — all validator discovery is dynamic via
+// getClusterInfo RPC with getValidators fallback. Kill switch, health checks,
+// and validator rendering all use live cluster data, never a hardcoded list.
 
 const SYMBOLS = [
     'MOLT','MUSD','WETH','WSOL','DEX','DEXAMM','DEXGOV','DEXMARGIN',
@@ -375,11 +374,19 @@ async function refresh() {
             document.getElementById('perfAccounts').textContent = formatNum(metrics.total_accounts || 0);
             document.getElementById('perfActive').textContent = formatNum(metrics.active_accounts || 0);
 
-            // Simulated perf rings (based on real metrics)
+            // INF-05: Performance rings are heuristic proxies derived from
+            // on-chain metrics, NOT real OS-level CPU/Memory/Disk stats.
+            // Labels updated to reflect what each ring actually measures.
             const blockRate = metrics.average_block_time > 0 ? Math.min(100, Math.round(3 / metrics.average_block_time * 100)) : 0;
-            setRing('perfCPU', Math.min(95, Math.round(20 + (metrics.tps || 0) * 2)));
-            setRing('perfMem', Math.min(90, Math.round(15 + (metrics.total_accounts || 0) * 0.1)));
-            setRing('perfDisk', Math.min(85, Math.round(5 + slot * 0.01)));
+            // TPS Load: current TPS relative to theoretical max (~500 TPS = 100%)
+            const tpsLoadPct = Math.min(100, Math.round((metrics.tps || 0) / 5));
+            // Accounts: on-chain account count relative to capacity (~100k = 100%)
+            const accountsPct = Math.min(100, Math.round((metrics.total_accounts || 0) / 1000));
+            // Chain Size: slot height as proxy for data growth (~1.2M slots = 100%)
+            const chainSizePct = Math.min(100, Math.round(slot / 12000));
+            setRing('perfCPU', tpsLoadPct);
+            setRing('perfMem', accountsPct);
+            setRing('perfDisk', chainSizePct);
             setRing('perfNet', Math.min(95, blockRate));
         }
 
@@ -550,9 +557,9 @@ async function updateHealth(metrics, probes, peers) {
         : Math.min(100, peerCount * 50 + 20);
     setBar('healthP2P', p2pPct);
 
-    // Memory (simulated)
-    const memPct = Math.min(85, 20 + (metrics?.total_accounts || 0) * 0.1);
-    setBar('healthMemory', Math.round(memPct));
+    // Memory: derive from account count (same formula as perf ring)
+    const memPct = Math.min(100, Math.round((metrics?.total_accounts || 0) / 1000));
+    setBar('healthMemory', memPct);
 
     // Overall badge
     const avg = (consensusPct + blockPct + p2pPct) / 3;
@@ -826,10 +833,19 @@ async function killswitchEmergencyShutdown() {
     if (!confirm('EMERGENCY SHUTDOWN\n\nThis will halt ALL validator nodes immediately.\nAre you absolutely sure?')) return;
     if (!confirm('FINAL CONFIRMATION\n\nThis action cannot be undone remotely.\nProceed with emergency shutdown?')) return;
     addEvent('danger', 'power-off', 'EMERGENCY SHUTDOWN initiated across all nodes');
-    for (const v of VALIDATOR_RPCS) {
-        await rpc('admin_shutdown', [{ admin_token: token }], v.rpc);
+    // Dynamically discover validators via cluster info (no hardcoded list)
+    const cluster = await rpc('getClusterInfo');
+    const nodes = (cluster && cluster.cluster_nodes) ? cluster.cluster_nodes : [];
+    if (nodes.length === 0) {
+        // Fallback: shutdown this node directly
+        await rpc('admin_shutdown', [{ admin_token: token }]);
+    } else {
+        for (const node of nodes) {
+            const nodeRpc = node.rpc_url || rpcUrl;
+            await rpc('admin_shutdown', [{ admin_token: token }], nodeRpc);
+        }
     }
-    showAlert('EMERGENCY SHUTDOWN executed - all nodes signaled');
+    showAlert('EMERGENCY SHUTDOWN executed - ' + Math.max(1, nodes.length) + ' node(s) signaled');
 }
 
 async function killswitchDenyAll() {

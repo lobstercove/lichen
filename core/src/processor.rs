@@ -3522,23 +3522,47 @@ impl TxProcessor {
                         // Whale Transfer
                     }
                 }
-                // Stake
+                // CreateCollection (opcode 6 per dispatch table)
                 6 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?;
+                    // Collection Creator
+                }
+                // MintNFT (opcode 7 per dispatch table)
+                7 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?;
+                    // First Mint (NFT)
+                }
+                // TransferNFT (opcode 8 per dispatch table)
+                8 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?;
+                    // NFT Trader
+                }
+                // Stake (opcode 9 per dispatch table)
+                9 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 41, timestamp)?;
                     // First Stake
                 }
-                // Unstake
-                7 => {
+                // RequestUnstake (opcode 10 per dispatch table)
+                10 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 42, timestamp)?;
                     // Unstaked
                 }
-                // ClaimUnstake
-                8 => {
+                // ClaimUnstake (opcode 11 per dispatch table)
+                11 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                 }
-                // ReefStakeDeposit
+                // RegisterEvmAddress (opcode 12 per dispatch table)
+                12 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?;
+                    // EVM Connected
+                }
+                // ReefStakeDeposit (opcode 13 per dispatch table)
                 13 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 43, timestamp)?; // ReefStake Pioneer
@@ -3560,63 +3584,39 @@ impl TxProcessor {
                         // Whale Staker
                     }
                 }
-                // ReefStakeUnstake
+                // ReefStakeUnstake (opcode 14 per dispatch table)
                 14 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                 }
-                // ReefStakeClaim
+                // ReefStakeClaim (opcode 15 per dispatch table)
                 15 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 47, timestamp)?;
                     // Reward Harvester
                 }
-                // Shield
+                // ReefStakeTransfer / stMOLT (opcode 16 per dispatch table)
                 16 => {
+                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?;
+                    // stMOLT Transferrer
+                }
+                // ShieldDeposit (opcode 23 per dispatch table)
+                23 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 57, timestamp)?;
                     // Privacy Pioneer (First Shield)
                 }
-                // Unshield
-                17 => {
+                // UnshieldWithdraw (opcode 24 per dispatch table)
+                24 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 58, timestamp)?;
                     // Unshielded
                 }
-                // Shielded Transfer
-                18 => {
+                // ShieldedTransfer (opcode 25 per dispatch table)
+                25 => {
                     self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
                     self.award_ach(&moltyid_addr, &caller, &hex, 59, timestamp)?;
                     // Shadow Sender
-                }
-                // RegisterEvmAddress
-                9 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?;
-                    // EVM Connected
-                }
-                // CreateCollection
-                19 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?;
-                    // Collection Creator
-                }
-                // MintNFT
-                20 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?;
-                    // First Mint (NFT)
-                }
-                // TransferNFT
-                21 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?;
-                    // NFT Trader
-                }
-                // ReefStakeTransfer (stMOLT)
-                23 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?;
-                    // stMOLT Transferrer
                 }
                 // Any other instruction
                 _ => {

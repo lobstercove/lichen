@@ -279,7 +279,9 @@ impl GenesisWallet {
                 "warning": "KEEP THIS FILE SECURE - CONTROLS GENESIS TREASURY",
             });
 
-            fs::write(&path, serde_json::to_string_pretty(&keypair_json).unwrap())
+            let json_str = serde_json::to_string_pretty(&keypair_json)
+                .map_err(|e| format!("Failed to serialize keypair JSON: {}", e))?;
+            fs::write(&path, json_str)
                 .map_err(|e| format!("Failed to write keypair: {}", e))?;
 
             paths.push(path.to_string_lossy().to_string());
@@ -305,7 +307,9 @@ impl GenesisWallet {
             "warning": "KEEP THIS FILE SECURE - CONTROLS TREASURY",
         });
 
-        fs::write(&path, serde_json::to_string_pretty(&keypair_json).unwrap())
+        let json_str = serde_json::to_string_pretty(&keypair_json)
+            .map_err(|e| format!("Failed to serialize treasury JSON: {}", e))?;
+        fs::write(&path, json_str)
             .map_err(|e| format!("Failed to write treasury keypair: {}", e))?;
 
         Ok(path.to_string_lossy().to_string())
@@ -335,7 +339,9 @@ impl GenesisWallet {
                 "warning": "KEEP THIS FILE SECURE - CONTROLS DISTRIBUTION WALLET",
             });
 
-            fs::write(&path, serde_json::to_string_pretty(&keypair_json).unwrap())
+            let json_str = serde_json::to_string_pretty(&keypair_json)
+                .map_err(|e| format!("Failed to serialize distribution JSON: {}", e))?;
+            fs::write(&path, json_str)
                 .map_err(|e| format!("Failed to write distribution keypair: {}", e))?;
 
             paths.push(path.to_string_lossy().to_string());

@@ -83,7 +83,7 @@ test-contracts:
 	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			name=$$(basename "$$d"); \
-			if (cd "$$d" && cargo test --release 2>&1 | tail -1 | grep -q "ok"); then \
+			if (cd "$$d" && cargo test --release >/dev/null 2>&1); then \
 				PASS=$$((PASS + 1)); \
 			else \
 				echo "  ❌ $$name"; FAIL=$$((FAIL + 1)); \
@@ -256,6 +256,18 @@ production-gate: check-expected-contracts
 	@echo "🚦 Running production E2E gate..."
 	bash tests/production-e2e-gate.sh
 
+sync-shared:
+	@echo "📦 Syncing canonical shared/ from monitoring/shared/ to all frontends..."
+	@for dir in explorer dex wallet marketplace faucet programs; do \
+		cp monitoring/shared/utils.js $$dir/shared/utils.js; \
+		echo "  ✓ $$dir/shared/utils.js"; \
+	done
+	@for dir in explorer dex wallet faucet programs; do \
+		cp monitoring/shared/wallet-connect.js $$dir/shared/wallet-connect.js; \
+		echo "  ✓ $$dir/shared/wallet-connect.js"; \
+	done
+	@echo "✅ Shared JS synced (marketplace/wallet-connect.js is custom — skipped)"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Help
 # ─────────────────────────────────────────────────────────────────────────────
@@ -301,3 +313,4 @@ help:
 	@echo "  make check              Cargo check all code"
 	@echo "  make check-expected-contracts  Verify contracts lockfile parity"
 	@echo "  make production-gate    Run lockfile check + production E2E gate"
+	@echo "  make sync-shared        Sync monitoring/shared/ to all frontends"

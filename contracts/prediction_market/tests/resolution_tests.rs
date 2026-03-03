@@ -16,6 +16,11 @@ fn setup() -> [u8; 32] {
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_slot(1000);
     assert_eq!(initialize(admin.as_ptr()), 0);
+    // Configure mUSD + self addresses so transfer_musd_out succeeds (fail-closed audit fix)
+    moltchain_sdk::test_mock::set_caller(admin);
+    set_musd_address(admin.as_ptr(), &[0xAAu8; 32] as *const u8);
+    moltchain_sdk::test_mock::set_caller(admin);
+    set_self_address(admin.as_ptr(), &[0xBBu8; 32] as *const u8);
     admin
 }
 
@@ -901,12 +906,12 @@ fn test_resolution_with_missing_attestation() {
 // MOLTYID REPUTATION TESTS (with mocked reputation storage)
 // ============================================================================
 
-fn mock_moltyid_reputation(addr: &[u8; 32], reputation: u64) {
-    let mut key = Vec::from(&b"rep:"[..]);
-    key.extend_from_slice(&hex_encode_for_test(addr));
-    moltchain_sdk::test_mock::STORAGE.with(|s| {
-        s.borrow_mut().insert(key, reputation.to_le_bytes().to_vec());
-    });
+fn mock_moltyid_reputation(_addr: &[u8; 32], reputation: u64) {
+    // CON-14 audit fix: reputation is now read via cross-contract call, not storage.
+    // Set the mock cross-call response to return the reputation as 8 le bytes.
+    moltchain_sdk::test_mock::set_cross_call_response(
+        Some(reputation.to_le_bytes().to_vec()),
+    );
 }
 
 #[test]

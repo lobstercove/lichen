@@ -453,14 +453,15 @@ fn query_protocol_yield(addr_key: &[u8], function: &str, deployed: u64, elapsed_
 
 /// G25-02: Transfer MOLT tokens out of the vault to a recipient.
 /// Uses self-custody pattern: vault holds tokens at its own contract address.
-/// Returns true on success or if MOLT token not configured (graceful degradation).
+/// Returns true on success, false if token not configured or transfer fails.
 fn transfer_molt_out(to: &[u8; 32], amount: u64) -> bool {
     if amount == 0 {
         return true;
     }
     let token_data = storage_get(MOLT_TOKEN_KEY);
     if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
-        return true; // graceful degradation: token not configured yet
+        log_info("MOLT token not configured — transfer rejected");
+        return false;
     }
     let mut token = [0u8; 32];
     token.copy_from_slice(&token_data.unwrap()[..32]);
@@ -944,6 +945,18 @@ mod tests {
         test_mock::reset();
     }
 
+    /// G25-02: Configure MOLT token and mock cross-contract transfers so
+    /// withdraw / withdraw_protocol_fees can succeed in unit tests.
+    fn enable_token_transfers() {
+        let admin = [1u8; 32];
+        let prev_caller = moltchain_sdk::get_caller();
+        test_mock::set_caller(admin);
+        let molt_token = [0xCC; 32];
+        set_molt_token(admin.as_ptr(), molt_token.as_ptr());
+        test_mock::set_cross_call_response(Some(alloc::vec![1u8]));
+        test_mock::set_caller(prev_caller.0);
+    }
+
     #[test]
     fn test_initialize() {
         setup();
@@ -1068,6 +1081,7 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(100_000);
@@ -1191,6 +1205,7 @@ mod tests {
         let non_admin = [2u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
 
         test_mock::set_caller(non_admin);
         assert_eq!(cv_pause(non_admin.as_ptr()), 1); // not admin
@@ -1259,6 +1274,7 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
 
         // Set withdrawal fee to 0
         assert_eq!(set_withdrawal_fee(admin.as_ptr(), 0), 0);
@@ -1358,6 +1374,7 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
@@ -1578,11 +1595,12 @@ mod tests {
 
     #[test]
     fn test_g25_withdraw_triggers_transfer() {
-        // Withdraw must attempt token transfer (graceful degradation when MOLT token not set)
+        // Withdraw must attempt token transfer via cross-contract call
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(100_000);
@@ -1595,11 +1613,12 @@ mod tests {
 
     #[test]
     fn test_g25_withdraw_fees_triggers_transfer() {
-        // withdraw_protocol_fees must attempt transfer
+        // withdraw_protocol_fees must attempt transfer via cross-contract call
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        enable_token_transfers();
         let user = [2u8; 32];
         test_mock::set_caller(user);
         test_mock::set_value(1_000_000);

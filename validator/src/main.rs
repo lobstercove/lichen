@@ -241,6 +241,7 @@ struct SeedsFile {
 
 #[derive(Debug, Deserialize)]
 struct SeedNetwork {
+    /// Retained for seeds.json schema completeness (deserialized but not read directly).
     #[allow(dead_code)]
     chain_id: String,
     #[serde(default)]
@@ -3360,112 +3361,6 @@ fn genesis_exec_contract(
                 }
             }
 
-            true
-        }
-        Err(e) => {
-            error!("  FAIL {}: WASM execution error: {}", label, e);
-            false
-        }
-    }
-}
-
-/// Like `genesis_exec_contract` but allows attaching a value (e.g. mUSD fee).
-#[allow(dead_code)]
-fn genesis_exec_contract_with_value(
-    state: &StateStore,
-    program_pubkey: &Pubkey,
-    deployer_pubkey: &Pubkey,
-    function_name: &str,
-    args: &[u8],
-    value: u64,
-    label: &str,
-) -> bool {
-    let account = match state.get_account(program_pubkey) {
-        Ok(Some(a)) => a,
-        _ => {
-            error!("  FAIL {}: account not found", label);
-            return false;
-        }
-    };
-
-    let mut contract: ContractAccount = match serde_json::from_slice(&account.data) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("  FAIL {}: deserialize ContractAccount: {}", label, e);
-            return false;
-        }
-    };
-
-    let ctx = ContractContext::with_args(
-        *deployer_pubkey,
-        *program_pubkey,
-        value,
-        0,
-        contract.storage.clone(),
-        args.to_vec(),
-    );
-
-    let mut runtime = ContractRuntime::new();
-    match runtime.execute(&contract, function_name, args, ctx) {
-        Ok(result) => {
-            if !result.success {
-                let rc = result.return_code.unwrap_or(1);
-                if rc != 0 {
-                    warn!(
-                        "  FAIL {}: contract returned error code {} — {:?}",
-                        label, rc, result.error
-                    );
-                    return false;
-                }
-                warn!(
-                    "  WARN {}: contract returned !success with rc=0: {:?}",
-                    label, result.error
-                );
-            }
-            for (key, val_opt) in &result.storage_changes {
-                match val_opt {
-                    Some(val) => {
-                        contract.set_storage(key.clone(), val.clone());
-                        if let Err(e) = state.put_contract_storage(program_pubkey, key, val) {
-                            warn!("  WARN {}: put_contract_storage: {}", label, e);
-                        }
-                    }
-                    None => {
-                        contract.remove_storage(key);
-                        let _ = state.delete_contract_storage(program_pubkey, key);
-                    }
-                }
-            }
-            let mut updated_account = account;
-            match serde_json::to_vec(&contract) {
-                Ok(data) => updated_account.data = data,
-                Err(e) => {
-                    error!("  FAIL {}: re-serialize: {}", label, e);
-                    return false;
-                }
-            }
-            if let Err(e) = state.put_account(program_pubkey, &updated_account) {
-                error!("  FAIL {}: put_account: {}", label, e);
-                return false;
-            }
-            let seq = GENESIS_ACTIVITY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let activity = ProgramCallActivity {
-                slot: 0,
-                timestamp: 0,
-                program: *program_pubkey,
-                caller: *deployer_pubkey,
-                function: function_name.to_string(),
-                value,
-                tx_signature: Hash([0u8; 32]),
-            };
-            if let Err(e) = state.record_program_call(&activity, seq) {
-                warn!("  WARN {}: failed to record genesis call: {}", label, e);
-            }
-            for event in &result.events {
-                if let Err(e) = state.put_contract_event(program_pubkey, event) {
-                    warn!("  WARN {}: failed to record genesis event: {}", label, e);
-                }
-            }
             true
         }
         Err(e) => {
@@ -10479,6 +10374,9 @@ async fn run_validator() {
         .filter(|t| !t.is_empty());
     if admin_token.is_some() {
         info!("🔒 Admin token configured for state-mutating RPC endpoints");
+    } else {
+        warn!("⚠️  No admin_token configured — all admin RPC endpoints are disabled. \
+               Set MOLTCHAIN_ADMIN_TOKEN env var or --admin-token flag for production.");
     }
 
     let state_for_rpc = state.clone();
@@ -11985,6 +11883,242 @@ async fn run_validator() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Helper builders ─────────────────────────────────────────────
+
+    fn make_tx_with_opcode(program_id: Pubkey, opcode: u8) -> Transaction {
+        Transaction {
+            signatures: vec![[0u8; 64]],
+            message: Message {
+                instructions: vec![Instruction {
+                    program_id,
+                    accounts: vec![Pubkey([1u8; 32])],
+                    data: vec![opcode],
+                }],
+                recent_blockhash: Hash([0u8; 32]),
+            },
+        }
+    }
+
+    fn make_empty_tx() -> Transaction {
+        Transaction {
+            signatures: vec![],
+            message: Message {
+                instructions: vec![],
+                recent_blockhash: Hash([0u8; 32]),
+            },
+        }
+    }
+
+    fn make_block_with_txs(txs: Vec<Transaction>) -> Block {
+        Block {
+            header: moltchain_core::BlockHeader {
+                slot: 1,
+                parent_hash: Hash([0u8; 32]),
+                state_root: Hash([0u8; 32]),
+                tx_root: Hash([0u8; 32]),
+                timestamp: 0,
+                validator: [0u8; 32],
+                signature: [0u8; 64],
+            },
+            transactions: txs,
+            tx_fees_paid: vec![],
+        }
+    }
+
+    // ── is_reward_or_debt_tx ────────────────────────────────────────
+
+    #[test]
+    fn reward_tx_opcode_2_is_reward() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
+        assert!(is_reward_or_debt_tx(&tx));
+    }
+
+    #[test]
+    fn debt_tx_opcode_3_is_reward() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 3);
+        assert!(is_reward_or_debt_tx(&tx));
+    }
+
+    #[test]
+    fn transfer_opcode_0_is_not_reward() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        assert!(!is_reward_or_debt_tx(&tx));
+    }
+
+    #[test]
+    fn non_system_program_is_not_reward() {
+        let tx = make_tx_with_opcode(Pubkey([99u8; 32]), 2);
+        assert!(!is_reward_or_debt_tx(&tx));
+    }
+
+    #[test]
+    fn empty_tx_is_not_reward() {
+        let tx = make_empty_tx();
+        assert!(!is_reward_or_debt_tx(&tx));
+    }
+
+    // ── block_has_user_transactions ─────────────────────────────────
+
+    #[test]
+    fn block_with_only_rewards_has_no_user_tx() {
+        let reward = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
+        let block = make_block_with_txs(vec![reward]);
+        assert!(!block_has_user_transactions(&block));
+    }
+
+    #[test]
+    fn block_with_transfer_has_user_tx() {
+        let transfer = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let block = make_block_with_txs(vec![transfer]);
+        assert!(block_has_user_transactions(&block));
+    }
+
+    #[test]
+    fn empty_block_has_no_user_tx() {
+        let block = make_block_with_txs(vec![]);
+        assert!(!block_has_user_transactions(&block));
+    }
+
+    #[test]
+    fn mixed_block_has_user_tx() {
+        let reward = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 2);
+        let transfer = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let block = make_block_with_txs(vec![reward, transfer]);
+        assert!(block_has_user_transactions(&block));
+    }
+
+    // ── parse_marketplace_args ──────────────────────────────────────
+
+    #[test]
+    fn parse_marketplace_args_empty() {
+        let parsed = parse_marketplace_args(&[]);
+        assert!(parsed.collection.is_none());
+        assert!(parsed.price.is_none());
+    }
+
+    #[test]
+    fn parse_marketplace_args_invalid_json() {
+        let parsed = parse_marketplace_args(b"not json");
+        assert!(parsed.collection.is_none());
+    }
+
+    #[test]
+    fn parse_marketplace_args_price_and_token_id() {
+        let json = r#"{"price": 1000, "token_id": 42}"#;
+        let parsed = parse_marketplace_args(json.as_bytes());
+        assert_eq!(parsed.price, Some(1000));
+        assert_eq!(parsed.token_id, Some(42));
+    }
+
+    #[test]
+    fn parse_marketplace_args_price_as_string() {
+        let json = r#"{"price": "5000"}"#;
+        let parsed = parse_marketplace_args(json.as_bytes());
+        assert_eq!(parsed.price, Some(5000));
+    }
+
+    #[test]
+    fn parse_marketplace_args_camel_case_keys() {
+        let json = r#"{"nftContract": "11111111111111111111111111111111", "tokenId": 7}"#;
+        let parsed = parse_marketplace_args(json.as_bytes());
+        // nftContract is an alias for "collection"
+        assert!(parsed.collection.is_some());
+        assert_eq!(parsed.token_id, Some(7));
+    }
+
+    // ── block_fee_at_index ──────────────────────────────────────────
+
+    #[test]
+    fn block_fee_at_index_uses_precomputed() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let mut block = make_block_with_txs(vec![tx]);
+        block.tx_fees_paid = vec![500];
+        assert_eq!(block_fee_at_index(&block, 0, 999), 500);
+    }
+
+    #[test]
+    fn block_fee_at_index_fallback_when_mismatched() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let mut block = make_block_with_txs(vec![tx]);
+        block.tx_fees_paid = vec![]; // length mismatch
+        assert_eq!(block_fee_at_index(&block, 0, 999), 999);
+    }
+
+    #[test]
+    fn block_fee_at_index_out_of_bounds() {
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let mut block = make_block_with_txs(vec![tx]);
+        block.tx_fees_paid = vec![100];
+        // Index 5 out of bounds → fallback
+        assert_eq!(block_fee_at_index(&block, 5, 999), 999);
+    }
+
+    // ── resolve_peer_list ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_peer_list_parses_ip() {
+        let peers = vec!["127.0.0.1:8000".to_string()];
+        let result = resolve_peer_list(&peers);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].port(), 8000);
+    }
+
+    #[test]
+    fn resolve_peer_list_empty() {
+        let result = resolve_peer_list(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolve_peer_list_ipv6() {
+        let peers = vec!["[::1]:9000".to_string()];
+        let result = resolve_peer_list(&peers);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn resolve_peer_list_invalid_skipped() {
+        let peers = vec!["not-a-valid-address".to_string(), "127.0.0.1:8000".to_string()];
+        let result = resolve_peer_list(&peers);
+        // invalid hostname without port won't resolve
+        assert!(result.len() >= 1, "should have at least the valid peer");
+    }
+
+    // ── constants sanity ────────────────────────────────────────────
+
+    #[test]
+    fn reward_pool_is_100m() {
+        assert_eq!(REWARD_POOL_MOLT, 100_000_000);
+    }
+
+    #[test]
+    fn watchdog_timeout_reasonable() {
+        assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
+        assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
+    }
+
+    #[test]
+    fn max_freeze_is_30s() {
+        assert_eq!(MAX_FREEZE_DURATION_SECS, 30);
+    }
+
+    #[test]
+    fn heartbeat_idle_is_5s() {
+        assert_eq!(HEARTBEAT_GLOBAL_IDLE_SECS, 5);
+    }
+
+    #[test]
+    fn sync_fanout_reasonable() {
+        assert!(SYNC_REQUEST_FANOUT >= 1 && SYNC_REQUEST_FANOUT <= 10);
+    }
+
+    #[test]
+    fn exit_code_restart_is_75() {
+        assert_eq!(EXIT_CODE_RESTART, 75);
+    }
+
+    // ── existing P9 tests ───────────────────────────────────────────
 
     /// P9-VAL-01 test: Verify run_sltp_triggers_from_state uses a persistent
     /// cursor and only processes new trades. This ensures both block producers

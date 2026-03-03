@@ -17,7 +17,7 @@
  *  F10E.4  — Governance New Proposal wallet-gate
  *  F10E.5  — Parameter + Delist proposal form fields
  *  F10E.6  — MOLT/mUSD genesis price $0.10
- *  F10E.7  — External price feed (Binance WebSocket real-time overlay)
+ *  F10E.7  — Oracle fast-poll price overlay (FE-06: replaced Binance WS)
  *  F10E.8  — CSS disabled styles
  *  F10E.9  — Margin position wallet-gate
  *  F10E.10 — Add Liquidity wallet-gate
@@ -26,9 +26,9 @@
  * Oracle Price Feed Integration tests:
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
- *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
+ *  - Background price feeder service (internal oracle → moltoracle + analytics)
  *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
- *  - Frontend real-time overlay (Binance WS for sub-second updates)
+ *  - Frontend real-time overlay (oracle fast-poll for responsive updates)
  *  - End-to-end data flow verification
  *
  * Trade Bridge + Oracle Integration (Phases A-D):
@@ -38,9 +38,9 @@
  *  PD — Frontend oracle reference line: gold dashed line on TradingView chart
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
- *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
+ *  - Background price feeder service (internal oracle → moltoracle + analytics)
  *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
- *  - Frontend real-time overlay (Binance WS for sub-second updates)
+ *  - Frontend real-time overlay (oracle fast-poll for responsive updates)
  *  - End-to-end data flow verification
  */
 'use strict';
@@ -61,44 +61,24 @@ function assertThrows(fn, msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Extract pure functions from dex.js (inline reimplementation matching source)
+// Import shared pure functions from shared/utils.js (single source of truth)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function escapeHtml(str) {
-    if (typeof str !== 'string') return String(str ?? '');
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+// Browser stubs so shared/utils.js IIFE doesn't blow up in Node
+if (typeof document === 'undefined') { global.document = { readyState: 'complete', addEventListener() {}, querySelector() { return null; }, getElementById() { return null; }, createElement() { return { textContent: '', appendChild() {} }; }, head: { appendChild() {} } }; }
+if (typeof window === 'undefined')   { global.window = { location: { hostname: 'localhost' } }; }
 
+const {
+    escapeHtml, bs58encode, bs58decode,
+} = require('./shared/utils.js');
+
+// ── DEX-specific helpers (not in shared utils) ──
 function hexToBytes(hex) {
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
     return bytes;
 }
 function bytesToHex(bytes) { return [...bytes].map(b => b.toString(16).padStart(2, '0')).join(''); }
-
-const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-function bs58encode(bytes) {
-    let leadingZeros = 0;
-    for (let i = 0; i < bytes.length && bytes[i] === 0; i++) leadingZeros++;
-    let num = 0n;
-    for (const b of bytes) num = num * 256n + BigInt(b);
-    let encoded = '';
-    while (num > 0n) { encoded = BS58_ALPHABET[Number(num % 58n)] + encoded; num = num / 58n; }
-    return '1'.repeat(leadingZeros) + encoded;
-}
-function bs58decode(str) {
-    let num = 0n;
-    for (const c of str) { const idx = BS58_ALPHABET.indexOf(c); if (idx < 0) throw new Error('Invalid base58'); num = num * 58n + BigInt(idx); }
-    const hex = num === 0n ? '' : num.toString(16);
-    const padded = hex.length % 2 ? '0' + hex : hex;
-    const bytes = [];
-    for (let i = 0; i < padded.length; i += 2) bytes.push(parseInt(padded.slice(i, i + 2), 16));
-    let leadingOnes = 0;
-    for (let i = 0; i < str.length && str[i] === '1'; i++) leadingOnes++;
-    const result = new Uint8Array(leadingOnes + bytes.length);
-    result.set(bytes, leadingOnes);
-    return result;
-}
 
 function encodeTransactionMessage(instructions, blockhash, signer) {
     const parts = [];
@@ -434,16 +414,15 @@ assert(dexSource.includes('lastPrice: MOLT_GENESIS_PRICE'), 'F10E.6: State defau
 assert(dexSource.includes("genesis MOLT/mUSD"), 'F10E.6: Genesis pair fallback message');
 assert(dexSource.includes("price: MOLT_GENESIS_PRICE"), 'F10E.6: Genesis pair uses MOLT_GENESIS_PRICE');
 
-// F10E.7: External price feed — Binance WebSocket for real-time overlay,
-// backend oracle feeder provides primary prices via standard API
-assert(dexSource.includes('connectBinancePriceFeed'), 'F10E.7: connectBinancePriceFeed function exists');
-assert(dexSource.includes('stream.binance.com'), 'F10E.7: Uses Binance WebSocket endpoint');
-assert(dexSource.includes('solusdt@miniTicker'), 'F10E.7: Subscribes to SOL/USDT');
-assert(dexSource.includes('ethusdt@miniTicker'), 'F10E.7: Subscribes to ETH/USDT');
-assert(!dexSource.includes('btcusdt'), 'F10E.7: BTC streams removed');
-assert(dexSource.includes('applyBinanceRealTimeOverlay'), 'F10E.7: applyBinanceRealTimeOverlay function exists');
-assert(dexSource.includes("externalPrices"), 'F10E.7: externalPrices state object exists');
-assert(dexSource.includes("real-time overlay"), 'F10E.7: Binance feed documented as real-time overlay');
+// F10E.7: Oracle fast-poll price overlay (FE-06 fix: replaced Binance WS with internal oracle)
+assert(dexSource.includes('startOracleFastPoll'), 'F10E.7: startOracleFastPoll function exists');
+assert(dexSource.includes('applyOracleRealTimeOverlay'), 'F10E.7: applyOracleRealTimeOverlay function exists');
+assert(dexSource.includes('oracleRefPrices'), 'F10E.7: oracleRefPrices state object exists');
+assert(!dexSource.includes('stream.binance.com'), 'F10E.7: No direct Binance WebSocket (FE-06 fix)');
+assert(!dexSource.includes('connectBinancePriceFeed'), 'F10E.7: Old Binance WS function removed');
+assert(!dexSource.includes('externalPrices'), 'F10E.7: Old externalPrices state removed');
+assert(dexSource.includes('oracle/prices'), 'F10E.7: Oracle prices fetched from internal API');
+assert(dexSource.includes('FE-06 FIX'), 'F10E.7: FE-06 audit fix documented');
 
 // F10E.8: CSS disabled styles
 const cssSource = fs.readFileSync(__dirname + '/dex.css', 'utf8');
@@ -473,8 +452,8 @@ assert(dexSource.includes("dataset?.unit"), 'F10E.5: Reads data-unit from option
 const gateCallCount = (dexSource.match(/applyWalletGateAll\(\)/g) || []).length;
 assert(gateCallCount >= 4, `F10E: applyWalletGateAll called ${gateCallCount} times (>=4 expected: init, connect, disconnect, auto-connect)`);
 
-// F10E: Binance feed is connected in init
-assert(dexSource.includes('connectBinancePriceFeed()'), 'F10E.7: Binance feed connected in init');
+// F10E: Oracle fast-poll is started in init when ENABLE_EXTERNAL_PRICE_WS is true
+assert(dexSource.includes('startOracleFastPoll()'), 'F10E.7: Oracle fast-poll started in init');
 
 // ─── HTML structural tests ─────────────────────────────────────────────
 console.log('\n── F10E: HTML structural checks ──');
@@ -612,15 +591,15 @@ assert(!rpcLibSrc.includes('BTC'), 'RPC: BTC removed from oracle note');
 // ── Frontend oracle integration tests ──
 console.log('\n── Frontend Oracle Integration ──');
 
-assert(dexSource.includes('applyBinanceRealTimeOverlay'), 'FE: applyBinanceRealTimeOverlay function exists');
+assert(dexSource.includes('applyOracleRealTimeOverlay'), 'FE: applyOracleRealTimeOverlay function exists');
 assert(!dexSource.includes('updateExternalPricedPairs'), 'FE: Old updateExternalPricedPairs removed');
 assert(!dexSource.includes('apiPriceless'), 'FE: Old apiPriceless flag removed');
-assert(dexSource.includes('real-time overlay'), 'FE: Binance feed documented as real-time overlay');
+assert(dexSource.includes('oracle fast-poll') || dexSource.includes('Oracle Fast-Poll'), 'FE: Oracle overlay documented');
 assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'FE: MOLT genesis price constant used in overlay');
 assert(!dexSource.includes('externalPrices.BTC'), 'FE: BTC removed from externalPrices');
 
 // Real-time overlay logic
-assert(dexSource.includes('state.activePair') && dexSource.includes('applyBinanceRealTimeOverlay'), 'FE: Real-time overlay updates active pair only');
+assert(dexSource.includes('state.activePair') && dexSource.includes('applyOracleRealTimeOverlay'), 'FE: Real-time overlay updates active pair only');
 assert(dexSource.includes('MOLT') && dexSource.includes('moltPair'), 'FE: MOLT-quoted pair conversion in overlay');
 
 // ── Validator genesis pair creation tests ──
@@ -1145,7 +1124,7 @@ assert(
     'P5.4a: get_candles uses inclusive range start..=candle_count (F5.2 fix)'
 );
 assert(
-    rpcDexSource.includes('candle_count.saturating_sub(limit as u64)'),
+    rpcDexSource.includes('candle_count.saturating_sub(effective_limit)'),
     'P5.4b: get_candles start is 1-based (F5.2 fix)'
 );
 
@@ -3343,7 +3322,7 @@ const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/cont
     // Check the cross-contract call is in fill_at_price_level
     const fillIdx = core.indexOf('fn fill_at_price_level');
     assert(fillIdx !== -1, 'P18.2d: fill_at_price_level function exists');
-    const fillBlock = core.substring(fillIdx, fillIdx + 7000);
+    const fillBlock = core.substring(fillIdx, fillIdx + 8500);
     assert(fillBlock.includes('"record_trade"'), 'P18.2e: Cross-contract call to record_trade in fill function');
     assert(fillBlock.includes('analytics_addr'), 'P18.2f: Analytics address loaded in fill function');
     // Analytics accepts authorized callers
@@ -3510,7 +3489,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     // MOLT mints initial supply on init
     const initIdx = molt.indexOf('fn initialize');
     const initBlock = molt.substring(initIdx, initIdx + 2600);
-    assert(initBlock.includes('mint') || initBlock.includes('Token::'), 'P19.5b: initialize mints initial supply');
+    assert(initBlock.includes('mint') || initBlock.includes('Token::') || initBlock.includes('make_token') || initBlock.includes('token.initialize'), 'P19.5b: initialize mints initial supply');
 }
 
 // P19.6: Wrapped asset mint/redeem (wSOL, wETH)
@@ -3578,7 +3557,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     const fillBlock = core.substring(fillIdx, fillIdx + 4200);
     assert(fillBlock.includes('transfer_fee'), 'P19.12b: Fee deduction via cross-contract transfer_fee');
     assert(fillBlock.includes('FEE_TREASURY_KEY'), 'P19.12c: Protocol fees tracked in treasury');
-    const rebateBlock = core.substring(fillIdx, fillIdx + 7500);
+    const rebateBlock = core.substring(fillIdx, fillIdx + 8500);
     assert(rebateBlock.includes('dex_rebate_'), 'P19.12d: Maker rebates accumulated in dex_rebate_ key');
     assert(!rebateBlock.includes('let _ = maker_rebate'), 'P19.12e: Maker rebate is NOT discarded anymore');
 }

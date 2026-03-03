@@ -103,4 +103,59 @@ mod tests {
         let b = Balance::from_molt(0.0);
         assert_eq!(b.shells(), 0);
     }
+
+    #[test]
+    fn test_balance_neg_infinity() {
+        let b = Balance::from_molt(f64::NEG_INFINITY);
+        assert_eq!(b.shells(), 0);
+    }
+
+    #[test]
+    fn test_balance_from_molt_tiny_fraction() {
+        // 0.000000001 MOLT = 1 shell (rounding)
+        let b = Balance::from_molt(0.000_000_001);
+        assert_eq!(b.shells(), 1);
+    }
+
+    #[test]
+    fn test_balance_from_molt_sub_shell() {
+        // 0.0000000001 MOLT < 1 shell → rounds to 0
+        let b = Balance::from_molt(0.000_000_000_1);
+        assert_eq!(b.shells(), 0);
+    }
+
+    #[test]
+    fn test_balance_from_shells_max() {
+        let b = Balance::from_shells(u64::MAX);
+        assert_eq!(b.shells(), u64::MAX);
+    }
+
+    #[test]
+    fn test_balance_eq() {
+        let a = Balance::from_shells(100);
+        let b = Balance::from_shells(100);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_balance_copy() {
+        let a = Balance::from_shells(42);
+        let b = a;
+        assert_eq!(a.shells(), b.shells());
+    }
+
+    #[test]
+    fn test_balance_debug() {
+        let b = Balance::from_shells(0);
+        let s = format!("{:?}", b);
+        assert!(s.contains("Balance"));
+    }
+
+    #[test]
+    fn test_balance_molt_precision() {
+        // 1 MOLT exactly
+        let b = Balance::from_molt(1.0);
+        assert_eq!(b.shells(), 1_000_000_000);
+        assert!((b.molt() - 1.0).abs() < 1e-15);
+    }
 }

@@ -56,3 +56,18 @@ doc = false
 name = "rpc_request"
 path = "fuzz_targets/rpc_request.rs"
 doc = false
+
+[[bin]]
+name = "wasm_exec"
+path = "fuzz_targets/wasm_exec.rs"
+doc = false
+
+[[bin]]
+name = "zk_proof_deser"
+path = "fuzz_targets/zk_proof_deser.rs"
+doc = false
+
+[[bin]]
+name = "p2p_message"
+path = "fuzz_targets/p2p_message.rs"
+doc = false

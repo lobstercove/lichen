@@ -91,7 +91,7 @@ impl ViewingKey {
         let mut serialized = Vec::new();
         self.0
             .serialize_compressed(&mut serialized)
-            .expect("G1 serialization should not fail");
+            .unwrap_or_else(|e| panic!("FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.", e));
 
         let mut hasher = Sha256::new();
         hasher.update(&serialized);
@@ -106,7 +106,7 @@ impl ViewingKey {
         let mut bytes = Vec::new();
         self.0
             .serialize_compressed(&mut bytes)
-            .expect("G1 serialization should not fail");
+            .unwrap_or_else(|e| panic!("FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.", e));
         bytes
     }
 }

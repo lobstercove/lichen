@@ -628,7 +628,7 @@ const MAX_CCC_ARGS_LEN: u32 = 65_536;
 ///    - Logging: log messages and structured events
 ///    - Chain introspection: timestamp, caller, value, slot (read-only)
 ///    - Args/returns: get_args, set_return_data
-///    - Cross-contract calls: stub (not yet re-entrant)
+///    - Cross-contract calls: synchronous dispatch via call_contract (non-reentrant)
 ///
 /// 5. **Deploy-time Validation**: Bytecode is validated at deploy to reject
 ///    modules with excessive memory declarations, unauthorized import modules,

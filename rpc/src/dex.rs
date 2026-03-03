@@ -2833,3 +2833,577 @@ async fn get_moltswap_stats(State(state): State<Arc<RpcState>>) -> Response {
     )
     .into_response()
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Unit Tests — decode_* helpers, compute_swap_output_rpc, constants
+// ═══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    /// Build a minimal 112-byte trading-pair blob for decode_pair.
+    fn make_pair_blob(pair_id: u64, tick: u64, lot: u64, min_order: u64, status: u8,
+                      maker_bps: i16, taker_bps: u16, vol: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 112];
+        buf[0..32].copy_from_slice(&[0xAA; 32]);   // base_token
+        buf[32..64].copy_from_slice(&[0xBB; 32]);   // quote_token
+        buf[64..72].copy_from_slice(&pair_id.to_le_bytes());
+        buf[72..80].copy_from_slice(&tick.to_le_bytes());
+        buf[80..88].copy_from_slice(&lot.to_le_bytes());
+        buf[88..96].copy_from_slice(&min_order.to_le_bytes());
+        buf[96] = status;
+        buf[97..99].copy_from_slice(&maker_bps.to_le_bytes());
+        buf[99..101].copy_from_slice(&taker_bps.to_le_bytes());
+        buf[101..109].copy_from_slice(&vol.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal 128-byte order blob for decode_order.
+    fn make_order_blob(trader: [u8; 32], pair_id: u64, side: u8, otype: u8,
+                       price: u64, qty: u64, filled: u64, status: u8,
+                       created: u64, expiry: u64, order_id: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 128];
+        buf[0..32].copy_from_slice(&trader);
+        buf[32..40].copy_from_slice(&pair_id.to_le_bytes());
+        buf[40] = side;
+        buf[41] = otype;
+        buf[42..50].copy_from_slice(&price.to_le_bytes());
+        buf[50..58].copy_from_slice(&qty.to_le_bytes());
+        buf[58..66].copy_from_slice(&filled.to_le_bytes());
+        buf[66] = status;
+        buf[67..75].copy_from_slice(&created.to_le_bytes());
+        buf[75..83].copy_from_slice(&expiry.to_le_bytes());
+        buf[83..91].copy_from_slice(&order_id.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal 80-byte trade blob.
+    fn make_trade_blob(trade_id: u64, pair_id: u64, price: u64, qty: u64,
+                       taker: [u8; 32], maker_order_id: u64, slot: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 80];
+        buf[0..8].copy_from_slice(&trade_id.to_le_bytes());
+        buf[8..16].copy_from_slice(&pair_id.to_le_bytes());
+        buf[16..24].copy_from_slice(&price.to_le_bytes());
+        buf[24..32].copy_from_slice(&qty.to_le_bytes());
+        buf[32..64].copy_from_slice(&taker);
+        buf[64..72].copy_from_slice(&maker_order_id.to_le_bytes());
+        buf[72..80].copy_from_slice(&slot.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal 96-byte pool blob.
+    fn make_pool_blob(pool_id: u64, sqrt_price: u64, tick: i32, liquidity: u64,
+                      fee_tier: u8, protocol_fee: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; 96];
+        buf[0..32].copy_from_slice(&[0xCC; 32]);  // token_a
+        buf[32..64].copy_from_slice(&[0xDD; 32]); // token_b
+        buf[64..72].copy_from_slice(&pool_id.to_le_bytes());
+        buf[72..80].copy_from_slice(&sqrt_price.to_le_bytes());
+        buf[80..84].copy_from_slice(&tick.to_le_bytes());
+        buf[84..92].copy_from_slice(&liquidity.to_le_bytes());
+        buf[92] = fee_tier;
+        buf[93] = protocol_fee;
+        buf
+    }
+
+    /// Build a minimal 48-byte candle blob.
+    fn make_candle_blob(o: u64, h: u64, l: u64, c: u64, vol: u64, slot: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 48];
+        buf[0..8].copy_from_slice(&o.to_le_bytes());
+        buf[8..16].copy_from_slice(&h.to_le_bytes());
+        buf[16..24].copy_from_slice(&l.to_le_bytes());
+        buf[24..32].copy_from_slice(&c.to_le_bytes());
+        buf[32..40].copy_from_slice(&vol.to_le_bytes());
+        buf[40..48].copy_from_slice(&slot.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal 48-byte 24h stats blob.
+    fn make_stats_blob(vol: u64, h: u64, l: u64, o: u64, c: u64, trades: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; 48];
+        buf[0..8].copy_from_slice(&vol.to_le_bytes());
+        buf[8..16].copy_from_slice(&h.to_le_bytes());
+        buf[16..24].copy_from_slice(&l.to_le_bytes());
+        buf[24..32].copy_from_slice(&o.to_le_bytes());
+        buf[32..40].copy_from_slice(&c.to_le_bytes());
+        buf[40..48].copy_from_slice(&trades.to_le_bytes());
+        buf
+    }
+
+    /// Build a minimal 96-byte route blob.
+    fn make_route_blob(route_id: u64, rtype: u8, pool_id: u64, secondary: u64,
+                       split: u8, enabled: bool) -> Vec<u8> {
+        let mut buf = vec![0u8; 96];
+        buf[0..32].copy_from_slice(&[0x11; 32]);   // token_in
+        buf[32..64].copy_from_slice(&[0x22; 32]);   // token_out
+        buf[64..72].copy_from_slice(&route_id.to_le_bytes());
+        buf[72] = rtype;
+        buf[73..81].copy_from_slice(&pool_id.to_le_bytes());
+        buf[81..89].copy_from_slice(&secondary.to_le_bytes());
+        buf[89] = split;
+        buf[90] = if enabled { 1 } else { 0 };
+        buf
+    }
+
+    // ── decode_pair ─────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_pair_too_short() {
+        assert!(decode_pair(&[0u8; 111]).is_none());
+    }
+
+    #[test]
+    fn decode_pair_roundtrip() {
+        let blob = make_pair_blob(42, 100, 10, 5, 0, -5, 30, 999_000);
+        let p = decode_pair(&blob).unwrap();
+        assert_eq!(p.pair_id, 42);
+        assert_eq!(p.tick_size, 100);
+        assert_eq!(p.lot_size, 10);
+        assert_eq!(p.min_order, 5);
+        assert_eq!(p.status, "active");
+        assert_eq!(p.maker_fee_bps, -5);
+        assert_eq!(p.taker_fee_bps, 30);
+        assert_eq!(p.daily_volume, 999_000);
+        assert_eq!(p.base_token, hex::encode([0xAA; 32]));
+    }
+
+    #[test]
+    fn decode_pair_status_paused() {
+        let blob = make_pair_blob(1, 0, 0, 0, 1, 0, 0, 0);
+        assert_eq!(decode_pair(&blob).unwrap().status, "paused");
+    }
+
+    #[test]
+    fn decode_pair_status_delisted() {
+        let blob = make_pair_blob(1, 0, 0, 0, 99, 0, 0, 0);
+        assert_eq!(decode_pair(&blob).unwrap().status, "delisted");
+    }
+
+    // ── decode_order ────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_order_too_short() {
+        assert!(decode_order(&[0u8; 127]).is_none());
+    }
+
+    #[test]
+    fn decode_order_roundtrip() {
+        let trader = [0x01; 32];
+        let blob = make_order_blob(trader, 7, 0, 0, PRICE_SCALE * 100, 50, 10, 1, 500, 1000, 99);
+        let o = decode_order(&blob).unwrap();
+        assert_eq!(o.order_id, 99);
+        assert_eq!(o.pair_id, 7);
+        assert_eq!(o.side, "buy");
+        assert_eq!(o.order_type, "limit");
+        assert_eq!(o.price, 100.0);
+        assert_eq!(o.quantity, 50);
+        assert_eq!(o.filled, 10);
+        assert_eq!(o.status, "partial");
+        assert_eq!(o.created_slot, 500);
+        assert_eq!(o.expiry_slot, 1000);
+    }
+
+    #[test]
+    fn decode_order_sell_market() {
+        let blob = make_order_blob([0; 32], 1, 1, 1, 0, 0, 0, 0, 0, 0, 1);
+        let o = decode_order(&blob).unwrap();
+        assert_eq!(o.side, "sell");
+        assert_eq!(o.order_type, "market");
+    }
+
+    #[test]
+    fn decode_order_all_statuses() {
+        for (byte, expected) in [(0u8, "open"), (1, "partial"), (2, "filled"),
+                                  (3, "cancelled"), (4, "expired")] {
+            let blob = make_order_blob([0; 32], 1, 0, 0, 0, 0, 0, byte, 0, 0, 1);
+            assert_eq!(decode_order(&blob).unwrap().status, expected);
+        }
+    }
+
+    #[test]
+    fn decode_order_all_types() {
+        for (byte, expected) in [(0u8, "limit"), (1, "market"), (2, "stop-limit"),
+                                  (3, "post-only")] {
+            let blob = make_order_blob([0; 32], 1, 0, byte, 0, 0, 0, 0, 0, 0, 1);
+            assert_eq!(decode_order(&blob).unwrap().order_type, expected);
+        }
+    }
+
+    // ── decode_trade ────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_trade_too_short() {
+        assert!(decode_trade(&[0u8; 79]).is_none());
+    }
+
+    #[test]
+    fn decode_trade_roundtrip() {
+        let taker = [0xFF; 32];
+        let price_raw = 50 * PRICE_SCALE;
+        let blob = make_trade_blob(1, 2, price_raw, 100, taker, 77, 12345);
+        let t = decode_trade(&blob).unwrap();
+        assert_eq!(t.trade_id, 1);
+        assert_eq!(t.pair_id, 2);
+        assert_eq!(t.price, 50.0);
+        assert_eq!(t.quantity, 100);
+        assert_eq!(t.maker_order_id, 77);
+        assert_eq!(t.slot, 12345);
+        assert_eq!(t.taker, hex::encode([0xFF; 32]));
+    }
+
+    // ── decode_pool ─────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_pool_too_short() {
+        assert!(decode_pool(&[0u8; 95]).is_none());
+    }
+
+    #[test]
+    fn decode_pool_roundtrip() {
+        let sqrt_price: u64 = 1u64 << 32; // sqrt_price = 1.0 → price = 1.0
+        let blob = make_pool_blob(5, sqrt_price, -100, 500_000, 2, 10);
+        let p = decode_pool(&blob).unwrap();
+        assert_eq!(p.pool_id, 5);
+        assert!((p.price - 1.0).abs() < 1e-6);
+        assert_eq!(p.tick, -100);
+        assert_eq!(p.liquidity, 500_000);
+        assert_eq!(p.fee_tier, "30bps");
+        assert_eq!(p.protocol_fee, 10);
+    }
+
+    #[test]
+    fn decode_pool_fee_tiers() {
+        for (byte, expected) in [(0u8, "1bps"), (1, "5bps"), (2, "30bps"), (3, "100bps")] {
+            let blob = make_pool_blob(1, 0, 0, 0, byte, 0);
+            assert_eq!(decode_pool(&blob).unwrap().fee_tier, expected);
+        }
+    }
+
+    // ── decode_lp_position ──────────────────────────────────────────────
+
+    #[test]
+    fn decode_lp_position_too_short() {
+        assert!(decode_lp_position(&[0u8; 79], 1).is_none());
+    }
+
+    #[test]
+    fn decode_lp_position_roundtrip() {
+        let mut buf = vec![0u8; 80];
+        buf[0..32].copy_from_slice(&[0xAB; 32]);
+        buf[32..40].copy_from_slice(&3u64.to_le_bytes());
+        buf[40..44].copy_from_slice(&(-200i32).to_le_bytes());
+        buf[44..48].copy_from_slice(&200i32.to_le_bytes());
+        buf[48..56].copy_from_slice(&1_000_000u64.to_le_bytes());
+        buf[56..64].copy_from_slice(&50u64.to_le_bytes());
+        buf[64..72].copy_from_slice(&75u64.to_le_bytes());
+        buf[72..80].copy_from_slice(&999u64.to_le_bytes());
+
+        let pos = decode_lp_position(&buf, 42).unwrap();
+        assert_eq!(pos.position_id, 42);
+        assert_eq!(pos.pool_id, 3);
+        assert_eq!(pos.lower_tick, -200);
+        assert_eq!(pos.upper_tick, 200);
+        assert_eq!(pos.liquidity, 1_000_000);
+        assert_eq!(pos.fee_a_owed, 50);
+        assert_eq!(pos.fee_b_owed, 75);
+        assert_eq!(pos.created_slot, 999);
+    }
+
+    // ── decode_margin_position ──────────────────────────────────────────
+
+    #[test]
+    fn decode_margin_position_too_short() {
+        assert!(decode_margin_position(&[0u8; 111]).is_none());
+    }
+
+    #[test]
+    fn decode_margin_position_v1() {
+        let mut buf = vec![0u8; 112];
+        buf[0..32].copy_from_slice(&[0x33; 32]);
+        buf[32..40].copy_from_slice(&7u64.to_le_bytes());  // position_id
+        buf[40..48].copy_from_slice(&2u64.to_le_bytes());  // pair_id
+        buf[48] = 0; // side = long
+        buf[49] = 0; // status = open
+        buf[50..58].copy_from_slice(&100u64.to_le_bytes()); // size
+        buf[58..66].copy_from_slice(&10u64.to_le_bytes());  // margin
+        let entry = 50 * PRICE_SCALE;
+        buf[66..74].copy_from_slice(&entry.to_le_bytes());
+        buf[74..82].copy_from_slice(&5u64.to_le_bytes());   // leverage
+        buf[82..90].copy_from_slice(&1000u64.to_le_bytes()); // created_slot
+        // PNL at zero => bias
+        buf[90..98].copy_from_slice(&PNL_BIAS.to_le_bytes());
+        buf[98..106].copy_from_slice(&0u64.to_le_bytes());
+
+        let m = decode_margin_position(&buf).unwrap();
+        assert_eq!(m.position_id, 7);
+        assert_eq!(m.pair_id, 2);
+        assert_eq!(m.side, "long");
+        assert_eq!(m.status, "open");
+        assert_eq!(m.entry_price, 50.0);
+        assert_eq!(m.leverage, 5);
+        assert_eq!(m.realized_pnl, 0);
+        assert_eq!(m.margin_type, "isolated"); // V1 = isolated
+        assert_eq!(m.sl_price, 0);
+        assert_eq!(m.tp_price, 0);
+    }
+
+    #[test]
+    fn decode_margin_position_v2_cross() {
+        let mut buf = vec![0u8; 128];
+        buf[0..32].copy_from_slice(&[0x44; 32]);
+        buf[32..40].copy_from_slice(&1u64.to_le_bytes());
+        buf[40..48].copy_from_slice(&1u64.to_le_bytes());
+        buf[48] = 1; // short
+        buf[49] = 1; // closed
+        buf[50..58].copy_from_slice(&200u64.to_le_bytes());
+        buf[58..66].copy_from_slice(&20u64.to_le_bytes());
+        let entry = 75 * PRICE_SCALE;
+        buf[66..74].copy_from_slice(&entry.to_le_bytes());
+        buf[74..82].copy_from_slice(&10u64.to_le_bytes());
+        buf[82..90].copy_from_slice(&500u64.to_le_bytes());
+        // PNL: +1000 => bias + 1000
+        let pnl_raw = PNL_BIAS + 1000;
+        buf[90..98].copy_from_slice(&pnl_raw.to_le_bytes());
+        buf[98..106].copy_from_slice(&0u64.to_le_bytes());
+        // SL/TP
+        let sl = 80 * PRICE_SCALE;
+        let tp = 60 * PRICE_SCALE;
+        buf[106..114].copy_from_slice(&sl.to_le_bytes());
+        buf[114..122].copy_from_slice(&tp.to_le_bytes());
+        buf[122] = 1; // cross
+        buf[123..128].fill(0);
+
+        let m = decode_margin_position(&buf).unwrap();
+        assert_eq!(m.side, "short");
+        assert_eq!(m.status, "closed");
+        assert_eq!(m.margin_type, "cross");
+        assert_eq!(m.realized_pnl, 1000);
+        assert_eq!(m.sl_price, sl);
+        assert_eq!(m.tp_price, tp);
+    }
+
+    #[test]
+    fn decode_margin_position_liquidated() {
+        let mut buf = vec![0u8; 112];
+        buf[0..32].fill(0);
+        buf[32..40].copy_from_slice(&1u64.to_le_bytes());
+        buf[40..48].copy_from_slice(&1u64.to_le_bytes());
+        buf[48] = 0;
+        buf[49] = 2; // liquidated
+        buf[50..106].fill(0);
+        buf[90..98].copy_from_slice(&PNL_BIAS.to_le_bytes());
+        let m = decode_margin_position(&buf).unwrap();
+        assert_eq!(m.status, "liquidated");
+    }
+
+    // ── decode_candle ───────────────────────────────────────────────────
+
+    #[test]
+    fn decode_candle_too_short() {
+        assert!(decode_candle(&[0u8; 47]).is_none());
+    }
+
+    #[test]
+    fn decode_candle_roundtrip() {
+        let scale = PRICE_SCALE;
+        let blob = make_candle_blob(100 * scale, 110 * scale, 90 * scale, 105 * scale, 5000, 42);
+        let c = decode_candle(&blob).unwrap();
+        assert!((c.open - 100.0).abs() < 1e-6);
+        assert!((c.high - 110.0).abs() < 1e-6);
+        assert!((c.low -  90.0).abs() < 1e-6);
+        assert!((c.close - 105.0).abs() < 1e-6);
+        assert_eq!(c.volume, 5000);
+        assert_eq!(c.slot, 42);
+    }
+
+    // ── decode_stats_24h ────────────────────────────────────────────────
+
+    #[test]
+    fn decode_stats_24h_too_short() {
+        assert!(decode_stats_24h(&[0u8; 47]).is_none());
+    }
+
+    #[test]
+    fn decode_stats_24h_positive_change() {
+        let scale = PRICE_SCALE;
+        let blob = make_stats_blob(10_000, 120 * scale, 80 * scale, 100 * scale, 110 * scale, 200);
+        let s = decode_stats_24h(&blob).unwrap();
+        assert_eq!(s.volume, 10_000);
+        assert!((s.open - 100.0).abs() < 1e-6);
+        assert!((s.close - 110.0).abs() < 1e-6);
+        assert!((s.change - 10.0).abs() < 1e-6);
+        assert!((s.change_percent - 10.0).abs() < 1e-6);
+        assert_eq!(s.trade_count, 200);
+    }
+
+    #[test]
+    fn decode_stats_24h_zero_open() {
+        let blob = make_stats_blob(0, 0, 0, 0, 0, 0);
+        let s = decode_stats_24h(&blob).unwrap();
+        assert_eq!(s.change_percent, 0.0); // no div by zero
+    }
+
+    // ── decode_route ────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_route_too_short() {
+        assert!(decode_route(&[0u8; 95]).is_none());
+    }
+
+    #[test]
+    fn decode_route_roundtrip() {
+        let blob = make_route_blob(10, 1, 5, 0, 50, true);
+        let r = decode_route(&blob).unwrap();
+        assert_eq!(r.route_id, 10);
+        assert_eq!(r.route_type, "amm");
+        assert_eq!(r.pool_or_pair_id, 5);
+        assert_eq!(r.split_percent, 50);
+        assert!(r.enabled);
+    }
+
+    #[test]
+    fn decode_route_all_types() {
+        for (byte, expected) in [(0u8, "clob"), (1, "amm"), (2, "split"),
+                                  (3, "multi_hop"), (4, "legacy")] {
+            let blob = make_route_blob(1, byte, 0, 0, 0, false);
+            assert_eq!(decode_route(&blob).unwrap().route_type, expected);
+        }
+    }
+
+    // ── decode_proposal ─────────────────────────────────────────────────
+
+    #[test]
+    fn decode_proposal_too_short() {
+        assert!(decode_proposal(&[0u8; 119]).is_none());
+    }
+
+    #[test]
+    fn decode_proposal_active_new_pair() {
+        let mut buf = vec![0u8; 120];
+        buf[0..32].copy_from_slice(&[0x55; 32]); // proposer
+        buf[32..40].copy_from_slice(&1u64.to_le_bytes());
+        buf[40] = 0; // new_pair
+        buf[41] = 0; // active
+        buf[42..50].copy_from_slice(&100u64.to_le_bytes());
+        buf[50..58].copy_from_slice(&200u64.to_le_bytes());
+        buf[58..66].copy_from_slice(&50u64.to_le_bytes());
+        buf[66..74].copy_from_slice(&10u64.to_le_bytes());
+        buf[74..82].copy_from_slice(&3u64.to_le_bytes());
+
+        let p = decode_proposal(&buf).unwrap();
+        assert_eq!(p.proposal_id, 1);
+        assert_eq!(p.proposal_type, "new_pair");
+        assert_eq!(p.status, "active");
+        assert_eq!(p.yes_votes, 50);
+        assert_eq!(p.no_votes, 10);
+        assert!(p.base_token.is_some()); // 120 >= 114, so new_pair includes base_token
+    }
+
+    #[test]
+    fn decode_proposal_all_statuses() {
+        for (byte, expected) in [(0u8, "active"), (1, "passed"), (2, "rejected"),
+                                  (3, "executed"), (4, "cancelled")] {
+            let mut buf = vec![0u8; 120];
+            buf[41] = byte;
+            assert_eq!(decode_proposal(&buf).unwrap().status, expected);
+        }
+    }
+
+    #[test]
+    fn decode_proposal_all_types() {
+        for (byte, expected) in [(0u8, "new_pair"), (1, "fee_change"),
+                                  (2, "delist"), (3, "param_change")] {
+            let mut buf = vec![0u8; 120];
+            buf[40] = byte;
+            assert_eq!(decode_proposal(&buf).unwrap().proposal_type, expected);
+        }
+    }
+
+    // ── compute_swap_output_rpc ─────────────────────────────────────────
+
+    #[test]
+    fn swap_zero_liquidity_returns_zero() {
+        let (out, new_sqrt) = compute_swap_output_rpc(1000, 0, 1u64 << 32, 30, true);
+        assert_eq!(out, 0);
+        assert_eq!(new_sqrt, 1u64 << 32);
+    }
+
+    #[test]
+    fn swap_zero_amount_returns_zero() {
+        let (out, new_sqrt) = compute_swap_output_rpc(0, 1_000_000, 1u64 << 32, 30, true);
+        assert_eq!(out, 0);
+        assert_eq!(new_sqrt, 1u64 << 32);
+    }
+
+    #[test]
+    fn swap_a_for_b_produces_output() {
+        let sqrt_price = 1u64 << 32;
+        let (out, new_sqrt) = compute_swap_output_rpc(10_000, 1_000_000, sqrt_price, 30, true);
+        assert!(out > 0, "should produce output tokens");
+        assert!(new_sqrt < sqrt_price, "A→B should lower sqrt price");
+    }
+
+    #[test]
+    fn swap_b_for_a_produces_output() {
+        let sqrt_price = 1u64 << 32;
+        let (out, new_sqrt) = compute_swap_output_rpc(10_000, 1_000_000, sqrt_price, 30, false);
+        assert!(out > 0, "should produce output tokens");
+        assert!(new_sqrt > sqrt_price, "B→A should raise sqrt price");
+    }
+
+    #[test]
+    fn swap_more_input_more_output() {
+        let sqrt_price = 1u64 << 32;
+        let liq = 1_000_000u64;
+        let (out_small, _) = compute_swap_output_rpc(1_000, liq, sqrt_price, 30, true);
+        let (out_large, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 30, true);
+        assert!(out_large > out_small, "larger input should yield more output");
+    }
+
+    #[test]
+    fn swap_higher_fee_less_output() {
+        let sqrt_price = 1u64 << 32;
+        let liq = 1_000_000u64;
+        let (out_low_fee, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 10, true);
+        let (out_high_fee, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 500, true);
+        assert!(out_low_fee > out_high_fee, "lower fee should yield more output");
+    }
+
+    // ── constants sanity ────────────────────────────────────────────────
+
+    #[test]
+    fn price_scale_is_1e9() {
+        assert_eq!(PRICE_SCALE, 1_000_000_000);
+    }
+
+    #[test]
+    fn pnl_bias_is_2_63() {
+        assert_eq!(PNL_BIAS, 1u64 << 63);
+    }
+
+    #[test]
+    fn slot_duration_ms_is_400() {
+        assert_eq!(SLOT_DURATION_MS, 400);
+    }
+
+    #[test]
+    fn program_constants_non_empty() {
+        assert!(!DEX_CORE_PROGRAM.is_empty());
+        assert!(!DEX_AMM_PROGRAM.is_empty());
+        assert!(!DEX_MARGIN_PROGRAM.is_empty());
+        assert!(!DEX_ANALYTICS_PROGRAM.is_empty());
+        assert!(!DEX_ROUTER_PROGRAM.is_empty());
+        assert!(!DEX_REWARDS_PROGRAM.is_empty());
+        assert!(!DEX_GOVERNANCE_PROGRAM.is_empty());
+        assert!(!ORACLE_PROGRAM.is_empty());
+    }
+
+    // ── api_err / api_not_found helpers ─────────────────────────────────
+
+    #[test]
+    fn default_limit_is_limit() {
+        assert_eq!(default_limit(), "limit");
+    }
+}

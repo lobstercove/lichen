@@ -289,9 +289,24 @@ async fn send_tx(
     signer: &Keypair,
     instructions: Vec<Instruction>,
 ) -> Result<String> {
+    // Fetch a recent blockhash from the validator for replay protection
+    let bh_result = rpc_call(client, rpc_url, "getRecentBlockhash", json!([])).await?;
+    let blockhash_str = bh_result
+        .get("blockhash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Failed to get recent blockhash from RPC"))?;
+    let blockhash_bytes = hex::decode(blockhash_str)
+        .context("Failed to decode blockhash")?;
+    let mut bh = [0u8; 32];
+    if blockhash_bytes.len() >= 32 {
+        bh.copy_from_slice(&blockhash_bytes[..32]);
+    } else {
+        bh[..blockhash_bytes.len()].copy_from_slice(&blockhash_bytes);
+    }
+
     let message = Message {
         instructions,
-        recent_blockhash: Hash::new([0u8; 32]),
+        recent_blockhash: Hash::new(bh),
     };
 
     let signature = signer.sign(&message.serialize());

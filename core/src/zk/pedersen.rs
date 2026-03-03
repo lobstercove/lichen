@@ -16,11 +16,32 @@ use ark_std::rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 /// Fixed generator G for value component (hash-to-curve of "MoltChain-Pedersen-G")
+/// Uses deterministic try-and-increment with domain-separated hash, matching H.
 fn generator_g() -> G1Affine {
-    // Deterministic generator via hash-to-curve
-    // In production, use a proper hash-to-curve (e.g., SWU map)
-    // For now, use the standard BN254 generator
-    G1Affine::generator()
+    // AUDIT-FIX CORE-02: Use hash-to-curve instead of standard generator.
+    // Domain separation ensures G and H are provably independent.
+    let mut hasher = Sha256::new();
+    hasher.update(b"MoltChain-Pedersen-G-generator-v1");
+    let hash = hasher.finalize();
+
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&hash);
+
+    loop {
+        let mut attempt_hasher = Sha256::new();
+        attempt_hasher.update(seed);
+        let attempt = attempt_hasher.finalize();
+
+        if let Some(point) = try_decode_point(&attempt) {
+            if !point.is_zero() {
+                return point;
+            }
+        }
+        for byte in seed.iter_mut().rev() {
+            *byte = byte.wrapping_add(1);
+            if *byte != 0 { break; }
+        }
+    }
 }
 
 /// Fixed generator H for blinding component (hash-to-curve of "MoltChain-Pedersen-H")

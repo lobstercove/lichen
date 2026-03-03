@@ -349,3 +349,132 @@ impl GossipManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn addr(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    // ── ReconnectTracker basics ──
+
+    #[test]
+    fn tracker_new_peer_should_attempt() {
+        let tracker = ReconnectTracker::new();
+        assert!(tracker.should_attempt(&addr(8000)));
+    }
+
+    #[test]
+    fn tracker_after_failure_respects_backoff() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8001);
+        tracker.record_failure(peer);
+        // Immediately after failure, should NOT attempt (backoff > 0)
+        assert!(!tracker.should_attempt(&peer));
+    }
+
+    #[test]
+    fn tracker_success_clears_backoff() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8002);
+        tracker.record_failure(peer);
+        assert!(!tracker.should_attempt(&peer));
+        tracker.record_success(peer);
+        assert!(tracker.should_attempt(&peer));
+    }
+
+    #[test]
+    fn tracker_multiple_failures_increase_backoff() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8003);
+        tracker.record_failure(peer);
+        let (_, b1) = tracker.backoff[&peer];
+        tracker.record_failure(peer);
+        let (_, b2) = tracker.backoff[&peer];
+        tracker.record_failure(peer);
+        let (_, b3) = tracker.backoff[&peer];
+        assert!(b2 > b1, "Second backoff should be larger");
+        assert!(b3 > b2, "Third backoff should be larger");
+    }
+
+    #[test]
+    fn tracker_backoff_capped_at_max() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8004);
+        // Record many failures to exceed max
+        for _ in 0..20 {
+            tracker.record_failure(peer);
+        }
+        let (_, backoff) = tracker.backoff[&peer];
+        assert_eq!(backoff, MAX_BACKOFF_SECS);
+    }
+
+    #[test]
+    fn tracker_initial_backoff_value() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8005);
+        tracker.record_failure(peer);
+        let (_, backoff) = tracker.backoff[&peer];
+        // First failure doubles from INITIAL_BACKOFF_SECS
+        assert_eq!(backoff, INITIAL_BACKOFF_SECS * 2);
+    }
+
+    #[test]
+    fn tracker_independent_peers() {
+        let mut tracker = ReconnectTracker::new();
+        let peer_a = addr(8006);
+        let peer_b = addr(8007);
+        tracker.record_failure(peer_a);
+        // peer_b is unaffected
+        assert!(tracker.should_attempt(&peer_b));
+        assert!(!tracker.should_attempt(&peer_a));
+    }
+
+    #[test]
+    fn tracker_prune_stale_removes_old_entries() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8008);
+        // Manually insert an entry far in the past
+        tracker.backoff.insert(peer, (0, INITIAL_BACKOFF_SECS));
+        assert_eq!(tracker.backoff.len(), 1);
+        tracker.prune_stale();
+        assert_eq!(tracker.backoff.len(), 0, "Stale entry should be pruned");
+    }
+
+    #[test]
+    fn tracker_prune_keeps_fresh_entries() {
+        let mut tracker = ReconnectTracker::new();
+        let peer = addr(8009);
+        tracker.record_failure(peer); // Sets next_attempt to now + backoff
+        let before = tracker.backoff.len();
+        tracker.prune_stale();
+        assert_eq!(tracker.backoff.len(), before, "Fresh entry should NOT be pruned");
+    }
+
+    // ── Constants ──
+
+    #[test]
+    fn constants_sane() {
+        assert!(MIN_PEER_COUNT >= 1);
+        assert!(MAX_BACKOFF_SECS >= INITIAL_BACKOFF_SECS);
+        assert!(INITIAL_BACKOFF_SECS > 0);
+    }
+
+    // ── GossipManager field-level assertions (requires PeerManager which is
+    //    async + heavy; tested at integration level instead) ──
+    //    See tests/matrix-test-3val.sh Phase 2 for live gossip verification.
+
+    #[test]
+    fn gossip_manager_struct_size_sanity() {
+        // GossipManager should exist and be constructible in principle;
+        // we can't easily unit-test it because PeerManager::new is async
+        // and requires certs + a real UDP socket. Assert it exists as a type.
+        fn _assert_send<T: Send>() {}
+        fn _assert_sync<T: Sync>() {}
+        _assert_send::<GossipManager>();
+        _assert_sync::<GossipManager>();
+    }
+}

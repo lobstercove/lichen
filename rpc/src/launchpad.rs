@@ -517,3 +517,157 @@ pub(crate) fn build_launchpad_router() -> Router<Arc<RpcState>> {
         .route("/tokens/:id/quote", get(get_buy_quote))
         .route("/tokens/:id/holders", get(get_holder_balance))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Constants sanity ──
+
+    #[test]
+    fn constants_sane() {
+        assert!(BASE_PRICE > 0);
+        assert!(SLOPE > 0);
+        assert!(SLOPE_SCALE > 0);
+        assert!(SHELLS_PER_MOLT > 0.0);
+        assert!(CREATION_FEE_MOLT > 0.0);
+        assert!(GRADUATION_MCAP_MOLT > 0.0);
+    }
+
+    // ── spot_price ──
+
+    #[test]
+    fn spot_price_at_zero_supply() {
+        let p = spot_price(0);
+        // At supply=0: price = BASE_PRICE / SHELLS_PER_MOLT
+        let expected = BASE_PRICE as f64 / SHELLS_PER_MOLT;
+        assert!((p - expected).abs() < 1e-15, "spot_price(0) = {}, expected {}", p, expected);
+    }
+
+    #[test]
+    fn spot_price_increases_with_supply() {
+        let p0 = spot_price(0);
+        let p1 = spot_price(1_000_000_000);
+        let p2 = spot_price(10_000_000_000);
+        assert!(p1 > p0, "Price should increase with supply");
+        assert!(p2 > p1, "Price should increase with supply");
+    }
+
+    #[test]
+    fn spot_price_monotonic() {
+        let mut prev = spot_price(0);
+        for supply in (1_000_000..=100_000_000).step_by(1_000_000) {
+            let p = spot_price(supply);
+            assert!(p >= prev, "spot_price must be monotonically non-decreasing");
+            prev = p;
+        }
+    }
+
+    // ── market_cap ──
+
+    #[test]
+    fn market_cap_zero_at_zero_supply() {
+        assert_eq!(market_cap(0), 0.0);
+    }
+
+    #[test]
+    fn market_cap_increases_with_supply() {
+        let m0 = market_cap(0);
+        let m1 = market_cap(1_000_000_000);
+        let m2 = market_cap(10_000_000_000);
+        assert!(m1 > m0);
+        assert!(m2 > m1);
+    }
+
+    // ── isqrt_u128 ──
+
+    #[test]
+    fn isqrt_zero() {
+        assert_eq!(isqrt_u128(0), 0);
+    }
+
+    #[test]
+    fn isqrt_one() {
+        assert_eq!(isqrt_u128(1), 1);
+    }
+
+    #[test]
+    fn isqrt_perfect_squares() {
+        assert_eq!(isqrt_u128(4), 2);
+        assert_eq!(isqrt_u128(9), 3);
+        assert_eq!(isqrt_u128(16), 4);
+        assert_eq!(isqrt_u128(100), 10);
+        assert_eq!(isqrt_u128(10000), 100);
+        assert_eq!(isqrt_u128(1_000_000), 1000);
+    }
+
+    #[test]
+    fn isqrt_non_perfect_squares() {
+        // isqrt should floor
+        assert_eq!(isqrt_u128(2), 1);
+        assert_eq!(isqrt_u128(3), 1);
+        assert_eq!(isqrt_u128(5), 2);
+        assert_eq!(isqrt_u128(8), 2);
+        assert_eq!(isqrt_u128(99), 9);
+    }
+
+    #[test]
+    fn isqrt_large_values() {
+        let n = 1u128 << 64; // 2^64
+        let s = isqrt_u128(n);
+        assert_eq!(s, 1u128 << 32); // 2^32
+    }
+
+    // ── compute_buy_tokens ──
+
+    #[test]
+    fn buy_tokens_zero_input_returns_zero() {
+        assert_eq!(compute_buy_tokens(0, 0), 0);
+    }
+
+    #[test]
+    fn buy_tokens_positive_input() {
+        // With some shells, we should get tokens
+        let tokens = compute_buy_tokens(0, 1_000_000_000); // 1 MOLT worth
+        assert!(tokens > 0, "Should receive >0 tokens for 1 MOLT");
+    }
+
+    #[test]
+    fn buy_tokens_more_input_more_output() {
+        let t1 = compute_buy_tokens(0, 1_000_000_000);
+        let t2 = compute_buy_tokens(0, 10_000_000_000);
+        assert!(t2 > t1, "More MOLT in should yield more tokens");
+    }
+
+    #[test]
+    fn buy_tokens_higher_supply_fewer_tokens() {
+        // At higher supply, same input yields fewer tokens (bonding curve)
+        let t_low = compute_buy_tokens(0, 1_000_000_000);
+        let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000);
+        assert!(t_low > t_high, "Higher supply should yield fewer tokens per MOLT");
+    }
+
+    // ── u64_le helper ──
+
+    #[test]
+    fn u64_le_reads_correctly() {
+        let val: u64 = 0x0102030405060708;
+        let bytes = val.to_le_bytes();
+        let mut data = vec![0u8; 16];
+        data[4..12].copy_from_slice(&bytes);
+        assert_eq!(u64_le(&data, 4), val);
+    }
+
+    #[test]
+    fn u64_le_out_of_bounds_returns_zero() {
+        let data = [0u8; 4]; // too short
+        assert_eq!(u64_le(&data, 0), 0);
+    }
+
+    #[test]
+    fn u64_le_at_end() {
+        let val: u64 = 42;
+        let data = val.to_le_bytes().to_vec();
+        assert_eq!(u64_le(&data, 0), 42);
+    }
+}

@@ -114,7 +114,7 @@ fn serialize_proof(proof: Proof<Bn254>, proof_type: ProofType) -> ZkProof {
     let mut proof_bytes = Vec::new();
     proof
         .serialize_compressed(&mut proof_bytes)
-        .expect("proof serialization should not fail");
+        .unwrap_or_else(|e| panic!("FATAL: Groth16 proof serialization failed: {}. OOM or ark-serialize bug.", e));
 
     ZkProof {
         proof_bytes,

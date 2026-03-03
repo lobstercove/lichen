@@ -874,8 +874,12 @@ async fn get_price_history(
     ApiResponse::ok(snapshots, slot).into_response()
 }
 
-/// POST /prediction-market/trade — Submit a trade (buy/sell outcome shares)
-/// In production this would create a transaction. For now returns the trade preview.
+/// POST /prediction-market/trade — Returns a trade preview (quote).
+///
+/// AUDIT-FIX RPC-02: This endpoint intentionally returns a preview/quote only.
+/// Actual trade execution must go through `sendTransaction` to ensure all state
+/// mutations occur under consensus. The preview gives callers the expected price,
+/// shares, and fees before they submit a signed transaction.
 async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeRequest>) -> Response {
     let slot = current_slot(&state);
 
@@ -940,7 +944,7 @@ async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeReq
         shares: f64,
         price: f64,
         fee: f64,
-        // In production: tx_hash
+        /// Always "preview" — submit via sendTransaction for execution.
         status: &'static str,
     }
 
@@ -1434,4 +1438,166 @@ pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
         .route("/trade", post(post_trade))
         .route("/create", post(post_create))
         .route("/create-template", post(post_create_template))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── map_category ──
+
+    #[test]
+    fn map_category_valid() {
+        assert_eq!(map_category("politics"), Some(0));
+        assert_eq!(map_category("sports"), Some(1));
+        assert_eq!(map_category("crypto"), Some(2));
+        assert_eq!(map_category("science"), Some(3));
+        assert_eq!(map_category("entertainment"), Some(4));
+        assert_eq!(map_category("economics"), Some(5));
+        assert_eq!(map_category("tech"), Some(6));
+        assert_eq!(map_category("custom"), Some(7));
+    }
+
+    #[test]
+    fn map_category_case_insensitive() {
+        assert_eq!(map_category("POLITICS"), Some(0));
+        assert_eq!(map_category("Sports"), Some(1));
+        assert_eq!(map_category("CRYPTO"), Some(2));
+    }
+
+    #[test]
+    fn map_category_trims_whitespace() {
+        assert_eq!(map_category("  sports  "), Some(1));
+        assert_eq!(map_category("\tcrypto\n"), Some(2));
+    }
+
+    #[test]
+    fn map_category_invalid() {
+        assert_eq!(map_category("invalid"), None);
+        assert_eq!(map_category(""), None);
+        assert_eq!(map_category("unknown"), None);
+    }
+
+    // ── category_name ──
+
+    #[test]
+    fn category_name_all_valid() {
+        assert_eq!(category_name(0), "politics");
+        assert_eq!(category_name(1), "sports");
+        assert_eq!(category_name(2), "crypto");
+        assert_eq!(category_name(3), "science");
+        assert_eq!(category_name(4), "entertainment");
+        assert_eq!(category_name(5), "economics");
+        assert_eq!(category_name(6), "tech");
+        assert_eq!(category_name(7), "custom");
+    }
+
+    #[test]
+    fn category_name_invalid_returns_unknown() {
+        assert_eq!(category_name(8), "unknown");
+        assert_eq!(category_name(255), "unknown");
+    }
+
+    #[test]
+    fn category_roundtrip() {
+        for cat in ["politics", "sports", "crypto", "science", "entertainment", "economics", "tech", "custom"] {
+            let id = map_category(cat).unwrap();
+            assert_eq!(category_name(id), cat);
+        }
+    }
+
+    // ── status_name ──
+
+    #[test]
+    fn status_name_pending() {
+        assert_eq!(status_name(0, 0, 0), "pending");
+    }
+
+    #[test]
+    fn status_name_active_before_close() {
+        assert_eq!(status_name(1, 1000, 500), "active");
+    }
+
+    #[test]
+    fn status_name_closed_after_close() {
+        assert_eq!(status_name(1, 1000, 1000), "closed");
+        assert_eq!(status_name(1, 1000, 2000), "closed");
+    }
+
+    #[test]
+    fn status_name_explicit_closed() {
+        assert_eq!(status_name(2, 0, 0), "closed");
+    }
+
+    #[test]
+    fn status_name_resolving() {
+        assert_eq!(status_name(3, 0, 0), "resolving");
+    }
+
+    #[test]
+    fn status_name_resolved() {
+        assert_eq!(status_name(4, 0, 0), "resolved");
+    }
+
+    #[test]
+    fn status_name_disputed() {
+        assert_eq!(status_name(5, 0, 0), "disputed");
+    }
+
+    #[test]
+    fn status_name_voided() {
+        assert_eq!(status_name(6, 0, 0), "voided");
+    }
+
+    #[test]
+    fn status_name_unknown() {
+        assert_eq!(status_name(99, 0, 0), "unknown");
+    }
+
+    // ── build_create_market_args ──
+
+    #[test]
+    fn build_create_market_args_structure() {
+        let creator = moltchain_core::Pubkey([0xAAu8; 32]);
+        let args = build_create_market_args(&creator, 2, 10000, 2, "Will BTC hit 100k?");
+        // byte 0: opcode (1)
+        assert_eq!(args[0], 1);
+        // bytes 1-32: creator pubkey
+        assert_eq!(&args[1..33], &[0xAAu8; 32]);
+        // byte 33: category
+        assert_eq!(args[33], 2);
+        // bytes 34-41: close_slot (little-endian)
+        assert_eq!(u64::from_le_bytes(args[34..42].try_into().unwrap()), 10000);
+        // byte 42: outcome_count
+        assert_eq!(args[42], 2);
+        // bytes 43-74: sha256 hash of question
+        // bytes 75-78: question length (little-endian u32)
+        let q = "Will BTC hit 100k?";
+        let q_len = u32::from_le_bytes(args[75..79].try_into().unwrap());
+        assert_eq!(q_len as usize, q.len());
+        // remaining: question bytes
+        assert_eq!(&args[79..], q.as_bytes());
+    }
+
+    #[test]
+    fn build_create_market_args_empty_question() {
+        let creator = moltchain_core::Pubkey([0u8; 32]);
+        let args = build_create_market_args(&creator, 0, 0, 2, "");
+        let q_len = u32::from_le_bytes(args[75..79].try_into().unwrap());
+        assert_eq!(q_len, 0);
+        assert_eq!(args.len(), 79); // no question bytes
+    }
+
+    // ── Constants ──
+
+    #[test]
+    fn constants_sane() {
+        assert_eq!(PRICE_SCALE, 1_000_000, "Prediction uses 1e6 (MUSD), not 1e9");
+        assert!(MIN_COLLATERAL > 0);
+        assert!(TRADING_FEE_BPS > 0 && TRADING_FEE_BPS < 10_000);
+        assert!(MIN_REPUTATION_CREATE < MIN_REPUTATION_RESOLVE);
+        assert!(DISPUTE_BOND > MARKET_CREATION_FEE);
+        assert!(DEFAULT_CLOSE_SLOTS > 0);
+        assert!(DISPUTE_PERIOD_SLOTS > 0);
+    }
 }

@@ -25,6 +25,13 @@ impl Client {
             next_id: Arc::new(AtomicU64::new(1)),
         }
     }
+
+    /// Create a client using the MOLTCHAIN_RPC_URL env var, falling back to localhost:8899.
+    pub fn from_env() -> Self {
+        let url = std::env::var("MOLTCHAIN_RPC_URL")
+            .unwrap_or_else(|_| "http://localhost:8899".to_string());
+        Self::new(url)
+    }
     
     /// Create a client builder for custom configuration
     pub fn builder() -> ClientBuilder {
@@ -370,11 +377,45 @@ impl ClientBuilder {
 mod tests {
     use super::*;
 
+    // ── Client::new ─────────────────────────────────────────────────
+
     #[test]
     fn test_client_new() {
         let client = Client::new("http://localhost:8899");
         assert_eq!(client.rpc_url, "http://localhost:8899");
     }
+
+    #[test]
+    fn test_client_new_custom_url() {
+        let client = Client::new("https://rpc.moltchain.io:443");
+        assert_eq!(client.rpc_url, "https://rpc.moltchain.io:443");
+    }
+
+    #[test]
+    fn test_client_new_id_starts_at_1() {
+        let client = Client::new("http://localhost:8899");
+        assert_eq!(client.next_id.load(Ordering::Relaxed), 1);
+    }
+
+    // ── Client::from_env ────────────────────────────────────────────
+
+    #[test]
+    fn test_client_from_env_defaults_to_localhost() {
+        // Clear the env var to ensure fallback
+        std::env::remove_var("MOLTCHAIN_RPC_URL");
+        let client = Client::from_env();
+        assert_eq!(client.rpc_url, "http://localhost:8899");
+    }
+
+    #[test]
+    fn test_client_from_env_uses_var() {
+        std::env::set_var("MOLTCHAIN_RPC_URL", "http://custom:9999");
+        let client = Client::from_env();
+        assert_eq!(client.rpc_url, "http://custom:9999");
+        std::env::remove_var("MOLTCHAIN_RPC_URL");
+    }
+
+    // ── ClientBuilder ───────────────────────────────────────────────
 
     #[test]
     fn test_client_builder() {
@@ -385,6 +426,30 @@ mod tests {
             .expect("should build client");
         assert_eq!(client.rpc_url, "http://localhost:8899");
     }
+
+    #[test]
+    fn test_client_builder_no_url_fails() {
+        let result = Client::builder().build();
+        assert!(result.is_err(), "should fail without URL");
+    }
+
+    #[test]
+    fn test_client_builder_no_timeout() {
+        let client = Client::builder()
+            .rpc_url("http://localhost:8899")
+            .build()
+            .expect("should build without timeout");
+        assert_eq!(client.rpc_url, "http://localhost:8899");
+    }
+
+    #[test]
+    fn test_client_builder_default() {
+        let builder = ClientBuilder::default();
+        assert!(builder.rpc_url.is_none());
+        assert!(builder.timeout.is_none());
+    }
+
+    // ── Request ID counter ──────────────────────────────────────────
 
     #[test]
     fn test_client_id_increments() {
@@ -402,5 +467,12 @@ mod tests {
         let clone = client.clone();
         let v = clone.next_id.fetch_add(1, Ordering::Relaxed);
         assert_eq!(v, 2); // Shared via Arc
+    }
+
+    #[test]
+    fn test_client_clone_shares_url() {
+        let client = Client::new("http://my-rpc:8899");
+        let clone = client.clone();
+        assert_eq!(clone.rpc_url, "http://my-rpc:8899");
     }
 }

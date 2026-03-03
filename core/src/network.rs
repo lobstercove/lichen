@@ -110,7 +110,13 @@ impl SeedsConfig {
         peers
     }
 
-    /// Default embedded configuration
+    /// Default embedded configuration.
+    ///
+    /// AUDIT-FIX CORE-04: These are compile-time fallback seeds used only when
+    /// no seeds.json or config file is provided. Validators override these by
+    /// placing a seeds.json file in the data directory (see validator SeedsFile).
+    /// DNS-based seed addresses resolve dynamically; raw IP bootstrap_peers are
+    /// last-resort fallbacks for initial network discovery.
     pub fn default_embedded() -> Self {
         SeedsConfig {
             testnet: NetworkConfig {

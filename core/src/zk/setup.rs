@@ -70,11 +70,11 @@ pub fn setup_all() -> Result<Vec<CeremonyOutput>, String> {
 fn serialize_keys(pk: ProvingKey<Bn254>, vk: VerifyingKey<Bn254>, name: &str) -> CeremonyOutput {
     let mut pk_bytes = Vec::new();
     pk.serialize_compressed(&mut pk_bytes)
-        .expect("PK serialization should not fail");
+        .unwrap_or_else(|e| panic!("FATAL: ProvingKey '{}' serialization failed: {}. OOM or ark-serialize bug.", name, e));
 
     let mut vk_bytes = Vec::new();
     vk.serialize_compressed(&mut vk_bytes)
-        .expect("VK serialization should not fail");
+        .unwrap_or_else(|e| panic!("FATAL: VerifyingKey '{}' serialization failed: {}. OOM or ark-serialize bug.", name, e));
 
     CeremonyOutput {
         proving_key_bytes: pk_bytes,

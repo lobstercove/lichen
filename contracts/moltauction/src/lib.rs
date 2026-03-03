@@ -87,9 +87,8 @@ fn get_marketplace_addr() -> Address {
     match storage_get(MARKETPLACE_ADDR_KEY) {
         Some(data) if data.len() == 32 => Address(data.try_into().expect("marketplace addr 32-byte slice")),
         _ => {
-            log_info(" Marketplace address not set, using contract default");
-            // Fallback: derive from a known seed rather than zero address
-            Address([0x4D; 32]) // 'M' repeated — identifiable placeholder
+            log_info("Marketplace address not set — operations requiring it will fail");
+            Address([0u8; 32])
         }
     }
 }

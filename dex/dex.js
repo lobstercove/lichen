@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Configuration — override via window globals or <script> config block
     // ═══════════════════════════════════════════════════════════════════════
-    const RPC_BASE  = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || 'http://localhost:8899').replace(/\/$/, '');
+    const RPC_BASE  = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || (typeof getMoltRpcUrl === 'function' ? getMoltRpcUrl() : 'http://localhost:8899')).replace(/\/$/, '');
     const WS_URL    = (localStorage.getItem('dexWsUrl') || window.MOLTCHAIN_WS  || RPC_BASE.replace(/^http/, 'ws').replace(/:8899/, ':8900')).replace(/\/$/, '');
     const API_BASE  = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
@@ -94,7 +94,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             this.ws.onopen = () => {
-                console.log('[WS] Connected');
                 this.reconnectDelay = 1000;
                 this.connected = true;
                 if (this.onConnectionChange) this.onConnectionChange(true);
@@ -905,11 +904,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── Tick math for AMM (Uniswap V3 style) ──
-    const MIN_TICK = -443636;
-    const MAX_TICK = 443636;
+    const MIN_TICK = -887272;
+    const MAX_TICK = 887272;
     function sqrtPriceQ32ToPrice(sqrtPrice) {
         if (!sqrtPrice) return 0;
-        const sqrtP = sqrtPrice / (2 ** 32);
+        const sqrtP = sqrtPrice / (2**32);
         return sqrtP * sqrtP;
     }
     function priceToTick(price) {
@@ -961,10 +960,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // State
     // ═══════════════════════════════════════════════════════════════════════
-    // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch
+    // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch.
+    // Used ONLY as bootstrap fallback before any on-chain trading data exists.
+    // Once the oracle or first trade provides a real price, this value is never used.
     const MOLT_GENESIS_PRICE = 0.10;
+    let _genesisOverridden = false;
     const MAX_OPEN_ORDERS_PER_USER = 100;
-    const GOVERNANCE_SLOT_SECONDS = 1;
+    const GOVERNANCE_SLOT_SECONDS = 0.4;
     const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
     const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';
 
@@ -1034,26 +1036,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 contracts.dex_analytics = map['ANALYTICS'] || null;
                 contracts.prediction_market = map['PREDICT'] || null;
                 contracts.clawpump = map['CLAWPUMP'] || null;
-                console.log('[DEX] Contract addresses loaded from symbol registry');
+                // Contract addresses loaded from symbol registry
             }
         } catch (e) {
             console.warn('[DEX] Symbol registry unavailable, trying deploy manifest:', e.message);
         }
-        // Fallback: genesis-deployed addresses (deterministic from deployer + WASM)
-        // WARNING: These MUST match the live genesis auto-deploy. If contracts are
-        // recompiled, addresses change. Always prefer the symbol registry (above).
-        const needsFallback = !contracts.dex_core;
-        if (!contracts.dex_core) contracts.dex_core = '7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds';
-        if (!contracts.dex_amm) contracts.dex_amm = '72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay';
-        if (!contracts.dex_router) contracts.dex_router = 'FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf';
-        if (!contracts.dex_margin) contracts.dex_margin = '8rTFuvbHZY89c3d9NktefAbHfjRoYh3vYJoC7eVgcw3W';
-        if (!contracts.dex_rewards) contracts.dex_rewards = '2okkNYSYPdN1jvhnhpXTmseFdXzgAgQXSCkQhgCkNiqC';
-        if (!contracts.dex_governance) contracts.dex_governance = '7BKw55h387pVAUs1dNApn2rfARBcGnnncXyb4WZDdGru';
-        if (!contracts.dex_analytics) contracts.dex_analytics = 'FBE25S5yGHUa6q38P8SjVXviw6dkoqD7oCMUuxj1aRof';
-        if (!contracts.prediction_market) contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
-        if (!contracts.clawpump) contracts.clawpump = null; // No hardcoded fallback — must come from registry
-        if (needsFallback) {
-            console.warn('[DEX] ⚠️ FALLBACK ADDRESSES ACTIVE — symbol registry was unavailable. Transactions WILL fail if contracts were recompiled. Set MOLTCHAIN_RPC or check node connectivity.');
+        // If symbol registry is unavailable, use hardcoded fallback addresses as safety net.
+        // Registry is always preferred; fallbacks are a resilience measure for cold-start scenarios.
+        let needsFallback = false;
+        if (!contracts.dex_core) {
+            needsFallback = true;
+            contracts.dex_core = '7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds';
+            contracts.dex_amm = '72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay';
+            contracts.dex_router = 'FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf';
+            contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
+            console.warn('[DEX] Using fallback contract addresses — registry unavailable');
+            const banner = document.getElementById('dexWarningBanner');
+            if (banner) {
+                banner.textContent = '⚠ Using fallback contract addresses — symbol registry unavailable.';
+                banner.style.display = 'block';
+            }
         }
     }
 
@@ -1193,13 +1195,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.activePair = pairs[0]; state.activePairId = pairs[0].pairId;
                 state.lastPrice = pairs[0].price || MOLT_GENESIS_PRICE;
             }
-            // F10E.6: Ensure pairs with zero price get genesis fallback
-            pairs.forEach(p => { if (!p.price) p.price = (p.id === 'MOLT/mUSD' || p.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0; });
+            // F10E.6: Ensure pairs with zero price get genesis fallback (only before first real trade)
+            pairs.forEach(p => {
+                if (!p.price) {
+                    p.price = (!_genesisOverridden && (p.id === 'MOLT/mUSD' || p.base === 'MOLT')) ? MOLT_GENESIS_PRICE : 0;
+                } else if (p.id === 'MOLT/mUSD' || p.base === 'MOLT') {
+                    _genesisOverridden = true; // real price from chain — disable genesis fallback
+                }
+            });
         } else {
-            // F10E.6: No pairs from API — create genesis default MOLT/mUSD pair
+            // F10E.6: No pairs from API — create genesis MOLT/mUSD pair
             pairs = [{ pairId: 1, id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: MOLT_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'MOLT/mUSD' }];
             state.activePair = pairs[0]; state.activePairId = 1; state.lastPrice = MOLT_GENESIS_PRICE;
-            console.info('[DEX] No trading pairs on-chain — using genesis MOLT/mUSD @ $0.10');
         }
         // Populate all select dropdowns from real pairs
         populateSelectsFromPairs();
@@ -3405,45 +3412,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // F10E.7 — External Price Feed (Binance WebSocket for real-time wSOL, wETH)
-    // The backend oracle price feeder connects to Binance WebSocket
-    // (aggTrade streams) for real-time SOL/ETH prices and writes to
-    // moltoracle + dex_analytics every 1s when prices change. The frontend
-    // Binance WebSocket supplements this with sub-second ticker updates
-    // for a responsive UI between API polls.
+    // F10E.7 — Oracle Fast-Poll Price Overlay
+    // FE-06 FIX: Replaced direct Binance WebSocket with internal oracle
+    // polling. All price data now flows through the MoltChain oracle API
+    // (/api/v1/oracle/prices) — no external third-party connections.
+    // When ENABLE_EXTERNAL_PRICE_WS is true, poll rate increases from 5s
+    // to 2s for more responsive real-time price overlay on pair list and
+    // TradingView chart. Primary prices still come from on-chain DEX data.
     // ═══════════════════════════════════════════════════════════════════════
-    const externalPrices = { wSOL: 0, wETH: 0, wBNB: 0 };
-    let binanceWs = null, binanceReconnectDelay = 5000;
+    let oracleFastPollTimer = null;
 
-    function connectBinancePriceFeed() {
-        // Streams: SOL/USDT, ETH/USDT, BNB/USDT mini tickers
-        const streams = 'solusdt@miniTicker/ethusdt@miniTicker/bnbusdt@miniTicker';
-        const url = `wss://stream.binance.com:9443/ws/${streams}`;
-        try {
-            binanceWs = new WebSocket(url);
-            binanceWs.onmessage = (evt) => {
-                try {
-                    const d = JSON.parse(evt.data);
-                    const price = parseFloat(d.c); // close price
-                    if (!price || isNaN(price)) return;
-                    const sym = (d.s || '').toUpperCase();
-                    if (sym === 'SOLUSDT') externalPrices.wSOL = price;
-                    else if (sym === 'ETHUSDT') externalPrices.wETH = price;
-                    else if (sym === 'BNBUSDT') externalPrices.wBNB = price;
-                    // Real-time overlay: update active pair price between API polls
-                    applyBinanceRealTimeOverlay();
-                } catch { /* malformed message */ }
-            };
-            binanceWs.onclose = () => { binanceReconnectDelay = Math.min((binanceReconnectDelay || 5000) * 2, 60000); setTimeout(connectBinancePriceFeed, binanceReconnectDelay); };
-            binanceWs.onerror = () => { try { binanceWs.close(); } catch { /* already closed */ } };
-            binanceReconnectDelay = 5000; // reset on successful connect;
-            console.log('[DEX] Binance price feed connected (real-time overlay)');
-        } catch (e) {
-            console.warn('[DEX] Binance price feed unavailable:', e.message);
-        }
+    function startOracleFastPoll() {
+        if (oracleFastPollTimer) return; // already running
+        console.info('[DEX] Oracle fast-poll overlay enabled (2s interval)');
+        oracleFastPollTimer = setInterval(async () => {
+            try {
+                const resp = await fetch(`${API_BASE}/oracle/prices`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (!data.feeds) return;
+                for (const feed of data.feeds) {
+                    if (feed.price > 0 && !feed.stale) {
+                        oracleRefPrices[feed.asset] = feed.price;
+                    }
+                }
+                applyOracleRealTimeOverlay();
+                updateOracleReferenceLine();
+            } catch { /* network error — skip */ }
+        }, 2000);
     }
 
-    function applyBinanceRealTimeOverlay() {
+    function applyOracleRealTimeOverlay() {
         // Update ALL oracle-priced pairs in the dropdown + active pair ticker
         const moltPairRef = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
         const moltUsd = moltPairRef?.price || MOLT_GENESIS_PRICE;
@@ -3453,9 +3452,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const base = (p.base || '').toUpperCase();
             const quote = (p.quote || '').toUpperCase();
             let extPrice = 0;
-            if ((base === 'WSOL' || base === 'SOL') && externalPrices.wSOL > 0) extPrice = externalPrices.wSOL;
-            else if ((base === 'WETH' || base === 'ETH') && externalPrices.wETH > 0) extPrice = externalPrices.wETH;
-            else if ((base === 'WBNB' || base === 'BNB') && externalPrices.wBNB > 0) extPrice = externalPrices.wBNB;
+            if ((base === 'WSOL' || base === 'SOL') && oracleRefPrices['wSOL'] > 0) extPrice = oracleRefPrices['wSOL'];
+            else if ((base === 'WETH' || base === 'ETH') && oracleRefPrices['wETH'] > 0) extPrice = oracleRefPrices['wETH'];
+            else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB'] > 0) extPrice = oracleRefPrices['wBNB'];
             if (extPrice <= 0) continue;
 
             // For MOLT-quoted pairs (on-chain: wSOL/MOLT, display: MOLT/wSOL),
@@ -3480,9 +3479,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Phase D — Oracle Price Reference Line on Chart
     // Fetches oracle prices from /api/v1/oracle/prices every 5s and draws
     // a horizontal dashed line on the TradingView chart showing the
-    // Binance oracle reference price for the active pair. This gives
+    // internal oracle reference price for the active pair. This gives
     // traders a visual comparison between on-chain trade price and the
-    // external oracle index price.
+    // oracle index price.
     // ═══════════════════════════════════════════════════════════════════════
     let oracleLineId = null;
     let oracleRefPrices = {};
@@ -4798,6 +4797,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadProposals() {
         try {
             const { data, slot: currentSlot } = await api.get('/governance/proposals');
+            // F16.9: Time remaining uses currentSlot * 0.4 seconds per Moltchain slot
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.getElementById('proposalsList');
                 if (container) {
@@ -4821,7 +4821,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const nowSlot = currentSlot || 0;
                         const votingEnded = p.endSlot && nowSlot > p.endSlot;
                         if (p.endSlot && status === 'active') {
-                            const remaining = (p.endSlot - nowSlot) * GOVERNANCE_SLOT_SECONDS;
+                            const remaining = (p.endSlot - nowSlot) * 0.4; // slot-to-seconds
                             if (remaining > 3600) timeStr = `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m remaining`;
                             else if (remaining > 0) timeStr = `${Math.floor(remaining / 60)}m remaining`;
                             else timeStr = 'Voting ended';
@@ -4991,15 +4991,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const feeFields = document.getElementById('feeFields');
     const delistFields = document.getElementById('delistFields');
     const paramFields = document.getElementById('paramFields');
-    const SUPPORTED_PROPOSAL_TYPES = new Set(['pair', 'fee']);
+    const SUPPORTED_PROPOSAL_TYPES = new Set(['pair', 'fee', 'delist', 'param']);
     proposalTypeBtns.forEach(btn => btn.addEventListener('click', () => {
         proposalTypeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const ptype = SUPPORTED_PROPOSAL_TYPES.has(btn.dataset.ptype) ? btn.dataset.ptype : 'pair';
         if (pairFields) pairFields.classList.toggle('hidden', ptype !== 'pair');
         if (feeFields) feeFields.classList.toggle('hidden', ptype !== 'fee');
-        if (delistFields) delistFields.classList.add('hidden');
-        if (paramFields) paramFields.classList.add('hidden');
+        if (delistFields) delistFields.classList.toggle('hidden', ptype !== 'delist');
+        if (paramFields) paramFields.classList.toggle('hidden', ptype !== 'param');
     }));
 
     // F10E.5: Parameter selector — show current value + description
@@ -5055,6 +5055,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
                 proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
                 proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
+            } else if (ptype === 'delist') {
+                const propDelistReason = document.getElementById('propDelistReason');
+                const delistReason = propDelistReason?.value?.trim() || '';
+                proposalData.pair_id = parseInt(document.getElementById('propDelistPair')?.value) || 0;
+                proposalData.reason = delistReason;
+            } else if (ptype === 'param') {
+                const propParamValue = document.getElementById('propParamValue');
+                proposalData.parameter = document.getElementById('propParamName')?.value?.trim() || '';
+                proposalData.proposed_value = propParamValue?.value?.trim() || '';
             }
             // Build binary args based on proposal type
             let govArgs;
@@ -5087,6 +5096,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 v.setInt16(41, proposalData.maker_fee || -1, true);
                 v.setUint16(43, proposalData.taker_fee || 5, true);
                 govArgs = a;
+            } else if (ptype === 'delist') {
+                // Delist proposals not yet supported on-chain — governance contract lacks delist opcode
+                showNotification('Delist proposals are not yet supported on-chain. Governance contract update required.', 'warning');
+                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                return;
+            } else if (ptype === 'param') {
+                // Param proposals not yet supported on-chain — governance contract lacks param_change opcode
+                showNotification('Parameter change proposals are not yet supported on-chain. Governance contract update required.', 'warning');
+                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                return;
             } else {
                 showNotification('Please fill in all required fields', 'warning');
                 submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
@@ -6183,7 +6202,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.textContent = 'Claiming...';
         try {
             await wallet.sendTransaction([contractIx(contracts.dex_rewards, buildClaimRewardsArgs(wallet.address))]);
-            showNotification('Trading rewards claimed successfully!', 'success');
+            showNotification('Rewards claimed successfully!', 'success');
             loadRewardsStats().catch(() => {});
         } catch (e) {
             showNotification(`Claim failed: ${e.message}`, 'error');
@@ -6859,8 +6878,9 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(initTradingView, 200);
             connectWebSocket();
         }
-        // F10E.7 / DEX-M01: external Binance WS is opt-in only (default off).
-        if (ENABLE_EXTERNAL_PRICE_WS) connectBinancePriceFeed();
+        // F10E.7 / DEX-M01 / FE-06: oracle fast-poll overlay (opt-in, default off).
+        // Replaces former Binance WS — all prices now flow through internal oracle.
+        if (ENABLE_EXTERNAL_PRICE_WS) startOracleFastPoll();
         if (savedWallets.length) {
             const activeWalletAddress = localStorage.getItem(ACTIVE_WALLET_KEY);
             const restored = savedWallets.find(w => w.address === activeWalletAddress) || savedWallets[savedWallets.length - 1];

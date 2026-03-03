@@ -10,7 +10,7 @@
 //   - Admin reserve factor updates
 //   - Protocol deposit cap
 //   - Interest rate query view function
-//   - Oracle price integration placeholder
+//   - Oracle price integration via moltoracle cross-contract call
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -22,6 +22,31 @@ use moltchain_sdk::{
     bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
     get_value, get_contract_address, call_token_transfer, Address,
 };
+use moltchain_sdk::crosscall::{CrossCall, call_contract};
+
+// Oracle configuration key (stores moltoracle contract address)
+const ORACLE_ADDR_KEY: &[u8] = b"ll_oracle_addr";
+
+/// Query oracle price for an asset (returns price in shells, or 1:1 if unavailable).
+/// Asset identifier is the token contract address hex.
+fn get_oracle_price(asset: &[u8]) -> u64 {
+    if let Some(oracle_bytes) = storage_get(ORACLE_ADDR_KEY) {
+        if oracle_bytes.len() == 32 {
+            let mut oracle_addr = [0u8; 32];
+            oracle_addr.copy_from_slice(&oracle_bytes);
+            // Query oracle: get_price(asset) → u64 price in shells
+            let call = CrossCall::new(Address(oracle_addr), "get_price", asset.to_vec());
+            if let Ok(result) = call_contract(call) {
+                if result.len() >= 8 {
+                    return bytes_to_u64(&result[..8]);
+                }
+            }
+            log_info("Oracle query failed, using 1:1 fallback");
+        }
+    }
+    // Fallback: 1:1 valuation (oracle not configured)
+    1
+}
 
 // T5.12: Reentrancy guard
 const REENTRANCY_KEY: &[u8] = b"_reentrancy";
@@ -433,7 +458,10 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let current_borrow = settle_user_borrow(&hex);
     let borrow_key = make_key(b"bor:", &hex);
 
-    let max_borrow = deposit_val * COLLATERAL_FACTOR_PERCENT / 100;
+    // AUDIT-FIX CON-10: Use oracle price for collateral valuation
+    let collateral_price = get_oracle_price(&borrower);
+    let deposit_value_usd = deposit_val.saturating_mul(collateral_price);
+    let max_borrow = deposit_value_usd * COLLATERAL_FACTOR_PERCENT / 100;
     let new_borrow = match current_borrow.checked_add(amount) {
         Some(v) => v,
         None => {
@@ -604,7 +632,10 @@ pub extern "C" fn liquidate(
     }
 
     // Check if position is liquidatable
-    let liquidation_limit = deposit * LIQUIDATION_THRESHOLD_PERCENT / 100;
+    // AUDIT-FIX CON-10: Use oracle price for liquidation threshold
+    let collateral_price = get_oracle_price(&borrower);
+    let deposit_value_usd = deposit.saturating_mul(collateral_price);
+    let liquidation_limit = deposit_value_usd * LIQUIDATION_THRESHOLD_PERCENT / 100;
     if current_borrow <= liquidation_limit {
         reentrancy_exit();
         log_info("Position is healthy, cannot liquidate");

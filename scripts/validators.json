@@ -1,4 +1,5 @@
 {
+  "_comment": "LOCAL DEVELOPMENT ONLY — 3-validator cluster on localhost. Copy and edit for remote deployments.",
   "validators": [
     {
       "name": "val1",

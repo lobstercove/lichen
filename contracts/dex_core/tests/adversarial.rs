@@ -30,6 +30,9 @@ fn setup_with_pair() -> ([u8; 32], u64) {
         ),
         0
     );
+    // CON-11 fix: Balance check is now fail-closed. Mock a large balance so
+    // cross-contract balance queries succeed in integration tests.
+    moltchain_sdk::test_mock::set_cross_call_response(Some(u64::MAX.to_le_bytes().to_vec()));
     (admin, 1)
 }
 

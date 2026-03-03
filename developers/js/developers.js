@@ -563,17 +563,17 @@ const NETWORK_STORAGE_KEY = 'moltchain_dev_network';
 
 const NETWORK_ENDPOINTS = {
     'local-testnet': 'http://localhost:8899',
-    'local-mainnet': 'http://localhost:8899',
-    testnet: 'https://testnet-rpc.moltchain.io',
-    mainnet: 'https://rpc.moltchain.io',
+    'local-mainnet': 'http://localhost:9899',
+    testnet: 'https://testnet-rpc.moltchain.network',
+    mainnet: 'https://rpc.moltchain.network',
     devnet: 'http://localhost:8899'
 };
 
 const NETWORK_WS_ENDPOINTS = {
     'local-testnet': 'ws://localhost:8900',
-    'local-mainnet': 'ws://localhost:8900',
-    testnet: 'wss://testnet-ws.moltchain.io',
-    mainnet: 'wss://ws.moltchain.io',
+    'local-mainnet': 'ws://localhost:9900',
+    testnet: 'wss://testnet-rpc.moltchain.network/ws',
+    mainnet: 'wss://rpc.moltchain.network/ws',
     devnet: 'ws://localhost:8900'
 };
 

@@ -32,66 +32,30 @@ function assertThrows(fn, msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Reproduce pure functions from source files for unit-level testing
+// Import pure functions from shared source (TEST-06 fix: no more copy-paste)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// From utils.js — canonical escapeHtml
-function escapeHtml(str) {
-    return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+// Provide minimal browser-API stubs so shared/utils.js can load in Node
+if (typeof document === 'undefined') {
+    global.document = { readyState: 'complete', getElementById: () => null,
+        addEventListener: () => {}, createElement: () => ({ style: {} }),
+        head: { appendChild: () => {} }, querySelector: () => null };
+    global.window = {};
+    // navigator is read-only in Node ≥25 — use Object.defineProperty
+    try { global.navigator = { clipboard: { writeText: () => Promise.resolve() } }; }
+    catch (_) { Object.defineProperty(global, 'navigator', { value: { clipboard: { writeText: () => Promise.resolve() } }, writable: true, configurable: true }); }
 }
 
-// From utils.js — formatNumber
-function formatNumber(num) {
-    if (num === null || num === undefined || Number.isNaN(num)) return '0';
-    return Number(num).toLocaleString();
-}
+const sharedUtils = require('./shared/utils.js');
+const {
+    escapeHtml, formatNumber, formatHash, formatMolt,
+    formatTime, formatBytes, getTrustTier, normalizeTxType,
+} = sharedUtils;
 
-// From utils.js — formatHash
-function formatHash(hash, length = 6) {
-    if (!hash) return 'N/A';
-    if (hash.length <= length * 2 + 3) return hash;
-    return hash.substring(0, length) + '...' + hash.substring(hash.length - length);
-}
-
-// From utils.js — formatMolt
-function formatMolt(shells) {
-    const molt = shells / 1_000_000_000;
-    return molt.toLocaleString(undefined, {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 4,
-    }) + ' MOLT';
-}
-
-// From utils.js — formatTime
-function formatTime(timestamp) {
-    if (!timestamp || timestamp <= 0) return 'Genesis';
-    const ts = timestamp < 1e12 ? timestamp : timestamp / 1000;
-    const now = Date.now() / 1000;
-    const diff = now - ts;
-    if (diff < 0) return 'just now';
-    if (diff < 60) return Math.floor(diff) + 's ago';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    return Math.floor(diff / 86400) + 'd ago';
-}
-
-// From utils.js — formatBytes
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
-// From utils.js — resolveTxType
+// Explorer-specific: resolveTxType from explorer/js/utils.js
+// (This file doesn't export yet — inline until we add module.exports there)
 function resolveTxType(tx, instruction) {
-    if (tx.type) return tx.type === 'DebtRepay' ? 'GrantRepay' : tx.type;
+    if (tx.type) return normalizeTxType(tx.type);
     const SYSTEM_ID = '11111111111111111111111111111111';
     if (instruction && instruction.program_id === SYSTEM_ID) {
         const opcode = instruction.data && instruction.data.length > 0 ? instruction.data[0] : null;
@@ -105,39 +69,19 @@ function resolveTxType(tx, instruction) {
     return 'Unknown';
 }
 
-// TC-01: Fixed — these stubs now mirror the production TRUST_TIER_THRESHOLDS
-// from explorer/shared/utils.js (0, 100, 500, 1000, 5000, 10000)
+// TC-01: Trust tier helpers — now delegate to shared/utils.js
 function getTrustTierLabel(score) {
-    const s = Number(score) || 0;
-    if (s >= 10000) return 'Legendary';
-    if (s >= 5000) return 'Elite';
-    if (s >= 1000) return 'Established';
-    if (s >= 500) return 'Trusted';
-    if (s >= 100) return 'Verified';
-    return 'Newcomer';
+    return getTrustTier(score).label;
 }
 
-// From validators.js — trust tier (should match address.js)
 function trustTierFromReputation(score) {
-    const rep = Number(score || 0);
-    if (rep >= 10000) return 'Legendary';
-    if (rep >= 5000) return 'Elite';
-    if (rep >= 1000) return 'Established';
-    if (rep >= 500) return 'Trusted';
-    if (rep >= 100) return 'Verified';
-    return 'Newcomer';
+    return getTrustTier(score).label;
 }
 
 // From agents.js — trust tier (aligned with address.js after F13.5 fix)
 function trustTierLabel(agent) {
     if (agent?.trust_tier_name) return agent.trust_tier_name;
-    const rep = Number(agent?.reputation || 0);
-    if (rep >= 10000) return 'Legendary';
-    if (rep >= 5000) return 'Elite';
-    if (rep >= 1000) return 'Established';
-    if (rep >= 500) return 'Trusted';
-    if (rep >= 100) return 'Verified';
-    return 'Newcomer';
+    return getTrustTier(agent?.reputation || 0).label;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

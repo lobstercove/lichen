@@ -221,16 +221,17 @@ fn load_self_addr() -> [u8; 32] {
 
 /// Transfer mUSD tokens from the contract to a recipient.
 /// Returns true on success, false if addresses not configured or transfer fails.
+/// Rejects transfer when token addresses are not set (fail-closed).
 fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
     let musd_addr = load_addr(MUSD_ADDR_KEY);
     if is_zero(&musd_addr) {
-        log_info("mUSD address not configured — skipping transfer");
-        return true; // graceful degradation for unconfigured deployments
+        log_info("mUSD address not configured — transfer rejected");
+        return false;
     }
     let self_addr = load_self_addr();
     if is_zero(&self_addr) {
-        log_info("Self address not configured — skipping transfer");
-        return true; // graceful degradation for unconfigured deployments
+        log_info("Self address not configured — transfer rejected");
+        return false;
     }
     let mut recip = [0u8; 32];
     recip.copy_from_slice(recipient);
@@ -1469,17 +1470,17 @@ pub fn create_market(
         return 0;
     }
 
-    // MoltyID reputation check (reads pm_moltyid_addr for the contract address)
-    // Since cross-contract calls are stubs on MoltChain, we read MoltyID's storage
-    // directly using the known key format: "rep:{hex_encoded_pubkey}"
+    // MoltyID reputation check via cross-contract call (reads pm_moltyid_addr)
+    // AUDIT-FIX CON-14: Use cross-contract call instead of direct storage reads
     let moltyid_addr = load_addr(MOLTYID_ADDR_KEY);
     if !is_zero(&moltyid_addr) {
-        let rep_key_for_creator = {
-            let mut k = Vec::from(&b"rep:"[..]);
-            k.extend_from_slice(&hex_encode(creator));
-            k
+        let mut rep_args = Vec::with_capacity(32);
+        rep_args.extend_from_slice(creator);
+        let call = CrossCall::new(Address(moltyid_addr), "get_reputation", rep_args);
+        let reputation = match call_contract(call) {
+            Ok(data) if data.len() >= 8 => bytes_to_u64(&data[..8]),
+            _ => 0u64, // Treat cross-call failure as zero reputation
         };
-        let reputation = load_u64(&rep_key_for_creator);
         if reputation < MIN_REPUTATION_CREATE {
             reentrancy_exit();
             return 0;
@@ -2464,14 +2465,16 @@ pub fn submit_resolution(
     }
 
     // MoltyID reputation check for resolver (1000+ required)
+    // AUDIT-FIX CON-14: Use cross-contract call instead of direct storage reads
     let moltyid_addr = load_addr(MOLTYID_ADDR_KEY);
     if !is_zero(&moltyid_addr) {
-        let rep_key_for_resolver = {
-            let mut k = Vec::from(&b"rep:"[..]);
-            k.extend_from_slice(&hex_encode(resolver));
-            k
+        let mut rep_args = Vec::with_capacity(32);
+        rep_args.extend_from_slice(resolver);
+        let call = CrossCall::new(Address(moltyid_addr), "get_reputation", rep_args);
+        let reputation = match call_contract(call) {
+            Ok(data) if data.len() >= 8 => bytes_to_u64(&data[..8]),
+            _ => 0u64,
         };
-        let reputation = load_u64(&rep_key_for_resolver);
         if reputation < MIN_REPUTATION_RESOLVE {
             reentrancy_exit();
             return 0;
@@ -4083,6 +4086,7 @@ mod tests {
     fn test_sell_shares() {
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_binary_market(&creator, 100_000);
         activate_market(&creator, mid, 10_000_000);
@@ -4130,6 +4134,7 @@ mod tests {
     fn test_redeem_complete_set() {
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_binary_market(&creator, 100_000);
         activate_market(&creator, mid, 10_000_000);
@@ -4906,6 +4911,7 @@ mod tests {
     fn test_sell_shares_sets_return_data() {
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_binary_market(&creator, 100_000);
         activate_market(&creator, mid, 10_000_000);
@@ -4969,6 +4975,7 @@ mod tests {
     fn test_multi_outcome_sell_returns_nonzero() {
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_3outcome_market(&creator, 100_000);
 
@@ -5000,6 +5007,7 @@ mod tests {
     fn test_multi_outcome_sell_all_shares() {
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_3outcome_market(&creator, 100_000);
 
@@ -5033,6 +5041,7 @@ mod tests {
         // by doing a buy then sell and checking reserves change sensibly
         setup();
         init_contract();
+        configure_escrow();
         let creator = [2u8; 32];
         let mid = create_3outcome_market(&creator, 100_000);
 

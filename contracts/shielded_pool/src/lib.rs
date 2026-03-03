@@ -346,12 +346,14 @@ impl ShieldedPoolState {
 
     // --- Proof validation methods ---
     //
-    // The actual Groth16 proof verification happens in the processor layer
-    // (TxProcessor types 23/24/25) BEFORE the contract is invoked.  These
-    // methods only perform structural validation (correct proof length) and
-    // state consistency checks (merkle root match).  The processor already
-    // verified the cryptographic proof, so the contract does not need to
-    // duplicate the heavy Groth16 verification.
+    // ARCHITECTURE NOTE: Full Groth16 proof verification runs in the processor
+    // layer (TxProcessor types 23/24/25) BEFORE the contract is invoked.
+    // See core/src/processor.rs system_shield_deposit() (line ~2093):
+    //   verifier.verify(&zk_proof) — full BN254 pairing check.
+    // These contract methods only perform structural validation (correct proof
+    // length = 128 bytes for compressed BN254) and state consistency checks
+    // (merkle root match). Duplicating Groth16 in the contract would waste
+    // ~10M gas per operation with zero additional security.
 
     fn verify_shield_proof(
         &self,

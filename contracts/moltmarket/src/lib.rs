@@ -286,9 +286,17 @@ pub extern "C" fn buy_nft(
         
         // AUDIT-FIX 1.12: Escrow pattern — hold payment in marketplace until
         // NFT transfer confirms. Prevents buyer losing funds if NFT transfer fails.
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
-            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]); // fallback
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
+        let fee_addr_bytes = storage_get(b"marketplace_fee_addr");
+        if fee_addr_bytes.is_none() {
+            log_info("marketplace_fee_addr not configured — purchase rejected");
+            reentrancy_exit();
+            return 0;
+        }
+        let fee_addr_bytes = fee_addr_bytes.unwrap();
+        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or_else(|_| {
+            log_info("invalid marketplace_fee_addr length");
+            [0u8; 32]
+        }));
 
         // STEP 1: Transfer full payment from buyer to marketplace (escrow)
         match call_token_transfer(payment_token, buyer, marketplace_addr, price) {
@@ -1082,9 +1090,11 @@ pub extern "C" fn place_bid(
         let payment_token = Address(pay_bytes);
 
         // Escrow bid from bidder to marketplace
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
-            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]);
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
+        let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
+            Some(v) if v.len() >= 32 => v,
+            _ => { log_info("marketplace_fee_addr not configured — bid rejected"); reentrancy_exit(); return 0; }
+        };
+        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
         match call_token_transfer(payment_token, bidder, marketplace_addr, bid_amount) {
             Ok(true) => {}
@@ -1168,9 +1178,11 @@ pub extern "C" fn settle_auction(
         pay_bytes.copy_from_slice(&data[145..177]);
         let payment_token = Address(pay_bytes);
 
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
-            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]);
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
+        let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
+            Some(v) if v.len() >= 32 => v,
+            _ => { log_info("marketplace_fee_addr not configured — auction finalize rejected"); reentrancy_exit(); return 0; }
+        };
+        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
         // If no bids or reserve not met, cancel and return
         if highest_bid == 0 || (reserve_price > 0 && highest_bid < reserve_price) {
@@ -1420,9 +1432,11 @@ pub extern "C" fn accept_collection_offer(
         pay_bytes.copy_from_slice(&data[72..104]);
         let payment_token = Address(pay_bytes);
 
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
-            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]);
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
+        let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
+            Some(v) if v.len() >= 32 => v,
+            _ => { log_info("marketplace_fee_addr not configured — offer rejected"); reentrancy_exit(); return 0; }
+        };
+        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
         // Fee calculation
         let fee = get_marketplace_fee();
