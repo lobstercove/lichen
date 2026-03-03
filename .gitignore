@@ -56,6 +56,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# ── Test artifacts / output ─────────────────────────────────
+tests/artifacts/
+tests/__pycache__/
+*_test_output.txt
+
 # ── Python ─────────────────────────────────────────────────
 venv/
 __pycache__/
