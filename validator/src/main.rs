@@ -4873,16 +4873,26 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     // Set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_MOLT_USD
     // before first boot. Falls back to reasonable defaults if not set.
     let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.10);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.10);
     let sol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(145.0);
     let eth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2600.0);
     let bnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(620.0);
 
-    info!("  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-          molt_usd, sol_usd, eth_usd, bnb_usd);
+    info!(
+        "  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        molt_usd, sol_usd, eth_usd, bnb_usd
+    );
 
     // sqrt_price = floor(sqrt(price) * 2^32)
     let q32: f64 = (1u64 << 32) as f64;
@@ -4894,10 +4904,25 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
         ("MOLT/mUSD", molt_addr, musd_addr, sqrt_price(molt_usd)),
         ("wSOL/mUSD", wsol_addr, musd_addr, sqrt_price(sol_usd)),
         ("wETH/mUSD", weth_addr, musd_addr, sqrt_price(eth_usd)),
-        ("wSOL/MOLT", wsol_addr, molt_addr, sqrt_price(sol_usd / molt_usd)),
-        ("wETH/MOLT", weth_addr, molt_addr, sqrt_price(eth_usd / molt_usd)),
+        (
+            "wSOL/MOLT",
+            wsol_addr,
+            molt_addr,
+            sqrt_price(sol_usd / molt_usd),
+        ),
+        (
+            "wETH/MOLT",
+            weth_addr,
+            molt_addr,
+            sqrt_price(eth_usd / molt_usd),
+        ),
         ("wBNB/mUSD", wbnb_addr, musd_addr, sqrt_price(bnb_usd)),
-        ("wBNB/MOLT", wbnb_addr, molt_addr, sqrt_price(bnb_usd / molt_usd)),
+        (
+            "wBNB/MOLT",
+            wbnb_addr,
+            molt_addr,
+            sqrt_price(bnb_usd / molt_usd),
+        ),
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {
@@ -5004,11 +5029,17 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
     // Prices read from env vars; the background WebSocket price feeder
     // will update them to live prices immediately after genesis.
     let sol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(145.0);
     let eth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2600.0);
     let bnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(620.0);
     let price_8dec = |usd: f64| -> u64 { (usd * 100_000_000.0) as u64 };
 
     let external_feeds: [(&[u8], u64, String); 3] = [
@@ -5021,7 +5052,7 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         // Authorize genesis admin as feeder for this asset
         let mut ext_feeder_args = Vec::with_capacity(32 + ext_asset.len() + 4);
         ext_feeder_args.extend_from_slice(&admin);
-        ext_feeder_args.extend_from_slice(*ext_asset);
+        ext_feeder_args.extend_from_slice(ext_asset);
         ext_feeder_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
 
         let asset_name = core::str::from_utf8(ext_asset).unwrap_or("?");
@@ -5042,7 +5073,7 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         // Submit initial price
         let mut ext_price_args = Vec::with_capacity(32 + ext_asset.len() + 4 + 8 + 1);
         ext_price_args.extend_from_slice(&admin);
-        ext_price_args.extend_from_slice(*ext_asset);
+        ext_price_args.extend_from_slice(ext_asset);
         ext_price_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
         ext_price_args.extend_from_slice(&ext_price.to_le_bytes());
         ext_price_args.push(decimals); // 8 decimals
@@ -5096,13 +5127,21 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
     //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
     //   6=wBNB/mUSD, 7=wBNB/MOLT
     let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.10);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.10);
     let wsol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(145.0);
     let weth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2600.0);
     let wbnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(620.0);
 
     let pair_prices: [(u64, f64); 7] = [
         (1, molt_usd),
@@ -5203,13 +5242,21 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 
     const PRICE_SCALE: u64 = 1_000_000_000;
     let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.10);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.10);
     let wsol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(145.0);
     let weth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2600.0);
     let wbnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(620.0);
 
     // Pair IDs match genesis_create_trading_pairs order:
     //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,

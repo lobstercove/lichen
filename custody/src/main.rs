@@ -420,10 +420,7 @@ const SOLANA_RENT_SYSVAR: &str = "SysvarRent111111111111111111111111111111111";
 /// Auto-discover wrapped token contract addresses from MoltChain's symbol registry.
 /// This eliminates the need to hardcode contract addresses — they are read from
 /// whatever was deployed during genesis (or later). Falls back to env vars if RPC fails.
-async fn autodiscover_contract_addresses(
-    config: &mut CustodyConfig,
-    http: &reqwest::Client,
-) {
+async fn autodiscover_contract_addresses(config: &mut CustodyConfig, http: &reqwest::Client) {
     let Some(rpc_url) = config.molt_rpc_url.as_ref() else {
         tracing::warn!("CUSTODY_MOLT_RPC_URL not set — skipping contract auto-discovery");
         return;
@@ -447,7 +444,10 @@ async fn autodiscover_contract_addresses(
     let value: serde_json::Value = match response.json().await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("contract auto-discovery JSON parse failed: {} — using env vars", e);
+            tracing::warn!(
+                "contract auto-discovery JSON parse failed: {} — using env vars",
+                e
+            );
             return;
         }
     };
@@ -640,11 +640,29 @@ async fn main() {
     info!("══════════════════════════════════════════════════════════════");
     info!("  MoltChain RPC:   {:?}", config.molt_rpc_url);
     info!("  SOL RPC:         {:?}", config.solana_rpc_url);
-    info!("  ETH RPC:         {:?}", config.eth_rpc_url.as_ref().or(config.evm_rpc_url.as_ref()));
-    info!("  BNB RPC:         {:?}", config.bnb_rpc_url.as_ref().or(config.evm_rpc_url.as_ref()));
+    info!(
+        "  ETH RPC:         {:?}",
+        config.eth_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
+    );
+    info!(
+        "  BNB RPC:         {:?}",
+        config.bnb_rpc_url.as_ref().or(config.evm_rpc_url.as_ref())
+    );
     info!("  SOL Treasury:    {:?}", config.treasury_solana_address);
-    info!("  ETH Treasury:    {:?}", config.treasury_eth_address.as_ref().or(config.treasury_evm_address.as_ref()));
-    info!("  BNB Treasury:    {:?}", config.treasury_bnb_address.as_ref().or(config.treasury_evm_address.as_ref()));
+    info!(
+        "  ETH Treasury:    {:?}",
+        config
+            .treasury_eth_address
+            .as_ref()
+            .or(config.treasury_evm_address.as_ref())
+    );
+    info!(
+        "  BNB Treasury:    {:?}",
+        config
+            .treasury_bnb_address
+            .as_ref()
+            .or(config.treasury_evm_address.as_ref())
+    );
 
     // Log the Solana fee payer address so operators know what to fund
     if config.solana_rpc_url.is_some() {
@@ -783,7 +801,11 @@ async fn main() {
 
     // Per-chain EVM watchers: spawn separate watchers for ETH and BNB
     // so each chain polls its own RPC endpoint
-    if let Some(url) = config.eth_rpc_url.clone().or_else(|| config.evm_rpc_url.clone()) {
+    if let Some(url) = config
+        .eth_rpc_url
+        .clone()
+        .or_else(|| config.evm_rpc_url.clone())
+    {
         let watcher_state = state.clone();
         tokio::spawn(async move {
             evm_watcher_loop_for_chains(watcher_state, url, &["ethereum", "eth"]).await;
@@ -1927,7 +1949,11 @@ async fn evm_watcher_loop(state: CustodyState, url: String) {
 }
 
 /// Per-chain EVM watcher — only watches deposits for the specified chain names.
-async fn evm_watcher_loop_for_chains(state: CustodyState, url: String, chains: &'static [&'static str]) {
+async fn evm_watcher_loop_for_chains(
+    state: CustodyState,
+    url: String,
+    chains: &'static [&'static str],
+) {
     loop {
         if let Err(err) = process_evm_deposits_for_chains(&state, &url, chains).await {
             tracing::warn!("evm watcher ({:?}) error: {}", chains, err);
@@ -3850,10 +3876,7 @@ async fn fund_evm_gas_for_sweep(
         "custody/treasury/ethereum"
     };
 
-    let treasury_addr = {
-        let addr = derive_evm_address(treasury_chain, &state.config.master_seed)?;
-        addr
-    };
+    let treasury_addr = derive_evm_address(treasury_chain, &state.config.master_seed)?;
 
     let nonce = evm_get_transaction_count(&state.http, url, &treasury_addr).await?;
     let gas_price = evm_get_gas_price(&state.http, url).await?;
@@ -6953,9 +6976,10 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 }
             }
             chain if is_evm_chain(chain) => {
-                if let (Some(url), Some(ref tx_hash)) =
-                    (rpc_url_for_chain(&state.config, chain), &job.outbound_tx_hash)
-                {
+                if let (Some(url), Some(ref tx_hash)) = (
+                    rpc_url_for_chain(&state.config, chain),
+                    &job.outbound_tx_hash,
+                ) {
                     check_evm_tx_confirmed(
                         &state.http,
                         &url,
@@ -7026,8 +7050,8 @@ async fn broadcast_outbound_withdrawal(
 ) -> Result<String, String> {
     // Self-custody mode: build and sign the withdrawal transaction directly
     // using the master-seed-derived treasury keys
-    let self_custody = state.config.signer_endpoints.is_empty()
-        || state.config.signer_threshold == 0;
+    let self_custody =
+        state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0;
 
     match job.dest_chain.as_str() {
         "solana" | "sol" => {
@@ -7043,13 +7067,8 @@ async fn broadcast_outbound_withdrawal(
             };
 
             if self_custody {
-                return broadcast_self_custody_solana_withdrawal(
-                    state,
-                    url,
-                    job,
-                    &outbound_asset,
-                )
-                .await;
+                return broadcast_self_custody_solana_withdrawal(state, url, job, &outbound_asset)
+                    .await;
             }
 
             let signed_tx = assemble_signed_solana_tx(state, job, &outbound_asset)?;
@@ -7077,20 +7096,14 @@ async fn broadcast_outbound_withdrawal(
             };
 
             if self_custody {
-                return broadcast_self_custody_evm_withdrawal(
-                    state,
-                    &url,
-                    job,
-                    &outbound_asset,
-                )
-                .await;
+                return broadcast_self_custody_evm_withdrawal(state, &url, job, &outbound_asset)
+                    .await;
             }
 
             let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset)?;
             let tx_hex = format!("0x{}", hex::encode(&signed_tx));
             let result =
-                evm_rpc_call(&state.http, &url, "eth_sendRawTransaction", json!([tx_hex]))
-                    .await?;
+                evm_rpc_call(&state.http, &url, "eth_sendRawTransaction", json!([tx_hex])).await?;
             result
                 .as_str()
                 .map(|s| s.to_string())
@@ -7119,12 +7132,8 @@ async fn broadcast_self_custody_solana_withdrawal(
     let transfer_amount = job.amount - solana_tx_fee;
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let message = build_solana_transfer_message(
-        &from_pubkey,
-        &to_pubkey,
-        transfer_amount,
-        &recent_blockhash,
-    );
+    let message =
+        build_solana_transfer_message(&from_pubkey, &to_pubkey, transfer_amount, &recent_blockhash);
     let signature = signing_key.sign(&message).to_bytes();
     let tx = build_solana_transaction(&[signature], &message);
     solana_send_transaction(&state.http, url, &tx).await
@@ -8403,9 +8412,10 @@ mod tests {
 
     #[test]
     fn test_ensure_solana_config_missing_fee_payer() {
+        // Fee payer is no longer mandatory — it can be derived from the master seed
         let mut config = test_config();
         config.solana_fee_payer_keypair_path = None;
-        assert!(ensure_solana_config(&config).is_err());
+        assert!(ensure_solana_config(&config).is_ok());
     }
 
     #[test]
