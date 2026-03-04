@@ -452,10 +452,44 @@ async fn autodiscover_contract_addresses(
         }
     };
 
-    let Some(registry) = value.get("result").and_then(|r| r.as_object()) else {
-        tracing::warn!("contract auto-discovery: empty registry — using env vars");
+    let Some(result) = value.get("result") else {
+        tracing::warn!("contract auto-discovery: no result field — using env vars");
         return;
     };
+
+    // getAllSymbolRegistry returns {"count": N, "entries": [...]} where each
+    // entry has {"symbol": "MUSD", "program": "base58addr", ...}.
+    // Build a symbol -> program_address lookup from the entries array.
+    let entries = result
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if entries.is_empty() {
+        tracing::warn!("contract auto-discovery: empty entries — using env vars");
+        return;
+    }
+
+    let mut addr_by_symbol: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        if let (Some(sym), Some(addr)) = (
+            entry.get("symbol").and_then(|v| v.as_str()),
+            entry
+                .get("program")
+                .or_else(|| entry.get("address"))
+                .or_else(|| entry.get("program_id"))
+                .and_then(|v| v.as_str()),
+        ) {
+            addr_by_symbol.insert(sym.to_string(), addr.to_string());
+        }
+    }
+
+    info!(
+        "contract auto-discovery: found {} entries in registry",
+        addr_by_symbol.len()
+    );
 
     // Map well-known symbol names to config fields
     let symbol_map: &[(&str, &str)] = &[
@@ -466,41 +500,33 @@ async fn autodiscover_contract_addresses(
     ];
 
     for (symbol, field_name) in symbol_map {
-        if let Some(entry) = registry.get(*symbol) {
-            let addr = entry
-                .get("address")
-                .or_else(|| entry.get("program_id"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            if let Some(ref addr) = addr {
-                match *field_name {
-                    "musd" => {
-                        if config.musd_contract_addr.is_none() {
-                            info!("auto-discovered {} contract: {}", symbol, addr);
-                            config.musd_contract_addr = Some(addr.clone());
-                        }
+        if let Some(addr) = addr_by_symbol.get(*symbol) {
+            match *field_name {
+                "musd" => {
+                    if config.musd_contract_addr.is_none() {
+                        info!("auto-discovered {} contract: {}", symbol, addr);
+                        config.musd_contract_addr = Some(addr.clone());
                     }
-                    "wsol" => {
-                        if config.wsol_contract_addr.is_none() {
-                            info!("auto-discovered {} contract: {}", symbol, addr);
-                            config.wsol_contract_addr = Some(addr.clone());
-                        }
-                    }
-                    "weth" => {
-                        if config.weth_contract_addr.is_none() {
-                            info!("auto-discovered {} contract: {}", symbol, addr);
-                            config.weth_contract_addr = Some(addr.clone());
-                        }
-                    }
-                    "wbnb" => {
-                        if config.wbnb_contract_addr.is_none() {
-                            info!("auto-discovered {} contract: {}", symbol, addr);
-                            config.wbnb_contract_addr = Some(addr.clone());
-                        }
-                    }
-                    _ => {}
                 }
+                "wsol" => {
+                    if config.wsol_contract_addr.is_none() {
+                        info!("auto-discovered {} contract: {}", symbol, addr);
+                        config.wsol_contract_addr = Some(addr.clone());
+                    }
+                }
+                "weth" => {
+                    if config.weth_contract_addr.is_none() {
+                        info!("auto-discovered {} contract: {}", symbol, addr);
+                        config.weth_contract_addr = Some(addr.clone());
+                    }
+                }
+                "wbnb" => {
+                    if config.wbnb_contract_addr.is_none() {
+                        info!("auto-discovered {} contract: {}", symbol, addr);
+                        config.wbnb_contract_addr = Some(addr.clone());
+                    }
+                }
+                _ => {}
             }
         }
     }
