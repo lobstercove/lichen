@@ -1621,7 +1621,9 @@ async fn main() -> Result<()> {
             let dao_addr = match client.resolve_symbol("DAO").await {
                 Ok(Some(addr)) => addr,
                 _ => {
-                    eprintln!("⚠️  DAO contract not found in symbol registry, using well-known address");
+                    eprintln!(
+                        "⚠️  DAO contract not found in symbol registry, using well-known address"
+                    );
                     moltchain_core::Pubkey([0xDA; 32])
                 }
             };

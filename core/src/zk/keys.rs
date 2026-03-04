@@ -91,7 +91,12 @@ impl ViewingKey {
         let mut serialized = Vec::new();
         self.0
             .serialize_compressed(&mut serialized)
-            .unwrap_or_else(|e| panic!("FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.", e));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.",
+                    e
+                )
+            });
 
         let mut hasher = Sha256::new();
         hasher.update(&serialized);
@@ -104,9 +109,12 @@ impl ViewingKey {
     /// Get the full compressed point bytes
     pub fn to_compressed_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        self.0
-            .serialize_compressed(&mut bytes)
-            .unwrap_or_else(|e| panic!("FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.", e));
+        self.0.serialize_compressed(&mut bytes).unwrap_or_else(|e| {
+            panic!(
+                "FATAL: G1 point serialization failed: {}. OOM or ark-serialize bug.",
+                e
+            )
+        });
         bytes
     }
 }
@@ -114,7 +122,6 @@ impl ViewingKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_std::rand::rngs::OsRng;
 
     #[test]
     fn test_keypair_generation() {

@@ -358,7 +358,7 @@ fn a12_01_genesis_distribution_matches_multisig() {
 
     // Verify multisig.rs has the canonical values
     for (name, amount) in &canonical {
-        let pattern = format!(
+        let _pattern = format!(
             "(\"{}\", {})",
             name,
             amount
@@ -609,9 +609,8 @@ fn a5_03_graduated_slashing_math() {
 
 #[cfg(test)]
 mod get_contract_address_tests {
-    use moltchain_core::contract::{ContractContext, ContractRuntime};
+    use moltchain_core::contract::ContractContext;
     use moltchain_core::Pubkey;
-    use std::collections::HashMap;
 
     /// Verify that the ContractContext correctly stores both `caller` and
     /// `contract` fields, and that they are distinct — this is the foundation

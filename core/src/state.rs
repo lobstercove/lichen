@@ -7112,8 +7112,8 @@ mod tests {
 
         let all = state.get_all_shielded_commitments(5).unwrap();
         assert_eq!(all.len(), 5);
-        for i in 0..5 {
-            assert_eq!(all[i][0], i as u8);
+        for (i, entry) in all.iter().enumerate() {
+            assert_eq!(entry[0], i as u8);
         }
     }
 

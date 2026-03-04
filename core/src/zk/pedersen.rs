@@ -39,7 +39,9 @@ fn generator_g() -> G1Affine {
         }
         for byte in seed.iter_mut().rev() {
             *byte = byte.wrapping_add(1);
-            if *byte != 0 { break; }
+            if *byte != 0 {
+                break;
+            }
         }
     }
 }

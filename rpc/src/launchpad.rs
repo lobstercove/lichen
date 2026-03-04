@@ -525,6 +525,7 @@ mod tests {
     // ── Constants sanity ──
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn constants_sane() {
         assert!(BASE_PRICE > 0);
         assert!(SLOPE > 0);
@@ -541,7 +542,12 @@ mod tests {
         let p = spot_price(0);
         // At supply=0: price = BASE_PRICE / SHELLS_PER_MOLT
         let expected = BASE_PRICE as f64 / SHELLS_PER_MOLT;
-        assert!((p - expected).abs() < 1e-15, "spot_price(0) = {}, expected {}", p, expected);
+        assert!(
+            (p - expected).abs() < 1e-15,
+            "spot_price(0) = {}, expected {}",
+            p,
+            expected
+        );
     }
 
     #[test]
@@ -644,7 +650,10 @@ mod tests {
         // At higher supply, same input yields fewer tokens (bonding curve)
         let t_low = compute_buy_tokens(0, 1_000_000_000);
         let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000);
-        assert!(t_low > t_high, "Higher supply should yield fewer tokens per MOLT");
+        assert!(
+            t_low > t_high,
+            "Higher supply should yield fewer tokens per MOLT"
+        );
     }
 
     // ── u64_le helper ──

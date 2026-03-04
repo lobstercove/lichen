@@ -2183,7 +2183,7 @@ async fn test_native_get_transaction_found() {
     assert_valid_rpc(&resp);
     // Result may be the tx or error depending on format, but should not be method-not-found
     assert!(
-        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        resp.get("error").is_none_or(|e| e["code"] != -32601),
         "should route to handler, not method-not-found"
     );
 }
@@ -2517,7 +2517,7 @@ async fn test_native_request_airdrop_handled() {
     assert_valid_rpc(&resp);
     // Without tx_sender, airdrop may error; important thing is it's routed correctly
     assert!(
-        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        resp.get("error").is_none_or(|e| e["code"] != -32601),
         "airdrop should route to handler, not method-not-found"
     );
 }
@@ -2533,7 +2533,7 @@ async fn test_native_confirm_transaction_found() {
     assert_valid_rpc(&resp);
     // Should route correctly (not method-not-found)
     assert!(
-        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        resp.get("error").is_none_or(|e| e["code"] != -32601),
         "should route to handler"
     );
 }

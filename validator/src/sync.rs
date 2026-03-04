@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(chunks[2], (250, 299));
         // All chunks must be ≤ P2P_BLOCK_RANGE_LIMIT in size
         for (s, e) in &chunks {
-            assert!(e - s + 1 <= P2P_BLOCK_RANGE_LIMIT);
+            assert!(e - s < P2P_BLOCK_RANGE_LIMIT);
         }
     }
 

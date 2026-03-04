@@ -346,9 +346,18 @@ mod tests {
 
     #[test]
     fn parse_orderbook() {
-        assert_eq!(DexChannel::parse("orderbook:1"), Some(DexChannel::OrderBook(1)));
-        assert_eq!(DexChannel::parse("orderbook:0"), Some(DexChannel::OrderBook(0)));
-        assert_eq!(DexChannel::parse("orderbook:999"), Some(DexChannel::OrderBook(999)));
+        assert_eq!(
+            DexChannel::parse("orderbook:1"),
+            Some(DexChannel::OrderBook(1))
+        );
+        assert_eq!(
+            DexChannel::parse("orderbook:0"),
+            Some(DexChannel::OrderBook(0))
+        );
+        assert_eq!(
+            DexChannel::parse("orderbook:999"),
+            Some(DexChannel::OrderBook(999))
+        );
     }
 
     #[test]
@@ -363,8 +372,14 @@ mod tests {
 
     #[test]
     fn parse_candles() {
-        assert_eq!(DexChannel::parse("candles:1:60"), Some(DexChannel::Candles(1, 60)));
-        assert_eq!(DexChannel::parse("candles:5:3600"), Some(DexChannel::Candles(5, 3600)));
+        assert_eq!(
+            DexChannel::parse("candles:1:60"),
+            Some(DexChannel::Candles(1, 60))
+        );
+        assert_eq!(
+            DexChannel::parse("candles:5:3600"),
+            Some(DexChannel::Candles(5, 3600))
+        );
     }
 
     #[test]
@@ -407,7 +422,7 @@ mod tests {
         ];
         for ch in channels {
             let s = ch.channel_string();
-            let parsed = DexChannel::parse(&s).expect(&format!("Failed to parse '{}'", s));
+            let parsed = DexChannel::parse(&s).unwrap_or_else(|| panic!("Failed to parse '{}'", s));
             assert_eq!(parsed, ch);
         }
     }
@@ -417,51 +432,158 @@ mod tests {
     #[test]
     fn matches_orderbook() {
         let ch = DexChannel::OrderBook(1);
-        assert!(ch.matches(&DexEvent::OrderBookUpdate { pair_id: 1, bids: vec![], asks: vec![], slot: 0 }));
-        assert!(!ch.matches(&DexEvent::OrderBookUpdate { pair_id: 2, bids: vec![], asks: vec![], slot: 0 }));
+        assert!(ch.matches(&DexEvent::OrderBookUpdate {
+            pair_id: 1,
+            bids: vec![],
+            asks: vec![],
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::OrderBookUpdate {
+            pair_id: 2,
+            bids: vec![],
+            asks: vec![],
+            slot: 0
+        }));
     }
 
     #[test]
     fn matches_trades() {
         let ch = DexChannel::Trades(5);
-        assert!(ch.matches(&DexEvent::TradeExecution { trade_id: 1, pair_id: 5, price: 1.0, quantity: 100, side: "buy".into(), slot: 0 }));
-        assert!(!ch.matches(&DexEvent::TradeExecution { trade_id: 1, pair_id: 6, price: 1.0, quantity: 100, side: "buy".into(), slot: 0 }));
+        assert!(ch.matches(&DexEvent::TradeExecution {
+            trade_id: 1,
+            pair_id: 5,
+            price: 1.0,
+            quantity: 100,
+            side: "buy".into(),
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::TradeExecution {
+            trade_id: 1,
+            pair_id: 6,
+            price: 1.0,
+            quantity: 100,
+            side: "buy".into(),
+            slot: 0
+        }));
     }
 
     #[test]
     fn matches_ticker() {
         let ch = DexChannel::Ticker(3);
-        assert!(ch.matches(&DexEvent::TickerUpdate { pair_id: 3, last_price: 1.0, bid: 0.99, ask: 1.01, volume_24h: 1000, change_24h: 0.05 }));
-        assert!(!ch.matches(&DexEvent::TickerUpdate { pair_id: 4, last_price: 1.0, bid: 0.99, ask: 1.01, volume_24h: 1000, change_24h: 0.05 }));
+        assert!(ch.matches(&DexEvent::TickerUpdate {
+            pair_id: 3,
+            last_price: 1.0,
+            bid: 0.99,
+            ask: 1.01,
+            volume_24h: 1000,
+            change_24h: 0.05
+        }));
+        assert!(!ch.matches(&DexEvent::TickerUpdate {
+            pair_id: 4,
+            last_price: 1.0,
+            bid: 0.99,
+            ask: 1.01,
+            volume_24h: 1000,
+            change_24h: 0.05
+        }));
     }
 
     #[test]
     fn matches_candles_both_pair_and_interval() {
         let ch = DexChannel::Candles(1, 60);
-        assert!(ch.matches(&DexEvent::CandleUpdate { pair_id: 1, interval: 60, open: 1.0, high: 1.1, low: 0.9, close: 1.05, volume: 100, slot: 0 }));
-        assert!(!ch.matches(&DexEvent::CandleUpdate { pair_id: 1, interval: 3600, open: 1.0, high: 1.1, low: 0.9, close: 1.05, volume: 100, slot: 0 }));
-        assert!(!ch.matches(&DexEvent::CandleUpdate { pair_id: 2, interval: 60, open: 1.0, high: 1.1, low: 0.9, close: 1.05, volume: 100, slot: 0 }));
+        assert!(ch.matches(&DexEvent::CandleUpdate {
+            pair_id: 1,
+            interval: 60,
+            open: 1.0,
+            high: 1.1,
+            low: 0.9,
+            close: 1.05,
+            volume: 100,
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::CandleUpdate {
+            pair_id: 1,
+            interval: 3600,
+            open: 1.0,
+            high: 1.1,
+            low: 0.9,
+            close: 1.05,
+            volume: 100,
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::CandleUpdate {
+            pair_id: 2,
+            interval: 60,
+            open: 1.0,
+            high: 1.1,
+            low: 0.9,
+            close: 1.05,
+            volume: 100,
+            slot: 0
+        }));
     }
 
     #[test]
     fn matches_user_orders() {
         let ch = DexChannel::UserOrders("alice".to_string());
-        assert!(ch.matches(&DexEvent::OrderUpdate { order_id: 1, trader: "alice".into(), status: "filled".into(), filled: 100, remaining: 0, slot: 0 }));
-        assert!(!ch.matches(&DexEvent::OrderUpdate { order_id: 1, trader: "bob".into(), status: "filled".into(), filled: 100, remaining: 0, slot: 0 }));
+        assert!(ch.matches(&DexEvent::OrderUpdate {
+            order_id: 1,
+            trader: "alice".into(),
+            status: "filled".into(),
+            filled: 100,
+            remaining: 0,
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::OrderUpdate {
+            order_id: 1,
+            trader: "bob".into(),
+            status: "filled".into(),
+            filled: 100,
+            remaining: 0,
+            slot: 0
+        }));
     }
 
     #[test]
     fn matches_user_positions() {
         let ch = DexChannel::UserPositions("alice".to_string());
-        assert!(ch.matches(&DexEvent::PositionUpdate { position_id: 1, trader: "alice".into(), status: "open".into(), unrealized_pnl: 500, margin_ratio: 2.0, slot: 0 }));
-        assert!(!ch.matches(&DexEvent::PositionUpdate { position_id: 1, trader: "bob".into(), status: "open".into(), unrealized_pnl: 500, margin_ratio: 2.0, slot: 0 }));
+        assert!(ch.matches(&DexEvent::PositionUpdate {
+            position_id: 1,
+            trader: "alice".into(),
+            status: "open".into(),
+            unrealized_pnl: 500,
+            margin_ratio: 2.0,
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::PositionUpdate {
+            position_id: 1,
+            trader: "bob".into(),
+            status: "open".into(),
+            unrealized_pnl: 500,
+            margin_ratio: 2.0,
+            slot: 0
+        }));
     }
 
     #[test]
     fn cross_type_never_matches() {
         let ch = DexChannel::OrderBook(1);
-        assert!(!ch.matches(&DexEvent::TradeExecution { trade_id: 1, pair_id: 1, price: 1.0, quantity: 100, side: "buy".into(), slot: 0 }));
-        assert!(!ch.matches(&DexEvent::TickerUpdate { pair_id: 1, last_price: 1.0, bid: 0.99, ask: 1.01, volume_24h: 1000, change_24h: 0.05 }));
+        assert!(!ch.matches(&DexEvent::TradeExecution {
+            trade_id: 1,
+            pair_id: 1,
+            price: 1.0,
+            quantity: 100,
+            side: "buy".into(),
+            slot: 0
+        }));
+        assert!(!ch.matches(&DexEvent::TickerUpdate {
+            pair_id: 1,
+            last_price: 1.0,
+            bid: 0.99,
+            ask: 1.01,
+            volume_24h: 1000,
+            change_24h: 0.05
+        }));
     }
 
     // ── DexEventBroadcaster ──
@@ -479,7 +601,14 @@ mod tests {
         bc.emit_trade(1, 2, 1.5, 100, "buy", 10);
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::TradeExecution { trade_id, pair_id, price, quantity, side, slot } => {
+            DexEvent::TradeExecution {
+                trade_id,
+                pair_id,
+                price,
+                quantity,
+                side,
+                slot,
+            } => {
                 assert_eq!(trade_id, 1);
                 assert_eq!(pair_id, 2);
                 assert!((price - 1.5).abs() < 1e-9);
@@ -495,10 +624,24 @@ mod tests {
     async fn broadcaster_emit_orderbook() {
         let bc = DexEventBroadcaster::new(16);
         let mut rx = bc.subscribe();
-        bc.emit_orderbook(1, vec![PriceLevel { price: 100.0, quantity: 5, orders: 2 }], vec![], 50);
+        bc.emit_orderbook(
+            1,
+            vec![PriceLevel {
+                price: 100.0,
+                quantity: 5,
+                orders: 2,
+            }],
+            vec![],
+            50,
+        );
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::OrderBookUpdate { pair_id, bids, asks, slot } => {
+            DexEvent::OrderBookUpdate {
+                pair_id,
+                bids,
+                asks,
+                slot,
+            } => {
                 assert_eq!(pair_id, 1);
                 assert_eq!(bids.len(), 1);
                 assert_eq!(asks.len(), 0);
@@ -515,7 +658,14 @@ mod tests {
         bc.emit_ticker(1, 100.0, 99.5, 100.5, 50000, 2.5);
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::TickerUpdate { pair_id, last_price, bid, ask, volume_24h, change_24h } => {
+            DexEvent::TickerUpdate {
+                pair_id,
+                last_price,
+                bid: _,
+                ask: _,
+                volume_24h,
+                change_24h: _,
+            } => {
                 assert_eq!(pair_id, 1);
                 assert!((last_price - 100.0).abs() < 1e-9);
                 assert_eq!(volume_24h, 50000);
@@ -531,7 +681,16 @@ mod tests {
         bc.emit_candle(1, 60, 1.0, 1.1, 0.9, 1.05, 500, 100);
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::CandleUpdate { pair_id, interval, open, high, low, close, volume, slot } => {
+            DexEvent::CandleUpdate {
+                pair_id,
+                interval,
+                open: _,
+                high: _,
+                low: _,
+                close: _,
+                volume,
+                slot,
+            } => {
                 assert_eq!(pair_id, 1);
                 assert_eq!(interval, 60);
                 assert_eq!(volume, 500);
@@ -548,7 +707,14 @@ mod tests {
         bc.emit_order_update(1, "alice", "filled", 100, 0, 200);
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::OrderUpdate { order_id, trader, status, filled, remaining, slot } => {
+            DexEvent::OrderUpdate {
+                order_id,
+                trader,
+                status,
+                filled,
+                remaining,
+                slot: _,
+            } => {
                 assert_eq!(order_id, 1);
                 assert_eq!(trader, "alice");
                 assert_eq!(status, "filled");
@@ -566,7 +732,14 @@ mod tests {
         bc.emit_position_update(1, "bob", "liquidated", -500, 0.5, 300);
         let event = rx.recv().await.unwrap();
         match event {
-            DexEvent::PositionUpdate { position_id, trader, status, unrealized_pnl, margin_ratio, slot } => {
+            DexEvent::PositionUpdate {
+                position_id,
+                trader,
+                status,
+                unrealized_pnl,
+                margin_ratio: _,
+                slot: _,
+            } => {
                 assert_eq!(position_id, 1);
                 assert_eq!(trader, "bob");
                 assert_eq!(status, "liquidated");
@@ -597,8 +770,14 @@ mod tests {
 
     #[test]
     fn handle_dex_subscribe_valid() {
-        assert_eq!(handle_dex_subscribe("orderbook:1"), Some("orderbook:1".to_string()));
-        assert_eq!(handle_dex_subscribe("trades:5"), Some("trades:5".to_string()));
+        assert_eq!(
+            handle_dex_subscribe("orderbook:1"),
+            Some("orderbook:1".to_string())
+        );
+        assert_eq!(
+            handle_dex_subscribe("trades:5"),
+            Some("trades:5".to_string())
+        );
     }
 
     #[test]

@@ -10389,8 +10389,10 @@ async fn run_validator() {
     if admin_token.is_some() {
         info!("🔒 Admin token configured for state-mutating RPC endpoints");
     } else {
-        warn!("⚠️  No admin_token configured — all admin RPC endpoints are disabled. \
-               Set MOLTCHAIN_ADMIN_TOKEN env var or --admin-token flag for production.");
+        warn!(
+            "⚠️  No admin_token configured — all admin RPC endpoints are disabled. \
+               Set MOLTCHAIN_ADMIN_TOKEN env var or --admin-token flag for production."
+        );
     }
 
     let state_for_rpc = state.clone();
@@ -12099,10 +12101,13 @@ mod tests {
 
     #[test]
     fn resolve_peer_list_invalid_skipped() {
-        let peers = vec!["not-a-valid-address".to_string(), "127.0.0.1:8000".to_string()];
+        let peers = vec![
+            "not-a-valid-address".to_string(),
+            "127.0.0.1:8000".to_string(),
+        ];
         let result = resolve_peer_list(&peers);
         // invalid hostname without port won't resolve
-        assert!(result.len() >= 1, "should have at least the valid peer");
+        assert!(!result.is_empty(), "should have at least the valid peer");
     }
 
     // ── constants sanity ────────────────────────────────────────────
@@ -12113,6 +12118,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
@@ -12129,6 +12135,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn sync_fanout_reasonable() {
         assert!(SYNC_REQUEST_FANOUT >= 1 && SYNC_REQUEST_FANOUT <= 10);
     }
@@ -12201,13 +12208,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let state = StateStore::open(temp_dir.path()).expect("open state");
 
-        // Register MARGIN program
+        // Register DEXMARGIN program (trigger engine looks up "DEXMARGIN")
         let margin_pk = Pubkey([50u8; 32]);
         state
             .register_symbol(
-                "MARGIN",
+                "DEXMARGIN",
                 moltchain_core::state::SymbolRegistryEntry {
-                    symbol: "MARGIN".to_string(),
+                    symbol: "DEXMARGIN".to_string(),
                     program: margin_pk,
                     owner: Pubkey([0u8; 32]),
                     name: None,
@@ -12277,11 +12284,12 @@ mod tests {
         // tp_price=150 at [114..122]
         pos_data[114..122].copy_from_slice(&150u64.to_le_bytes());
 
+        // Trigger engine reads positions as "mrg_pos_{pid}" with count "mrg_pos_count"
         state
-            .put_contract_storage(&margin_pk, b"margin_pos_1", &pos_data)
+            .put_contract_storage(&margin_pk, b"mrg_pos_1", &pos_data)
             .unwrap();
         state
-            .put_contract_storage(&margin_pk, b"position_count", &1u64.to_le_bytes())
+            .put_contract_storage(&margin_pk, b"mrg_pos_count", &1u64.to_le_bytes())
             .unwrap();
 
         // Set up a trade at price=200 (above TP=150, triggers TP)
@@ -12301,7 +12309,7 @@ mod tests {
 
         // Verify: position should be closed (status=1)
         let closed_data = state
-            .get_contract_storage(&margin_pk, b"margin_pos_1")
+            .get_contract_storage(&margin_pk, b"mrg_pos_1")
             .unwrap()
             .unwrap();
         assert_eq!(closed_data[49], 1, "position should be closed");
@@ -12309,14 +12317,14 @@ mod tests {
         // PnL: (200 - 100) * 1B / 1B = 100 profit
         // return_amount = margin(500) + capped_profit(min(100, 1000)) = 600
         // insurance_fund should be debited by 100: 1000 - 100 = 900
-        let insurance_after = state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+        let insurance_after = state.get_program_storage_u64("DEXMARGIN", b"mrg_insurance");
         assert_eq!(
             insurance_after, 900,
             "insurance fund should be debited by profit"
         );
 
         // Verify PnL tracking
-        let pnl_profit = state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+        let pnl_profit = state.get_program_storage_u64("DEXMARGIN", b"mrg_pnl_profit");
         assert_eq!(pnl_profit, 100, "cumulative profit should be tracked");
 
         // Verify user balance credited (with saturating_add, P9-VAL-03)

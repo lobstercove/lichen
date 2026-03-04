@@ -281,8 +281,7 @@ impl GenesisWallet {
 
             let json_str = serde_json::to_string_pretty(&keypair_json)
                 .map_err(|e| format!("Failed to serialize keypair JSON: {}", e))?;
-            fs::write(&path, json_str)
-                .map_err(|e| format!("Failed to write keypair: {}", e))?;
+            fs::write(&path, json_str).map_err(|e| format!("Failed to write keypair: {}", e))?;
 
             paths.push(path.to_string_lossy().to_string());
         }

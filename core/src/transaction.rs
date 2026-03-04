@@ -42,7 +42,10 @@ impl Message {
     /// `try_serialize()` instead.
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap_or_else(|e| {
-            panic!("FATAL: Message serialization failed ({}). This indicates data corruption or OOM.", e)
+            panic!(
+                "FATAL: Message serialization failed ({}). This indicates data corruption or OOM.",
+                e
+            )
         })
     }
 

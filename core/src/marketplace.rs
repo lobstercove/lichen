@@ -191,7 +191,11 @@ mod tests {
         // Each pair is different (different kind enum variant)
         for i in 0..encoded.len() {
             for j in (i + 1)..encoded.len() {
-                assert_ne!(encoded[i], encoded[j], "Kinds {:?} and {:?} serialize identically", kinds[i], kinds[j]);
+                assert_ne!(
+                    encoded[i], encoded[j],
+                    "Kinds {:?} and {:?} serialize identically",
+                    kinds[i], kinds[j]
+                );
             }
         }
     }
