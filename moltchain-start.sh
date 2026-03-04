@@ -216,6 +216,30 @@ if $IS_GENESIS; then
     echo -e "${CYAN}[2/4]${NC} Starting ${GREEN}GENESIS${NC} validator..."
     echo -e "  🎯 This validator will create the chain and treasury"
     echo -e "     Treasury keys will be saved to: ${DB_PATH}/genesis-keys/"
+
+    # Fetch real-time prices from Binance for genesis pool pricing
+    echo -e "  📈 Fetching real-time prices for genesis pools..."
+    PRICE_JSON=$(curl -sf --max-time 10 \
+        'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+        || curl -sf --max-time 10 \
+        'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+        || echo '[]')
+    if [ "$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
+        eval "$(python3 -c "
+import json, sys
+try:
+    data = json.loads('''$PRICE_JSON''')
+    m = {d['symbol']: float(d['price']) for d in data}
+    print(f'export GENESIS_SOL_USD={m.get(\"SOLUSDT\", 145.0):.2f}')
+    print(f'export GENESIS_ETH_USD={m.get(\"ETHUSDT\", 2600.0):.2f}')
+    print(f'export GENESIS_BNB_USD={m.get(\"BNBUSDT\", 620.0):.2f}')
+except: pass
+" 2>/dev/null)"
+        export GENESIS_MOLT_USD="${GENESIS_MOLT_USD:-0.10}"
+        echo -e "     SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} MOLT=\$${GENESIS_MOLT_USD}"
+    else
+        echo -e "  ${YELLOW}⚠  Could not fetch prices, using defaults${NC}"
+    fi
 else
     echo -e "${CYAN}[2/4]${NC} Starting validator..."
 fi
