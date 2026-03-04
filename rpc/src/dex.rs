@@ -2844,11 +2844,20 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────────
 
     /// Build a minimal 112-byte trading-pair blob for decode_pair.
-    fn make_pair_blob(pair_id: u64, tick: u64, lot: u64, min_order: u64, status: u8,
-                      maker_bps: i16, taker_bps: u16, vol: u64) -> Vec<u8> {
+    #[allow(clippy::too_many_arguments)]
+    fn make_pair_blob(
+        pair_id: u64,
+        tick: u64,
+        lot: u64,
+        min_order: u64,
+        status: u8,
+        maker_bps: i16,
+        taker_bps: u16,
+        vol: u64,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 112];
-        buf[0..32].copy_from_slice(&[0xAA; 32]);   // base_token
-        buf[32..64].copy_from_slice(&[0xBB; 32]);   // quote_token
+        buf[0..32].copy_from_slice(&[0xAA; 32]); // base_token
+        buf[32..64].copy_from_slice(&[0xBB; 32]); // quote_token
         buf[64..72].copy_from_slice(&pair_id.to_le_bytes());
         buf[72..80].copy_from_slice(&tick.to_le_bytes());
         buf[80..88].copy_from_slice(&lot.to_le_bytes());
@@ -2861,9 +2870,20 @@ mod tests {
     }
 
     /// Build a minimal 128-byte order blob for decode_order.
-    fn make_order_blob(trader: [u8; 32], pair_id: u64, side: u8, otype: u8,
-                       price: u64, qty: u64, filled: u64, status: u8,
-                       created: u64, expiry: u64, order_id: u64) -> Vec<u8> {
+    #[allow(clippy::too_many_arguments)]
+    fn make_order_blob(
+        trader: [u8; 32],
+        pair_id: u64,
+        side: u8,
+        otype: u8,
+        price: u64,
+        qty: u64,
+        filled: u64,
+        status: u8,
+        created: u64,
+        expiry: u64,
+        order_id: u64,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 128];
         buf[0..32].copy_from_slice(&trader);
         buf[32..40].copy_from_slice(&pair_id.to_le_bytes());
@@ -2880,8 +2900,15 @@ mod tests {
     }
 
     /// Build a minimal 80-byte trade blob.
-    fn make_trade_blob(trade_id: u64, pair_id: u64, price: u64, qty: u64,
-                       taker: [u8; 32], maker_order_id: u64, slot: u64) -> Vec<u8> {
+    fn make_trade_blob(
+        trade_id: u64,
+        pair_id: u64,
+        price: u64,
+        qty: u64,
+        taker: [u8; 32],
+        maker_order_id: u64,
+        slot: u64,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 80];
         buf[0..8].copy_from_slice(&trade_id.to_le_bytes());
         buf[8..16].copy_from_slice(&pair_id.to_le_bytes());
@@ -2894,10 +2921,16 @@ mod tests {
     }
 
     /// Build a minimal 96-byte pool blob.
-    fn make_pool_blob(pool_id: u64, sqrt_price: u64, tick: i32, liquidity: u64,
-                      fee_tier: u8, protocol_fee: u8) -> Vec<u8> {
+    fn make_pool_blob(
+        pool_id: u64,
+        sqrt_price: u64,
+        tick: i32,
+        liquidity: u64,
+        fee_tier: u8,
+        protocol_fee: u8,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 96];
-        buf[0..32].copy_from_slice(&[0xCC; 32]);  // token_a
+        buf[0..32].copy_from_slice(&[0xCC; 32]); // token_a
         buf[32..64].copy_from_slice(&[0xDD; 32]); // token_b
         buf[64..72].copy_from_slice(&pool_id.to_le_bytes());
         buf[72..80].copy_from_slice(&sqrt_price.to_le_bytes());
@@ -2933,11 +2966,17 @@ mod tests {
     }
 
     /// Build a minimal 96-byte route blob.
-    fn make_route_blob(route_id: u64, rtype: u8, pool_id: u64, secondary: u64,
-                       split: u8, enabled: bool) -> Vec<u8> {
+    fn make_route_blob(
+        route_id: u64,
+        rtype: u8,
+        pool_id: u64,
+        secondary: u64,
+        split: u8,
+        enabled: bool,
+    ) -> Vec<u8> {
         let mut buf = vec![0u8; 96];
-        buf[0..32].copy_from_slice(&[0x11; 32]);   // token_in
-        buf[32..64].copy_from_slice(&[0x22; 32]);   // token_out
+        buf[0..32].copy_from_slice(&[0x11; 32]); // token_in
+        buf[32..64].copy_from_slice(&[0x22; 32]); // token_out
         buf[64..72].copy_from_slice(&route_id.to_le_bytes());
         buf[72] = rtype;
         buf[73..81].copy_from_slice(&pool_id.to_le_bytes());
@@ -3015,8 +3054,13 @@ mod tests {
 
     #[test]
     fn decode_order_all_statuses() {
-        for (byte, expected) in [(0u8, "open"), (1, "partial"), (2, "filled"),
-                                  (3, "cancelled"), (4, "expired")] {
+        for (byte, expected) in [
+            (0u8, "open"),
+            (1, "partial"),
+            (2, "filled"),
+            (3, "cancelled"),
+            (4, "expired"),
+        ] {
             let blob = make_order_blob([0; 32], 1, 0, 0, 0, 0, 0, byte, 0, 0, 1);
             assert_eq!(decode_order(&blob).unwrap().status, expected);
         }
@@ -3024,8 +3068,12 @@ mod tests {
 
     #[test]
     fn decode_order_all_types() {
-        for (byte, expected) in [(0u8, "limit"), (1, "market"), (2, "stop-limit"),
-                                  (3, "post-only")] {
+        for (byte, expected) in [
+            (0u8, "limit"),
+            (1, "market"),
+            (2, "stop-limit"),
+            (3, "post-only"),
+        ] {
             let blob = make_order_blob([0; 32], 1, 0, byte, 0, 0, 0, 0, 0, 0, 1);
             assert_eq!(decode_order(&blob).unwrap().order_type, expected);
         }
@@ -3122,17 +3170,17 @@ mod tests {
     fn decode_margin_position_v1() {
         let mut buf = vec![0u8; 112];
         buf[0..32].copy_from_slice(&[0x33; 32]);
-        buf[32..40].copy_from_slice(&7u64.to_le_bytes());  // position_id
-        buf[40..48].copy_from_slice(&2u64.to_le_bytes());  // pair_id
+        buf[32..40].copy_from_slice(&7u64.to_le_bytes()); // position_id
+        buf[40..48].copy_from_slice(&2u64.to_le_bytes()); // pair_id
         buf[48] = 0; // side = long
         buf[49] = 0; // status = open
         buf[50..58].copy_from_slice(&100u64.to_le_bytes()); // size
-        buf[58..66].copy_from_slice(&10u64.to_le_bytes());  // margin
+        buf[58..66].copy_from_slice(&10u64.to_le_bytes()); // margin
         let entry = 50 * PRICE_SCALE;
         buf[66..74].copy_from_slice(&entry.to_le_bytes());
-        buf[74..82].copy_from_slice(&5u64.to_le_bytes());   // leverage
+        buf[74..82].copy_from_slice(&5u64.to_le_bytes()); // leverage
         buf[82..90].copy_from_slice(&1000u64.to_le_bytes()); // created_slot
-        // PNL at zero => bias
+                                                             // PNL at zero => bias
         buf[90..98].copy_from_slice(&PNL_BIAS.to_le_bytes());
         buf[98..106].copy_from_slice(&0u64.to_le_bytes());
 
@@ -3212,7 +3260,7 @@ mod tests {
         let c = decode_candle(&blob).unwrap();
         assert!((c.open - 100.0).abs() < 1e-6);
         assert!((c.high - 110.0).abs() < 1e-6);
-        assert!((c.low -  90.0).abs() < 1e-6);
+        assert!((c.low - 90.0).abs() < 1e-6);
         assert!((c.close - 105.0).abs() < 1e-6);
         assert_eq!(c.volume, 5000);
         assert_eq!(c.slot, 42);
@@ -3228,7 +3276,14 @@ mod tests {
     #[test]
     fn decode_stats_24h_positive_change() {
         let scale = PRICE_SCALE;
-        let blob = make_stats_blob(10_000, 120 * scale, 80 * scale, 100 * scale, 110 * scale, 200);
+        let blob = make_stats_blob(
+            10_000,
+            120 * scale,
+            80 * scale,
+            100 * scale,
+            110 * scale,
+            200,
+        );
         let s = decode_stats_24h(&blob).unwrap();
         assert_eq!(s.volume, 10_000);
         assert!((s.open - 100.0).abs() < 1e-6);
@@ -3265,8 +3320,13 @@ mod tests {
 
     #[test]
     fn decode_route_all_types() {
-        for (byte, expected) in [(0u8, "clob"), (1, "amm"), (2, "split"),
-                                  (3, "multi_hop"), (4, "legacy")] {
+        for (byte, expected) in [
+            (0u8, "clob"),
+            (1, "amm"),
+            (2, "split"),
+            (3, "multi_hop"),
+            (4, "legacy"),
+        ] {
             let blob = make_route_blob(1, byte, 0, 0, 0, false);
             assert_eq!(decode_route(&blob).unwrap().route_type, expected);
         }
@@ -3303,8 +3363,13 @@ mod tests {
 
     #[test]
     fn decode_proposal_all_statuses() {
-        for (byte, expected) in [(0u8, "active"), (1, "passed"), (2, "rejected"),
-                                  (3, "executed"), (4, "cancelled")] {
+        for (byte, expected) in [
+            (0u8, "active"),
+            (1, "passed"),
+            (2, "rejected"),
+            (3, "executed"),
+            (4, "cancelled"),
+        ] {
             let mut buf = vec![0u8; 120];
             buf[41] = byte;
             assert_eq!(decode_proposal(&buf).unwrap().status, expected);
@@ -3313,8 +3378,12 @@ mod tests {
 
     #[test]
     fn decode_proposal_all_types() {
-        for (byte, expected) in [(0u8, "new_pair"), (1, "fee_change"),
-                                  (2, "delist"), (3, "param_change")] {
+        for (byte, expected) in [
+            (0u8, "new_pair"),
+            (1, "fee_change"),
+            (2, "delist"),
+            (3, "param_change"),
+        ] {
             let mut buf = vec![0u8; 120];
             buf[40] = byte;
             assert_eq!(decode_proposal(&buf).unwrap().proposal_type, expected);
@@ -3359,7 +3428,10 @@ mod tests {
         let liq = 1_000_000u64;
         let (out_small, _) = compute_swap_output_rpc(1_000, liq, sqrt_price, 30, true);
         let (out_large, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 30, true);
-        assert!(out_large > out_small, "larger input should yield more output");
+        assert!(
+            out_large > out_small,
+            "larger input should yield more output"
+        );
     }
 
     #[test]
@@ -3368,7 +3440,10 @@ mod tests {
         let liq = 1_000_000u64;
         let (out_low_fee, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 10, true);
         let (out_high_fee, _) = compute_swap_output_rpc(10_000, liq, sqrt_price, 500, true);
-        assert!(out_low_fee > out_high_fee, "lower fee should yield more output");
+        assert!(
+            out_low_fee > out_high_fee,
+            "lower fee should yield more output"
+        );
     }
 
     // ── constants sanity ────────────────────────────────────────────────

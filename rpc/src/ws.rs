@@ -1732,8 +1732,14 @@ mod tests {
 
     #[test]
     fn prediction_channel_parse_all() {
-        assert!(matches!(PredictionChannel::parse("all"), Some(PredictionChannel::AllMarkets)));
-        assert!(matches!(PredictionChannel::parse("markets"), Some(PredictionChannel::AllMarkets)));
+        assert!(matches!(
+            PredictionChannel::parse("all"),
+            Some(PredictionChannel::AllMarkets)
+        ));
+        assert!(matches!(
+            PredictionChannel::parse("markets"),
+            Some(PredictionChannel::AllMarkets)
+        ));
     }
 
     #[test]
@@ -1762,15 +1768,31 @@ mod tests {
     #[test]
     fn prediction_channel_matches_all() {
         let ch = PredictionChannel::AllMarkets;
-        let event = PredictionEvent::MarketCreated { market_id: 1, question: "test".into(), slot: 10 };
+        let event = PredictionEvent::MarketCreated {
+            market_id: 1,
+            question: "test".into(),
+            slot: 10,
+        };
         assert!(ch.matches(&event));
     }
 
     #[test]
     fn prediction_channel_matches_specific() {
         let ch = PredictionChannel::Market(5);
-        let matching = PredictionEvent::TradeExecuted { market_id: 5, outcome: "Yes".into(), shares: 100, price: 0.6, slot: 10 };
-        let non_matching = PredictionEvent::TradeExecuted { market_id: 3, outcome: "No".into(), shares: 50, price: 0.4, slot: 10 };
+        let matching = PredictionEvent::TradeExecuted {
+            market_id: 5,
+            outcome: "Yes".into(),
+            shares: 100,
+            price: 0.6,
+            slot: 10,
+        };
+        let non_matching = PredictionEvent::TradeExecuted {
+            market_id: 3,
+            outcome: "No".into(),
+            shares: 50,
+            price: 0.4,
+            slot: 10,
+        };
         assert!(ch.matches(&matching));
         assert!(!ch.matches(&non_matching));
     }
@@ -1778,10 +1800,28 @@ mod tests {
     #[test]
     fn prediction_channel_matches_all_event_types() {
         let ch = PredictionChannel::Market(1);
-        assert!(ch.matches(&PredictionEvent::MarketCreated { market_id: 1, question: "q".into(), slot: 1 }));
-        assert!(ch.matches(&PredictionEvent::TradeExecuted { market_id: 1, outcome: "Y".into(), shares: 1, price: 0.5, slot: 1 }));
-        assert!(ch.matches(&PredictionEvent::MarketResolved { market_id: 1, winning_outcome: "Y".into(), slot: 1 }));
-        assert!(ch.matches(&PredictionEvent::PriceUpdate { market_id: 1, outcomes: vec![], slot: 1 }));
+        assert!(ch.matches(&PredictionEvent::MarketCreated {
+            market_id: 1,
+            question: "q".into(),
+            slot: 1
+        }));
+        assert!(ch.matches(&PredictionEvent::TradeExecuted {
+            market_id: 1,
+            outcome: "Y".into(),
+            shares: 1,
+            price: 0.5,
+            slot: 1
+        }));
+        assert!(ch.matches(&PredictionEvent::MarketResolved {
+            market_id: 1,
+            winning_outcome: "Y".into(),
+            slot: 1
+        }));
+        assert!(ch.matches(&PredictionEvent::PriceUpdate {
+            market_id: 1,
+            outcomes: vec![],
+            slot: 1
+        }));
     }
 
     // ── PredictionEventBroadcaster ──
@@ -1799,7 +1839,11 @@ mod tests {
         bc.emit_market_created(1, "Will it rain?", 100);
         let event = rx.recv().await.unwrap();
         match event {
-            PredictionEvent::MarketCreated { market_id, question, slot } => {
+            PredictionEvent::MarketCreated {
+                market_id,
+                question,
+                slot,
+            } => {
                 assert_eq!(market_id, 1);
                 assert_eq!(question, "Will it rain?");
                 assert_eq!(slot, 100);
@@ -1815,7 +1859,13 @@ mod tests {
         bc.emit_trade(1, "Yes", 500, 0.65, 200);
         let event = rx.recv().await.unwrap();
         match event {
-            PredictionEvent::TradeExecuted { market_id, outcome, shares, price, slot } => {
+            PredictionEvent::TradeExecuted {
+                market_id,
+                outcome,
+                shares,
+                price,
+                slot,
+            } => {
                 assert_eq!(market_id, 1);
                 assert_eq!(outcome, "Yes");
                 assert_eq!(shares, 500);
@@ -1833,7 +1883,11 @@ mod tests {
         bc.emit_market_resolved(5, "No", 999);
         let event = rx.recv().await.unwrap();
         match event {
-            PredictionEvent::MarketResolved { market_id, winning_outcome, slot } => {
+            PredictionEvent::MarketResolved {
+                market_id,
+                winning_outcome,
+                slot,
+            } => {
                 assert_eq!(market_id, 5);
                 assert_eq!(winning_outcome, "No");
                 assert_eq!(slot, 999);
@@ -1847,13 +1901,23 @@ mod tests {
         let bc = PredictionEventBroadcaster::new(16);
         let mut rx = bc.subscribe();
         let outcomes = vec![
-            OutcomePrice { outcome: "Yes".into(), price: 0.7 },
-            OutcomePrice { outcome: "No".into(), price: 0.3 },
+            OutcomePrice {
+                outcome: "Yes".into(),
+                price: 0.7,
+            },
+            OutcomePrice {
+                outcome: "No".into(),
+                price: 0.3,
+            },
         ];
         bc.emit_price_update(2, outcomes, 300);
         let event = rx.recv().await.unwrap();
         match event {
-            PredictionEvent::PriceUpdate { market_id, outcomes, slot } => {
+            PredictionEvent::PriceUpdate {
+                market_id,
+                outcomes,
+                slot,
+            } => {
                 assert_eq!(market_id, 2);
                 assert_eq!(outcomes.len(), 2);
                 assert_eq!(slot, 300);
@@ -1946,7 +2010,11 @@ mod tests {
     async fn handle_unsubscribe_slots_valid() {
         let sm = SubscriptionManager::new();
         sm.subscribe(SubscriptionType::Slots).await.unwrap();
-        let resp = handle_subscription_request(make_req("unsubscribeSlots", Some(serde_json::json!(1))), &sm).await;
+        let resp = handle_subscription_request(
+            make_req("unsubscribeSlots", Some(serde_json::json!(1))),
+            &sm,
+        )
+        .await;
         assert!(resp.error.is_none());
         assert_eq!(resp.result.unwrap(), serde_json::json!(true));
     }
@@ -1954,7 +2022,11 @@ mod tests {
     #[tokio::test]
     async fn handle_unsubscribe_slots_invalid_id() {
         let sm = SubscriptionManager::new();
-        let resp = handle_subscription_request(make_req("unsubscribeSlots", Some(serde_json::json!(999))), &sm).await;
+        let resp = handle_subscription_request(
+            make_req("unsubscribeSlots", Some(serde_json::json!(999))),
+            &sm,
+        )
+        .await;
         assert!(resp.error.is_none());
         assert_eq!(resp.result.unwrap(), serde_json::json!(false));
     }
@@ -1975,7 +2047,8 @@ mod tests {
         let resp = handle_subscription_request(
             make_req("subscribeAccount", Some(serde_json::json!(pk.to_base58()))),
             &sm,
-        ).await;
+        )
+        .await;
         assert!(resp.error.is_none());
     }
 
@@ -1983,9 +2056,13 @@ mod tests {
     async fn handle_subscribe_account_invalid_pubkey() {
         let sm = SubscriptionManager::new();
         let resp = handle_subscription_request(
-            make_req("subscribeAccount", Some(serde_json::json!("not-a-pubkey!!!"))),
+            make_req(
+                "subscribeAccount",
+                Some(serde_json::json!("not-a-pubkey!!!")),
+            ),
             &sm,
-        ).await;
+        )
+        .await;
         assert!(resp.error.is_some());
     }
 
@@ -1999,7 +2076,8 @@ mod tests {
     #[tokio::test]
     async fn handle_subscribe_program_updates() {
         let sm = SubscriptionManager::new();
-        let resp = handle_subscription_request(make_req("subscribeProgramUpdates", None), &sm).await;
+        let resp =
+            handle_subscription_request(make_req("subscribeProgramUpdates", None), &sm).await;
         assert!(resp.error.is_none());
     }
 
@@ -2032,7 +2110,13 @@ mod tests {
     #[test]
     fn create_notification_account_change() {
         let pk = Pubkey([0xBBu8; 32]);
-        let notif = create_notification(5, &Event::AccountChange { pubkey: pk, balance: 1000 });
+        let notif = create_notification(
+            5,
+            &Event::AccountChange {
+                pubkey: pk,
+                balance: 1000,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["balance"], 1000);
         assert!(result["pubkey"].as_str().is_some());
@@ -2040,13 +2124,16 @@ mod tests {
 
     #[test]
     fn create_notification_bridge_lock() {
-        let notif = create_notification(3, &Event::BridgeLock {
-            chain: "ethereum".to_string(),
-            asset: "WETH".to_string(),
-            amount: 1_000_000_000,
-            sender: "0x1234".to_string(),
-            recipient: Pubkey([0xCCu8; 32]),
-        });
+        let notif = create_notification(
+            3,
+            &Event::BridgeLock {
+                chain: "ethereum".to_string(),
+                asset: "WETH".to_string(),
+                amount: 1_000_000_000,
+                sender: "0x1234".to_string(),
+                recipient: Pubkey([0xCCu8; 32]),
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "BridgeLock");
         assert_eq!(result["chain"], "ethereum");
@@ -2055,12 +2142,15 @@ mod tests {
 
     #[test]
     fn create_notification_epoch_change() {
-        let notif = create_notification(2, &Event::EpochChange {
-            epoch: 10,
-            slot: 43200,
-            total_stake: 500_000_000_000,
-            validator_count: 5,
-        });
+        let notif = create_notification(
+            2,
+            &Event::EpochChange {
+                epoch: 10,
+                slot: 43200,
+                total_stake: 500_000_000_000,
+                validator_count: 5,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "EpochChange");
         assert_eq!(result["epoch"], 10);
@@ -2069,13 +2159,16 @@ mod tests {
 
     #[test]
     fn create_notification_governance_event() {
-        let notif = create_notification(4, &Event::GovernanceEvent {
-            proposal_id: 7,
-            event_kind: "voted".to_string(),
-            voter: Some(Pubkey([0xDDu8; 32])),
-            vote_weight: Some(1000),
-            slot: 100,
-        });
+        let notif = create_notification(
+            4,
+            &Event::GovernanceEvent {
+                proposal_id: 7,
+                event_kind: "voted".to_string(),
+                voter: Some(Pubkey([0xDDu8; 32])),
+                vote_weight: Some(1000),
+                slot: 100,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "GovernanceEvent");
         assert_eq!(result["proposal_id"], 7);
@@ -2084,12 +2177,15 @@ mod tests {
 
     #[test]
     fn create_notification_signature_status() {
-        let notif = create_notification(6, &Event::SignatureStatus {
-            signature: "abcdef123456".to_string(),
-            status: "finalized".to_string(),
-            slot: 50,
-            err: None,
-        });
+        let notif = create_notification(
+            6,
+            &Event::SignatureStatus {
+                signature: "abcdef123456".to_string(),
+                status: "finalized".to_string(),
+                slot: 50,
+                err: None,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "SignatureStatus");
         assert_eq!(result["status"], "finalized");
@@ -2097,12 +2193,15 @@ mod tests {
 
     #[test]
     fn create_notification_validator_update() {
-        let notif = create_notification(7, &Event::ValidatorUpdate {
-            pubkey: Pubkey([0xEEu8; 32]),
-            event_kind: "joined".to_string(),
-            stake: 100_000_000_000,
-            slot: 200,
-        });
+        let notif = create_notification(
+            7,
+            &Event::ValidatorUpdate {
+                pubkey: Pubkey([0xEEu8; 32]),
+                event_kind: "joined".to_string(),
+                stake: 100_000_000_000,
+                slot: 200,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "ValidatorUpdate");
         assert_eq!(result["kind"], "joined");
@@ -2110,13 +2209,16 @@ mod tests {
 
     #[test]
     fn create_notification_token_balance_change() {
-        let notif = create_notification(8, &Event::TokenBalanceChange {
-            owner: Pubkey([0x01u8; 32]),
-            mint: Pubkey([0x02u8; 32]),
-            old_balance: 1000,
-            new_balance: 2000,
-            slot: 300,
-        });
+        let notif = create_notification(
+            8,
+            &Event::TokenBalanceChange {
+                owner: Pubkey([0x01u8; 32]),
+                mint: Pubkey([0x02u8; 32]),
+                old_balance: 1000,
+                new_balance: 2000,
+                slot: 300,
+            },
+        );
         let result = &notif.params.result;
         assert_eq!(result["event"], "TokenBalanceChange");
         assert_eq!(result["delta"], 1000);
@@ -2154,7 +2256,10 @@ mod tests {
             SubscriptionType::BridgeMints,
             SubscriptionType::SignatureStatus("abc".to_string()),
             SubscriptionType::Validators,
-            SubscriptionType::TokenBalance { owner: Pubkey([0u8; 32]), mint: None },
+            SubscriptionType::TokenBalance {
+                owner: Pubkey([0u8; 32]),
+                mint: None,
+            },
             SubscriptionType::Epochs,
             SubscriptionType::Governance,
         ];

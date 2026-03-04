@@ -274,6 +274,7 @@ mod tests {
     // ── Version constants ──
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn version_constants_nonzero() {
         assert!(NFT_COLLECTION_VERSION > 0);
         assert!(NFT_TOKEN_VERSION > 0);

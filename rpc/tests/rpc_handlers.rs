@@ -97,6 +97,7 @@ fn create_test_app() -> axum::Router {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_identity_record(
     owner: Pubkey,
     agent_type: u8,

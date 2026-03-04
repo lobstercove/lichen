@@ -161,9 +161,8 @@ impl Note {
         let nonce = Nonce::from_slice(&nonce_material[..12]);
 
         // ChaCha20-Poly1305 authenticated encryption
-        let cipher =
-            ChaCha20Poly1305::new_from_slice(&encryption_key)
-                .unwrap_or_else(|e| panic!("FATAL: ChaCha20 key init with 32-byte key failed: {}", e));
+        let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)
+            .unwrap_or_else(|e| panic!("FATAL: ChaCha20 key init with 32-byte key failed: {}", e));
         let ciphertext = cipher
             .encrypt(nonce, note_bytes.as_ref())
             .map_err(|_| "note encryption failed")

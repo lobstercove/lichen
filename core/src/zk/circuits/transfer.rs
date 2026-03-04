@@ -301,6 +301,7 @@ mod tests {
     use ark_std::rand::rngs::OsRng;
 
     /// Helper: insert two notes into a tree, return (tree, proofs, note data)
+    #[allow(dead_code)]
     struct TestInput {
         value: u64,
         blinding: Fr,
@@ -317,8 +318,7 @@ mod tests {
 
         let inputs: Vec<TestInput> = values
             .iter()
-            .enumerate()
-            .map(|(idx, &val)| {
+            .map(|&val| {
                 let blinding = Fr::rand(&mut OsRng);
                 let serial = Fr::rand(&mut OsRng);
                 let sk = Fr::rand(&mut OsRng);
@@ -514,7 +514,7 @@ mod tests {
         // ≈ 2 × (300 + 300 + 32×300 + 254) + 2 × (300 + 254) + 1 ≈ 21,000
         println!("Transfer circuit constraint count: {}", num);
         assert!(
-            num >= 10000 && num <= 50000,
+            (10000..=50000).contains(&num),
             "constraint count {} outside expected range [10000, 50000]",
             num
         );

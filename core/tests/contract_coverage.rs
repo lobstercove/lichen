@@ -18,7 +18,6 @@ use std::path::PathBuf;
 
 use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use moltchain_core::Pubkey;
-use serde_json;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1452,9 +1451,7 @@ fn test_all_contracts_initialize() {
 /// Attempt to call a privileged function with a non-admin caller.
 /// Returns Ok(true) if rejected (good), Ok(false) if succeeded (bad),
 /// Err if the function doesn't exist in the export table.
-fn try_unauthorized_call(contract_name: &str, function: &str, args: &[u8])
-    -> Result<bool, String>
-{
+fn try_unauthorized_call(contract_name: &str, function: &str, args: &[u8]) -> Result<bool, String> {
     let code = load_wasm(contract_name);
     let contract = make_contract(code, admin());
     let ctx = ContractContext::with_args(
@@ -1487,12 +1484,16 @@ fn test_compute_market_set_claim_timeout_unauthorized() {
     }))
     .unwrap();
     match try_unauthorized_call("compute_market", "set_claim_timeout", &args) {
-        Ok(rejected) => assert!(rejected,
-            "compute_market::set_claim_timeout should reject unauthorized caller"),
+        Ok(rejected) => assert!(
+            rejected,
+            "compute_market::set_claim_timeout should reject unauthorized caller"
+        ),
         Err(e) => {
             // Export might not exist in opcode-ABI contracts
-            assert!(e.contains("not found") || e.contains("Missing export"),
-                    "unexpected error: {e}");
+            assert!(
+                e.contains("not found") || e.contains("Missing export"),
+                "unexpected error: {e}"
+            );
         }
     }
 }
@@ -1511,7 +1512,14 @@ fn test_moltdao_cancel_proposal_caller_check() {
     let code = load_wasm("moltdao");
     let contract = make_contract(code, admin());
     // Just verify it doesn't crash
-    let _result = exec(&contract, "cancel_proposal", user_a(), &args, admin_storage(), 0);
+    let _result = exec(
+        &contract,
+        "cancel_proposal",
+        user_a(),
+        &args,
+        admin_storage(),
+        0,
+    );
 }
 
 // ── moltoracle: submit_price — documents allowlist-based access ──
@@ -1528,7 +1536,14 @@ fn test_moltoracle_submit_price_caller_check() {
     .unwrap();
     let code = load_wasm("moltoracle");
     let contract = make_contract(code, admin());
-    let _result = exec(&contract, "submit_price", user_a(), &args, admin_storage(), 0);
+    let _result = exec(
+        &contract,
+        "submit_price",
+        user_a(),
+        &args,
+        admin_storage(),
+        0,
+    );
 }
 
 // ── Verify WASM runtime rejects calls to non-existent exports ──
@@ -1541,7 +1556,12 @@ fn test_missing_export_rejected() {
         let code = load_wasm(contract_name);
         let contract = make_contract(code, admin());
         let ctx = ContractContext::with_args(
-            user_a(), contract_addr(), 0, 100, admin_storage(), b"{}".to_vec(),
+            user_a(),
+            contract_addr(),
+            0,
+            100,
+            admin_storage(),
+            b"{}".to_vec(),
         );
         let mut runtime = ContractRuntime::new();
         let result = runtime.execute(&contract, "nonexistent_function_xyz", b"{}", ctx);
@@ -1557,15 +1577,19 @@ fn test_missing_export_rejected() {
 #[test]
 fn test_batch_named_export_admin_check() {
     // Only test contracts that have known named exports
-    let test_cases: Vec<(&str, &str, serde_json::Value)> = vec![
-        ("compute_market", "set_claim_timeout", serde_json::json!({"timeout": 999})),
-    ];
+    let test_cases: Vec<(&str, &str, serde_json::Value)> = vec![(
+        "compute_market",
+        "set_claim_timeout",
+        serde_json::json!({"timeout": 999}),
+    )];
 
     for (contract_name, function, json_args) in &test_cases {
         let args = serde_json::to_vec(json_args).unwrap();
         match try_unauthorized_call(contract_name, function, &args) {
-            Ok(rejected) => assert!(rejected,
-                "[{contract_name}::{function}] should reject unauthorized caller"),
+            Ok(rejected) => assert!(
+                rejected,
+                "[{contract_name}::{function}] should reject unauthorized caller"
+            ),
             Err(e) => panic!("[{contract_name}::{function}] unexpected error: {e}"),
         }
     }

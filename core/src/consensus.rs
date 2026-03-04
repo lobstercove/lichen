@@ -4811,6 +4811,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_min_stake_vs_bootstrap_grant_separation() {
         // Verify MIN_VALIDATOR_STAKE < BOOTSTRAP_GRANT_AMOUNT (the 25% buffer)
         assert!(
@@ -5253,6 +5254,7 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_block_reward_constants() {
         // TX block reward: 0.1 MOLT = 100,000,000 shells
         assert_eq!(TRANSACTION_BLOCK_REWARD, 100_000_000);

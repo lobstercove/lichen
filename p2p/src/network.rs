@@ -797,22 +797,28 @@ mod tests {
 
     #[test]
     fn test_p2p_config_effective_max_peers_override() {
-        let mut config = P2PConfig::default();
-        config.max_peers = Some(100);
+        let config = P2PConfig {
+            max_peers: Some(100),
+            ..Default::default()
+        };
         assert_eq!(config.effective_max_peers(), 100);
     }
 
     #[test]
     fn test_p2p_config_effective_max_peers_relay() {
-        let mut config = P2PConfig::default();
-        config.role = NodeRole::Relay;
+        let config = P2PConfig {
+            role: NodeRole::Relay,
+            ..Default::default()
+        };
         assert_eq!(config.effective_max_peers(), 500);
     }
 
     #[test]
     fn test_p2p_config_effective_max_peers_seed() {
-        let mut config = P2PConfig::default();
-        config.role = NodeRole::Seed;
+        let config = P2PConfig {
+            role: NodeRole::Seed,
+            ..Default::default()
+        };
         assert_eq!(config.effective_max_peers(), 1000);
     }
 

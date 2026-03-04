@@ -248,7 +248,7 @@ mod tests {
         // commitment ==: 1
         // Total should be in the range [300, 1500]
         assert!(
-            num >= 200 && num <= 2000,
+            (200..=2000).contains(&num),
             "constraint count {} outside expected range [200, 2000]",
             num
         );

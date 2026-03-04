@@ -295,8 +295,7 @@ async fn send_tx(
         .get("blockhash")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Failed to get recent blockhash from RPC"))?;
-    let blockhash_bytes = hex::decode(blockhash_str)
-        .context("Failed to decode blockhash")?;
+    let blockhash_bytes = hex::decode(blockhash_str).context("Failed to decode blockhash")?;
     let mut bh = [0u8; 32];
     if blockhash_bytes.len() >= 32 {
         bh.copy_from_slice(&blockhash_bytes[..32]);

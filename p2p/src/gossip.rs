@@ -451,12 +451,17 @@ mod tests {
         tracker.record_failure(peer); // Sets next_attempt to now + backoff
         let before = tracker.backoff.len();
         tracker.prune_stale();
-        assert_eq!(tracker.backoff.len(), before, "Fresh entry should NOT be pruned");
+        assert_eq!(
+            tracker.backoff.len(),
+            before,
+            "Fresh entry should NOT be pruned"
+        );
     }
 
     // ── Constants ──
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn constants_sane() {
         assert!(MIN_PEER_COUNT >= 1);
         assert!(MAX_BACKOFF_SECS >= INITIAL_BACKOFF_SECS);

@@ -578,7 +578,7 @@ mod tests {
         // + bit decomposition ≈ 254
         // Total ≈ 10500-12000
         assert!(
-            num >= 5000 && num <= 20000,
+            (5000..=20000).contains(&num),
             "constraint count {} outside expected range [5000, 20000]",
             num
         );

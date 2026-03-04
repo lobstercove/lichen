@@ -1500,7 +1500,16 @@ mod tests {
 
     #[test]
     fn category_roundtrip() {
-        for cat in ["politics", "sports", "crypto", "science", "entertainment", "economics", "tech", "custom"] {
+        for cat in [
+            "politics",
+            "sports",
+            "crypto",
+            "science",
+            "entertainment",
+            "economics",
+            "tech",
+            "custom",
+        ] {
             let id = map_category(cat).unwrap();
             assert_eq!(category_name(id), cat);
         }
@@ -1591,8 +1600,12 @@ mod tests {
     // ── Constants ──
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn constants_sane() {
-        assert_eq!(PRICE_SCALE, 1_000_000, "Prediction uses 1e6 (MUSD), not 1e9");
+        assert_eq!(
+            PRICE_SCALE, 1_000_000,
+            "Prediction uses 1e6 (MUSD), not 1e9"
+        );
         assert!(MIN_COLLATERAL > 0);
         assert!(TRADING_FEE_BPS > 0 && TRADING_FEE_BPS < 10_000);
         assert!(MIN_REPUTATION_CREATE < MIN_REPUTATION_RESOLVE);
