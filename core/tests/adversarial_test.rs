@@ -586,6 +586,7 @@ fn test_byzantine_block_production() {
         },
         transactions: vec![],
         tx_fees_paid: vec![],
+        oracle_prices: vec![],
     };
 
     let block2 = Block {
@@ -600,6 +601,7 @@ fn test_byzantine_block_production() {
         },
         transactions: vec![],
         tx_fees_paid: vec![],
+        oracle_prices: vec![],
     };
 
     // Store first block

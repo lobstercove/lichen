@@ -73,6 +73,56 @@ const EXIT_CODE_RESTART: i32 = 75;
 /// pending blocks or is actively syncing.
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 
+// =========================================================================
+//  SHARED ORACLE PRICES — Thread-safe container for Binance price data
+//
+//  The background oracle price feeder (WebSocket + REST) updates these
+//  atomics. The block production loop reads them to include in each block.
+//  All validators then apply the same prices deterministically from the
+//  block data, ensuring oracle state is consensus-propagated.
+// =========================================================================
+
+/// Thread-safe container for oracle prices fetched from external sources.
+/// The background oracle feeder updates these atomics; block production reads them
+/// and includes them in every produced block via `Block::oracle_prices`.
+#[derive(Clone)]
+struct SharedOraclePrices {
+    wsol_micro: Arc<AtomicU64>,
+    weth_micro: Arc<AtomicU64>,
+    wbnb_micro: Arc<AtomicU64>,
+    ws_healthy: Arc<AtomicBool>,
+}
+
+impl SharedOraclePrices {
+    fn new() -> Self {
+        Self {
+            wsol_micro: Arc::new(AtomicU64::new(0)),
+            weth_micro: Arc::new(AtomicU64::new(0)),
+            wbnb_micro: Arc::new(AtomicU64::new(0)),
+            ws_healthy: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Snapshot current prices into block-embeddable format.
+    /// Returns vec of (asset_symbol, price_microcents) pairs with non-zero prices.
+    fn snapshot(&self) -> Vec<(String, u64)> {
+        let mut prices = Vec::with_capacity(3);
+        let wsol = self.wsol_micro.load(Ordering::Relaxed);
+        let weth = self.weth_micro.load(Ordering::Relaxed);
+        let wbnb = self.wbnb_micro.load(Ordering::Relaxed);
+        if wsol > 0 {
+            prices.push(("wSOL".to_string(), wsol));
+        }
+        if weth > 0 {
+            prices.push(("wETH".to_string(), weth));
+        }
+        if wbnb > 0 {
+            prices.push(("wBNB".to_string(), wbnb));
+        }
+        prices
+    }
+}
+
 /// Maximum duration (seconds) the freeze-production guard can stay active
 /// before forcibly resuming production. Prevents the death spiral where
 /// continuous incoming blocks keep highest_seen elevated and the node
@@ -1986,6 +2036,230 @@ fn block_total_fees_paid(block: &Block, fee_config: &FeeConfig) -> u64 {
             .iter()
             .map(|tx| TxProcessor::compute_transaction_fee(tx, fee_config))
             .sum()
+    }
+}
+
+// =========================================================================
+//  CONSENSUS-PROPAGATED ORACLE — Deterministic oracle data from blocks
+//
+//  Oracle prices are embedded in each block by the leader validator and
+//  applied identically by ALL validators during block processing. This
+//  ensures every validator has identical oracle state, preventing any
+//  divergence in DEX WASM execution (price band checks etc.).
+// =========================================================================
+
+/// Apply oracle price data from a block to the local state.
+///
+/// Called on ALL validators (both the block producer and receivers) after
+/// `apply_block_effects`. The oracle prices come from `block.oracle_prices`
+/// which the block producer populated from its `SharedOraclePrices` atomics.
+///
+/// This function writes:
+/// 1. Oracle price feeds to the ORACLE contract storage (moltoracle)
+/// 2. DEX price bands to the DEX contract storage (dex_core)
+/// 3. Analytics indicative prices to ANALYTICS contract storage (dex_analytics)
+///
+/// Since all validators apply the SAME prices from the SAME block, the
+/// resulting state is deterministic and identical across the network.
+fn apply_oracle_from_block(state: &StateStore, block: &Block) {
+    if block.oracle_prices.is_empty() || block.header.slot == 0 {
+        return;
+    }
+
+    let slot = block.header.slot;
+    let now_ts = block.header.timestamp;
+
+    // Resolve contract pubkeys via symbol registry
+    let oracle_pk = match state.get_symbol_registry("ORACLE") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+    let dex_pk = match state.get_symbol_registry("DEX") {
+        Ok(Some(entry)) => entry.program,
+        _ => Pubkey([0u8; 32]),
+    };
+    let feeder = match state.get_genesis_pubkey() {
+        Ok(Some(gpk)) => gpk.0,
+        _ => return,
+    };
+
+    const ORACLE_DECIMALS: u8 = 8;
+    const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
+    const MICRO_SCALE_DIV: f64 = 1_000_000.0;
+
+    // Parse prices from block data
+    let mut wsol_usd: f64 = 0.0;
+    let mut weth_usd: f64 = 0.0;
+    let mut wbnb_usd: f64 = 0.0;
+
+    for (symbol, micro) in &block.oracle_prices {
+        let price_usd = *micro as f64 / MICRO_SCALE_DIV;
+        match symbol.as_str() {
+            "wSOL" => wsol_usd = price_usd,
+            "wETH" => weth_usd = price_usd,
+            "wBNB" => wbnb_usd = price_usd,
+            _ => {}
+        }
+    }
+
+    if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
+        return;
+    }
+
+    // Read MOLT price from oracle (or use default 0.10)
+    let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
+        Ok(Some(feed)) if feed.len() >= 8 => {
+            let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+            if raw > 0 {
+                raw as f64 / 100_000_000.0
+            } else {
+                0.10
+            }
+        }
+        _ => 0.10,
+    };
+
+    // ── Phase A: Write oracle price feeds to ORACLE contract ──
+    let oracle_feeds: [(&[u8], f64); 3] = [
+        (b"wSOL", wsol_usd),
+        (b"wETH", weth_usd),
+        (b"wBNB", wbnb_usd),
+    ];
+
+    for (asset, price_usd) in &oracle_feeds {
+        if *price_usd <= 0.0 {
+            continue;
+        }
+        let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
+
+        // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
+        let mut feed = Vec::with_capacity(49);
+        feed.extend_from_slice(&price_raw.to_le_bytes());
+        feed.extend_from_slice(&now_ts.to_le_bytes());
+        feed.push(ORACLE_DECIMALS);
+        feed.extend_from_slice(&feeder);
+
+        let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
+        let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
+
+        // Also write indexed key for aggregation
+        let indexed_key = format!("{}_0", price_key);
+        let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
+    }
+
+    // ── Phase B: Write DEX price bands to DEX contract ──
+    // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
+    // The dex_core contract reads this during place_order to enforce
+    // ±5% (market) / ±10% (limit) price band protection.
+    let pair_prices: [(u64, f64); 7] = [
+        (1, molt_usd),
+        (2, wsol_usd),
+        (3, weth_usd),
+        (
+            4,
+            if molt_usd > 0.0 {
+                wsol_usd / molt_usd
+            } else {
+                0.0
+            },
+        ),
+        (
+            5,
+            if molt_usd > 0.0 {
+                weth_usd / molt_usd
+            } else {
+                0.0
+            },
+        ),
+        (6, wbnb_usd),
+        (
+            7,
+            if molt_usd > 0.0 {
+                wbnb_usd / molt_usd
+            } else {
+                0.0
+            },
+        ),
+    ];
+
+    if dex_pk.0 != [0u8; 32] {
+        for (pair_id, price_f64) in &pair_prices {
+            if *price_f64 <= 0.0 {
+                continue;
+            }
+            let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+            let band_key = format!("dex_band_{}", pair_id);
+            let mut band_data = Vec::with_capacity(16);
+            band_data.extend_from_slice(&price_scaled.to_le_bytes());
+            band_data.extend_from_slice(&slot.to_le_bytes());
+            let _ = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data);
+        }
+    }
+
+    // ── Phase C: Write analytics indicative prices ──
+    // Only for pairs with no recent real trade (>60s since last trade).
+    // This keeps chart data alive on inactive markets.
+    for (pair_id, price_f64) in &pair_prices {
+        if *price_f64 <= 0.0 {
+            continue;
+        }
+        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+
+        // Check if a real trade occurred within 60 seconds
+        let ts_key = format!("ana_last_trade_ts_{}", pair_id);
+        let last_trade_ts: u64 = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes())
+        {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+        let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
+
+        if trade_active {
+            continue; // Active market: trades drive displayed prices
+        }
+
+        // Inactive market: write indicative price from oracle
+        let lp_key = format!("ana_lp_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            lp_key.as_bytes(),
+            &price_scaled.to_le_bytes(),
+        );
+
+        // Update 24h stats (read-modify-write)
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let (vol, mut high, mut low, open, _close, trades) =
+            match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                Ok(Some(d)) if d.len() >= 48 => (
+                    u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
+                ),
+                _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
+            };
+
+        if price_scaled > high {
+            high = price_scaled;
+        }
+        if price_scaled < low {
+            low = price_scaled;
+        }
+
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&vol.to_le_bytes());
+        stats.extend_from_slice(&high.to_le_bytes());
+        stats.extend_from_slice(&low.to_le_bytes());
+        stats.extend_from_slice(&open.to_le_bytes());
+        stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
+        stats.extend_from_slice(&trades.to_le_bytes());
+        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
     }
 }
 
@@ -5013,16 +5287,9 @@ struct BinanceTicker {
     price: String,
 }
 
-fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
+fn spawn_oracle_price_feeder(state: StateStore, shared_prices: SharedOraclePrices) {
     tokio::spawn(async move {
-        // Resolve contract pubkeys via symbol registry
-        let oracle_pk = match state.get_symbol_registry("ORACLE") {
-            Ok(Some(entry)) => entry.program,
-            _ => {
-                warn!("🔮 Oracle price feeder: ORACLE symbol not found, aborting");
-                return;
-            }
-        };
+        // Resolve analytics contract pubkey for candle writes (display-only)
         let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
             Ok(Some(entry)) => entry.program,
             _ => {
@@ -5030,21 +5297,6 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 return;
             }
         };
-
-        // Resolve DEX symbol for writing oracle price bands
-        let dex_pk = match state.get_symbol_registry("DEX") {
-            Ok(Some(entry)) => entry.program,
-            _ => {
-                warn!("🔮 Oracle price feeder: DEX symbol not found (price bands disabled)");
-                // Use a sentinel — bands won't be written but feeder continues
-                Pubkey([0u8; 32])
-            }
-        };
-
-        const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
-        const ORACLE_DECIMALS: u8 = 8;
-        let feeder = deployer_pubkey.0; // genesis admin is the authorized feeder
-        let molt_usd_default: f64 = 0.10;
 
         // Configurable Binance endpoints via env vars (for geo-blocked regions)
         let oracle_ws_url: String = std::env::var("MOLTCHAIN_ORACLE_WS_URL")
@@ -5054,11 +5306,12 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
         info!("🔮 Oracle WS: {}", oracle_ws_url);
         info!("🔮 Oracle REST: {}", oracle_rest_url);
 
-        // Lock-free atomic price storage shared between WS reader and storage writer
-        let wsol_micro = Arc::new(AtomicU64::new(0));
-        let weth_micro = Arc::new(AtomicU64::new(0));
-        let wbnb_micro = Arc::new(AtomicU64::new(0));
-        let ws_healthy = Arc::new(AtomicBool::new(false));
+        // Use the shared atomics — block production reads these to include
+        // oracle prices in each block for consensus propagation.
+        let wsol_micro = shared_prices.wsol_micro.clone();
+        let weth_micro = shared_prices.weth_micro.clone();
+        let wbnb_micro = shared_prices.wbnb_micro.clone();
+        let ws_healthy = shared_prices.ws_healthy.clone();
 
         // Spawn WebSocket reader task
         {
@@ -5080,18 +5333,17 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 
         let rest_url = oracle_rest_url.clone();
 
-        info!("🔮 Oracle price feeder started (WebSocket real-time + 1s storage writes)");
+        info!("🔮 Oracle price feeder started (WebSocket real-time → SharedOraclePrices → block consensus)");
 
         let candle_intervals: [u64; 9] =
             [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
 
-        // Track last-written prices to skip no-op writes
-        let mut prev_wsol: u64 = 0;
-        let mut prev_weth: u64 = 0;
-        let mut prev_wbnb: u64 = 0;
+        const PRICE_SCALE_F: f64 = 1_000_000_000.0; // 1e9 for DEX price scaling
 
-        // Storage writer loop: 1-second tick
-        let mut write_tick = time::interval(Duration::from_secs(1));
+        // Candle writer loop: 5-second tick (display-only, not consensus-critical)
+        // Oracle feeds + DEX bands are now written deterministically in
+        // apply_oracle_from_block() during block effects — NOT here.
+        let mut write_tick = time::interval(Duration::from_secs(5));
 
         loop {
             write_tick.tick().await;
@@ -5133,16 +5385,10 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 }
             }
 
-            // Track whether prices actually changed — oracle feed storage writes
-            // are skipped when unchanged, but candle writes ALWAYS proceed so
-            // that new candle periods are created at correct time boundaries.
-            let prices_changed =
-                cur_wsol != prev_wsol || cur_weth != prev_weth || cur_wbnb != prev_wbnb;
-            if prices_changed {
-                prev_wsol = cur_wsol;
-                prev_weth = cur_weth;
-                prev_wbnb = cur_wbnb;
-            }
+            // NOTE: Oracle feed writes and DEX price band writes are now handled
+            // deterministically in apply_oracle_from_block() during block effects.
+            // This feeder ONLY updates SharedOraclePrices atomics (for block production)
+            // and writes display-only candle data for TradingView charts.
 
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
@@ -5152,8 +5398,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 continue;
             }
 
-            // AUDIT-FIX E-2: Use deterministic slot-derived timestamp instead of
-            // SystemTime::now() to prevent cross-validator candle boundary disagreements.
+            // Candle updates (display-only for TradingView charts)
             let current_slot = state.get_last_slot().unwrap_or(0);
             let now_ts = {
                 let genesis_ts = state
@@ -5162,7 +5407,6 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     .flatten()
                     .map(|b| b.header.timestamp)
                     .unwrap_or(0);
-                // Use latest block's timestamp when available, fall back to slot-derived
                 state
                     .get_block_by_slot(current_slot)
                     .ok()
@@ -5171,56 +5415,11 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     .unwrap_or_else(|| genesis_ts + (current_slot * 400 / 1000))
             };
 
-            // Read current MOLT price from oracle (or use default)
-            let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
-                Ok(Some(feed)) if feed.len() >= 8 => {
-                    let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-                    if raw > 0 {
-                        raw as f64 / 100_000_000.0
-                    } else {
-                        molt_usd_default
-                    }
-                }
-                _ => molt_usd_default,
-            };
-
-            // Write oracle prices for each external asset — only when changed
-            if prices_changed {
-                let oracle_feeds: [(&[u8], f64); 3] = [
-                    (b"wSOL", wsol_usd),
-                    (b"wETH", weth_usd),
-                    (b"wBNB", wbnb_usd),
-                ];
-
-                for (asset, price_usd) in &oracle_feeds {
-                    if *price_usd <= 0.0 {
-                        continue;
-                    }
-                    let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
-
-                    // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
-                    let mut feed = Vec::with_capacity(49);
-                    feed.extend_from_slice(&price_raw.to_le_bytes());
-                    feed.extend_from_slice(&now_ts.to_le_bytes());
-                    feed.push(ORACLE_DECIMALS);
-                    feed.extend_from_slice(&feeder);
-
-                    let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
-                    let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
-
-                    // Also write indexed key for aggregation
-                    let indexed_key = format!("{}_0", price_key);
-                    let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
-                }
-            }
-
-            // Update dex_analytics for oracle-priced pairs
-            // Pair 1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
-            // 6=wBNB/mUSD, 7=wBNB/MOLT
+            let molt_usd: f64 = 0.10;
             let pair_prices: [(u64, f64); 7] = [
-                (1, molt_usd), // MOLT/mUSD (fixed oracle price)
-                (2, wsol_usd), // wSOL/mUSD
-                (3, weth_usd), // wETH/mUSD
+                (1, molt_usd),
+                (2, wsol_usd),
+                (3, weth_usd),
                 (
                     4,
                     if molt_usd > 0.0 {
@@ -5228,7 +5427,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     } else {
                         0.0
                     },
-                ), // wSOL/MOLT
+                ),
                 (
                     5,
                     if molt_usd > 0.0 {
@@ -5236,8 +5435,8 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     } else {
                         0.0
                     },
-                ), // wETH/MOLT
-                (6, wbnb_usd), // wBNB/mUSD
+                ),
+                (6, wbnb_usd),
                 (
                     7,
                     if molt_usd > 0.0 {
@@ -5245,40 +5444,16 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     } else {
                         0.0
                     },
-                ), // wBNB/MOLT
+                ),
             ];
-
-            // ── Phase C: Write oracle price bands to dex_core storage ──
-            // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
-            // The dex_core contract reads this during place_order to enforce
-            // ±5% (market) / ±10% (limit) price band protection.
-            // Uses slot (not unix timestamp) because get_timestamp() in WASM
-            // returns the block slot number.
-            if prices_changed && dex_pk.0 != [0u8; 32] {
-                for (pair_id, price_f64) in &pair_prices {
-                    if *price_f64 <= 0.0 {
-                        continue;
-                    }
-                    let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
-                    let band_key = format!("dex_band_{}", pair_id);
-                    let mut band_data = Vec::with_capacity(16);
-                    band_data.extend_from_slice(&price_scaled.to_le_bytes());
-                    band_data.extend_from_slice(&current_slot.to_le_bytes());
-                    let _ = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data);
-                }
-            }
 
             for (pair_id, price_f64) in &pair_prices {
                 if *price_f64 <= 0.0 {
                     continue;
                 }
-                let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+                let price_scaled = (*price_f64 * PRICE_SCALE_F) as u64;
 
-                // ── Phase B: Trade-driven fallback ──
-                // If a real trade occurred within 60 seconds for this pair,
-                // skip oracle analytics writes — the trade bridge owns the
-                // displayed price and candles. Oracle still writes to
-                // moltoracle storage (reference index) unconditionally.
+                // Skip candle writes for pairs with active trading
                 let ts_key = format!("ana_last_trade_ts_{}", pair_id);
                 let last_trade_ts: u64 =
                     match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
@@ -5287,57 +5462,10 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                         }
                         _ => 0,
                     };
-                let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
-
-                if trade_active {
-                    // Active market: trades drive analytics, skip oracle overwrite
+                if last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60 {
                     continue;
                 }
 
-                // Update last price + 24h stats only when prices actually changed
-                if prices_changed {
-                    // Inactive market: oracle writes indicative price
-                    let lp_key = format!("ana_lp_{}", pair_id);
-                    let _ = state.put_contract_storage(
-                        &analytics_pk,
-                        lp_key.as_bytes(),
-                        &price_scaled.to_le_bytes(),
-                    );
-
-                    // Update 24h stats (read-modify-write)
-                    let stats_key = format!("ana_24h_{}", pair_id);
-                    let (vol, mut high, mut low, open, _close, trades) =
-                        match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-                            Ok(Some(d)) if d.len() >= 48 => (
-                                u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-                                u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
-                                u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
-                                u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
-                                u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
-                                u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
-                            ),
-                            _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
-                        };
-
-                    if price_scaled > high {
-                        high = price_scaled;
-                    }
-                    if price_scaled < low {
-                        low = price_scaled;
-                    }
-
-                    let mut stats = Vec::with_capacity(48);
-                    stats.extend_from_slice(&vol.to_le_bytes());
-                    stats.extend_from_slice(&high.to_le_bytes());
-                    stats.extend_from_slice(&low.to_le_bytes());
-                    stats.extend_from_slice(&open.to_le_bytes());
-                    stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
-                    stats.extend_from_slice(&trades.to_le_bytes());
-                    let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
-                }
-
-                // ALWAYS update candles — even when prices haven't changed,
-                // so new candle periods are created at correct time boundaries.
                 for &ci in &candle_intervals {
                     oracle_update_candle(
                         &state,
@@ -5352,7 +5480,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             }
 
             debug!(
-                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2}",
+                "🔮 Oracle candles updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2}",
                 wsol_usd, weth_usd, wbnb_usd
             );
         }
@@ -6699,7 +6827,7 @@ async fn run_validator() {
             // The faucet service sends signed transfer transactions to requesting
             // users. It needs its own wallet with MOLT. We generate a deterministic
             // keypair here, save it to genesis-keys, and fund it from treasury.
-            let faucet_fund_molt: u64 = 1_000;
+            let faucet_fund_molt: u64 = 100_000;
             let faucet_fund_shells = Account::molt_to_shells(faucet_fund_molt);
             let faucet_kp = Keypair::generate();
             let faucet_pubkey = faucet_kp.pubkey();
@@ -8334,6 +8462,7 @@ async fn run_validator() {
                                     false,
                                 )
                                 .await;
+                                apply_oracle_from_block(&state_for_blocks, &pending_block);
                                 maybe_create_checkpoint(
                                     &state_for_blocks,
                                     pending_slot,
@@ -8464,6 +8593,7 @@ async fn run_validator() {
                                 false,
                             )
                             .await;
+                            apply_oracle_from_block(&state_for_blocks, &block);
                             maybe_create_checkpoint(
                                 &state_for_blocks,
                                 block_slot,
@@ -8522,6 +8652,7 @@ async fn run_validator() {
                                         false,
                                     )
                                     .await;
+                                    apply_oracle_from_block(&state_for_blocks, &pending_block);
                                     maybe_create_checkpoint(
                                         &state_for_blocks,
                                         pending_slot,
@@ -8775,6 +8906,7 @@ async fn run_validator() {
                                         false,
                                     )
                                     .await;
+                                    apply_oracle_from_block(&state_for_blocks, &block);
                                     maybe_create_checkpoint(
                                         &state_for_blocks,
                                         block_slot,
@@ -8841,6 +8973,10 @@ async fn run_validator() {
                                                 false,
                                             )
                                             .await;
+                                            apply_oracle_from_block(
+                                                &state_for_blocks,
+                                                &pending_block,
+                                            );
                                             maybe_create_checkpoint(
                                                 &state_for_blocks,
                                                 pending_slot,
@@ -10545,16 +10681,18 @@ async fn run_validator() {
     // and writes to moltoracle + dex_analytics storage every 1s when prices change.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
     // Can be disabled via MOLTCHAIN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
+    // Create shared oracle prices — block production reads these atomics
+    // to embed oracle prices in each block for consensus propagation.
+    let shared_oracle_prices = SharedOraclePrices::new();
+
     let oracle_disabled = std::env::var("MOLTCHAIN_DISABLE_ORACLE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if oracle_disabled {
         info!("🔮 Oracle price feeder disabled via MOLTCHAIN_DISABLE_ORACLE");
-    } else if let Ok(Some(gpk)) = state.get_genesis_pubkey() {
-        let state_for_oracle = state.clone();
-        spawn_oracle_price_feeder(state_for_oracle, gpk);
     } else {
-        warn!("⚠️  Oracle price feeder: no genesis pubkey found, skipping");
+        let state_for_oracle = state.clone();
+        spawn_oracle_price_feeder(state_for_oracle, shared_oracle_prices.clone());
     }
 
     info!("⚡ Starting consensus-based block production");
@@ -11676,6 +11814,10 @@ async fn run_validator() {
         );
         block.tx_fees_paid = tx_fees_paid;
 
+        // Embed current oracle prices in the block for consensus propagation.
+        // All validators will apply these deterministically via apply_oracle_from_block().
+        block.oracle_prices = shared_oracle_prices.snapshot();
+
         // Step 2: Apply block effects (rewards, stake updates, etc.)
         apply_block_effects(
             &state,
@@ -11686,6 +11828,7 @@ async fn run_validator() {
             rewards_applied,
         )
         .await;
+        apply_oracle_from_block(&state, &block);
 
         // Step 3: Now compute state_root AFTER effects are applied
         let state_root = state.compute_state_root();
@@ -11945,6 +12088,7 @@ mod tests {
             },
             transactions: txs,
             tx_fees_paid: vec![],
+            oracle_prices: vec![],
         }
     }
 

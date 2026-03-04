@@ -76,6 +76,21 @@ pub struct Block {
     /// to deterministic recomputation.
     #[serde(default)]
     pub tx_fees_paid: Vec<u64>,
+
+    /// Oracle price data included by the block producer.
+    ///
+    /// Each entry: (asset_symbol, price_microcents) where price_microcents =
+    /// USD price × 1_000_000 (6 decimal precision).
+    ///
+    /// All validators apply these prices deterministically during
+    /// `apply_block_effects`, ensuring oracle data is consensus-propagated
+    /// rather than independently fetched. This prevents state divergence
+    /// when the DEX WASM reads oracle price bands during order execution.
+    ///
+    /// Legacy blocks without this field deserialize to an empty vec,
+    /// meaning no oracle update for that block (backward compatible).
+    #[serde(default)]
+    pub oracle_prices: Vec<(String, u64)>,
 }
 
 impl Block {
@@ -94,6 +109,7 @@ impl Block {
             },
             transactions,
             tx_fees_paid: Vec::new(),
+            oracle_prices: Vec::new(),
         }
     }
 
@@ -118,6 +134,7 @@ impl Block {
             },
             transactions,
             tx_fees_paid: Vec::new(),
+            oracle_prices: Vec::new(),
         }
     }
 
@@ -143,6 +160,7 @@ impl Block {
             },
             transactions,
             tx_fees_paid: Vec::new(),
+            oracle_prices: Vec::new(),
         }
     }
 
