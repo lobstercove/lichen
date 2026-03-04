@@ -176,73 +176,7 @@ fi
 # ─────────────────────────────────────────────────────────
 echo -e "\n${CYAN}[5/5]${NC} Seeding AMM pools + insurance fund..."
 
-python3 -c "
-import asyncio, sys, json, os, struct
-sys.path.insert(0, '${TOOLS_DIR}')
-sys.path.insert(0, os.path.join('${TOOLS_DIR}', '..', 'sdk', 'python'))
-from deploy_dex import load_or_create_deployer, call_contract_raw
-from moltchain import Connection
-
-async def go():
-    conn = Connection('${RPC_URL}')
-    deployer = load_or_create_deployer()
-    manifest_path = '${MANIFEST}'
-    if not os.path.exists(manifest_path):
-        print('  No manifest found, skipping pool seeding')
-        return
-    manifest = json.load(open(manifest_path))
-    addrs = manifest.get('contracts', {})
-    amm = addrs.get('dex_amm')
-
-    if not amm:
-        print('  dex_amm not in manifest, skipping pool seeding')
-        return
-
-    # Build pubkey bytes from hex or base58 address strings in manifest
-    from moltchain import PublicKey
-    amm_pk = PublicKey.from_base58(amm) if isinstance(amm, str) else amm
-    deployer_bytes = bytes(deployer.public_key().to_bytes())
-
-    # Resolve token addresses from manifest
-    token_names = {
-        'MOLT': 'moltcoin',
-        'mUSD': 'musd_token',
-        'wSOL': 'wsol_token',
-        'wETH': 'weth_token',
-    }
-    token_pks = {}
-    for sym, contract_name in token_names.items():
-        addr_str = addrs.get(contract_name)
-        if addr_str:
-            token_pks[sym] = bytes(PublicKey.from_base58(addr_str).to_bytes()) if isinstance(addr_str, str) else bytes(addr_str.to_bytes())
-        else:
-            print(f'  ⚠  {contract_name} not in manifest, skipping pools with {sym}')
-
-    # Pools to create: (token_a_symbol, token_b_symbol, fee_tier, initial_sqrt_price)
-    # sqrt_price in Q32: (1 << 32) * sqrt(real_price)
-    # Prices aligned with genesis oracle: MOLT=\$0.10, wSOL=\$170, wETH=\$2,500
-    pools = [
-        ('MOLT', 'mUSD', 30, 1_358_187_913),        # MOLT/mUSD 0.10
-        ('wSOL', 'mUSD', 30, 55_999_522_252),        # wSOL/mUSD 170
-        ('wETH', 'mUSD', 30, 214_748_364_800),       # wETH/mUSD 2500
-        ('wSOL', 'MOLT', 30, 177_086_038_199),        # wSOL/MOLT 1700
-        ('wETH', 'MOLT', 30, 679_093_956_564),        # wETH/MOLT 25000
-    ]
-
-    for (sym_a, sym_b, fee_tier, sqrt_price) in pools:
-        if sym_a not in token_pks or sym_b not in token_pks:
-            print(f'  ⚠  Skipping pool {sym_a}/{sym_b}: token not deployed')
-            continue
-        # Build opcode-encoded binary: opcode(1) + caller(32) + token_a(32) + token_b(32) + fee_tier(1) + sqrt_price(8)
-        data = bytes([1]) + deployer_bytes + token_pks[sym_a] + token_pks[sym_b] + bytes([fee_tier]) + struct.pack('<Q', sqrt_price)
-        try:
-            sig = await call_contract_raw(conn, deployer, amm_pk, 'call', list(data))
-            print(f'  Pool {sym_a}/{sym_b} created (fee={fee_tier}bps)')
-        except Exception as e:
-            print(f'  Pool {sym_a}/{sym_b}: {e}')
-
-asyncio.run(go())
-" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
+CUSTODY_MOLT_RPC_URL="${RPC_URL}" python3 "${SCRIPT_DIR}/seed_pools.py" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
 
 # ─────────────────────────────────────────────────────────
 # Final verification

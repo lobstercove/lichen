@@ -4868,24 +4868,36 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     // Args: [0x01][caller 32B][token_a 32B][token_b 32B][fee_tier 1B][initial_sqrt_price 8B]
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
-    // Prices aligned with genesis oracle seeds: MOLT=$0.10, wSOL=$82, wETH=$1,979, wBNB=$300
-    //   MOLT/mUSD  = $0.10         → sqrt_price =  1_358_187_913
-    //   wSOL/mUSD  = $82           → sqrt_price = 38_892_583_020
-    //   wETH/mUSD  = $1,979        → sqrt_price = 191_065_712_575
-    //   wSOL/MOLT  = 820 MOLT      → sqrt_price = 122_989_146_433
-    //   wETH/MOLT  = 19,790 MOLT   → sqrt_price = 604_202_834_500
-    //   wBNB/mUSD  = $300          → sqrt_price = 74_391_015_735
-    //   wBNB/MOLT  = 3,000 MOLT    → sqrt_price = 235_245_047_176
+    //
+    // Prices are read from env vars at genesis time for accuracy.
+    // Set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_MOLT_USD
+    // before first boot. Falls back to reasonable defaults if not set.
+    let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(0.10);
+    let sol_usd: f64 = std::env::var("GENESIS_SOL_USD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+    let eth_usd: f64 = std::env::var("GENESIS_ETH_USD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+    let bnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+
+    info!("  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+          molt_usd, sol_usd, eth_usd, bnb_usd);
+
+    // sqrt_price = floor(sqrt(price) * 2^32)
+    let q32: f64 = (1u64 << 32) as f64;
+    let sqrt_price = |price: f64| -> u64 { (price.sqrt() * q32) as u64 };
+
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
     let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
-        ("MOLT/mUSD", molt_addr, musd_addr, 1_358_187_913), // $0.10
-        ("wSOL/mUSD", wsol_addr, musd_addr, 38_892_583_020), // $82
-        ("wETH/mUSD", weth_addr, musd_addr, 191_065_712_575), // $1,979
-        ("wSOL/MOLT", wsol_addr, molt_addr, 122_989_146_433), // 820 MOLT
-        ("wETH/MOLT", weth_addr, molt_addr, 604_202_834_500), // 19,790 MOLT
-        ("wBNB/mUSD", wbnb_addr, musd_addr, 74_391_015_735), // $300
-        ("wBNB/MOLT", wbnb_addr, molt_addr, 235_245_047_176), // 3,000 MOLT
+        ("MOLT/mUSD", molt_addr, musd_addr, sqrt_price(molt_usd)),
+        ("wSOL/mUSD", wsol_addr, musd_addr, sqrt_price(sol_usd)),
+        ("wETH/mUSD", weth_addr, musd_addr, sqrt_price(eth_usd)),
+        ("wSOL/MOLT", wsol_addr, molt_addr, sqrt_price(sol_usd / molt_usd)),
+        ("wETH/MOLT", weth_addr, molt_addr, sqrt_price(eth_usd / molt_usd)),
+        ("wBNB/mUSD", wbnb_addr, musd_addr, sqrt_price(bnb_usd)),
+        ("wBNB/MOLT", wbnb_addr, molt_addr, sqrt_price(bnb_usd / molt_usd)),
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {

@@ -189,6 +189,9 @@ if [[ "$SEED_POOLS" == "true" ]]; then
     log "═══ Phase 5: Creating initial AMM pools + Insurance fund ═══"
 
     # Create fee-tier pools for the main pairs and seed insurance fund
+    CUSTODY_MOLT_RPC_URL="$RPC_URL" python3 "$ROOT_DIR/scripts/seed_pools.py" 2>&1 | tee -a "$DEPLOY_LOG" || true
+
+    # Seed insurance fund
     python3 -c "
 import asyncio, sys, json, os
 sys.path.insert(0, '$ROOT_DIR/tools')
@@ -200,29 +203,7 @@ async def go():
     deployer = load_or_create_deployer()
     manifest = json.load(open('$MANIFEST')) if os.path.exists('$MANIFEST') else {}
     addrs = manifest.get('contracts', {})
-    amm = addrs.get('dex_amm')
     margin = addrs.get('dex_margin')
-
-    if amm:
-        # Pair IDs are 1-indexed (matching genesis_create_trading_pairs):
-        #   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
-        # sqrt_price in Q32: (1 << 32) * sqrt(real_price)
-        # Prices aligned with genesis oracle: MOLT=\$0.10, wSOL=\$170, wETH=\$2,500
-        pools = [
-            {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 1_358_187_913},      # MOLT/mUSD $0.10
-            {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 55_999_522_252},     # wSOL/mUSD $170
-            {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 214_748_364_800},    # wETH/mUSD $2,500
-            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 177_086_038_199},    # wSOL/MOLT 1,700
-            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 679_093_956_564},    # wETH/MOLT 25,000
-        ]
-        for pool in pools:
-            try:
-                sig = await call_contract(conn, deployer, amm, 'create_pool', pool)
-                print(f'  ✅ Pool pair_id={pool[\"pair_id\"]} → {sig}')
-            except Exception as e:
-                print(f'  ⚠️  Pool pair_id={pool[\"pair_id\"]}: {e}')
-    else:
-        print('  ⚠️  dex_amm not in manifest, skipping pools')
 
     if margin:
         try:
