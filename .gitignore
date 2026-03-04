@@ -144,6 +144,7 @@ moltchain/
 faucet-keypair.json
 
 # ── Local-only frontend workspace (keep on disk, ignore in git) ──
+developers/
 dex/
 explorer/
 marketplace/
@@ -159,7 +160,6 @@ shared-theme.css
 skills/
 
 # ── Local-only dev/runtime surfaces (not open source) ───────────
-faucet/
 monitoring/
 keypairs/
 moltchain/
