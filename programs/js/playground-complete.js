@@ -1737,7 +1737,7 @@ const Playground = {
             return { collateralFactor: 75, liquidationThreshold: 85, liquidationBonus: 5 };
         }
         if (exampleId === 'launchpad') {
-            return { platformFee: 1, graduationMcap: 1000000 };
+            return { platformFee: 1, graduationMcap: 100000 };
         }
         if (exampleId === 'vault') {
             return { performanceFee: 10, maxStrategies: 5 };
@@ -2851,10 +2851,13 @@ pub extern "C" fn total_minted() -> u64 {
         
         try {
             // Call compiler API
-            const compilerUrl = `${this.rpc.rpcUrl.replace('/rpc', '')}/compile`;
+            const compilerUrl = this.rpc.compilerUrl;
             const response = await fetch(compilerUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(window.COMPILER_API_KEY ? { 'X-API-Key': window.COMPILER_API_KEY } : {})
+                },
                 body: JSON.stringify({
                     code,
                     language,
@@ -3218,10 +3221,13 @@ pub extern "C" fn total_minted() -> u64 {
         
         try {
             // Build first, then run tests via compiler
-            const compilerUrl = `${this.rpc.rpcUrl.replace('/rpc', '')}/compile`;
+            const compilerUrl = this.rpc.compilerUrl;
             const response = await fetch(compilerUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(window.COMPILER_API_KEY ? { 'X-API-Key': window.COMPILER_API_KEY } : {})
+                },
                 body: JSON.stringify({ code, language: 'rust', mode: 'test' })
             });
             const result = await response.json();
@@ -3272,8 +3278,8 @@ pub extern "C" fn total_minted() -> u64 {
         }
         
         // Check entry point
-        if (!code.includes('process_instruction') && !code.includes('fn main')) {
-            issues.push({ level: 'warning', msg: 'No process_instruction or main entry point found' });
+        if (!code.includes('process_instruction') && !code.includes('fn main') && !code.includes('#[no_mangle]') && !code.includes('extern "C"')) {
+            issues.push({ level: 'warning', msg: 'No process_instruction, main, or #[no_mangle] entry point found' });
         }
         
         if (issues.length === 0) {
@@ -5587,7 +5593,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    call_token_transfer
+    call_token_transfer, set_return_data
 };
 
 // ============================================================================
@@ -5722,6 +5728,113 @@ pub extern "C" fn create_proposal(
     
     proposal_count as u32
 }
+
+#[no_mangle]
+pub extern "C" fn vote(
+    voter_ptr: *const u8,
+    proposal_id: u64,
+    support: u32,
+    amount: u64,
+) -> u32 {
+    log_info("🗳️  Casting vote...");
+    let voter = unsafe { core::slice::from_raw_parts(voter_ptr, 32) };
+    let key = alloc::format!("proposal_{}", proposal_id);
+    let mut data = match storage_get(key.as_bytes()) {
+        Some(d) if d.len() >= PROPOSAL_SIZE => d,
+        _ => { log_info("Proposal not found"); return 0; }
+    };
+
+    let now = get_timestamp();
+    let end_time = bytes_to_u64(&data[168..176]);
+    if now > end_time { log_info("Voting period ended"); return 0; }
+    if data[193] == 1 { log_info("Proposal cancelled"); return 0; }
+
+    // Check double-vote
+    let mut vh = [0u8; 32];
+    vh[..32].copy_from_slice(voter);
+    let vote_key = alloc::format!("vote_{}_{:02x}{:02x}{:02x}{:02x}", proposal_id, vh[0], vh[1], vh[2], vh[3]);
+    if storage_get(vote_key.as_bytes()).is_some() { log_info("Already voted"); return 0; }
+
+    if support == 1 {
+        let current = bytes_to_u64(&data[176..184]);
+        data[176..184].copy_from_slice(&u64_to_bytes(current + amount));
+    } else {
+        let current = bytes_to_u64(&data[184..192]);
+        data[184..192].copy_from_slice(&u64_to_bytes(current + amount));
+    }
+
+    storage_set(key.as_bytes(), &data);
+    storage_set(vote_key.as_bytes(), &u64_to_bytes(amount));
+    log_info(&alloc::format!("Vote cast: {} ({} tokens)", if support == 1 { "FOR" } else { "AGAINST" }, amount));
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn execute_proposal(caller_ptr: *const u8, proposal_id: u64) -> u32 {
+    log_info("⚡ Executing proposal...");
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let key = alloc::format!("proposal_{}", proposal_id);
+    let mut data = match storage_get(key.as_bytes()) {
+        Some(d) if d.len() >= PROPOSAL_SIZE => d,
+        _ => { log_info("Proposal not found"); return 0; }
+    };
+
+    if data[192] == 1 { log_info("Already executed"); return 0; }
+    if data[193] == 1 { log_info("Proposal cancelled"); return 0; }
+
+    let now = get_timestamp();
+    let end_time = bytes_to_u64(&data[168..176]);
+    if now < end_time + EXECUTION_DELAY { log_info("Execution delay not met"); return 0; }
+
+    let votes_for = bytes_to_u64(&data[176..184]);
+    let votes_against = bytes_to_u64(&data[184..192]);
+    let total_votes = votes_for + votes_against;
+    if total_votes == 0 { log_info("No votes cast"); return 0; }
+    let approval = votes_for * 100 / total_votes;
+    if approval < APPROVAL_THRESHOLD { log_info(&alloc::format!("Approval {}% < {}% threshold", approval, APPROVAL_THRESHOLD)); return 0; }
+
+    data[192] = 1; // executed
+    storage_set(key.as_bytes(), &data);
+    log_info(&alloc::format!("✅ Proposal #{} executed! Approval: {}%", proposal_id, approval));
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn cancel_proposal(caller_ptr: *const u8, proposal_id: u64) -> u32 {
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let key = alloc::format!("proposal_{}", proposal_id);
+    let mut data = match storage_get(key.as_bytes()) {
+        Some(d) if d.len() >= PROPOSAL_SIZE => d,
+        _ => { log_info("Proposal not found"); return 0; }
+    };
+    // Only proposer can cancel
+    if &data[0..32] != caller { log_info("Only proposer can cancel"); return 0; }
+    if data[192] == 1 { log_info("Already executed"); return 0; }
+    data[193] = 1; // cancelled
+    storage_set(key.as_bytes(), &data);
+    log_info(&alloc::format!("Proposal #{} cancelled", proposal_id));
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn get_proposal(proposal_id: u64) -> u32 {
+    let key = alloc::format!("proposal_{}", proposal_id);
+    match storage_get(key.as_bytes()) {
+        Some(d) => { set_return_data(&d); 1 }
+        None => 0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_dao_stats() -> u32 {
+    let count = storage_get(b"proposal_count")
+        .and_then(|d| Some(bytes_to_u64(&d)))
+        .unwrap_or(0);
+    let mut result = Vec::with_capacity(8);
+    result.extend_from_slice(&u64_to_bytes(count));
+    set_return_data(&result);
+    1
+}
 `,
             'Cargo.toml': `[package]
 name = "moltdao-governance"
@@ -5812,6 +5925,25 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     let total = load_u64(b"ll_total_deposits");
     store_u64(b"ll_total_deposits", total + amount);
     log_info(&alloc::format!("Deposited {} shells", amount));
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
+    let depositor = unsafe { core::slice::from_raw_parts(depositor_ptr, 32) };
+    let h = hex(depositor);
+    let dep_key = alloc::format!("dep:{}", h);
+    let bor_key = alloc::format!("bor:{}", h);
+    let deposit = load_u64(dep_key.as_bytes());
+    let borrow = load_u64(bor_key.as_bytes());
+    if amount > deposit { log_info("Insufficient deposit"); return 0; }
+    let remaining = deposit - amount;
+    let max_borrow = remaining * COLLATERAL_FACTOR_PERCENT / 100;
+    if borrow > max_borrow { log_info("Withdrawal would under-collateralize"); return 0; }
+    store_u64(dep_key.as_bytes(), remaining);
+    let total = load_u64(b"ll_total_deposits");
+    store_u64(b"ll_total_deposits", total.saturating_sub(amount));
+    log_info(&alloc::format!("Withdrew {} shells", amount));
     1
 }
 
@@ -5922,7 +6054,7 @@ use moltchain_sdk::{
 };
 
 const CREATION_FEE: u64 = 10_000_000_000;     // 10 MOLT
-const GRADUATION_MCAP: u64 = 1_000_000;        // Graduate at 1M MOLT market cap
+const GRADUATION_MCAP: u64 = 100_000;          // Graduate at 100K MOLT market cap
 const BASE_PRICE: u64 = 1000;                 // Base price in shells
 const SLOPE: u64 = 1;                         // Linear bonding curve slope
 const SLOPE_SCALE: u64 = 1_000_000;
@@ -5955,7 +6087,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     if fee_paid < CREATION_FEE {
-        log_info("Insufficient creation fee (need 0.1 MOLT)");
+        log_info("Insufficient creation fee (need 10 MOLT)");
         return 0;
     }
     let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
@@ -6752,42 +6884,39 @@ pub extern "C" fn initialize(marketplace_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn create_auction(
     seller_ptr: *const u8,
-    nft_contract_ptr: *const u8,
-    token_id: u64,
-    min_bid: u64,
+    nft_id: u64,
+    reserve_price: u64,
     duration: u64,
 ) -> u32 {
     let seller = unsafe { core::slice::from_raw_parts(seller_ptr, 32) };
-    let nft = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
     let now = get_timestamp();
     let dur = if duration == 0 { AUCTION_DURATION } else { duration };
+    let id = load_u64(b"auction_count") + 1;
+    store_u64(b"auction_count", id);
 
     let mut auction = Vec::with_capacity(AUCTION_SIZE);
     auction.extend_from_slice(seller);                     // seller
-    auction.extend_from_slice(nft);                        // nft contract
-    auction.extend_from_slice(&u64_to_bytes(token_id));    // token_id
-    auction.extend_from_slice(&u64_to_bytes(min_bid));     // minimum bid
+    auction.extend_from_slice(&u64_to_bytes(nft_id));      // nft_id
+    auction.extend_from_slice(&u64_to_bytes(reserve_price)); // reserve price
     auction.extend_from_slice(&u64_to_bytes(now));         // start
     auction.extend_from_slice(&u64_to_bytes(now + dur));   // end
     auction.extend_from_slice(&[0u8; 32]);                 // highest_bidder (none)
     auction.extend_from_slice(&u64_to_bytes(0));           // highest_bid
     auction.push(1);                                        // active
 
-    let key = alloc::format!("auction_{}_{}", hex(nft), token_id);
+    let key = alloc::format!("auction_{}", id);
     storage_set(key.as_bytes(), &auction);
-    log_info(&alloc::format!("Auction created: NFT #{}, min bid {}, duration {}s", token_id, min_bid, dur));
-    1
+    log_info(&alloc::format!("Auction #{} created: NFT #{}, reserve {}, duration {}s", id, nft_id, reserve_price, dur));
+    id as u32
 }
 
 #[no_mangle]
 pub extern "C" fn place_bid(
     bidder_ptr: *const u8,
-    nft_contract_ptr: *const u8,
-    token_id: u64,
+    auction_id: u64,
     bid_amount: u64,
 ) -> u32 {
-    let nft = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let key = alloc::format!("auction_{}_{}", hex(nft), token_id);
+    let key = alloc::format!("auction_{}", auction_id);
     let mut data = match storage_get(key.as_bytes()) {
         Some(d) if d.len() >= AUCTION_SIZE && d[136] == 1 => d,
         _ => { log_info("Auction not found or ended"); return 0; }
@@ -6798,8 +6927,8 @@ pub extern "C" fn place_bid(
     if now > end { log_info("Auction expired"); return 0; }
 
     let highest_bid = bytes_to_u64(&data[128..136]);
-    let min_bid = bytes_to_u64(&data[72..80]);
-    let required = if highest_bid == 0 { min_bid } else { highest_bid + highest_bid * MIN_BID_INCREMENT / 100 };
+    let reserve = bytes_to_u64(&data[40..48]);
+    let required = if highest_bid == 0 { reserve } else { highest_bid + highest_bid * MIN_BID_INCREMENT / 100 };
     if bid_amount < required {
         log_info(&alloc::format!("Bid too low: {} < {} required", bid_amount, required));
         return 0;
@@ -6809,17 +6938,16 @@ pub extern "C" fn place_bid(
     data[96..128].copy_from_slice(bidder);                    // highest_bidder
     data[128..136].copy_from_slice(&u64_to_bytes(bid_amount)); // highest_bid
     storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Bid placed: {} (previous: {})", bid_amount, highest_bid));
+    log_info(&alloc::format!("Bid placed on auction #{}: {} (previous: {})", auction_id, bid_amount, highest_bid));
     1
 }
 
 #[no_mangle]
 pub extern "C" fn finalize_auction(
-    nft_contract_ptr: *const u8,
-    token_id: u64,
+    caller_ptr: *const u8,
+    auction_id: u64,
 ) -> u32 {
-    let nft = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let key = alloc::format!("auction_{}_{}", hex(nft), token_id);
+    let key = alloc::format!("auction_{}", auction_id);
     let mut data = match storage_get(key.as_bytes()) {
         Some(d) if d.len() >= AUCTION_SIZE && d[136] == 1 => d,
         _ => { log_info("Auction not found"); return 0; }
@@ -6829,21 +6957,14 @@ pub extern "C" fn finalize_auction(
     data[136] = 0; // deactivate
     storage_set(key.as_bytes(), &data);
 
-    // Check royalty
-    let royalty_key = alloc::format!("royalty_{}", hex(nft));
-    let royalty_bps = load_u64(royalty_key.as_bytes());
-    let royalty = highest_bid * royalty_bps / 10000;
-    let seller_gets = highest_bid - royalty;
-
-    log_info(&alloc::format!("Auction finalized! Bid: {}, Royalty: {}, Seller: {}", highest_bid, royalty, seller_gets));
+    log_info(&alloc::format!("Auction #{} finalized! Winning bid: {}", auction_id, highest_bid));
     1
 }
 
 #[no_mangle]
-pub extern "C" fn set_royalty(creator_ptr: *const u8, nft_contract_ptr: *const u8, royalty_bps: u64) -> u32 {
+pub extern "C" fn set_royalty(caller_ptr: *const u8, collection_id: u64, royalty_bps: u64) -> u32 {
     if royalty_bps > 1000 { log_info("Max royalty: 10%"); return 0; }
-    let nft = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let key = alloc::format!("royalty_{}", hex(nft));
+    let key = alloc::format!("royalty_{}", collection_id);
     storage_set(key.as_bytes(), &u64_to_bytes(royalty_bps));
     log_info(&alloc::format!("Royalty set: {}bps ({}%)", royalty_bps, royalty_bps as f64 / 100.0));
     1
@@ -6884,12 +7005,12 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller
+    bytes_to_u64, u64_to_bytes, get_timestamp
 };
 
 const MAX_STALENESS: u64 = 3600; // 1 hour
-// Price feed: price(8) + timestamp(8) + decimals(1) + feeder(32) = 49 bytes
-const PRICE_FEED_SIZE: usize = 49;
+// Price feed: price(8) + timestamp(8) + confidence(8) + feeder(32) = 56 bytes
+const PRICE_FEED_SIZE: usize = 56;
 
 fn hex(addr: &[u8]) -> alloc::string::String {
     let mut s = alloc::string::String::with_capacity(addr.len() * 2);
@@ -6908,12 +7029,11 @@ pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn add_price_feeder(
+    caller_ptr: *const u8,
     feeder_ptr: *const u8,
-    asset_ptr: *const u8,
-    asset_len: u32,
 ) -> u32 {
     // T5.10: verify caller is oracle owner, not the feeder
-    let caller = get_caller();
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
     let owner = match storage_get(b"oracle_owner") {
         Some(o) => o,
         None => { log_info("Not initialized"); return 0; }
@@ -6921,58 +7041,47 @@ pub extern "C" fn add_price_feeder(
     if caller != owner.as_slice() { log_info("Unauthorized"); return 0; }
 
     let feeder = unsafe { core::slice::from_raw_parts(feeder_ptr, 32) };
-    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
-    let asset_str = core::str::from_utf8(asset).unwrap_or("?");
-    let key = alloc::format!("feeder_{}", asset_str);
-    storage_set(key.as_bytes(), feeder);
-    log_info(&alloc::format!("Authorized feeder for {}", asset_str));
+    let key = alloc::format!("feeder_{}", hex(feeder));
+    storage_set(key.as_bytes(), &[1]);
+    log_info(&alloc::format!("Authorized feeder {}", hex(feeder)));
     1
 }
 
 #[no_mangle]
 pub extern "C" fn submit_price(
     feeder_ptr: *const u8,
-    asset_ptr: *const u8,
-    asset_len: u32,
+    feed_id: u64,
     price: u64,
-    decimals: u8,
+    confidence: u64,
 ) -> u32 {
     let feeder = unsafe { core::slice::from_raw_parts(feeder_ptr, 32) };
-    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
-    let asset_str = core::str::from_utf8(asset).unwrap_or("?");
 
     // Verify feeder authorization
-    let key = alloc::format!("feeder_{}", asset_str);
+    let key = alloc::format!("feeder_{}", hex(feeder));
     match storage_get(key.as_bytes()) {
-        Some(auth) if auth == feeder => {},
-        _ => { log_info("Unauthorized feeder"); return 0; }
+        Some(_) => {},
+        None => { log_info("Unauthorized feeder"); return 0; }
     }
 
     let mut feed = Vec::with_capacity(PRICE_FEED_SIZE);
     feed.extend_from_slice(&u64_to_bytes(price));        // 0..8
     feed.extend_from_slice(&u64_to_bytes(get_timestamp())); // 8..16
-    feed.push(decimals);                                   // 16
-    feed.extend_from_slice(feeder);                        // 17..49
+    feed.extend_from_slice(&u64_to_bytes(confidence));     // 16..24
+    feed.extend_from_slice(feeder);                        // 24..56
 
-    let price_key = alloc::format!("price_{}", asset_str);
+    let price_key = alloc::format!("price_{}", feed_id);
     storage_set(price_key.as_bytes(), &feed);
-    log_info(&alloc::format!("Price submitted: {} = {} ({}d)", asset_str, price, decimals));
+    log_info(&alloc::format!("Price submitted: feed {} = {} (conf: {})", feed_id, price, confidence));
     1
 }
 
 #[no_mangle]
-pub extern "C" fn get_price(
-    asset_ptr: *const u8,
-    asset_len: u32,
-    result_ptr: *mut u8,
-) -> u32 {
-    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
-    let asset_str = core::str::from_utf8(asset).unwrap_or("?");
-    let key = alloc::format!("price_{}", asset_str);
+pub extern "C" fn get_price(feed_id: u64) -> u32 {
+    let key = alloc::format!("price_{}", feed_id);
 
     let feed = match storage_get(key.as_bytes()) {
-        Some(d) if d.len() >= PRICE_FEED_SIZE => d,
-        _ => { log_info(&alloc::format!("No price for {}", asset_str)); return 0; }
+        Some(d) if d.len() >= 24 => d,
+        _ => { log_info(&alloc::format!("No price for feed {}", feed_id)); return 0; }
     };
 
     // Staleness check
@@ -6983,61 +7092,51 @@ pub extern "C" fn get_price(
         return 0;
     }
 
-    unsafe {
-        let out = core::slice::from_raw_parts_mut(result_ptr, 9);
-        out[..8].copy_from_slice(&feed[0..8]);
-        out[8] = feed[16];
-    }
+    set_return_data(&feed[0..24]);
     1
 }
 
 /// Commit-reveal VRF: Phase 1
 #[no_mangle]
 pub extern "C" fn commit_randomness(
-    requester_ptr: *const u8,
-    commit_hash_ptr: *const u8,
-    seed: u64,
+    committer_ptr: *const u8,
+    commitment_ptr: *const u8,
 ) -> u32 {
-    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
-    let commit = unsafe { core::slice::from_raw_parts(commit_hash_ptr, 32) };
-    let h = hex(requester);
+    let committer = unsafe { core::slice::from_raw_parts(committer_ptr, 32) };
+    let commitment = unsafe { core::slice::from_raw_parts(commitment_ptr, 32) };
+    let h = hex(committer);
     let key = alloc::format!("rng_commit_{}", h);
-    let mut data = Vec::with_capacity(48);
-    data.extend_from_slice(commit);
-    data.extend_from_slice(&u64_to_bytes(seed));
+    let mut data = Vec::with_capacity(40);
+    data.extend_from_slice(commitment);
     data.extend_from_slice(&u64_to_bytes(get_timestamp()));
     storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Randomness committed (seed: {})", seed));
+    log_info(&alloc::format!("Randomness committed by {}", &h[..8]));
     1
 }
 
 /// Commit-reveal VRF: Phase 2
 #[no_mangle]
 pub extern "C" fn reveal_randomness(
-    requester_ptr: *const u8,
-    secret_ptr: *const u8,
-    result_ptr: *mut u8,
+    committer_ptr: *const u8,
+    preimage_ptr: *const u8,
 ) -> u32 {
-    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
-    let h = hex(requester);
+    let committer = unsafe { core::slice::from_raw_parts(committer_ptr, 32) };
+    let h = hex(committer);
     let key = alloc::format!("rng_commit_{}", h);
     let commit = match storage_get(key.as_bytes()) {
         Some(d) => d,
         None => { log_info("No commit found"); return 0; }
     };
 
-    // Derive random from commit + block timestamp
-    let seed = bytes_to_u64(&commit[32..40]);
+    // Derive random from commitment + block timestamp
     let ts = get_timestamp();
-    let random = seed ^ ts ^ 0xDEADBEEF_CAFEBABE;
+    let preimage = unsafe { core::slice::from_raw_parts(preimage_ptr, 32) };
+    let random = bytes_to_u64(&preimage[0..8]) ^ ts ^ 0xDEADBEEF_CAFEBABE;
 
     let result_key = alloc::format!("random_{}", h);
     storage_set(result_key.as_bytes(), &u64_to_bytes(random));
 
-    unsafe {
-        let out = core::slice::from_raw_parts_mut(result_ptr, 8);
-        out.copy_from_slice(&u64_to_bytes(random));
-    }
+    set_return_data(&u64_to_bytes(random));
     log_info(&alloc::format!("Randomness revealed: {}", random));
     1
 }
@@ -7137,12 +7236,10 @@ pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *co
 #[no_mangle]
 pub extern "C" fn lock_tokens(
     sender_ptr: *const u8, amount: u64,
-    dest_chain_ptr: *const u8, dest_address_ptr: *const u8,
+    dest_chain: u32,
 ) -> u32 {
     if is_paused() { log_info("Bridge paused"); return 0; }
     let sender = unsafe { core::slice::from_raw_parts(sender_ptr, 32) };
-    let dest_chain = unsafe { core::slice::from_raw_parts(dest_chain_ptr, 32) };
-    let dest_addr = unsafe { core::slice::from_raw_parts(dest_address_ptr, 32) };
 
     let nonce = load_u64(b"bridge_nonce") + 1;
     store_u64(b"bridge_nonce", nonce);
@@ -7152,15 +7249,13 @@ pub extern "C" fn lock_tokens(
     let mut tx = Vec::with_capacity(BRIDGE_TX_SIZE);
     tx.extend_from_slice(sender);
     tx.extend_from_slice(&u64_to_bytes(amount));
-    tx.push(0); tx.push(STATUS_PENDING);
+    tx.push(dest_chain as u8); tx.push(STATUS_PENDING);
     tx.extend_from_slice(&u64_to_bytes(get_slot()));
     tx.push(0);
-    tx.extend_from_slice(dest_chain);
-    tx.extend_from_slice(dest_addr);
 
     let key = alloc::format!("bridge_tx_{}", nonce);
     storage_set(key.as_bytes(), &tx);
-    log_info(&alloc::format!("Locked {} MOLT (nonce #{})", amount, nonce));
+    log_info(&alloc::format!("Locked {} MOLT → chain {} (nonce #{})", amount, dest_chain, nonce));
     nonce as u32
 }
 
@@ -7169,15 +7264,14 @@ pub extern "C" fn lock_tokens(
 /// Step 1: Validator submits mint request — funds reserved, not released
 #[no_mangle]
 pub extern "C" fn submit_mint(
-    caller_ptr: *const u8, recipient_ptr: *const u8, amount: u64,
-    source_chain_ptr: *const u8, source_tx_ptr: *const u8,
+    validator_ptr: *const u8, nonce: u64, recipient_ptr: *const u8, amount: u64,
+    source_tx_ptr: *const u8,
 ) -> u32 {
     if is_paused() { log_info("Bridge paused"); return 0; }
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let caller = unsafe { core::slice::from_raw_parts(validator_ptr, 32) };
     if !is_validator(caller) { log_info("Not a validator"); return 0; }
 
     let recipient = unsafe { core::slice::from_raw_parts(recipient_ptr, 32) };
-    let source_chain = unsafe { core::slice::from_raw_parts(source_chain_ptr, 32) };
     let source_tx = unsafe { core::slice::from_raw_parts(source_tx_ptr, 32) };
 
     // Dedup: check source TX not already used
@@ -7250,7 +7344,7 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, request_id: u64) -> u32 {
 
 // === Admin: Emergency pause ===
 #[no_mangle]
-pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
+pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
     let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
     if !is_admin(caller) { return 0; }
     storage_set(PAUSE_KEY, &[1]);
@@ -7259,7 +7353,7 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
+pub extern "C" fn mb_unpause(caller_ptr: *const u8) -> u32 {
     let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
     if !is_admin(caller) { return 0; }
     storage_set(PAUSE_KEY, &[0]);
@@ -7338,21 +7432,24 @@ fn store_u64(key: &[u8], val: u64) {
 #[no_mangle]
 pub extern "C" fn create_bounty(
     creator_ptr: *const u8,
-    title_hash_ptr: *const u8,
-    reward_amount: u64,
-    deadline_slot: u64,
+    reward: u64,
+    title_ptr: *const u8,
+    title_len: u32,
 ) -> u32 {
     let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
-    let title_hash = unsafe { core::slice::from_raw_parts(title_hash_ptr, 32) };
+    let title = unsafe { core::slice::from_raw_parts(title_ptr, title_len as usize) };
 
     let id = load_u64(b"bounty_count") + 1;
     store_u64(b"bounty_count", id);
 
     let mut bounty = Vec::with_capacity(BOUNTY_SIZE);
     bounty.extend_from_slice(creator);                      // 0..32
-    bounty.extend_from_slice(title_hash);                   // 32..64
-    bounty.extend_from_slice(&u64_to_bytes(reward_amount)); // 64..72
-    bounty.extend_from_slice(&u64_to_bytes(deadline_slot)); // 72..80
+    bounty.extend_from_slice(title);                        // 32..
+    // Pad title hash to 32 bytes
+    let pad = 32usize.saturating_sub(title_len as usize);
+    for _ in 0..pad { bounty.push(0); }
+    bounty.extend_from_slice(&u64_to_bytes(reward));        // 64..72
+    bounty.extend_from_slice(&u64_to_bytes(get_slot()));    // 72..80
     bounty.push(BOUNTY_OPEN);                               // 80 status
     bounty.push(0);                                          // 81 sub_count
     bounty.extend_from_slice(&u64_to_bytes(get_slot()));    // 82..90
@@ -7360,12 +7457,12 @@ pub extern "C" fn create_bounty(
 
     let key = alloc::format!("bounty_{}", id);
     storage_set(key.as_bytes(), &bounty);
-    log_info(&alloc::format!("Bounty #{} created: {} MOLT reward, deadline slot {}", id, reward_amount, deadline_slot));
+    log_info(&alloc::format!("Bounty #{} created: {} MOLT reward", id, reward));
     id as u32
 }
 
 #[no_mangle]
-pub extern "C" fn submit_work(bounty_id: u64, worker_ptr: *const u8, proof_hash_ptr: *const u8) -> u32 {
+pub extern "C" fn submit_work(submitter_ptr: *const u8, bounty_id: u64, proof_ptr: *const u8, proof_len: u32) -> u32 {
     let key = alloc::format!("bounty_{}", bounty_id);
     let mut data = match storage_get(key.as_bytes()) {
         Some(d) if d.len() >= BOUNTY_SIZE => d,
@@ -7373,13 +7470,16 @@ pub extern "C" fn submit_work(bounty_id: u64, worker_ptr: *const u8, proof_hash_
     };
     if data[80] != BOUNTY_OPEN { log_info("Bounty not open"); return 0; }
 
-    let worker = unsafe { core::slice::from_raw_parts(worker_ptr, 32) };
-    let proof = unsafe { core::slice::from_raw_parts(proof_hash_ptr, 32) };
+    let worker = unsafe { core::slice::from_raw_parts(submitter_ptr, 32) };
+    let proof = unsafe { core::slice::from_raw_parts(proof_ptr, proof_len as usize) };
     let idx = data[81];
 
     let mut submission = Vec::with_capacity(SUBMISSION_SIZE);
     submission.extend_from_slice(worker);                   // 0..32
-    submission.extend_from_slice(proof);                    // 32..64
+    submission.extend_from_slice(proof);                    // 32..
+    // Pad proof to 32 bytes
+    let pad = 32usize.saturating_sub(proof_len as usize);
+    for _ in 0..pad { submission.push(0); }
     submission.extend_from_slice(&u64_to_bytes(get_slot())); // 64..72
 
     let sub_key = alloc::format!("submission_{}_{}", bounty_id, idx);
@@ -7392,7 +7492,7 @@ pub extern "C" fn submit_work(bounty_id: u64, worker_ptr: *const u8, proof_hash_
 }
 
 #[no_mangle]
-pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission_idx: u8) -> u32 {
+pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission_id: u64) -> u32 {
     let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
     let key = alloc::format!("bounty_{}", bounty_id);
     let mut data = match storage_get(key.as_bytes()) {
@@ -7405,10 +7505,10 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
 
     let reward = bytes_to_u64(&data[64..72]);
     data[80] = BOUNTY_COMPLETED;
-    data[90] = submission_idx;
+    data[90] = submission_id as u8;
     storage_set(key.as_bytes(), &data);
 
-    log_info(&alloc::format!("Bounty #{} completed! Submission #{} approved, {} MOLT paid", bounty_id, submission_idx, reward));
+    log_info(&alloc::format!("Bounty #{} completed! Submission #{} approved, {} MOLT paid", bounty_id, submission_id, reward));
     1
 }
 
@@ -7486,8 +7586,8 @@ const JOB_COMPLETED: u8 = 2;
 const JOB_DISPUTED: u8 = 3;
 // Provider: address(32)+units(8)+price(8)+completed(8)+active(1)+registered(8) = 65
 const PROVIDER_SIZE: usize = 65;
-// Job: requester(32)+units(8)+max_price(8)+code_hash(32)+status(1)+provider(32)+result(32)+created(8)+completed(8) = 161
-const JOB_SIZE: usize = 161;
+// Job: requester(32)+provider(32)+payment(8)+spec_hash(32)+status(1)+result(32)+created(8)+completed(8) = 153
+const JOB_SIZE: usize = 153;
 
 fn hex(addr: &[u8]) -> alloc::string::String {
     let mut s = alloc::string::String::with_capacity(addr.len() * 2);
@@ -7506,7 +7606,7 @@ fn store_u64(key: &[u8], val: u64) {
 #[no_mangle]
 pub extern "C" fn register_provider(
     provider_ptr: *const u8,
-    compute_units_available: u64,
+    capacity: u64,
     price_per_unit: u64,
 ) -> u32 {
     let provider = unsafe { core::slice::from_raw_parts(provider_ptr, 32) };
@@ -7514,7 +7614,7 @@ pub extern "C" fn register_provider(
 
     let mut data = Vec::with_capacity(PROVIDER_SIZE);
     data.extend_from_slice(provider);                              // 0..32
-    data.extend_from_slice(&u64_to_bytes(compute_units_available));// 32..40
+    data.extend_from_slice(&u64_to_bytes(capacity));               // 32..40
     data.extend_from_slice(&u64_to_bytes(price_per_unit));         // 40..48
     data.extend_from_slice(&u64_to_bytes(0));                      // 48..56 completed
     data.push(1);                                                   // 56 active
@@ -7522,37 +7622,42 @@ pub extern "C" fn register_provider(
 
     let key = alloc::format!("provider_{}", h);
     storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Provider registered: {} units @ {} MOLT/unit", compute_units_available, price_per_unit));
+    log_info(&alloc::format!("Provider registered: {} units @ {} MOLT/unit", capacity, price_per_unit));
     1
 }
 
 #[no_mangle]
 pub extern "C" fn submit_job(
-    requester_ptr: *const u8,
-    compute_units_needed: u64,
-    max_price: u64,
-    code_hash_ptr: *const u8,
+    creator_ptr: *const u8,
+    provider_ptr: *const u8,
+    payment: u64,
+    spec_ptr: *const u8,
+    spec_len: u32,
 ) -> u32 {
-    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
-    let code_hash = unsafe { core::slice::from_raw_parts(code_hash_ptr, 32) };
+    let requester = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
+    let provider = unsafe { core::slice::from_raw_parts(provider_ptr, 32) };
+    let spec = unsafe { core::slice::from_raw_parts(spec_ptr, spec_len as usize) };
 
     let id = load_u64(b"job_count") + 1;
     store_u64(b"job_count", id);
 
+    // Hash spec to 32 bytes
+    let mut spec_hash = [0u8; 32];
+    for (i, &b) in spec.iter().take(32).enumerate() { spec_hash[i] = b; }
+
     let mut job = Vec::with_capacity(JOB_SIZE);
     job.extend_from_slice(requester);                           // 0..32
-    job.extend_from_slice(&u64_to_bytes(compute_units_needed)); // 32..40
-    job.extend_from_slice(&u64_to_bytes(max_price));            // 40..48
-    job.extend_from_slice(code_hash);                           // 48..80
-    job.push(JOB_PENDING);                                       // 80 status
-    job.extend_from_slice(&[0u8; 32]);                          // 81..113 provider (none)
-    job.extend_from_slice(&[0u8; 32]);                          // 113..145 result (none)
-    job.extend_from_slice(&u64_to_bytes(get_slot()));           // 145..153
-    job.extend_from_slice(&u64_to_bytes(0));                    // 153..161
+    job.extend_from_slice(provider);                            // 32..64
+    job.extend_from_slice(&u64_to_bytes(payment));              // 64..72
+    job.extend_from_slice(&spec_hash);                          // 72..104
+    job.push(JOB_PENDING);                                       // 104 status
+    job.extend_from_slice(&[0u8; 32]);                          // 105..137 result (none)
+    job.extend_from_slice(&u64_to_bytes(get_slot()));           // 137..145
+    job.extend_from_slice(&u64_to_bytes(0));                    // 145..153
 
     let key = alloc::format!("job_{}", id);
     storage_set(key.as_bytes(), &job);
-    log_info(&alloc::format!("Job #{} submitted: {} units, max {} MOLT", id, compute_units_needed, max_price));
+    log_info(&alloc::format!("Job #{} submitted: {} MOLT payment", id, payment));
     id as u32
 }
 
@@ -7564,45 +7669,50 @@ pub extern "C" fn claim_job(provider_ptr: *const u8, job_id: u64) -> u32 {
         Some(d) if d.len() >= JOB_SIZE => d,
         _ => { log_info("Job not found"); return 0; }
     };
-    if data[80] != JOB_PENDING { log_info("Job not pending"); return 0; }
+    if data[104] != JOB_PENDING { log_info("Job not pending"); return 0; }
 
-    data[80] = JOB_CLAIMED;
-    data[81..113].copy_from_slice(provider);
+    // Verify claimer is the assigned provider
+    if &data[32..64] != provider { log_info("Not assigned provider"); return 0; }
+    data[104] = JOB_CLAIMED;
     storage_set(key.as_bytes(), &data);
     log_info(&alloc::format!("Job #{} claimed", job_id));
     1
 }
 
 #[no_mangle]
-pub extern "C" fn complete_job(provider_ptr: *const u8, job_id: u64, result_hash_ptr: *const u8) -> u32 {
+pub extern "C" fn complete_job(provider_ptr: *const u8, job_id: u64, result_ptr: *const u8, result_len: u32) -> u32 {
     let provider = unsafe { core::slice::from_raw_parts(provider_ptr, 32) };
-    let result_hash = unsafe { core::slice::from_raw_parts(result_hash_ptr, 32) };
+    let result_data = unsafe { core::slice::from_raw_parts(result_ptr, result_len as usize) };
     let key = alloc::format!("job_{}", job_id);
     let mut data = match storage_get(key.as_bytes()) {
         Some(d) if d.len() >= JOB_SIZE => d,
         _ => { log_info("Job not found"); return 0; }
     };
-    if data[80] != JOB_CLAIMED { log_info("Job not claimed"); return 0; }
-    if &data[81..113] != provider { log_info("Not assigned provider"); return 0; }
+    if data[104] != JOB_CLAIMED { log_info("Job not claimed"); return 0; }
+    if &data[32..64] != provider { log_info("Not assigned provider"); return 0; }
 
-    data[80] = JOB_COMPLETED;
-    data[113..145].copy_from_slice(result_hash);
-    data[153..161].copy_from_slice(&u64_to_bytes(get_slot()));
+    // Hash result to 32 bytes
+    let mut result_hash = [0u8; 32];
+    for (i, &b) in result_data.iter().take(32).enumerate() { result_hash[i] = b; }
+
+    data[104] = JOB_COMPLETED;
+    data[105..137].copy_from_slice(&result_hash);
+    data[145..153].copy_from_slice(&u64_to_bytes(get_slot()));
     storage_set(key.as_bytes(), &data);
     log_info(&alloc::format!("Job #{} completed!", job_id));
     1
 }
 
 #[no_mangle]
-pub extern "C" fn dispute_job(requester_ptr: *const u8, job_id: u64) -> u32 {
-    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
+pub extern "C" fn dispute_job(caller_ptr: *const u8, job_id: u64) -> u32 {
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
     let key = alloc::format!("job_{}", job_id);
     let mut data = match storage_get(key.as_bytes()) {
         Some(d) if d.len() >= JOB_SIZE => d,
         _ => { log_info("Job not found"); return 0; }
     };
-    if &data[0..32] != requester { log_info("Not the requester"); return 0; }
-    data[80] = JOB_DISPUTED;
+    if &data[0..32] != caller { log_info("Not the requester"); return 0; }
+    data[104] = JOB_DISPUTED;
     storage_set(key.as_bytes(), &data);
     log_info(&alloc::format!("Job #{} disputed!", job_id));
     1
@@ -7648,7 +7758,7 @@ use moltchain_sdk::{
 
 const MAX_REPLICATION: u8 = 10;
 const MIN_DURATION: u64 = 1000;  // Minimum 1000 slots
-const REWARD_PER_SLOT_PER_BYTE: u64 = 1; // 1 shell per slot per byte
+const REWARD_PER_SLOT_PER_BYTE: u64 = 10; // 10 shells per slot per byte
 const MAX_PROVIDERS: u8 = 16;
 // DataEntry: owner(32)+size(8)+replication(1)+confirmations(1)+expiry(8)+created(8)+provider_count(1) = 59 header
 const DATA_HEADER_SIZE: usize = 59;
@@ -8376,13 +8486,13 @@ use alloc::{vec, vec::Vec, format};
 use moltchain_sdk::*;
 
 // ═══════ DEX Margin Trading ═══════
-// Isolated margin: up to 5x leverage
+// Isolated margin: up to 100x leverage (tiered)
 // Cross margin: up to 3x leverage
-// Maintenance margin: 10%, Liquidation penalty: 5%
+// Tiered maintenance margins with liquidation penalties
 // Insurance fund: 50% of liquidation penalty
 // 8-hour funding interval
 
-const MAX_LEVERAGE_ISOLATED: u64 = 5;
+const MAX_LEVERAGE_ISOLATED: u64 = 100;
 const MAX_LEVERAGE_CROSS: u64 = 3;
 const INITIAL_MARGIN_BPS: u64 = 2000;    // 20%
 const MAINTENANCE_MARGIN_BPS: u64 = 1000; // 10%
@@ -8982,6 +9092,267 @@ pub extern "C" fn call() {
 `,
             'Cargo.toml': `[package]
 name = "wsol-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
+    },
+
+    wbnb_token: {
+        name: 'Wrapped BNB',
+        description: 'Wrapped BNB bridge token with epoch rate-limited minting',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ Wrapped BNB (wBNB) ═══════
+// Bridge token representing BNB on MoltChain
+// Epoch rate-limited minting with reserve attestation
+
+const NAME: &[u8] = b"Wrapped BNB";
+const SYMBOL: &[u8] = b"wBNB";
+const DECIMALS: u8 = 18;
+const EPOCH_RATE_LIMIT: u64 = 1_000_000_000_000_000_000; // 1000 BNB/epoch
+
+fn initialize(bridge_admin: &[u8]) {
+    storage_set(b"admin", bridge_admin);
+    store_u64(b"total_supply", 0);
+    store_u64(b"epoch_minted", 0);
+    emit_event(b"Initialized", b"wBNB bridge token ready");
+}
+
+fn mint(to: &[u8], amount: u64) {
+    let minted = load_u64(b"epoch_minted");
+    if minted + amount > EPOCH_RATE_LIMIT { return; }
+    let bal_key = [b"bal:", to].concat();
+    let cur = load_u64(&bal_key);
+    store_u64(&bal_key, cur + amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply + amount);
+    store_u64(b"epoch_minted", minted + amount);
+    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+}
+
+fn burn(from: &[u8], amount: u64) {
+    let bal_key = [b"bal:", from].concat();
+    let cur = load_u64(&bal_key);
+    if cur < amount { return; }
+    store_u64(&bal_key, cur - amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply - amount);
+    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+}
+
+fn transfer(from: &[u8], to: &[u8], amount: u64) {
+    let from_key = [b"bal:", from].concat();
+    let to_key = [b"bal:", to].concat();
+    let from_bal = load_u64(&from_key);
+    if from_bal < amount { return; }
+    store_u64(&from_key, from_bal - amount);
+    store_u64(&to_key, load_u64(&to_key) + amount);
+}
+
+fn balance_of(account: &[u8]) -> u64 {
+    load_u64(&[b"bal:", account].concat())
+}
+
+fn get_reserves() -> u64 { load_u64(b"total_supply") }
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn call() {
+    let input = moltchain_sdk::get_call_data();
+    if input.is_empty() { return; }
+    match input[0] {
+        0 => { /* initialize */ }
+        1 => { /* mint */ }
+        2 => { /* burn */ }
+        3 => { /* transfer */ }
+        4 => { /* approve */ }
+        5 => { /* transfer_from */ }
+        6 => { /* total_supply */ }
+        7 => { /* balance_of */ }
+        8 => { /* get_reserves */ }
+        _ => {}
+    }
+}
+`,
+            'Cargo.toml': `[package]
+name = "wbnb-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
+    },
+
+    shielded_pool: {
+        name: 'Shielded Pool',
+        description: 'Privacy-preserving shielded transaction pool with Merkle commitments',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ Shielded Pool ═══════
+// Privacy-preserving transaction pool
+// Supports shield, unshield, and private transfers via Merkle commitments
+
+const TREE_DEPTH: u32 = 20;
+const MAX_COMMITMENTS: u64 = 1_048_576; // 2^20
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    storage_set(b"sp_admin", admin);
+    store_u64(b"sp_commitment_count", 0);
+    store_u64(b"sp_paused", 0);
+    // Initialize empty Merkle root
+    storage_set(b"sp_merkle_root", &[0u8; 32]);
+    emit_event(b"Initialized", b"Shielded Pool ready");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
+    if load_u64(b"sp_paused") == 1 { return 0; }
+    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+    if args.len() < 64 { return 0; } // commitment(32) + amount(8) + note(24+)
+
+    let commitment = &args[0..32];
+    let count = load_u64(b"sp_commitment_count");
+    if count >= MAX_COMMITMENTS { return 0; }
+
+    // Store commitment
+    let key = format!("sp_cm_{}", count);
+    storage_set(key.as_bytes(), commitment);
+    store_u64(b"sp_commitment_count", count + 1);
+
+    emit_event(b"Shield", &format!("idx={}", count).into_bytes());
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
+    if load_u64(b"sp_paused") == 1 { return 0; }
+    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+    if args.len() < 64 { return 0; } // nullifier(32) + recipient(32) + amount(8+)
+
+    let nullifier = &args[0..32];
+
+    // Check nullifier not already spent
+    let null_key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
+    if storage_get(null_key.as_bytes()).len() > 0 { return 0; }
+
+    // Mark nullifier as spent
+    storage_set(null_key.as_bytes(), &[1]);
+    emit_event(b"Unshield", b"withdrawal processed");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
+    if load_u64(b"sp_paused") == 1 { return 0; }
+    let args = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
+    if args.len() < 96 { return 0; } // nullifier(32) + new_commitment(32) + proof(32+)
+
+    let nullifier = &args[0..32];
+    let new_commitment = &args[32..64];
+
+    // Check nullifier
+    let null_key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
+    if storage_get(null_key.as_bytes()).len() > 0 { return 0; }
+
+    // Mark nullifier, add new commitment
+    storage_set(null_key.as_bytes(), &[1]);
+    let count = load_u64(b"sp_commitment_count");
+    let key = format!("sp_cm_{}", count);
+    storage_set(key.as_bytes(), new_commitment);
+    store_u64(b"sp_commitment_count", count + 1);
+
+    emit_event(b"Transfer", b"private transfer completed");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn pause() -> u32 {
+    store_u64(b"sp_paused", 1);
+    emit_event(b"Paused", b"pool paused");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn unpause() -> u32 {
+    store_u64(b"sp_paused", 0);
+    emit_event(b"Unpaused", b"pool resumed");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn get_pool_stats() -> u32 {
+    let count = load_u64(b"sp_commitment_count");
+    let paused = load_u64(b"sp_paused");
+    set_return_data(&[count.to_le_bytes(), paused.to_le_bytes()].concat());
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn get_merkle_root() -> u32 {
+    let root = storage_get(b"sp_merkle_root");
+    if root.len() >= 32 { set_return_data(&root); 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn check_nullifier(nullifier_ptr: *const u8) -> u32 {
+    let nullifier = unsafe { core::slice::from_raw_parts(nullifier_ptr, 32) };
+    let key = format!("sp_null_{:02x}{:02x}{:02x}{:02x}", nullifier[0], nullifier[1], nullifier[2], nullifier[3]);
+    if storage_get(key.as_bytes()).len() > 0 { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn get_commitments(from_index: u64) -> u32 {
+    let count = load_u64(b"sp_commitment_count");
+    let end = core::cmp::min(from_index + 100, count);
+    let mut result = Vec::new();
+    result.extend_from_slice(&count.to_le_bytes());
+    for i in from_index..end {
+        let key = format!("sp_cm_{}", i);
+        let cm = storage_get(key.as_bytes());
+        if cm.len() >= 32 { result.extend_from_slice(&cm[..32]); }
+    }
+    set_return_data(&result);
+    1
+}
+`,
+            'Cargo.toml': `[package]
+name = "shielded-pool"
 version = "0.1.0"
 edition = "2021"
 

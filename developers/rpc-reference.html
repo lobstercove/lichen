@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -110,6 +107,7 @@
                 <a href="#getAllContracts" class="sidebar-link">getAllContracts</a>
                 <a href="#getContractLogs" class="sidebar-link">getContractLogs</a>
                 <a href="#getContractAbi" class="sidebar-link">getContractAbi</a>
+                <a href="#callContract" class="sidebar-link">callContract</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Program</h3>
@@ -173,12 +171,12 @@
                     <div class="code-block-header">
                         <span class="code-lang">JSON</span>
                     </div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "id": 1,
   "method": "METHOD_NAME",
   "params": [...]
-}</pre></code>
+}</code></pre>
                 </div>
                 <p>Successful responses contain a <code>result</code> field. Errors contain an <code>error</code> object with <code>code</code> and <code>message</code>.</p>
                 <div class="callout callout-warning">
@@ -205,12 +203,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":42}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":42}</code></pre>
                 </div>
             </div>
 
@@ -228,7 +226,7 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}'
 
@@ -236,7 +234,7 @@
 {"jsonrpc":"2.0","id":1,"result":{
   "slot":42,"hash":"a1b2c3...","parentHash":"d4e5f6...",
   "transactions":5,"timestamp":1738800000,"validator":"7xK...","stateRoot":"abc..."
-}}</pre></code>
+}}</code></pre>
                 </div>
             </div>
 
@@ -254,12 +252,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getRecentBlockhash","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</code></pre>
                 </div>
             </div>
 
@@ -277,12 +275,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}</code></pre>
                 </div>
             </div>
 
@@ -300,14 +298,14 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getMetrics","params":[]}'
 
 # Response
 {"jsonrpc":"2.0","id":1,"result":{
   "tps":120,"totalTransactions":500000,"totalBlocks":42000,"averageBlockTime":400
-}}</pre></code>
+}}</code></pre>
                 </div>
             </div>
 
@@ -325,9 +323,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'</code></pre>
                 </div>
             </div>
 
@@ -355,12 +353,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"shells":5000000000,"molt":5.0}}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":{"shells":5000000000,"molt":5.0}}</code></pre>
                 </div>
             </div>
 
@@ -383,9 +381,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
             </div>
 
@@ -408,9 +406,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
                 </div>
             </div>
 
@@ -457,7 +455,7 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42]}'
 
@@ -465,7 +463,7 @@
 {"jsonrpc":"2.0","id":1,"result":{
   "slot":42,"hash":"a1b2...","parentHash":"d4e5...",
   "transactions":[...],"timestamp":1738800000
-}}</pre></code>
+}}</code></pre>
                 </div>
             </div>
 
@@ -493,9 +491,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["a1b2c3d4..."]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["a1b2c3d4..."]}'</code></pre>
                 </div>
             </div>
 
@@ -518,12 +516,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["BASE64_ENCODED_TX"]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</code></pre>
                 </div>
             </div>
 
@@ -606,9 +604,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}'</code></pre>
                 </div>
             </div>
 
@@ -750,9 +748,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":[]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":[]}'</code></pre>
                 </div>
             </div>
 
@@ -794,9 +792,9 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getContractInfo","params":["ContractPubkey..."]}'</pre></code>
+  -d '{"jsonrpc":"2.0","id":1,"method":"getContractInfo","params":["ContractPubkey..."]}'</code></pre>
                 </div>
             </div>
 
@@ -1154,12 +1152,12 @@
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>curl -X POST http://localhost:8899 \
+                    <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getTotalBurned","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"shells":1500000000000,"molt":1500.0}}</pre></code>
+{"jsonrpc":"2.0","id":1,"result":{"shells":1500000000000,"molt":1500.0}}</code></pre>
                 </div>
             </div>
 
@@ -1197,7 +1195,7 @@
             <!-- ═══════════════════════════════════════════════════════════ -->
             <!-- LIVE ADDITIONS -->
             <!-- ═══════════════════════════════════════════════════════════ -->
-            <section id="live-methods" style="margin-top:2rem;">
+            <section id="live-methods" class="rpc-live-methods">
                 <h2>Additional Implemented Methods</h2>
                 <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`) and may not yet have individual method cards on this page.</p>
 
@@ -1257,8 +1255,37 @@
                     <li><code>getNFTActivity</code></li>
                     <li><code>getPredictionMarketStats</code>, <code>getPredictionMarkets</code>, <code>getPredictionMarket</code>, <code>getPredictionPositions</code>, <code>getPredictionTraderStats</code>, <code>getPredictionLeaderboard</code>, <code>getPredictionTrending</code>, <code>getPredictionMarketAnalytics</code></li>
                     <li><code>getDexCoreStats</code>, <code>getDexAmmStats</code>, <code>getDexMarginStats</code>, <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>, <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code></li>
-                    <li><code>getMoltswapStats</code>, <code>getLobsterLendStats</code>, <code>getClawPayStats</code>, <code>getBountyBoardStats</code>, <code>getComputeMarketStats</code>, <code>getReefStorageStats</code>, <code>getMoltMarketStats</code>, <code>getMoltAuctionStats</code>, <code>getMoltPunksStats</code></li>
+                    <li><code>getMoltswapStats</code>, <code>getLobsterLendStats</code>, <code>getClawPayStats</code>, <code>getClawVaultStats</code>, <code>getBountyBoardStats</code>, <code>getComputeMarketStats</code>, <code>getReefStorageStats</code>, <code>getMoltMarketStats</code>, <code>getMoltAuctionStats</code>, <code>getMoltPunksStats</code></li>
+                    <li><code>getMusdStats</code>, <code>getWethStats</code>, <code>getWsolStats</code>, <code>getMoltBridgeStats</code>, <code>getMoltDaoStats</code>, <code>getMoltOracleStats</code></li>
                     <li><code>requestAirdrop</code> (testnet utility)</li>
+                </ul>
+
+                <h3>Bridge</h3>
+                <ul>
+                    <li><code>createBridgeDeposit</code> — initiate a cross-chain bridge deposit</li>
+                    <li><code>getBridgeDeposit</code> — query a bridge deposit by ID</li>
+                    <li><code>getBridgeDepositsByRecipient</code> — list deposits for a recipient address</li>
+                </ul>
+
+                <h3>Shielded Pool (Privacy)</h3>
+                <ul>
+                    <li><code>getShieldedPoolState</code> — query shielded pool state (tree size, root, nullifier count)</li>
+                    <li><code>getShieldedPoolStats</code> — aggregated pool statistics</li>
+                    <li><code>getShieldedMerkleRoot</code> — current Merkle tree root</li>
+                    <li><code>getShieldedMerklePath</code> — Merkle proof for a leaf index</li>
+                    <li><code>isNullifierSpent</code> — check if a nullifier has been spent</li>
+                    <li><code>checkNullifier</code> — alias for <code>isNullifierSpent</code></li>
+                    <li><code>getShieldedCommitments</code> — list commitments in the tree</li>
+                    <li><code>computeShieldCommitment</code> — compute commitment hash for shield operation</li>
+                    <li><code>generateShieldProof</code> — generate ZK proof for shield (deposit)</li>
+                    <li><code>generateUnshieldProof</code> — generate ZK proof for unshield (withdraw)</li>
+                    <li><code>generateTransferProof</code> — generate ZK proof for private transfer</li>
+                </ul>
+
+                <h3>Contract Execution</h3>
+                <ul>
+                    <li><code>callContract</code> — execute a read-only contract call (no state change)</li>
+                    <li><code>getNameAuction</code> — query MoltyID .molt name auction by name</li>
                 </ul>
 
                 <h3>Solana-Compatible Endpoint (<code>/solana</code>)</h3>
@@ -1269,16 +1296,33 @@
                 <h3>EVM-Compatible Endpoint (<code>/evm</code>)</h3>
                 <ul>
                     <li><code>eth_getBalance</code>, <code>eth_sendRawTransaction</code>, <code>eth_call</code>, <code>eth_chainId</code>, <code>eth_blockNumber</code>, <code>eth_getTransactionReceipt</code>, <code>eth_getTransactionByHash</code>, <code>eth_accounts</code>, <code>net_version</code></li>
+                    <li><code>eth_gasPrice</code>, <code>eth_maxPriorityFeePerGas</code>, <code>eth_estimateGas</code>, <code>eth_getCode</code>, <code>eth_getTransactionCount</code></li>
+                    <li><code>eth_getBlockByNumber</code>, <code>eth_getBlockByHash</code>, <code>eth_getLogs</code>, <code>eth_getStorageAt</code></li>
+                    <li><code>net_listening</code>, <code>web3_clientVersion</code></li>
                 </ul>
             </section>
 
-            <div class="callout callout-tip" style="margin-top:2rem;">
+            <div class="callout callout-tip rpc-live-methods">
                 <p><strong>Looking for real-time events?</strong> Check out the <a href="ws-reference.html">WebSocket Reference</a> for subscription-based streaming of blocks, transactions, and account changes.</p>
             </div>
         </main>
     </div>
 
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="dev-footer">
+        <div class="container">
+            <div class="dev-footer-links">
+                <a href="https://github.com/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+            </div>
+            <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
+        </div>
+    </footer>
+
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

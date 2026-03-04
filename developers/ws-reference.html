@@ -22,7 +22,7 @@
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
                 <li><a href="getting-started.html">Get Started</a></li>
-                <li><a href="ws-reference.html" class="active">API</a></li>
+                <li><a href="rpc-reference.html" class="active">API</a></li>
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -130,7 +127,7 @@
                 <div class="lang-tab-content active" data-lang="js">
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>import { Connection } from '@moltchain/sdk';
+                        <pre><code>import { Connection } from '@moltchain/sdk';
 
 const conn = new Connection(
   'http://localhost:8899',  // RPC
@@ -143,14 +140,14 @@ const subId = await conn.onSlot((slot) => {
 });
 
 // Later: unsubscribe
-await conn.offSlot(subId);</pre></code>
+await conn.offSlot(subId);</code></pre>
                     </div>
                 </div>
 
                 <div class="lang-tab-content" data-lang="python">
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>import asyncio
+                        <pre><code>import asyncio
 from moltchain import Connection
 
 async def main():
@@ -167,14 +164,14 @@ async def main():
     await conn.off_slot(sub_id)
     await conn.close()
 
-asyncio.run(main())</pre></code>
+asyncio.run(main())</code></pre>
                     </div>
                 </div>
 
                 <div class="lang-tab-content" data-lang="curl">
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">wscat</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre># Install: npm install -g wscat
+                        <pre><code># Install: npm install -g wscat
 wscat -c ws://localhost:8900
 
 # Subscribe to slots
@@ -182,7 +179,7 @@ wscat -c ws://localhost:8900
 &lt; {"jsonrpc":"2.0","id":1,"result":1}
 
 # Receive notifications
-&lt; {"jsonrpc":"2.0","method":"subscription","params":{"subscription":1,"result":{"slot":43}}}</pre></code>
+&lt; {"jsonrpc":"2.0","method":"subscription","params":{"subscription":1,"result":{"slot":43}}}</code></pre>
                     </div>
                 </div>
             </section>
@@ -193,40 +190,40 @@ wscat -c ws://localhost:8900
                 <h3>Subscribe Request</h3>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "id": 1,
   "method": "subscribeSlots",
   "params": null
-}</pre></code>
+}</code></pre>
                 </div>
                 <h3>Subscribe Response</h3>
                 <p>Returns the subscription ID (integer) used to identify future notifications and to unsubscribe.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{"jsonrpc": "2.0", "id": 1, "result": 1}</pre></code>
+                    <pre><code>{"jsonrpc": "2.0", "id": 1, "result": 1}</code></pre>
                 </div>
                 <h3>Notification</h3>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "method": "subscription",
   "params": {
     "subscription": 1,
     "result": { /* event-specific payload */ }
   }
-}</pre></code>
+}</code></pre>
                 </div>
                 <h3>Unsubscribe Request</h3>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "id": 2,
   "method": "unsubscribeSlots",
   "params": 1
-}</pre></code>
+}</code></pre>
                 </div>
             </section>
 
@@ -247,17 +244,17 @@ wscat -c ws://localhost:8900
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{ "slot": 43 }</pre></code>
+                        <pre><code>{ "slot": 43 }</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const subId = await conn.onSlot((slot) => {
+                        <pre><code>const subId = await conn.onSlot((slot) => {
   console.log('Slot:', slot);
 });
-await conn.offSlot(subId);</pre></code>
+await conn.offSlot(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -274,23 +271,23 @@ await conn.offSlot(subId);</pre></code>
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "slot": 43,
   "hash": "a1b2c3...",
   "parent_hash": "d4e5f6...",
   "transactions": 5,
   "timestamp": 1738800000
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const subId = await conn.onBlock((block) => {
+                        <pre><code>const subId = await conn.onBlock((block) => {
   console.log(`Block #${block.slot} — ${block.transactions} txs`);
 });
-await conn.offBlock(subId);</pre></code>
+await conn.offBlock(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -307,21 +304,21 @@ await conn.offBlock(subId);</pre></code>
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "signatures": ["a1b2c3..."],
   "instructions": 2,
   "recent_blockhash": "d4e5f6..."
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const subId = await conn.onTransaction((tx) => {
+                        <pre><code>const subId = await conn.onTransaction((tx) => {
   console.log('TX:', tx.signatures[0]);
 });
-await conn.offTransaction(subId);</pre></code>
+await conn.offTransaction(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -343,22 +340,22 @@ await conn.offTransaction(subId);</pre></code>
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
   "balance": 5000000000,
   "molt": 5
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const pubkey = new PublicKey('7xKXtg2CW87d...');
+                        <pre><code>const pubkey = new PublicKey('7xKXtg2CW87d...');
 const subId = await conn.onAccountChange(pubkey, (account) => {
   console.log('New balance:', account.molt, 'MOLT');
 });
-await conn.offAccountChange(subId);</pre></code>
+await conn.offAccountChange(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -380,17 +377,17 @@ await conn.offAccountChange(subId);</pre></code>
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "contract": "ContractPubkey...",
   "message": "Transfer completed: 100 MOLT"
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>// All logs
+                        <pre><code>// All logs
 const subId = await conn.onLogs((log) => {
   console.log(`[${log.contract}] ${log.message}`);
 });
@@ -399,7 +396,7 @@ const subId = await conn.onLogs((log) => {
 const contractKey = new PublicKey('ContractPub...');
 const subId2 = await conn.onLogs((log) => {
   console.log(log.message);
-}, contractKey);</pre></code>
+}, contractKey);</code></pre>
                     </div>
                 </div>
             </div>
@@ -416,7 +413,7 @@ const subId2 = await conn.onLogs((log) => {
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{ "program": "ProgramPubkey...", "kind": "deploy" }</pre></code>
+                        <pre><code>{ "program": "ProgramPubkey...", "kind": "deploy" }</code></pre>
                     </div>
                 </div>
             </div>
@@ -438,7 +435,7 @@ const subId2 = await conn.onLogs((log) => {
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{ "program": "ProgramPubkey..." }</pre></code>
+                        <pre><code>{ "program": "ProgramPubkey..." }</code></pre>
                     </div>
                 </div>
             </div>
@@ -460,7 +457,7 @@ const subId2 = await conn.onLogs((log) => {
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{ "collection": "CollectionPubkey..." }</pre></code>
+                        <pre><code>{ "collection": "CollectionPubkey..." }</code></pre>
                     </div>
                 </div>
             </div>
@@ -482,7 +479,7 @@ const subId2 = await conn.onLogs((log) => {
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{ "collection": "CollectionPubkey..." }</pre></code>
+                        <pre><code>{ "collection": "CollectionPubkey..." }</code></pre>
                     </div>
                 </div>
             </div>
@@ -499,7 +496,7 @@ const subId2 = await conn.onLogs((log) => {
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "MarketListing",
   "slot": 100,
   "timestamp": 1738800000,
@@ -511,17 +508,17 @@ const subId2 = await conn.onLogs((log) => {
   "price_molt": 5.0,
   "seller": "SellerPub...",
   "tx_signature": "abc123..."
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const subId = await conn.onMarketListings((event) => {
+                        <pre><code>const subId = await conn.onMarketListings((event) => {
   console.log(`Listed: token #${event.token_id} for ${event.price_molt} MOLT`);
 });
-await conn.offMarketListings(subId);</pre></code>
+await conn.offMarketListings(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -538,7 +535,7 @@ await conn.offMarketListings(subId);</pre></code>
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "MarketSale",
   "slot": 101,
   "timestamp": 1738800400,
@@ -551,17 +548,17 @@ await conn.offMarketListings(subId);</pre></code>
   "seller": "SellerPub...",
   "buyer": "BuyerPub...",
   "tx_signature": "def456..."
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <code><pre>const subId = await conn.onMarketSales((event) => {
+                        <pre><code>const subId = await conn.onMarketSales((event) => {
   console.log(`Sold: token #${event.token_id} for ${event.price_molt} MOLT`);
 });
-await conn.offMarketSales(subId);</pre></code>
+await conn.offMarketSales(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -579,7 +576,7 @@ await conn.offMarketSales(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "BridgeLock",
   "chain": "ethereum",
   "asset": "MOLT",
@@ -587,7 +584,7 @@ await conn.offMarketSales(subId);</pre></code>
   "amount_display": 250.0,
   "sender": "0xabc...",
   "recipient": "RecipientPub..."
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -603,7 +600,7 @@ await conn.offMarketSales(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "BridgeMint",
   "chain": "ethereum",
   "asset": "MOLT",
@@ -611,7 +608,7 @@ await conn.offMarketSales(subId);</pre></code>
   "amount_display": 250.0,
   "recipient": "RecipientPub...",
   "tx_hash": "0xdef..."
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -629,22 +626,22 @@ await conn.offMarketSales(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "SignatureStatus",
   "signature": "abc123...",
   "status": "finalized",
   "slot": 1234,
   "error": null
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JavaScript</span></div>
-                        <code><pre>const subId = await conn.onSignatureStatus(txSig, (status) => {
+                        <pre><code>const subId = await conn.onSignatureStatus(txSig, (status) => {
   console.log(`TX ${status.status} at slot ${status.slot}`);
 });
-await conn.offSignatureStatus(subId);</pre></code>
+await conn.offSignatureStatus(subId);</code></pre>
                     </div>
                 </div>
             </div>
@@ -660,14 +657,14 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "ValidatorUpdate",
   "pubkey": "8GCKfyj...",
   "kind": "joined",
   "stake": 100000000000000,
   "stake_display": 100000.0,
   "slot": 500
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -686,7 +683,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "TokenBalanceChange",
   "owner": "UserPub...",
   "mint": "MintPub...",
@@ -694,7 +691,7 @@ await conn.offSignatureStatus(subId);</pre></code>
   "new_balance": 2000000000,
   "delta": 1000000000,
   "slot": 789
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -710,14 +707,14 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "EpochChange",
   "epoch": 5,
   "slot": 2160000,
   "total_stake": 500000000000000,
   "total_stake_display": 500000.0,
   "validator_count": 42
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -733,14 +730,14 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
                     <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
-                        <code><pre>{
+                        <pre><code>{
   "event": "GovernanceEvent",
   "proposal_id": 7,
   "kind": "voted",
   "voter": "VoterPub...",
   "vote_weight": 50000000000,
   "slot": 1234
-}</pre></code>
+}</code></pre>
                     </div>
                 </div>
             </div>
@@ -755,7 +752,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted on each new slot.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{ "slot": 43 }</pre></code>
+                    <pre><code>{ "slot": 43 }</code></pre>
                 </div>
             </div>
 
@@ -764,13 +761,13 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted on each new block.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "slot": 43,
   "hash": "a1b2c3d4e5f6...",
   "parent_hash": "f6e5d4c3b2a1...",
   "transactions": 5,
   "timestamp": 1738800000
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -779,11 +776,11 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted for each confirmed transaction.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "signatures": ["a1b2c3d4..."],
   "instructions": 2,
   "recent_blockhash": "d4e5f6..."
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -792,11 +789,11 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted when a watched account's balance changes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "pubkey": "7xKXtg2CW87d...",
   "balance": 5000000000,
   "molt": 5
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -805,10 +802,10 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted when a contract emits a log message.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "contract": "ContractPubkey...",
   "message": "Transfer completed: 100 MOLT"
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -817,7 +814,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p class="method-desc">Emitted for marketplace activity. Both events share the same structure with an <code>event</code> discriminator field.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "event": "MarketListing" | "MarketSale",
   "slot": 100,
   "timestamp": 1738800000,
@@ -832,14 +829,14 @@ await conn.offSignatureStatus(subId);</pre></code>
   "buyer": "BuyerPub...",
   "function": "buyNow",
   "tx_signature": "abc123..."
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
             <!-- ═══════════════════════════════════════════════════════ -->
             <!-- LIVE CHANNELS -->
             <!-- ═══════════════════════════════════════════════════════ -->
-            <section id="live-channels" style="margin-top:2rem;">
+            <section id="live-channels" class="ws-live-channels">
                 <h2>Additional Implemented Live Channels</h2>
                 <p>These subscription families are implemented in the WebSocket server (`rpc/src/ws.rs`) and channel parsing in `rpc/src/dex_ws.rs`.</p>
 
@@ -858,7 +855,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON-RPC</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "id": 101,
   "method": "subscribeDex",
@@ -870,7 +867,7 @@ await conn.offSignatureStatus(subId);</pre></code>
   "id": 102,
   "method": "unsubscribeDex",
   "params": { "subscription": 101 }
-}</pre></code>
+}</code></pre>
                 </div>
 
                 <h3>Prediction Multiplexed Channels</h3>
@@ -886,7 +883,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON-RPC</span></div>
-                    <code><pre>{
+                    <pre><code>{
   "jsonrpc": "2.0",
   "id": 201,
   "method": "subscribePrediction",
@@ -898,7 +895,20 @@ await conn.offSignatureStatus(subId);</pre></code>
   "id": 202,
   "method": "unsubscribePrediction",
   "params": { "subscription": 201 }
-}</pre></code>
+}</code></pre>
+                </div>
+            </section>
+
+            <section id="keepalive">
+                <h3>Keepalive (Ping/Pong)</h3>
+                <p>The WebSocket server supports standard <strong>ping/pong</strong> frames for connection keepalive. If your client library supports automatic pong responses (most do), no action is needed. For manual implementations:</p>
+                <ul>
+                    <li>The server sends a <strong>ping</strong> frame periodically (every 30s by default).</li>
+                    <li>Your client must respond with a <strong>pong</strong> frame within the timeout window.</li>
+                    <li>Connections that fail to respond to 3 consecutive pings are automatically closed.</li>
+                </ul>
+                <div class="callout callout-info">
+                    <p><strong>Notification wrapper difference:</strong> Core subscriptions (slots, blocks, accounts, etc.) use <code>"method": "subscription"</code> in push messages. DEX and Prediction channel notifications use <code>"method": "notification"</code> instead. Check both wrappers when parsing events.</p>
                 </div>
             </section>
 
@@ -912,7 +922,7 @@ await conn.offSignatureStatus(subId);</pre></code>
                 <p>WebSocket connections can drop due to network issues, server restarts, or idle timeouts. Implement automatic reconnection with exponential backoff:</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>class ResilientConnection {
+                    <pre><code>class ResilientConnection {
   constructor(rpcUrl, wsUrl) {
     this.rpcUrl = rpcUrl;
     this.wsUrl = wsUrl;
@@ -940,7 +950,7 @@ await conn.offSignatureStatus(subId);</pre></code>
       await this.reconnect();
     }
   }
-}</pre></code>
+}</code></pre>
                 </div>
                 <div class="callout callout-tip">
                     <p><strong>Tip:</strong> Store subscription parameters so you can restore them after reconnection. The SDK's <code>Connection</code> class will automatically reconnect the WebSocket when you call an <code>on*</code> method.</p>
@@ -964,7 +974,21 @@ await conn.offSignatureStatus(subId);</pre></code>
         </main>
     </div>
 
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="dev-footer">
+        <div class="container">
+            <div class="dev-footer-links">
+                <a href="https://github.com/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+            </div>
+            <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
+        </div>
+    </footer>
+
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

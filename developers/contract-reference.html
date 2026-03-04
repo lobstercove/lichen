@@ -3,114 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltChain — Production Contracts Reference</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <title>Contracts Reference - MoltChain Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
-    <style>
-        :root {
-            --bg-primary: #0a0e1a;
-            --bg-secondary: #111827;
-            --bg-card: #1a1f35;
-            --bg-code: #0d1117;
-            --border: #2a3050;
-            --text-primary: #e2e8f0;
-            --text-secondary: #94a3b8;
-            --text-muted: #64748b;
-            --accent: #f97316;
-            --accent-light: #fb923c;
-            --blue: #3b82f6;
-            --green: #22c55e;
-            --purple: #a855f7;
-            --cyan: #06b6d4;
-            --red: #ef4444;
-            --yellow: #eab308;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Inter', -apple-system, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            line-height: 1.7;
-        }
-        .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 6rem; }
-
-        .doc-header { text-align: center; padding: 3rem 0 2rem; border-bottom: 1px solid var(--border); margin-bottom: 3rem; }
-        .doc-header h1 { font-size: 2.4rem; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--accent-light)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: .5rem; }
-        .doc-header p { color: var(--text-secondary); font-size: 1.1rem; }
-        .doc-stats { display: flex; justify-content: center; gap: 2.5rem; margin-top: 1.5rem; flex-wrap: wrap; }
-        .doc-stat { text-align: center; }
-        .doc-stat .num { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
-        .doc-stat .label { font-size: .8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
-
-        .toc { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem 2rem; margin-bottom: 3rem; }
-        .toc h2 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--text-secondary); }
-        .toc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .4rem .8rem; }
-        .toc a { color: var(--blue); text-decoration: none; font-size: .9rem; padding: .2rem 0; display: flex; align-items: center; gap: .5rem; }
-        .toc a:hover { color: var(--accent-light); }
-        .toc .toc-num { color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: .75rem; min-width: 1.6rem; }
-
-        .contract-section { margin-bottom: 3rem; scroll-margin-top: 2rem; }
-        .contract-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-        .contract-header { display: flex; align-items: center; gap: 1rem; padding: 1.5rem 2rem; border-bottom: 1px solid var(--border); }
-        .contract-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0; }
-        .contract-header-text h3 { font-size: 1.3rem; font-weight: 700; }
-        .contract-header-text .subtitle { color: var(--text-secondary); font-size: .85rem; }
-        .contract-meta { display: flex; gap: 1rem; margin-left: auto; flex-shrink: 0; }
-        .meta-chip { font-size: .75rem; padding: .25rem .7rem; border-radius: 6px; background: rgba(255,255,255,.06); color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
-        .contract-body { padding: 1.5rem 2rem; }
-        .contract-body p { color: var(--text-secondary); margin-bottom: 1rem; line-height: 1.8; }
-
-        .sub-heading { font-size: .85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin: 1.5rem 0 .6rem; }
-
-        .const-table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-bottom: 1rem; }
-        .const-table th { text-align: left; padding: .5rem .8rem; background: rgba(255,255,255,.04); color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); }
-        .const-table td { padding: .45rem .8rem; border-bottom: 1px solid rgba(255,255,255,.04); }
-        .const-table td:first-child { font-family: 'JetBrains Mono', monospace; color: var(--cyan); font-size: .8rem; }
-        .const-table td:last-child { color: var(--text-secondary); }
-
-        .fn-list { display: flex; flex-wrap: wrap; gap: .4rem; }
-        .fn-chip { font-family: 'JetBrains Mono', monospace; font-size: .78rem; background: rgba(59,130,246,.1); color: var(--blue); padding: .3rem .6rem; border-radius: 6px; border: 1px solid rgba(59,130,246,.15); }
-
-        .badge-row { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
-        .badge { font-size: .72rem; padding: .2rem .6rem; border-radius: 5px; font-weight: 600; }
-        .badge-identity { background: rgba(168,85,247,.15); color: var(--purple); border: 1px solid rgba(168,85,247,.2); }
-        .badge-defi { background: rgba(34,197,94,.12); color: var(--green); border: 1px solid rgba(34,197,94,.2); }
-        .badge-nft { background: rgba(249,115,22,.12); color: var(--accent); border: 1px solid rgba(249,115,22,.2); }
-        .badge-infra { background: rgba(6,182,212,.12); color: var(--cyan); border: 1px solid rgba(6,182,212,.2); }
-        .badge-dex { background: rgba(249,115,22,.12); color: #f59e0b; border: 1px solid rgba(245,158,11,.2); }
-
-        .icon-defi { background: linear-gradient(135deg, #166534, #22c55e); color: #fff; }
-        .icon-nft { background: linear-gradient(135deg, #9a3412, #f97316); color: #fff; }
-        .icon-identity { background: linear-gradient(135deg, #6b21a8, #a855f7); color: #fff; }
-        .icon-infra { background: linear-gradient(135deg, #155e75, #06b6d4); color: #fff; }
-        .icon-gov { background: linear-gradient(135deg, #854d0e, #eab308); color: #fff; }
-        .icon-token { background: linear-gradient(135deg, #1e40af, #3b82f6); color: #fff; }
-        .icon-dex { background: linear-gradient(135deg, #92400e, #f59e0b); color: #fff; }
-
-        .arch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem; }
-        .arch-box { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
-        .arch-box i { font-size: 1.3rem; margin-bottom: .5rem; display: block; }
-        .arch-box .arch-label { font-weight: 600; font-size: .9rem; margin-bottom: .3rem; }
-        .arch-box .arch-desc { font-size: .78rem; color: var(--text-muted); }
-
-        ul { color: var(--text-secondary); margin-left: 1.2rem; margin-bottom: 1rem; }
-        code { font-family: 'JetBrains Mono', monospace; background: rgba(255,255,255,.06); padding: .1rem .35rem; border-radius: 3px; font-size: .85em; }
-
-        @media (max-width: 700px) {
-            .container { padding: 1rem; }
-            .contract-header { flex-direction: column; align-items: flex-start; }
-            .contract-meta { margin-left: 0; margin-top: .5rem; }
-            .doc-header h1 { font-size: 1.6rem; }
-            .toc-grid { grid-template-columns: 1fr; }
-        }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
-<body>
+<body class="contract-ref-body">
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
@@ -133,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -154,9 +52,9 @@
     <!-- Header -->
     <div class="doc-header">
         <h1><i class="fas fa-file-contract"></i> MoltChain Contracts Reference</h1>
-        <p>Complete documentation of all 27 production smart contracts</p>
+        <p>Complete documentation of all 29 production smart contracts</p>
         <div class="doc-stats">
-            <div class="doc-stat"><div class="num">27</div><div class="label">Contracts</div></div>
+            <div class="doc-stat"><div class="num">29</div><div class="label">Contracts</div></div>
             <div class="doc-stat"><div class="num">19,395</div><div class="label">Lines of Rust</div></div>
             <div class="doc-stat"><div class="num">227</div><div class="label">Public Functions (All Contracts)</div></div>
             <div class="doc-stat"><div class="num">6</div><div class="label">MoltyID Integrations</div></div>
@@ -164,23 +62,23 @@
     </div>
 
     <!-- Architecture -->
-    <div style="margin-bottom:3rem;">
-        <h2 style="font-size:1.3rem; margin-bottom:.5rem;"><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-        <p style="color:var(--text-secondary); margin-bottom:1rem;">MoltChain's 27 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp; Governance — all compiled to WASM and deployable on-chain.</p>
+    <div class="cr-section">
+        <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
+        <p>MoltChain's 29 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp; Governance — all compiled to WASM and deployable on-chain.</p>
         <div class="arch-grid">
-            <div class="arch-box"><i class="fas fa-coins" style="color:var(--green)"></i><div class="arch-label">DeFi</div><div class="arch-desc">MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault</div></div>
-            <div class="arch-box"><i class="fas fa-chart-line" style="color:#f59e0b"></i><div class="arch-label">DEX</div><div class="arch-desc">DEX Core, DEX AMM, DEX Router, DEX Margin, DEX Governance, DEX Rewards, DEX Analytics</div></div>
-            <div class="arch-box"><i class="fas fa-palette" style="color:var(--accent)"></i><div class="arch-label">NFT</div><div class="arch-desc">MoltPunks, MoltMarket, MoltAuction</div></div>
-            <div class="arch-box"><i class="fas fa-fingerprint" style="color:var(--purple)"></i><div class="arch-label">Identity</div><div class="arch-desc">MoltyID (.molt names, reputation, vouching)</div></div>
-            <div class="arch-box"><i class="fas fa-server" style="color:var(--cyan)"></i><div class="arch-label">Infrastructure</div><div class="arch-desc">MoltOracle, MoltBridge, BountyBoard, Compute Market, Reef Storage</div></div>
-            <div class="arch-box"><i class="fas fa-landmark" style="color:var(--yellow)"></i><div class="arch-label">Governance</div><div class="arch-desc">MoltDAO (proposals, voting, treasury)</div></div>
+            <div class="arch-box"><i class="fas fa-coins arch-icon-defi"></i><div class="arch-label">DeFi</div><div class="arch-desc">MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault</div></div>
+            <div class="arch-box"><i class="fas fa-chart-line arch-icon-dex"></i><div class="arch-label">DEX</div><div class="arch-desc">DEX Core, DEX AMM, DEX Router, DEX Margin, DEX Governance, DEX Rewards, DEX Analytics</div></div>
+            <div class="arch-box"><i class="fas fa-palette arch-icon-nft"></i><div class="arch-label">NFT</div><div class="arch-desc">MoltPunks, MoltMarket, MoltAuction</div></div>
+            <div class="arch-box"><i class="fas fa-fingerprint arch-icon-identity"></i><div class="arch-label">Identity</div><div class="arch-desc">MoltyID (.molt names, reputation, vouching)</div></div>
+            <div class="arch-box"><i class="fas fa-server arch-icon-infra"></i><div class="arch-label">Infrastructure</div><div class="arch-desc">MoltOracle, MoltBridge, BountyBoard, Compute Market, Reef Storage, Shielded Pool</div></div>
+            <div class="arch-box"><i class="fas fa-landmark arch-icon-gov"></i><div class="arch-label">Governance</div><div class="arch-desc">MoltDAO (proposals, voting, treasury)</div></div>
         </div>
     </div>
 
     <!-- WASM ABI Calling Convention -->
-    <div style="margin-bottom:3rem;">
-        <h2 style="font-size:1.3rem; margin-bottom:.5rem;"><i class="fas fa-cogs"></i> WASM ABI Calling Convention</h2>
-        <p style="color:var(--text-secondary); margin-bottom:1rem;">MoltChain contracts compile to WASM and follow a unified ABI for argument passing. The runtime supports three modes — agents should use <strong>JSON mode</strong> for simplicity or <strong>Layout Descriptor mode</strong> for full control.</p>
+    <div class="cr-section">
+        <h2><i class="fas fa-cogs"></i> WASM ABI Calling Convention</h2>
+        <p>MoltChain contracts compile to WASM and follow a unified ABI for argument passing. The runtime supports three modes — agents should use <strong>JSON mode</strong> for simplicity or <strong>Layout Descriptor mode</strong> for full control.</p>
 
         <div class="sub-heading">Argument Passing Modes</div>
         <table class="const-table">
@@ -238,7 +136,7 @@
             <tr><td>DEX Analytics</td><td><code>call()</code></td><td><code>args[0]</code> from <code>get_args()</code></td><td><code>match opcode { ... }</code> in contract dispatcher</td></tr>
             <tr><td>Prediction Market</td><td><code>call()</code></td><td><code>args[0]</code> from <code>get_args()</code></td><td><code>match opcode { ... }</code> in contract dispatcher</td></tr>
         </table>
-        <p style="color:var(--text-secondary); margin-top:.5rem;">Use the SDK builders for opcode-dispatch contracts. They encode the leading opcode byte and argument layout correctly for each operation.</p>
+        <p class="cr-note">Use the SDK builders for opcode-dispatch contracts. They encode the leading opcode byte and argument layout correctly for each operation.</p>
 
         <div class="sub-heading">Return Code Conventions</div>
         <p><strong>Not all contracts agree on return codes.</strong> The runtime records the WASM return value in <code>return_code</code> for informational purposes but does NOT use it to determine success/failure — only a WASM trap constitutes failure.</p>
@@ -282,6 +180,8 @@
             <a href="#musd-token"><span class="toc-num">25</span> mUSD Stablecoin</a>
             <a href="#weth-token"><span class="toc-num">26</span> Wrapped ETH</a>
             <a href="#wsol-token"><span class="toc-num">27</span> Wrapped SOL</a>
+            <a href="#wbnb-token"><span class="toc-num">28</span> Wrapped BNB</a>
+            <a href="#shielded-pool"><span class="toc-num">29</span> Shielded Pool</a>
             <a href="#live-exports"><span class="toc-num">A1</span> Live Export Matrix (Authoritative)</a>
         </div>
     </div>
@@ -291,7 +191,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-token"><i class="fas fa-coins"></i></div>
             <div class="contract-header-text"><h3>MoltCoin</h3><div class="subtitle">MT-20 Fungible Token Standard</div></div>
-            <div class="contract-meta"><span class="meta-chip">319 lines</span><span class="meta-chip">7 fns</span><span class="meta-chip">5.2 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">498 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">5.2 KB</span></div>
         </div>
         <div class="contract-body">
             <p>The native fungible token contract for MoltChain. Implements the <strong>MT-20</strong> standard with minting, burning, transfers, and approvals. Serves as the reference token used across the entire DeFi stack — MoltSwap liquidity pools quote in MOLT, LobsterLend accepts MOLT deposits, and DAO governance is weighted by MOLT holdings.</p>
@@ -304,7 +204,7 @@
                 <tr><td>INITIAL_SUPPLY</td><td>1,000,000,000 MOLT (1,000,000,000,000,000,000 shells)</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">balance_of</span><span class="fn-chip">transfer</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">approve</span><span class="fn-chip">total_supply</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">balance_of</span><span class="fn-chip">transfer</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">total_supply</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
         </div>
     </div></div>
@@ -314,7 +214,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-exchange-alt"></i></div>
             <div class="contract-header-text"><h3>MoltSwap</h3><div class="subtitle">Automated Market Maker DEX</div></div>
-            <div class="contract-meta"><span class="meta-chip">728 lines</span><span class="meta-chip">16 fns</span><span class="meta-chip">5.4 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,764 lines</span><span class="meta-chip">32 fns</span><span class="meta-chip">5.4 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model. Supports <strong>liquidity pool creation</strong>, token swaps, flash loans (0.09% fee), and <strong>MoltyID reputation-based fee discounts</strong>. ClawPump tokens graduate to MoltSwap pools once they hit the market cap threshold.</p>
@@ -327,7 +227,7 @@
                 <li>Reentrancy guard on all state-changing operations</li>
             </ul>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span class="fn-chip">swap_a_for_b</span><span class="fn-chip">swap_b_for_a</span><span class="fn-chip">get_quote</span><span class="fn-chip">get_reserves</span><span class="fn-chip">get_liquidity_balance</span><span class="fn-chip">get_total_liquidity</span><span class="fn-chip">flash_loan_borrow</span><span class="fn-chip">flash_loan_repay</span><span class="fn-chip">flash_loan_abort</span><span class="fn-chip">get_flash_loan_fee</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_reputation_discount</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span class="fn-chip">swap_a_for_b</span><span class="fn-chip">swap_b_for_a</span><span class="fn-chip">swap_a_for_b_with_deadline</span><span class="fn-chip">swap_b_for_a_with_deadline</span><span class="fn-chip">get_quote</span><span class="fn-chip">get_reserves</span><span class="fn-chip">get_liquidity_balance</span><span class="fn-chip">get_total_liquidity</span><span class="fn-chip">flash_loan_borrow</span><span class="fn-chip">flash_loan_repay</span><span class="fn-chip">flash_loan_abort</span><span class="fn-chip">get_flash_loan_fee</span><span class="fn-chip">get_twap_cumulatives</span><span class="fn-chip">get_twap_snapshot_count</span><span class="fn-chip">set_protocol_fee</span><span class="fn-chip">get_protocol_fees</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_reputation_discount</span><span class="fn-chip">ms_pause</span><span class="fn-chip">ms_unpause</span><span class="fn-chip">create_pool</span><span class="fn-chip">swap</span><span class="fn-chip">get_pool_info</span><span class="fn-chip">get_pool_count</span><span class="fn-chip">set_platform_fee</span><span class="fn-chip">get_swap_count</span><span class="fn-chip">get_total_volume</span><span class="fn-chip">get_swap_stats</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -337,7 +237,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-hand-holding-usd"></i></div>
             <div class="contract-header-text"><h3>LobsterLend</h3><div class="subtitle">Decentralized Lending Protocol</div></div>
-            <div class="contract-meta"><span class="meta-chip">658 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">12.2 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">2,068 lines</span><span class="meta-chip">21 fns</span><span class="meta-chip">12.2 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Collateralized lending and borrowing with automated liquidations. Depositors earn interest; borrowers pledge collateral up to the collateral factor. Uses a <strong>kinked interest rate model</strong> — low rates below 80% utilization, steeply increasing above. Liquidators receive a 5% bonus for keeping the protocol solvent.</p>
@@ -351,7 +251,7 @@
                 <tr><td>BASE_RATE</td><td>~2% APR (254 / 10B per slot)</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span class="fn-chip">borrow</span><span class="fn-chip">repay</span><span class="fn-chip">liquidate</span><span class="fn-chip">get_account_info</span><span class="fn-chip">get_protocol_stats</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span class="fn-chip">borrow</span><span class="fn-chip">repay</span><span class="fn-chip">liquidate</span><span class="fn-chip">get_account_info</span><span class="fn-chip">get_protocol_stats</span><span class="fn-chip">flash_borrow</span><span class="fn-chip">flash_repay</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span><span class="fn-chip">set_deposit_cap</span><span class="fn-chip">set_reserve_factor</span><span class="fn-chip">withdraw_reserves</span><span class="fn-chip">set_moltcoin_address</span><span class="fn-chip">get_interest_rate</span><span class="fn-chip">get_deposit_count</span><span class="fn-chip">get_borrow_count</span><span class="fn-chip">get_liquidation_count</span><span class="fn-chip">get_platform_stats</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
         </div>
     </div></div>
@@ -361,7 +261,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-rocket"></i></div>
             <div class="contract-header-text"><h3>ClawPump</h3><div class="subtitle">Token Launchpad with Bonding Curves</div></div>
-            <div class="contract-meta"><span class="meta-chip">652 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">16.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,996 lines</span><span class="meta-chip">20 fns</span><span class="meta-chip">16.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Fair-launch platform for new tokens. Anyone can create a token by paying a small fee; the price follows a <strong>linear bonding curve</strong> (price = base + slope &times; supply). When a token's market cap hits the <strong>graduation threshold</strong>, it automatically migrates liquidity to a MoltSwap pool — no rugs, no presales.</p>
@@ -369,13 +269,13 @@
             <table class="const-table">
                 <tr><th>Constant</th><th>Value</th></tr>
                 <tr><td>CREATION_FEE</td><td>10 MOLT per token launch</td></tr>
-                <tr><td>GRADUATION_MCAP</td><td>1,000,000 MOLT</td></tr>
+                <tr><td>GRADUATION_MCAP</td><td>100,000 MOLT</td></tr>
                 <tr><td>BASE_PRICE</td><td>1,000 shells (0.000001 MOLT)</td></tr>
                 <tr><td>SLOPE</td><td>1 (linear curve)</td></tr>
                 <tr><td>PLATFORM_FEE</td><td>1% on each trade</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">create_token</span><span class="fn-chip">buy</span><span class="fn-chip">sell</span><span class="fn-chip">get_token_info</span><span class="fn-chip">get_buy_quote</span><span class="fn-chip">get_token_count</span><span class="fn-chip">get_platform_stats</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">create_token</span><span class="fn-chip">buy</span><span class="fn-chip">sell</span><span class="fn-chip">get_token_info</span><span class="fn-chip">get_buy_quote</span><span class="fn-chip">get_token_count</span><span class="fn-chip">get_platform_stats</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span><span class="fn-chip">freeze_token</span><span class="fn-chip">unfreeze_token</span><span class="fn-chip">set_buy_cooldown</span><span class="fn-chip">set_sell_cooldown</span><span class="fn-chip">set_max_buy</span><span class="fn-chip">set_creator_royalty</span><span class="fn-chip">withdraw_fees</span><span class="fn-chip">set_molt_token</span><span class="fn-chip">set_dex_addresses</span><span class="fn-chip">get_graduation_info</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
         </div>
     </div></div>
@@ -385,7 +285,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-stream"></i></div>
             <div class="contract-header-text"><h3>ClawPay</h3><div class="subtitle">Streaming Payments</div></div>
-            <div class="contract-meta"><span class="meta-chip">705 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">17.4 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">2,114 lines</span><span class="meta-chip">18 fns</span><span class="meta-chip">17.4 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Sablier-style payment streaming for real-time payroll, subscriptions, and vesting. A sender locks MOLT and sets a time window; the recipient can withdraw proportionally as slots pass. Senders can cancel at any time — unstreamed funds return automatically. Supports <strong>MoltyID identity gating</strong> so streams can require a minimum reputation score.</p>
@@ -397,7 +297,7 @@
                 <li>Identity gate: admin can set a MoltyID reputation threshold</li>
             </ul>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">create_stream</span><span class="fn-chip">withdraw_from_stream</span><span class="fn-chip">cancel_stream</span><span class="fn-chip">get_stream</span><span class="fn-chip">get_withdrawable</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span></div>
+            <div class="fn-list"><span class="fn-chip">create_stream</span><span class="fn-chip">withdraw_from_stream</span><span class="fn-chip">cancel_stream</span><span class="fn-chip">get_stream</span><span class="fn-chip">get_withdrawable</span><span class="fn-chip">create_stream_with_cliff</span><span class="fn-chip">transfer_stream</span><span class="fn-chip">initialize_cp_admin</span><span class="fn-chip">set_token_address</span><span class="fn-chip">set_self_address</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span><span class="fn-chip">get_stream_info</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span><span class="fn-chip">get_stream_count</span><span class="fn-chip">get_platform_stats</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -407,7 +307,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-vault"></i></div>
             <div class="contract-header-text"><h3>ClawVault</h3><div class="subtitle">Auto-Compounding Yield Aggregator</div></div>
-            <div class="contract-meta"><span class="meta-chip">625 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">17.0 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,698 lines</span><span class="meta-chip">19 fns</span><span class="meta-chip">17.0 KB</span></div>
         </div>
         <div class="contract-body">
             <p>ERC-4626-style vault that optimizes yield across MoltChain DeFi protocols. Depositors receive shares; the vault routes capital to up to 5 strategies (LobsterLend lending, MoltSwap LP, staking). <code>harvest()</code> compounds returns and takes a 10% performance fee. Minimum locked shares prevent the ERC-4626 inflation attack (T5.9).</p>
@@ -427,7 +327,7 @@
                 <tr><td>3</td><td>Staking</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_strategy</span><span class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span class="fn-chip">harvest</span><span class="fn-chip">get_vault_stats</span><span class="fn-chip">get_user_position</span><span class="fn-chip">get_strategy_info</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_strategy</span><span class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span class="fn-chip">set_protocol_addresses</span><span class="fn-chip">harvest</span><span class="fn-chip">get_vault_stats</span><span class="fn-chip">get_user_position</span><span class="fn-chip">get_strategy_info</span><span class="fn-chip">cv_pause</span><span class="fn-chip">cv_unpause</span><span class="fn-chip">set_deposit_fee</span><span class="fn-chip">set_withdrawal_fee</span><span class="fn-chip">set_deposit_cap</span><span class="fn-chip">set_risk_tier</span><span class="fn-chip">remove_strategy</span><span class="fn-chip">withdraw_protocol_fees</span><span class="fn-chip">update_strategy_allocation</span><span class="fn-chip">set_molt_token</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
         </div>
     </div></div>
@@ -437,7 +337,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-identity"><i class="fas fa-fingerprint"></i></div>
             <div class="contract-header-text"><h3>MoltyID</h3><div class="subtitle">Agent Identity &amp; Reputation System</div></div>
-            <div class="contract-meta"><span class="meta-chip">2,901 lines</span><span class="meta-chip">33 fns</span><span class="meta-chip">43.0 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">6,688 lines</span><span class="meta-chip">59 fns</span><span class="meta-chip">43.0 KB</span></div>
         </div>
         <div class="contract-body">
             <p>The largest and most critical contract in MoltChain. MoltyID is the <strong>on-chain identity layer</strong> for AI agents. Register your agent, build reputation through actions and vouches, claim a <code>.molt</code> domain name, earn skill attestations, and carry your identity across the entire ecosystem. Six other contracts integrate MoltyID for gating and verification.</p>
@@ -481,9 +381,10 @@
                 <tr><td>7</td><td>Oracle</td></tr>
                 <tr><td>8</td><td>Storage</td></tr>
                 <tr><td>9</td><td>General</td></tr>
+                <tr><td>10</td><td>Personal</td></tr>
             </table>
-            <div class="sub-heading">Functions (33)</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">register_identity</span><span class="fn-chip">get_identity</span><span class="fn-chip">update_reputation</span><span class="fn-chip">update_reputation_typed</span><span class="fn-chip">add_skill</span><span class="fn-chip">get_skills</span><span class="fn-chip">vouch</span><span class="fn-chip">get_reputation</span><span class="fn-chip">deactivate_identity</span><span class="fn-chip">get_identity_count</span><span class="fn-chip">update_agent_type</span><span class="fn-chip">get_vouches</span><span class="fn-chip">award_contribution_achievement</span><span class="fn-chip">get_achievements</span><span class="fn-chip">attest_skill</span><span class="fn-chip">get_attestations</span><span class="fn-chip">revoke_attestation</span><span class="fn-chip">register_name</span><span class="fn-chip">resolve_name</span><span class="fn-chip">reverse_resolve</span><span class="fn-chip">transfer_name</span><span class="fn-chip">renew_name</span><span class="fn-chip">release_name</span><span class="fn-chip">set_endpoint</span><span class="fn-chip">get_endpoint</span><span class="fn-chip">set_metadata</span><span class="fn-chip">get_metadata</span><span class="fn-chip">set_availability</span><span class="fn-chip">get_availability</span><span class="fn-chip">set_rate</span><span class="fn-chip">get_rate</span><span class="fn-chip">get_agent_profile</span></div>
+            <div class="sub-heading">Functions (59)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">register_identity</span><span class="fn-chip">get_identity</span><span class="fn-chip">update_reputation</span><span class="fn-chip">update_reputation_typed</span><span class="fn-chip">add_skill</span><span class="fn-chip">add_skill_as</span><span class="fn-chip">get_skills</span><span class="fn-chip">vouch</span><span class="fn-chip">set_recovery_guardians</span><span class="fn-chip">approve_recovery</span><span class="fn-chip">execute_recovery</span><span class="fn-chip">get_reputation</span><span class="fn-chip">deactivate_identity</span><span class="fn-chip">get_identity_count</span><span class="fn-chip">update_agent_type</span><span class="fn-chip">get_vouches</span><span class="fn-chip">award_contribution_achievement</span><span class="fn-chip">get_achievements</span><span class="fn-chip">attest_skill</span><span class="fn-chip">get_attestations</span><span class="fn-chip">revoke_attestation</span><span class="fn-chip">register_name</span><span class="fn-chip">resolve_name</span><span class="fn-chip">reverse_resolve</span><span class="fn-chip">create_name_auction</span><span class="fn-chip">bid_name_auction</span><span class="fn-chip">finalize_name_auction</span><span class="fn-chip">get_name_auction</span><span class="fn-chip">transfer_name</span><span class="fn-chip">renew_name</span><span class="fn-chip">release_name</span><span class="fn-chip">transfer_name_as</span><span class="fn-chip">renew_name_as</span><span class="fn-chip">release_name_as</span><span class="fn-chip">set_endpoint</span><span class="fn-chip">get_endpoint</span><span class="fn-chip">set_metadata</span><span class="fn-chip">get_metadata</span><span class="fn-chip">set_availability</span><span class="fn-chip">get_availability</span><span class="fn-chip">set_rate</span><span class="fn-chip">get_rate</span><span class="fn-chip">set_delegate</span><span class="fn-chip">revoke_delegate</span><span class="fn-chip">get_delegate</span><span class="fn-chip">set_endpoint_as</span><span class="fn-chip">set_metadata_as</span><span class="fn-chip">set_availability_as</span><span class="fn-chip">set_rate_as</span><span class="fn-chip">update_agent_type_as</span><span class="fn-chip">get_agent_profile</span><span class="fn-chip">get_trust_tier</span><span class="fn-chip">mid_pause</span><span class="fn-chip">mid_unpause</span><span class="fn-chip">transfer_admin</span><span class="fn-chip">admin_register_reserved_name</span><span class="fn-chip">set_mid_token_address</span><span class="fn-chip">set_mid_self_address</span></div>
             <div class="badge-row"><span class="badge badge-identity">Identity</span></div>
         </div>
     </div></div>
@@ -493,7 +394,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-gov"><i class="fas fa-landmark"></i></div>
             <div class="contract-header-text"><h3>MoltDAO</h3><div class="subtitle">Decentralized Governance</div></div>
-            <div class="contract-meta"><span class="meta-chip">1,009 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">18.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,840 lines</span><span class="meta-chip">26 fns</span><span class="meta-chip">18.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>On-chain governance with <strong>token-weighted voting</strong>, tiered proposal types, treasury management, and veto power. Proposals stake 10,000 MOLT; a 20% veto threshold can block contentious changes. Supports reputation-weighted voting via MoltyID.</p>
@@ -504,8 +405,8 @@
                 <tr><td>Standard</td><td>7 days</td><td>50%</td><td>10%</td><td>7 days</td></tr>
                 <tr><td>Constitutional</td><td>30 days</td><td>75%</td><td>30%</td><td>7 days</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize_dao</span><span class="fn-chip">create_proposal</span><span class="fn-chip">create_proposal_typed</span><span class="fn-chip">vote</span><span class="fn-chip">vote_with_reputation</span><span class="fn-chip">execute_proposal</span><span class="fn-chip">veto_proposal</span><span class="fn-chip">cancel_proposal</span><span class="fn-chip">treasury_transfer</span><span class="fn-chip">get_treasury_balance</span><span class="fn-chip">get_proposal</span><span class="fn-chip">get_dao_stats</span></div>
+            <div class="sub-heading">Functions (26)</div>
+            <div class="fn-list"><span class="fn-chip">initialize_dao</span><span class="fn-chip">create_proposal</span><span class="fn-chip">create_proposal_typed</span><span class="fn-chip">vote</span><span class="fn-chip">vote_with_reputation</span><span class="fn-chip">execute_proposal</span><span class="fn-chip">veto_proposal</span><span class="fn-chip">cancel_proposal</span><span class="fn-chip">treasury_transfer</span><span class="fn-chip">get_treasury_balance</span><span class="fn-chip">get_proposal</span><span class="fn-chip">get_dao_stats</span><span class="fn-chip">get_active_proposals</span><span class="fn-chip">initialize</span><span class="fn-chip">cast_vote</span><span class="fn-chip">finalize_proposal</span><span class="fn-chip">get_proposal_count</span><span class="fn-chip">get_vote</span><span class="fn-chip">get_vote_count</span><span class="fn-chip">get_total_supply</span><span class="fn-chip">set_quorum</span><span class="fn-chip">set_voting_period</span><span class="fn-chip">set_timelock_delay</span><span class="fn-chip">dao_pause</span><span class="fn-chip">dao_unpause</span><span class="fn-chip">set_moltyid_address</span></div>
             <div class="badge-row"><span class="badge badge-defi">Governance</span></div>
         </div>
     </div></div>
@@ -515,12 +416,12 @@
         <div class="contract-header">
             <div class="contract-icon icon-nft"><i class="fas fa-palette"></i></div>
             <div class="contract-header-text"><h3>MoltPunks</h3><div class="subtitle">MT-721 NFT Standard</div></div>
-            <div class="contract-meta"><span class="meta-chip">447 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">8.9 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">748 lines</span><span class="meta-chip">21 fns</span><span class="meta-chip">8.9 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Reference NFT implementation following the <strong>MT-721</strong> standard. Supports minting with arbitrary metadata, ownership transfer, approval delegation, transfer-from (marketplace compatibility), burning, and balance/supply queries. The blueprint all MoltChain NFT collections are built on.</p>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">transfer</span><span class="fn-chip">owner_of</span><span class="fn-chip">balance_of</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">burn</span><span class="fn-chip">total_minted</span></div>
+            <div class="sub-heading">Functions (21)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">transfer</span><span class="fn-chip">owner_of</span><span class="fn-chip">balance_of</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">burn</span><span class="fn-chip">total_minted</span><span class="fn-chip">mint_punk</span><span class="fn-chip">transfer_punk</span><span class="fn-chip">get_owner_of</span><span class="fn-chip">get_total_supply</span><span class="fn-chip">get_punk_metadata</span><span class="fn-chip">get_punks_by_owner</span><span class="fn-chip">set_base_uri</span><span class="fn-chip">set_max_supply</span><span class="fn-chip">set_royalty</span><span class="fn-chip">mp_pause</span><span class="fn-chip">mp_unpause</span><span class="fn-chip">get_collection_stats</span></div>
             <div class="badge-row"><span class="badge badge-nft">NFT</span></div>
         </div>
     </div></div>
@@ -530,7 +431,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-nft"><i class="fas fa-store"></i></div>
             <div class="contract-header-text"><h3>MoltMarket</h3><div class="subtitle">NFT Marketplace</div></div>
-            <div class="contract-meta"><span class="meta-chip">445 lines</span><span class="meta-chip">6 fns</span><span class="meta-chip">8.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">2,053 lines</span><span class="meta-chip">26 fns</span><span class="meta-chip">8.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Fixed-price NFT marketplace demonstrating MoltChain's <strong>cross-contract composability</strong>. Sellers list NFTs with a price; buyers pay in any token. The marketplace takes a 2.5% fee, executes the NFT transfer via <code>call_nft_transfer</code>, and routes payment via <code>call_token_transfer</code> — all in one atomic transaction.</p>
@@ -539,8 +440,8 @@
                 <tr><th>Constant</th><th>Value</th></tr>
                 <tr><td>DEFAULT_FEE_BPS</td><td>250 (2.5%)</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">list_nft</span><span class="fn-chip">buy_nft</span><span class="fn-chip">cancel_listing</span><span class="fn-chip">get_listing</span><span class="fn-chip">set_marketplace_fee</span></div>
+            <div class="sub-heading">Functions (26)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">list_nft</span><span class="fn-chip">buy_nft</span><span class="fn-chip">cancel_listing</span><span class="fn-chip">get_listing</span><span class="fn-chip">set_marketplace_fee</span><span class="fn-chip">list_nft_with_royalty</span><span class="fn-chip">make_offer</span><span class="fn-chip">cancel_offer</span><span class="fn-chip">accept_offer</span><span class="fn-chip">get_marketplace_stats</span><span class="fn-chip">set_nft_attributes</span><span class="fn-chip">get_nft_attributes</span><span class="fn-chip">get_offer_count</span><span class="fn-chip">update_listing_price</span><span class="fn-chip">create_auction</span><span class="fn-chip">place_bid</span><span class="fn-chip">settle_auction</span><span class="fn-chip">cancel_auction</span><span class="fn-chip">get_auction</span><span class="fn-chip">make_collection_offer</span><span class="fn-chip">accept_collection_offer</span><span class="fn-chip">cancel_collection_offer</span><span class="fn-chip">make_offer_with_expiry</span><span class="fn-chip">mm_pause</span><span class="fn-chip">mm_unpause</span></div>
             <div class="badge-row"><span class="badge badge-nft">NFT</span></div>
         </div>
     </div></div>
@@ -550,7 +451,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-nft"><i class="fas fa-gavel"></i></div>
             <div class="contract-header-text"><h3>MoltAuction</h3><div class="subtitle">English Auctions &amp; Offers</div></div>
-            <div class="contract-meta"><span class="meta-chip">825 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">35.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,469 lines</span><span class="meta-chip">16 fns</span><span class="meta-chip">35.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Advanced NFT auction house supporting <strong>English auctions</strong> (ascending bid), direct offers, creator royalties, and per-collection statistics. Auctions run for a configurable duration (default 24h) with a minimum bid increment (default 5%). When finalized, royalties are paid, the marketplace fee is deducted, and the NFT transfers atomically.</p>
@@ -561,8 +462,8 @@
                 <tr><td>MIN_BID_INCREMENT</td><td>5% above previous bid</td></tr>
                 <tr><td>AUCTION_SIZE</td><td>169 bytes per auction record</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">create_auction</span><span class="fn-chip">place_bid</span><span class="fn-chip">finalize_auction</span><span class="fn-chip">make_offer</span><span class="fn-chip">accept_offer</span><span class="fn-chip">set_royalty</span><span class="fn-chip">update_collection_stats</span><span class="fn-chip">get_collection_stats</span></div>
+            <div class="sub-heading">Functions (16)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">create_auction</span><span class="fn-chip">place_bid</span><span class="fn-chip">finalize_auction</span><span class="fn-chip">make_offer</span><span class="fn-chip">accept_offer</span><span class="fn-chip">set_royalty</span><span class="fn-chip">update_collection_stats</span><span class="fn-chip">get_collection_stats</span><span class="fn-chip">set_reserve_price</span><span class="fn-chip">cancel_auction</span><span class="fn-chip">initialize_ma_admin</span><span class="fn-chip">ma_pause</span><span class="fn-chip">ma_unpause</span><span class="fn-chip">get_auction_info</span><span class="fn-chip">get_auction_stats</span></div>
             <div class="badge-row"><span class="badge badge-nft">NFT</span></div>
         </div>
     </div></div>
@@ -572,7 +473,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-infra"><i class="fas fa-satellite-dish"></i></div>
             <div class="contract-header-text"><h3>MoltOracle</h3><div class="subtitle">Price Feeds, VRF &amp; Attestations</div></div>
-            <div class="contract-meta"><span class="meta-chip">856 lines</span><span class="meta-chip">14 fns</span><span class="meta-chip">16.4 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,341 lines</span><span class="meta-chip">24 fns</span><span class="meta-chip">16.4 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Decentralized oracle providing three services: <strong>price feeds</strong> (authorized feeders submit prices per asset, max 1h staleness), <strong>verifiable random function (VRF)</strong> (commit-reveal scheme for provably fair randomness), and <strong>data attestations</strong> (arbitrary signed data with on-chain verification). Critical for DeFi price discovery.</p>
@@ -582,8 +483,8 @@
                 <tr><td>MAX_STALENESS</td><td>3,600 seconds (1 hour)</td></tr>
                 <tr><td>PRICE_FEED_SIZE</td><td>49 bytes (price + timestamp + decimals + feeder)</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize_oracle</span><span class="fn-chip">add_price_feeder</span><span class="fn-chip">submit_price</span><span class="fn-chip">get_price</span><span class="fn-chip">commit_randomness</span><span class="fn-chip">reveal_randomness</span><span class="fn-chip">request_randomness</span><span class="fn-chip">get_randomness</span><span class="fn-chip">submit_attestation</span><span class="fn-chip">verify_attestation</span><span class="fn-chip">get_attestation_data</span><span class="fn-chip">query_oracle</span><span class="fn-chip">get_aggregated_price</span><span class="fn-chip">get_oracle_stats</span></div>
+            <div class="sub-heading">Functions (24)</div>
+            <div class="fn-list"><span class="fn-chip">initialize_oracle</span><span class="fn-chip">add_price_feeder</span><span class="fn-chip">set_authorized_attester</span><span class="fn-chip">submit_price</span><span class="fn-chip">get_price</span><span class="fn-chip">commit_randomness</span><span class="fn-chip">reveal_randomness</span><span class="fn-chip">request_randomness</span><span class="fn-chip">get_randomness</span><span class="fn-chip">submit_attestation</span><span class="fn-chip">verify_attestation</span><span class="fn-chip">get_attestation_data</span><span class="fn-chip">query_oracle</span><span class="fn-chip">get_aggregated_price</span><span class="fn-chip">get_oracle_stats</span><span class="fn-chip">initialize</span><span class="fn-chip">register_feed</span><span class="fn-chip">get_feed_count</span><span class="fn-chip">get_feed_list</span><span class="fn-chip">add_reporter</span><span class="fn-chip">remove_reporter</span><span class="fn-chip">set_update_interval</span><span class="fn-chip">mo_pause</span><span class="fn-chip">mo_unpause</span></div>
             <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
         </div>
     </div></div>
@@ -593,7 +494,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-infra"><i class="fas fa-bridge"></i></div>
             <div class="contract-header-text"><h3>MoltBridge</h3><div class="subtitle">Cross-Chain Lock-and-Mint Bridge</div></div>
-            <div class="contract-meta"><span class="meta-chip">749 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">16.2 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">2,653 lines</span><span class="meta-chip">21 fns</span><span class="meta-chip">16.2 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Cross-chain bridge using the <strong>lock-and-mint</strong> pattern. Lock MOLT on MoltChain &rarr; bridge validators confirm &rarr; mint wrapped tokens on the destination chain. Burn wrapped tokens externally &rarr; validators confirm &rarr; unlock on MoltChain. Requires 2 validator confirmations. Integrates <strong>MoltyID identity gating</strong>.</p>
@@ -610,7 +511,7 @@
                 <tr><td>CANCELLED</td><td>Cancelled / refunded</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_bridge_validator</span><span class="fn-chip">lock_tokens</span><span class="fn-chip">mint_bridged</span><span class="fn-chip">unlock_tokens</span><span class="fn-chip">get_bridge_status</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span></div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">add_bridge_validator</span><span class="fn-chip">remove_bridge_validator</span><span class="fn-chip">set_required_confirmations</span><span class="fn-chip">set_request_timeout</span><span class="fn-chip">lock_tokens</span><span class="fn-chip">submit_mint</span><span class="fn-chip">confirm_mint</span><span class="fn-chip">submit_unlock</span><span class="fn-chip">confirm_unlock</span><span class="fn-chip">cancel_expired_request</span><span class="fn-chip">get_bridge_status</span><span class="fn-chip">has_confirmed_mint</span><span class="fn-chip">has_confirmed_unlock</span><span class="fn-chip">is_source_tx_used</span><span class="fn-chip">is_burn_proof_used</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span><span class="fn-chip">mb_pause</span><span class="fn-chip">mb_unpause</span><span class="fn-chip">set_token_address</span></div>
             <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -620,7 +521,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-infra"><i class="fas fa-bullhorn"></i></div>
             <div class="contract-header-text"><h3>BountyBoard</h3><div class="subtitle">On-Chain Bounty &amp; Task Management</div></div>
-            <div class="contract-meta"><span class="meta-chip">714 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">16.0 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,389 lines</span><span class="meta-chip">16 fns</span><span class="meta-chip">16.0 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Decentralized task marketplace where creators post bounties with MOLT rewards and deadlines, workers submit proof of completion, and creators approve to release payment. Supports <strong>MoltyID identity gating</strong> so bounties can require a minimum reputation.</p>
@@ -631,8 +532,8 @@
                 <li><code>approve_work</code> — creator approves, worker gets paid + reputation boost</li>
                 <li><code>cancel_bounty</code> — creator cancels open bounty for refund</li>
             </ul>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">create_bounty</span><span class="fn-chip">submit_work</span><span class="fn-chip">approve_work</span><span class="fn-chip">cancel_bounty</span><span class="fn-chip">get_bounty</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span></div>
+            <div class="sub-heading">Functions (16)</div>
+            <div class="fn-list"><span class="fn-chip">create_bounty</span><span class="fn-chip">submit_work</span><span class="fn-chip">approve_work</span><span class="fn-chip">cancel_bounty</span><span class="fn-chip">get_bounty</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span><span class="fn-chip">set_token_address</span><span class="fn-chip">initialize</span><span class="fn-chip">approve_submission</span><span class="fn-chip">get_bounty_count</span><span class="fn-chip">set_platform_fee</span><span class="fn-chip">bb_pause</span><span class="fn-chip">bb_unpause</span><span class="fn-chip">get_platform_stats</span></div>
             <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -642,7 +543,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-infra"><i class="fas fa-microchip"></i></div>
             <div class="contract-header-text"><h3>Compute Market</h3><div class="subtitle">Decentralized Compute Marketplace</div></div>
-            <div class="contract-meta"><span class="meta-chip">759 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">16.9 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">2,323 lines</span><span class="meta-chip">34 fns</span><span class="meta-chip">16.9 KB</span></div>
         </div>
         <div class="contract-body">
             <p>On-chain marketplace for decentralized compute resources. <strong>Providers</strong> register CPU/GPU/memory; <strong>requesters</strong> submit jobs with a code hash and payment; providers claim and complete jobs. Built-in <strong>dispute mechanism</strong> for invalid results. <strong>MoltyID</strong> ensures only reputable providers participate.</p>
@@ -653,8 +554,8 @@
                 <tr><td>COMPLETED</td><td>Provider submitted result, payment released</td></tr>
                 <tr><td>DISPUTED</td><td>Requester challenged the result</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">register_provider</span><span class="fn-chip">submit_job</span><span class="fn-chip">claim_job</span><span class="fn-chip">complete_job</span><span class="fn-chip">dispute_job</span><span class="fn-chip">get_job</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span></div>
+            <div class="sub-heading">Functions (34)</div>
+            <div class="fn-list"><span class="fn-chip">register_provider</span><span class="fn-chip">submit_job</span><span class="fn-chip">claim_job</span><span class="fn-chip">complete_job</span><span class="fn-chip">dispute_job</span><span class="fn-chip">get_job</span><span class="fn-chip">set_identity_admin</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">set_identity_gate</span><span class="fn-chip">initialize</span><span class="fn-chip">set_claim_timeout</span><span class="fn-chip">set_complete_timeout</span><span class="fn-chip">set_challenge_period</span><span class="fn-chip">add_arbitrator</span><span class="fn-chip">remove_arbitrator</span><span class="fn-chip">cancel_job</span><span class="fn-chip">release_payment</span><span class="fn-chip">resolve_dispute</span><span class="fn-chip">deactivate_provider</span><span class="fn-chip">reactivate_provider</span><span class="fn-chip">update_provider</span><span class="fn-chip">get_escrow</span><span class="fn-chip">create_job</span><span class="fn-chip">accept_job</span><span class="fn-chip">submit_result</span><span class="fn-chip">confirm_result</span><span class="fn-chip">get_job_info</span><span class="fn-chip">get_job_count</span><span class="fn-chip">get_provider_info</span><span class="fn-chip">set_platform_fee</span><span class="fn-chip">cm_pause</span><span class="fn-chip">cm_unpause</span><span class="fn-chip">get_platform_stats</span><span class="fn-chip">set_token_address</span></div>
             <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -664,7 +565,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-infra"><i class="fas fa-database"></i></div>
             <div class="contract-header-text"><h3>Reef Storage</h3><div class="subtitle">Decentralized Storage Layer</div></div>
-            <div class="contract-meta"><span class="meta-chip">639 lines</span><span class="meta-chip">5 fns</span><span class="meta-chip">14.7 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,694 lines</span><span class="meta-chip">17 fns</span><span class="meta-chip">14.7 KB</span></div>
         </div>
         <div class="contract-body">
             <p>On-chain coordination layer for decentralized data storage. Data owners submit storage requests with a data hash, desired replication factor, and payment. <strong>Storage providers</strong> register capacity and confirm storage. Providers earn rewards proportional to duration &times; data size. Up to 10&times; replication across 16 providers.</p>
@@ -674,10 +575,10 @@
                 <tr><td>MAX_REPLICATION</td><td>10 copies</td></tr>
                 <tr><td>MIN_STORAGE_DURATION</td><td>1,000 slots</td></tr>
                 <tr><td>MAX_PROVIDERS</td><td>16 per storage entry</td></tr>
-                <tr><td>REWARD_PER_SLOT_PER_BYTE</td><td>1 shell</td></tr>
+                <tr><td>REWARD_PER_SLOT_PER_BYTE</td><td>10 shells</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">store_data</span><span class="fn-chip">confirm_storage</span><span class="fn-chip">get_storage_info</span><span class="fn-chip">register_provider</span><span class="fn-chip">claim_storage_rewards</span></div>
+            <div class="sub-heading">Functions (17)</div>
+            <div class="fn-list"><span class="fn-chip">store_data</span><span class="fn-chip">confirm_storage</span><span class="fn-chip">get_storage_info</span><span class="fn-chip">register_provider</span><span class="fn-chip">claim_storage_rewards</span><span class="fn-chip">initialize</span><span class="fn-chip">set_challenge_window</span><span class="fn-chip">set_slash_percent</span><span class="fn-chip">stake_collateral</span><span class="fn-chip">set_storage_price</span><span class="fn-chip">get_storage_price</span><span class="fn-chip">get_provider_stake</span><span class="fn-chip">issue_challenge</span><span class="fn-chip">respond_challenge</span><span class="fn-chip">slash_provider</span><span class="fn-chip">get_platform_stats</span><span class="fn-chip">set_molt_token</span></div>
             <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
         </div>
     </div></div>
@@ -687,7 +588,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-book-open"></i></div>
             <div class="contract-header-text"><h3>DEX Core</h3><div class="subtitle">Central Limit Order Book &amp; Matching Engine</div></div>
-            <div class="contract-meta"><span class="meta-chip">1,669 lines</span><span class="meta-chip">18 fns</span><span class="meta-chip">56 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">3,873 lines</span><span class="meta-chip">29 fns</span><span class="meta-chip">56 KB</span></div>
         </div>
         <div class="contract-body">
             <p>The heart of MoltyDEX. A full <strong>central limit order book (CLOB)</strong> with price-time priority matching, self-trade prevention, and stop-limit activation. Supports pair creation, order lifecycle (place/cancel/modify), and real-time order book queries. Fee structure: -1 BPS maker rebate, 5 BPS taker fee. Revenue split: 60% protocol, 20% LP rewards, 20% stakers.</p>
@@ -697,9 +598,9 @@
                 <tr><td>Order</td><td>128 bytes (trader, pair_id, side, type, price, qty, filled, status, slots, order_id)</td></tr>
                 <tr><td>Trading Pair</td><td>112 bytes (tokens, pair_id, tick/lot size, fees, volume)</td></tr>
             </table>
-            <div class="sub-heading">Functions (20)</div>
-            <div class="fn-list"><span class="fn-chip">create_pair</span><span class="fn-chip">update_pair_fees</span><span class="fn-chip">pause_pair</span><span class="fn-chip">unpause_pair</span><span class="fn-chip">place_order</span><span class="fn-chip">cancel_order</span><span class="fn-chip">cancel_all_orders</span><span class="fn-chip">modify_order</span><span class="fn-chip">match_order</span><span class="fn-chip">settle_trade</span><span class="fn-chip">get_order</span><span class="fn-chip">get_open_orders</span><span class="fn-chip">get_order_book</span><span class="fn-chip">get_best_bid</span><span class="fn-chip">get_best_ask</span><span class="fn-chip">get_spread</span><span class="fn-chip">get_trade_history</span><span class="fn-chip">get_pair_info</span><span class="fn-chip">set_margin_address</span><span class="fn-chip">place_order (reduce-only)</span></div>
-            <p style="font-size:.8rem;color:var(--text-muted);margin-top:.5rem"><strong>Reduce-only orders:</strong> Set <code>order_type | 0x80</code> to flag reduce-only. Cross-validates against dex-margin open positions. Returns code 12 on rejection. <strong>set_margin_address</strong> (opcode 30): admin-only, links to dex-margin contract for validation.</p>
+            <div class="sub-heading">Functions (29)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">set_preferred_quote</span><span class="fn-chip">add_allowed_quote</span><span class="fn-chip">create_pair</span><span class="fn-chip">update_pair_fees</span><span class="fn-chip">pause_pair</span><span class="fn-chip">unpause_pair</span><span class="fn-chip">place_order</span><span class="fn-chip">cancel_order</span><span class="fn-chip">cancel_all_orders</span><span class="fn-chip">modify_order</span><span class="fn-chip">set_analytics_address</span><span class="fn-chip">set_margin_address</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">get_order</span><span class="fn-chip">get_best_bid</span><span class="fn-chip">get_best_ask</span><span class="fn-chip">get_spread</span><span class="fn-chip">get_pair_info</span><span class="fn-chip">get_trade_count</span><span class="fn-chip">get_pair_count</span><span class="fn-chip">check_triggers</span></div>
+            <p class="cr-note"><strong>Reduce-only orders:</strong> Set <code>order_type | 0x80</code> to flag reduce-only. Cross-validates against dex-margin open positions. Returns code 12 on rejection. <strong>set_margin_address</strong> (opcode 30): admin-only, links to dex-margin contract for validation.</p>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -709,7 +610,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-water"></i></div>
             <div class="contract-header-text"><h3>DEX AMM</h3><div class="subtitle">Concentrated Liquidity Pools</div></div>
-            <div class="contract-meta"><span class="meta-chip">1,219 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">41 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,850 lines</span><span class="meta-chip">17 fns</span><span class="meta-chip">41 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Uniswap V3-style <strong>concentrated liquidity AMM</strong> with Q64.64 fixed-point math. LPs provide liquidity within custom tick ranges for capital-efficient market making. Four fee tiers (1/5/30/100 bps) with dynamic tick spacing. Integrates with DEX Router for hybrid CLOB+AMM order filling.</p>
@@ -721,8 +622,8 @@
                 <tr><td>2</td><td>30 bps</td><td>60</td><td>Standard pairs</td></tr>
                 <tr><td>3</td><td>100 bps</td><td>200</td><td>Exotic / volatile</td></tr>
             </table>
-            <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">create_pool</span><span class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span class="fn-chip">collect_fees</span><span class="fn-chip">swap_exact_in</span><span class="fn-chip">swap_exact_out</span><span class="fn-chip">get_pool_info</span><span class="fn-chip">quote_swap</span></div>
+            <div class="sub-heading">Functions (17)</div>
+            <div class="fn-list"><span class="fn-chip">create_pool</span><span class="fn-chip">add_liquidity</span><span class="fn-chip">remove_liquidity</span><span class="fn-chip">collect_fees</span><span class="fn-chip">swap_exact_in</span><span class="fn-chip">get_pool_info</span><span class="fn-chip">quote_swap</span><span class="fn-chip">set_fee_tier</span><span class="fn-chip">get_fee_tier</span><span class="fn-chip">amm_pause</span><span class="fn-chip">amm_unpause</span><span class="fn-chip">get_pool_count</span><span class="fn-chip">get_tvl</span><span class="fn-chip">get_swap_count</span><span class="fn-chip">get_pool_fee_info</span><span class="fn-chip">set_core_address</span><span class="fn-chip">set_rewards_address</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -732,7 +633,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-route"></i></div>
             <div class="contract-header-text"><h3>DEX Router</h3><div class="subtitle">Smart Order Routing Engine</div></div>
-            <div class="contract-meta"><span class="meta-chip">860 lines</span><span class="meta-chip">4 fns</span><span class="meta-chip">28 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,193 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">28 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Aggregates liquidity across <strong>CLOB, concentrated AMM, and legacy MoltSwap</strong> pools for optimal execution. Supports direct fills, split CLOB+AMM orders, multi-hop routing (A&rarr;B&rarr;C through intermediaries), and cross-pool sequencing. Finds the best price path automatically.</p>
@@ -744,8 +645,8 @@
                 <li><strong>Multi-hop</strong> &mdash; A&rarr;B&rarr;C through intermediary tokens</li>
                 <li><strong>Cross-pool</strong> &mdash; multiple AMM pools in sequence</li>
             </ul>
-            <div class="sub-heading">Functions (4)</div>
-            <div class="fn-list"><span class="fn-chip">swap</span><span class="fn-chip">swap_exact_out</span><span class="fn-chip">get_best_route</span><span class="fn-chip">multi_hop_swap</span></div>
+            <div class="sub-heading">Functions (12)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">set_addresses</span><span class="fn-chip">register_route</span><span class="fn-chip">set_route_enabled</span><span class="fn-chip">swap</span><span class="fn-chip">multi_hop_swap</span><span class="fn-chip">get_best_route</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">get_route_count</span><span class="fn-chip">get_swap_count</span><span class="fn-chip">get_route_info</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -755,12 +656,12 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-balance-scale"></i></div>
             <div class="contract-header-text"><h3>DEX Governance</h3><div class="subtitle">Pair Listing &amp; Fee Voting</div></div>
-            <div class="contract-meta"><span class="meta-chip">666 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">22 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,779 lines</span><span class="meta-chip">18 fns</span><span class="meta-chip">22 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Decentralized governance for DEX operations. Community proposes and votes on <strong>new trading pair listings</strong> and <strong>fee schedule changes</strong>. Listing requirements: minimum 10K MOLT liquidity, 10 holders, MoltyID reputation &ge; 500. 48-hour voting window, 66% approval threshold. Admin can emergency delist pairs. <strong>execute_proposal</strong> now performs real cross-contract dispatch: NEW_PAIR calls <code>dex_core::create_pair</code>, FEE_CHANGE calls <code>dex_core::update_pair_fees</code>, DELIST calls <code>dex_core::pause_pair</code>. All executions write audit trail to <code>gov_exec_*</code> storage keys.</p>
-            <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">propose_new_pair</span><span class="fn-chip">vote_on_pair</span><span class="fn-chip">execute_pair_proposal</span><span class="fn-chip">propose_fee_change</span><span class="fn-chip">vote_on_fee</span><span class="fn-chip">execute_fee_proposal</span><span class="fn-chip">set_listing_requirements</span><span class="fn-chip">emergency_delist</span></div>
+            <div class="sub-heading">Functions (18)</div>
+            <div class="fn-list"><span class="fn-chip">propose_new_pair</span><span class="fn-chip">vote</span><span class="fn-chip">execute_proposal</span><span class="fn-chip">propose_fee_change</span><span class="fn-chip">finalize_proposal</span><span class="fn-chip">emergency_delist</span><span class="fn-chip">set_listing_requirements</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">get_proposal_count</span><span class="fn-chip">get_proposal_info</span><span class="fn-chip">set_preferred_quote</span><span class="fn-chip">add_allowed_quote</span><span class="fn-chip">remove_allowed_quote</span><span class="fn-chip">get_allowed_quote_count</span><span class="fn-chip">get_preferred_quote</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -770,7 +671,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-gift"></i></div>
             <div class="contract-header-text"><h3>DEX Rewards</h3><div class="subtitle">Trading Incentives &amp; Referrals</div></div>
-            <div class="contract-meta"><span class="meta-chip">552 lines</span><span class="meta-chip">6 fns</span><span class="meta-chip">18 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,326 lines</span><span class="meta-chip">19 fns</span><span class="meta-chip">18 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Tiered trading rewards with volume-based multipliers, LP incentives, and a <strong>referral programme</strong>. Referrers earn 10% of referee fees (15% with MoltyID verification). Referees get 5% fee discount for 30 days. <strong>Monthly epoch cap:</strong> 100K MOLT/month (resets after 2,592,000 slots). Trades after budget exhaustion receive 0 reward until next epoch.</p>
@@ -782,8 +683,8 @@
                 <tr><td>Gold</td><td>$100K &ndash; $1M</td><td>2x</td></tr>
                 <tr><td>Diamond</td><td>&gt; $1M</td><td>3x</td></tr>
             </table>
-            <div class="sub-heading">Functions (6)</div>
-            <div class="fn-list"><span class="fn-chip">claim_trading_rewards</span><span class="fn-chip">claim_lp_rewards</span><span class="fn-chip">get_pending_rewards</span><span class="fn-chip">set_reward_rate</span><span class="fn-chip">register_referral</span><span class="fn-chip">get_trading_tier</span></div>
+            <div class="sub-heading">Functions (19)</div>
+            <div class="fn-list"><span class="fn-chip">claim_trading_rewards</span><span class="fn-chip">claim_lp_rewards</span><span class="fn-chip">get_pending_rewards</span><span class="fn-chip">set_reward_rate</span><span class="fn-chip">register_referral</span><span class="fn-chip">get_trading_tier</span><span class="fn-chip">record_trade_volume</span><span class="fn-chip">record_lp_action</span><span class="fn-chip">set_boosted_pairs</span><span class="fn-chip">set_epoch_duration</span><span class="fn-chip">get_epoch_info</span><span class="fn-chip">set_core_address</span><span class="fn-chip">set_amm_address</span><span class="fn-chip">set_moltyid_address</span><span class="fn-chip">dr_pause</span><span class="fn-chip">dr_unpause</span><span class="fn-chip">get_referral_count</span><span class="fn-chip">get_trader_volume</span><span class="fn-chip">get_total_distributed</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span><span class="badge badge-identity">MoltyID</span></div>
         </div>
     </div></div>
@@ -793,23 +694,23 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-chart-bar"></i></div>
             <div class="contract-header-text"><h3>DEX Margin</h3><div class="subtitle">Leveraged Trading &amp; Liquidation Engine</div></div>
-            <div class="contract-meta"><span class="meta-chip">778 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">27 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">3,176 lines</span><span class="meta-chip">32 fns</span><span class="meta-chip">27 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Isolated and cross-margin leverage trading up to <strong>5x (isolated) / 3x (cross)</strong>. Automated liquidation engine triggers when health drops below 10%. Liquidation penalty split 50/50 between liquidator bonus and insurance fund. Socialized loss if insurance fund is depleted. Funding rate settlements every 8 hours. <strong>Oracle safety:</strong> <code>close_position</code>, <code>partial_close</code>, and <code>remove_margin</code> now <strong>reject</strong> (codes 5/7) when oracle price is unavailable — prevents zero-PnL exits during outages.</p>
+            <p>Isolated and cross-margin leverage trading up to <strong>100x (isolated) / 3x (cross)</strong>. Automated liquidation engine triggers when health drops below 10%. Liquidation penalty split 50/50 between liquidator bonus and insurance fund. Socialized loss if insurance fund is depleted. Funding rate settlements every 8 hours. <strong>Oracle safety:</strong> <code>close_position</code>, <code>partial_close</code>, and <code>remove_margin</code> now <strong>reject</strong> (codes 5/7) when oracle price is unavailable — prevents zero-PnL exits during outages.</p>
             <div class="sub-heading">Configuration</div>
             <table class="const-table">
                 <tr><th>Parameter</th><th>Value</th></tr>
-                <tr><td>Max Leverage (Isolated)</td><td>5x</td></tr>
+                <tr><td>Max Leverage (Isolated)</td><td>100x (tiered 2x–100x)</td></tr>
                 <tr><td>Max Leverage (Cross)</td><td>3x</td></tr>
-                <tr><td>Initial Margin</td><td>20% (5x) / 33% (3x)</td></tr>
+                <tr><td>Initial Margin</td><td>1% (100x) to 50% (2x)</td></tr>
                 <tr><td>Maintenance Margin</td><td>10%</td></tr>
                 <tr><td>Liquidation Penalty</td><td>5%</td></tr>
                 <tr><td>Insurance Fund Share</td><td>50% of penalties</td></tr>
                 <tr><td>Funding Rate</td><td>Every 8 hours</td></tr>
             </table>
-            <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">open_margin_position</span><span class="fn-chip">close_margin_position</span><span class="fn-chip">partial_close</span><span class="fn-chip">add_margin</span><span class="fn-chip">remove_margin</span><span class="fn-chip">liquidate</span><span class="fn-chip">get_margin_ratio</span><span class="fn-chip">set_max_leverage</span><span class="fn-chip">get_liquidatable_positions</span><span class="fn-chip">query_user_open_position</span></div>
+            <div class="sub-heading">Functions (32)</div>
+            <div class="fn-list"><span class="fn-chip">open_position</span><span class="fn-chip">open_position_with_mode</span><span class="fn-chip">close_position</span><span class="fn-chip">close_position_limit</span><span class="fn-chip">partial_close</span><span class="fn-chip">partial_close_limit</span><span class="fn-chip">add_margin</span><span class="fn-chip">remove_margin</span><span class="fn-chip">liquidate</span><span class="fn-chip">set_mark_price</span><span class="fn-chip">set_index_price</span><span class="fn-chip">apply_funding</span><span class="fn-chip">enable_margin_pair</span><span class="fn-chip">disable_margin_pair</span><span class="fn-chip">is_margin_enabled</span><span class="fn-chip">set_max_leverage</span><span class="fn-chip">set_maintenance_margin</span><span class="fn-chip">get_tier_info</span><span class="fn-chip">get_maintenance_margin_override</span><span class="fn-chip">get_position_count</span><span class="fn-chip">get_insurance_fund</span><span class="fn-chip">get_position_info</span><span class="fn-chip">get_margin_ratio</span><span class="fn-chip">query_user_open_position</span><span class="fn-chip">set_position_sl_tp</span><span class="fn-chip">withdraw_insurance</span><span class="fn-chip">set_moltcoin_address</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -819,10 +720,10 @@
         <div class="contract-header">
             <div class="contract-icon icon-dex"><i class="fas fa-chart-area"></i></div>
             <div class="contract-header-text"><h3>DEX Analytics</h3><div class="subtitle">On-Chain OHLCV, Stats &amp; Leaderboards</div></div>
-            <div class="contract-meta"><span class="meta-chip">620 lines</span><span class="meta-chip">7 fns</span><span class="meta-chip">21 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,279 lines</span><span class="meta-chip">11 fns</span><span class="meta-chip">21 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>On-chain analytics engine recording every trade as OHLCV candles across <strong>six time intervals</strong> (1m, 5m, 15m, 1H, 4H, 1D). Provides 24h pair stats, per-trader stats, and volume leaderboards. Feeds DEX TWAP prices to MoltOracle for use by LobsterLend collateral valuation and ClawVault pricing.</p>
+            <p>On-chain analytics engine recording every trade as OHLCV candles across <strong>nine time intervals</strong> (1m, 5m, 15m, 1H, 4H, 1D, 1W, 1M, 1Y). Provides 24h pair stats, per-trader stats, and volume leaderboards. Feeds DEX TWAP prices to MoltOracle for use by LobsterLend collateral valuation and ClawVault pricing.</p>
             <div class="sub-heading">Candle Configuration</div>
             <table class="const-table">
                 <tr><th>Interval</th><th>Rolling Window</th><th>Size</th></tr>
@@ -832,9 +733,12 @@
                 <tr><td>1 hour</td><td>168 candles (7d)</td><td>48 bytes each</td></tr>
                 <tr><td>4 hours</td><td>180 candles (30d)</td><td>48 bytes each</td></tr>
                 <tr><td>1 day</td><td>365 candles (1y)</td><td>48 bytes each</td></tr>
+                <tr><td>1 week</td><td>104 candles (2y)</td><td>48 bytes each</td></tr>
+                <tr><td>1 month</td><td>60 candles (5y)</td><td>48 bytes each</td></tr>
+                <tr><td>1 year</td><td>10 candles (10y)</td><td>48 bytes each</td></tr>
             </table>
-            <div class="sub-heading">Functions (7)</div>
-            <div class="fn-list"><span class="fn-chip">record_trade</span><span class="fn-chip">get_ohlcv</span><span class="fn-chip">get_24h_stats</span><span class="fn-chip">get_all_pairs_stats</span><span class="fn-chip">get_trader_stats</span><span class="fn-chip">get_leaderboard</span><span class="fn-chip">update_price_feed</span></div>
+            <div class="sub-heading">Functions (11)</div>
+            <div class="fn-list"><span class="fn-chip">record_trade</span><span class="fn-chip">record_pnl</span><span class="fn-chip">get_ohlcv</span><span class="fn-chip">get_24h_stats</span><span class="fn-chip">get_trader_stats</span><span class="fn-chip">get_last_price</span><span class="fn-chip">get_record_count</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">set_authorized_caller</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -845,7 +749,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-chart-line"></i></div>
             <div class="contract-header-text"><h3>Prediction Market</h3><div class="subtitle">Binary Outcome Markets</div></div>
-            <div class="contract-meta"><span class="meta-chip">850 lines</span><span class="meta-chip">24 fns</span><span class="meta-chip">38 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">5,144 lines</span><span class="meta-chip">37 fns</span><span class="meta-chip">38 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Full prediction market with AMM pricing, liquidity pools, oracle-based resolution, DAO arbitration, and share redemption. Opcode-dispatch ABI. <strong>Multi-outcome sell</strong> uses binary search over <code>total_a_for_sets()</code> for exact computation. Return values from <code>create_market</code>, <code>buy_shares</code>, <code>sell_shares</code>, <code>add_liquidity</code>, <code>withdraw_liquidity</code> write <strong>full u64</strong> to <code>set_return_data()</code> to avoid u32 truncation.</p>
@@ -878,7 +782,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-dollar-sign"></i></div>
             <div class="contract-header-text"><h3>mUSD Stablecoin</h3><div class="subtitle">Treasury-Backed Stablecoin</div></div>
-            <div class="contract-meta"><span class="meta-chip">1082 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">23.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">1,178 lines</span><span class="meta-chip">20 fns</span><span class="meta-chip">23.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Treasury-backed stablecoin contract with mint/burn mechanics, reserve attestation, epoch rate-limiting, and circuit breaker protection. Implements the MT-20 interface for seamless integration with the MoltChain DeFi stack.</p>
@@ -888,8 +792,8 @@
                 <tr><td>EPOCH_RATE_LIMIT</td><td>100,000 mUSD/epoch</td></tr>
                 <tr><td>CIRCUIT_BREAKER_THRESHOLD</td><td>50,000 mUSD</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">total_supply</span><span class="fn-chip">balance_of</span><span class="fn-chip">get_reserves</span></div>
+            <div class="sub-heading">Functions (20)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span class="fn-chip">get_reserve_ratio</span><span class="fn-chip">get_last_attestation_slot</span><span class="fn-chip">get_attestation_count</span><span class="fn-chip">get_epoch_remaining</span><span class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
             <div class="badge-row"><span class="badge badge-defi">DeFi</span><span class="badge badge-defi">Stablecoin</span></div>
         </div>
     </div></div>
@@ -899,7 +803,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-gem"></i></div>
             <div class="contract-header-text"><h3>Wrapped ETH</h3><div class="subtitle">Wrapped ETH Bridge Token</div></div>
-            <div class="contract-meta"><span class="meta-chip">782 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">23.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">853 lines</span><span class="meta-chip">20 fns</span><span class="meta-chip">23.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Wrapped ETH bridge token with epoch rate-limited minting, reserve attestation, and circuit breaker protection. Used as the canonical ETH representation on MoltChain for cross-chain DeFi.</p>
@@ -909,8 +813,8 @@
                 <tr><td>EPOCH_RATE_LIMIT</td><td>500 ETH/epoch</td></tr>
                 <tr><td>CIRCUIT_BREAKER_THRESHOLD</td><td>Configurable</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">total_supply</span><span class="fn-chip">balance_of</span><span class="fn-chip">get_reserves</span></div>
+            <div class="sub-heading">Functions (20)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span class="fn-chip">get_reserve_ratio</span><span class="fn-chip">get_last_attestation_slot</span><span class="fn-chip">get_attestation_count</span><span class="fn-chip">get_epoch_remaining</span><span class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
             <div class="badge-row"><span class="badge badge-defi">Bridge</span><span class="badge badge-defi">Token</span></div>
         </div>
     </div></div>
@@ -920,7 +824,7 @@
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-sun"></i></div>
             <div class="contract-header-text"><h3>Wrapped SOL</h3><div class="subtitle">Wrapped SOL Bridge Token</div></div>
-            <div class="contract-meta"><span class="meta-chip">782 lines</span><span class="meta-chip">9 fns</span><span class="meta-chip">23.5 KB</span></div>
+            <div class="contract-meta"><span class="meta-chip">853 lines</span><span class="meta-chip">20 fns</span><span class="meta-chip">23.5 KB</span></div>
         </div>
         <div class="contract-body">
             <p>Wrapped SOL bridge token with epoch rate-limited minting, reserve attestation, and circuit breaker protection. Used as the canonical SOL representation on MoltChain for cross-chain DeFi.</p>
@@ -930,16 +834,52 @@
                 <tr><td>EPOCH_RATE_LIMIT</td><td>50,000 SOL/epoch</td></tr>
                 <tr><td>CIRCUIT_BREAKER_THRESHOLD</td><td>Configurable</td></tr>
             </table>
-            <div class="sub-heading">Functions</div>
-            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">total_supply</span><span class="fn-chip">balance_of</span><span class="fn-chip">get_reserves</span></div>
+            <div class="sub-heading">Functions (20)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span class="fn-chip">get_reserve_ratio</span><span class="fn-chip">get_last_attestation_slot</span><span class="fn-chip">get_attestation_count</span><span class="fn-chip">get_epoch_remaining</span><span class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
             <div class="badge-row"><span class="badge badge-defi">Bridge</span><span class="badge badge-defi">Token</span></div>
         </div>
     </div></div>
 
+    <!-- 41 WRAPPED BNB -->
+    <div class="contract-section" id="wbnb-token"><div class="contract-card">
+        <div class="contract-header">
+            <div class="contract-icon icon-defi"><i class="fas fa-coins"></i></div>
+            <div class="contract-header-text"><h3>Wrapped BNB</h3><div class="subtitle">Wrapped BNB Bridge Token</div></div>
+            <div class="contract-meta"><span class="meta-chip">854 lines</span><span class="meta-chip">20 fns</span><span class="meta-chip">23.5 KB</span></div>
+        </div>
+        <div class="contract-body">
+            <p>Wrapped BNB bridge token with epoch rate-limited minting, reserve attestation, and circuit breaker protection. Used as the canonical BNB representation on MoltChain for cross-chain DeFi.</p>
+            <div class="sub-heading">Configuration</div>
+            <table class="const-table">
+                <tr><th>Constant</th><th>Value</th></tr>
+                <tr><td>EPOCH_RATE_LIMIT</td><td>5,000 BNB/epoch</td></tr>
+                <tr><td>CIRCUIT_BREAKER_THRESHOLD</td><td>Configurable</td></tr>
+            </table>
+            <div class="sub-heading">Functions (20)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">transfer</span><span class="fn-chip">approve</span><span class="fn-chip">transfer_from</span><span class="fn-chip">attest_reserves</span><span class="fn-chip">balance_of</span><span class="fn-chip">allowance</span><span class="fn-chip">total_supply</span><span class="fn-chip">total_minted</span><span class="fn-chip">total_burned</span><span class="fn-chip">get_reserve_ratio</span><span class="fn-chip">get_last_attestation_slot</span><span class="fn-chip">get_attestation_count</span><span class="fn-chip">get_epoch_remaining</span><span class="fn-chip">get_transfer_count</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span class="fn-chip">transfer_admin</span></div>
+            <div class="badge-row"><span class="badge badge-defi">Bridge</span><span class="badge badge-defi">Token</span></div>
+        </div>
+    </div></div>
+
+    <!-- 42 SHIELDED POOL -->
+    <div class="contract-section" id="shielded-pool"><div class="contract-card">
+        <div class="contract-header">
+            <div class="contract-icon icon-infra"><i class="fas fa-shield-alt"></i></div>
+            <div class="contract-header-text"><h3>Shielded Pool</h3><div class="subtitle">ZK-Private Transaction Pool</div></div>
+            <div class="contract-meta"><span class="meta-chip">924 lines</span><span class="meta-chip">10 fns</span><span class="meta-chip">18 KB</span></div>
+        </div>
+        <div class="contract-body">
+            <p>On-chain contract managing the <strong>shielded transaction pool</strong> for ZK-private transfers. Stores the commitment Merkle tree root, spent nullifier set, and verification keys. Verifies Groth16/BN254 ZK proofs (128-byte) and updates state. Three core operations: <strong>shield</strong> (deposit into pool), <strong>unshield</strong> (withdraw from pool), and <strong>transfer</strong> (private transfer within pool). Uses reentrancy guard and admin pause control.</p>
+            <div class="sub-heading">Functions (10)</div>
+            <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">shield</span><span class="fn-chip">unshield</span><span class="fn-chip">transfer</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span><span class="fn-chip">get_pool_stats</span><span class="fn-chip">get_merkle_root</span><span class="fn-chip">check_nullifier</span><span class="fn-chip">get_commitments</span></div>
+            <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span class="badge badge-identity">Privacy</span></div>
+        </div>
+    </div></div>
+
     <!-- AUTHORITATIVE LIVE EXPORT MATRIX -->
-    <div style="margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);" id="live-exports">
-        <h2 style="font-size:1.4rem; margin-bottom:1rem;"><i class="fas fa-code-branch"></i> Authoritative Live Export Matrix (Source-Derived)</h2>
-        <p style="color:var(--text-secondary); margin-bottom:1.2rem;">
+    <div class="cr-section-bordered" id="live-exports">
+        <h2><i class="fas fa-code-branch"></i> Authoritative Live Export Matrix (Source-Derived)</h2>
+        <p>
             This matrix is generated from real contract source exports (<code>contracts/*/src/lib.rs</code>, <code>#[no_mangle] pub extern "C" fn ...</code>) and is the authoritative surface.
             Some per-card function chips above are legacy summaries; use this section for strict agent/runtime compatibility.
         </p>
@@ -954,7 +894,7 @@
             <tr><td>moltyid</td><td>initialize, register_identity, get_identity, update_reputation_typed, update_reputation, add_skill, add_skill_as, get_skills, vouch, set_recovery_guardians, approve_recovery, execute_recovery, get_reputation, deactivate_identity, get_identity_count, update_agent_type, get_vouches, award_contribution_achievement, get_achievements, attest_skill, get_attestations, revoke_attestation, register_name, resolve_name, reverse_resolve, create_name_auction, bid_name_auction, finalize_name_auction, get_name_auction, transfer_name, renew_name, release_name, transfer_name_as, renew_name_as, release_name_as, set_endpoint, get_endpoint, set_metadata, get_metadata, set_availability, get_availability, set_rate, get_rate, set_delegate, revoke_delegate, get_delegate, set_endpoint_as, set_metadata_as, set_availability_as, set_rate_as, update_agent_type_as, get_agent_profile, get_trust_tier, mid_pause, mid_unpause, transfer_admin, admin_register_reserved_name, set_mid_token_address, set_mid_self_address</td></tr>
             <tr><td>moltdao</td><td>initialize_dao, create_proposal, create_proposal_typed, vote, vote_with_reputation, execute_proposal, veto_proposal, cancel_proposal, treasury_transfer, get_treasury_balance, get_proposal, get_dao_stats, get_active_proposals, initialize, cast_vote, finalize_proposal, get_proposal_count, get_vote, get_vote_count, get_total_supply, set_quorum, set_voting_period, set_timelock_delay, dao_pause, dao_unpause, set_moltyid_address</td></tr>
             <tr><td>moltpunks</td><td>initialize, mint, transfer, owner_of, balance_of, approve, transfer_from, burn, total_minted, mint_punk, transfer_punk, get_owner_of, get_total_supply, get_punk_metadata, get_punks_by_owner, set_base_uri, set_max_supply, set_royalty, mp_pause, mp_unpause, get_collection_stats</td></tr>
-            <tr><td>moltmarket</td><td>initialize, list_nft, buy_nft, cancel_listing, get_listing, set_marketplace_fee, list_nft_with_royalty, make_offer, cancel_offer, accept_offer, get_marketplace_stats, mm_pause, mm_unpause</td></tr>
+            <tr><td>moltmarket</td><td>initialize, list_nft, buy_nft, cancel_listing, get_listing, set_marketplace_fee, list_nft_with_royalty, make_offer, cancel_offer, accept_offer, get_marketplace_stats, set_nft_attributes, get_nft_attributes, get_offer_count, update_listing_price, create_auction, place_bid, settle_auction, cancel_auction, get_auction, make_collection_offer, accept_collection_offer, cancel_collection_offer, make_offer_with_expiry, mm_pause, mm_unpause</td></tr>
             <tr><td>moltauction</td><td>create_auction, place_bid, finalize_auction, make_offer, accept_offer, set_royalty, update_collection_stats, get_collection_stats, initialize, set_reserve_price, cancel_auction, initialize_ma_admin, ma_pause, ma_unpause, get_auction_info, get_auction_stats</td></tr>
             <tr><td>moltoracle</td><td>initialize_oracle, add_price_feeder, set_authorized_attester, submit_price, get_price, commit_randomness, reveal_randomness, request_randomness, get_randomness, submit_attestation, verify_attestation, get_attestation_data, query_oracle, get_aggregated_price, get_oracle_stats, initialize, register_feed, get_feed_count, get_feed_list, add_reporter, remove_reporter, set_update_interval, mo_pause, mo_unpause</td></tr>
             <tr><td>moltbridge</td><td>initialize, add_bridge_validator, remove_bridge_validator, set_required_confirmations, set_request_timeout, lock_tokens, submit_mint, confirm_mint, submit_unlock, confirm_unlock, cancel_expired_request, get_bridge_status, has_confirmed_mint, has_confirmed_unlock, is_source_tx_used, is_burn_proof_used, set_moltyid_address, set_identity_gate, mb_pause, mb_unpause, set_token_address</td></tr>
@@ -972,16 +912,16 @@
             <tr><td>musd_token</td><td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of, allowance, total_supply, total_minted, total_burned, get_reserve_ratio, get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count, emergency_pause, emergency_unpause, transfer_admin</td></tr>
             <tr><td>weth_token</td><td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of, allowance, total_supply, total_minted, total_burned, get_reserve_ratio, get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count, emergency_pause, emergency_unpause, transfer_admin</td></tr>
             <tr><td>wsol_token</td><td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of, allowance, total_supply, total_minted, total_burned, get_reserve_ratio, get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count, emergency_pause, emergency_unpause, transfer_admin</td></tr>
-            <tr><td>shielded_pool</td><td> </td></tr>
+            <tr><td>shielded_pool</td><td>initialize, shield, unshield, transfer, pause, unpause, get_pool_stats, get_merkle_root, check_nullifier, get_commitments</td></tr>
             <tr><td>wbnb_token</td><td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of, allowance, total_supply, total_minted, total_burned, get_reserve_ratio, get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count, emergency_pause, emergency_unpause, transfer_admin</td></tr>
         </table>
     </div>
 
     <!-- CROSS-CONTRACT INTEGRATIONS -->
-    <div style="margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
-        <h2 style="font-size:1.4rem; margin-bottom:1rem;"><i class="fas fa-project-diagram"></i> Cross-Contract Integration Map</h2>
-        <p style="color:var(--text-secondary); margin-bottom:1.5rem;">MoltyID is the identity backbone — 6 contracts integrate it for reputation gating, fee discounts, and identity verification. DEX contracts cross-reference each other and the core DeFi stack.</p>
-        <table class="const-table" style="max-width:800px;">
+    <div class="cr-section-bordered">
+        <h2><i class="fas fa-project-diagram"></i> Cross-Contract Integration Map</h2>
+        <p>MoltyID is the identity backbone — 6 contracts integrate it for reputation gating, fee discounts, and identity verification. DEX contracts cross-reference each other and the core DeFi stack.</p>
+        <table class="const-table narrow">
             <tr><th>Contract</th><th>MoltyID Integration</th><th>Purpose</th></tr>
             <tr><td>MoltSwap</td><td>set_moltyid_address, set_reputation_discount</td><td>Fee discounts based on reputation tier</td></tr>
             <tr><td>ClawPay</td><td>set_moltyid_address, set_identity_gate</td><td>Require minimum rep to create streams</td></tr>
@@ -990,8 +930,8 @@
             <tr><td>Compute Market</td><td>set_moltyid_address, set_identity_gate</td><td>Only reputable providers can register</td></tr>
             <tr><td>MoltDAO</td><td>vote_with_reputation</td><td>Reputation-weighted governance voting</td></tr>
         </table>
-        <h3 style="font-size:1.1rem; margin-top:2rem; margin-bottom:.6rem;">DEX Cross-Contract Dependencies</h3>
-        <table class="const-table" style="max-width:800px;">
+        <h3>DEX Cross-Contract Dependencies</h3>
+        <table class="const-table narrow">
             <tr><th>Contract</th><th>Dependencies</th><th>Purpose</th></tr>
             <tr><td>DEX Router</td><td>DEX Core, DEX AMM, MoltSwap</td><td>Aggregate liquidity across all venues</td></tr>
             <tr><td>DEX Margin</td><td>DEX Core, MoltOracle</td><td>Leveraged orders + oracle price feeds</td></tr>
@@ -999,11 +939,11 @@
             <tr><td>DEX Governance</td><td>MoltyID, MoltCoin</td><td>Rep-gated pair proposals, MOLT voting</td></tr>
             <tr><td>DEX Rewards</td><td>MoltyID, MoltCoin</td><td>MoltyID-boosted referrals, MOLT distribution</td></tr>
         </table>
-        <h3 style="font-size:1.1rem; margin-top:2rem; margin-bottom:.6rem;">Security Patterns</h3>
-        <table class="const-table" style="max-width:600px;">
+        <h3>Security Patterns</h3>
+        <table class="const-table narrower">
             <tr><th>Pattern</th><th>Contracts</th></tr>
             <tr><td>Reentrancy guard</td><td>MoltSwap, LobsterLend, ClawPump, DEX Core, DEX AMM</td></tr>
-            <tr><td>Admin-only initialization</td><td>All 27 contracts</td></tr>
+            <tr><td>Admin-only initialization</td><td>All 29 contracts</td></tr>
             <tr><td>Overflow-safe arithmetic</td><td>All DeFi + DEX contracts</td></tr>
             <tr><td>T5.9 inflation attack prevention</td><td>ClawVault (MIN_LOCKED_SHARES)</td></tr>
             <tr><td>T5.10 caller verification</td><td>MoltOracle</td></tr>
@@ -1014,7 +954,22 @@
     </div>
 
 </div>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="dev-footer">
+        <div class="container">
+            <div class="dev-footer-links">
+                <a href="https://github.com/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+            </div>
+            <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
+        </div>
+    </footer>
+
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

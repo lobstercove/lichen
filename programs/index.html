@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoltChain Programs - Build, Deploy & Scale Smart Contracts</title>
+    <meta name="description" content="The fastest, cheapest, and most agent-friendly blockchain for developers. Deploy programs in seconds with 1000x lower fees than Ethereum.">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/programs.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltPrograms_Logo_256.png" class="logo-icon" alt="MoltChain Programs">
+                <span class="logo-text">MoltChain Programs</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="#why">Why MoltChain</a></li>
+                <li><a href="#quickstart">Quick Start</a></li>
+                <li><a href="#examples">Examples</a></li>
+                <li><a href="#languages">Languages</a></li>
+                <li><a href="#features">Features</a></li>
+                <li><a href="#docs">Docs</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="nav-network">
+                    <select id="programsNetworkSelect" class="programs-network-select">
+                        <option value="mainnet">Mainnet</option>
+                        <option value="testnet" selected>Testnet</option>
+                        <option value="local-testnet">Local Testnet</option>
+                        <option value="local-mainnet">Local Mainnet</option>
+                    </select>
+                </div>
+                <a href="playground.html" class="btn btn-primary">
+                    <i class="fas fa-play"></i> Launch Playground
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-background"></div>
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    Build Programs<br>
+                    Deploy in Seconds<br>
+                    Scale to Millions
+                </h1>
+                <p class="hero-subtitle">
+                    The fastest, cheapest, and most agent-friendly blockchain for developers
+                </p>
+                
+                <div class="hero-actions">
+                    <a href="playground.html" class="btn btn-primary btn-large">
+                        <i class="fas fa-code"></i> Start Building
+                    </a>
+                    <a href="#quickstart" class="btn btn-secondary btn-large">
+                        <i class="fas fa-rocket"></i> Quick Start Guide
+                    </a>
+                    <a href="#examples" class="btn btn-secondary btn-large">
+                        <i class="fas fa-book"></i> View Examples
+                    </a>
+                </div>
+                
+                <!-- Live Stats -->
+                <div class="hero-stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="programsDeployed">—</div>
+                        <div class="stat-label">Programs Deployed</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="activeDevs">—</div>
+                        <div class="stat-label">Active Validators</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="deployTime">—</div>
+                        <div class="stat-label">Avg Deploy Time</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="deployFee">—</div>
+                        <div class="stat-label">Avg Deploy Cost</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Why MoltChain Section -->
+    <section class="section" id="why">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Why Build on MoltChain?</h2>
+                <p class="section-subtitle">1000x cheaper. 100x faster. Built for agents from day one.</p>
+            </div>
+            
+            <div class="comparison-grid">
+                <div class="comparison-card">
+                    <div class="comparison-header">
+                        <div class="comparison-icon"><i class="fa-brands fa-ethereum"></i></div>
+                        <h3>Ethereum</h3>
+                    </div>
+                    <div class="comparison-metrics">
+                        <div class="metric metric-bad">
+                            <i class="fas fa-coins"></i>
+                            <span>$15-50 deploy</span>
+                        </div>
+                        <div class="metric metric-bad">
+                            <i class="fas fa-clock"></i>
+                            <span>5-15 min</span>
+                        </div>
+                        <div class="metric metric-bad">
+                            <i class="fas fa-paper-plane"></i>
+                            <span>$0.50-5 per tx</span>
+                        </div>
+                        <div class="metric metric-ok">
+                            <i class="fas fa-shield-alt"></i>
+                            <span>Battle-tested</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="comparison-card">
+                    <div class="comparison-header">
+                        <div class="comparison-icon"><i class="fa-solid fa-bolt"></i></div>
+                        <h3>Solana</h3>
+                    </div>
+                    <div class="comparison-metrics">
+                        <div class="metric metric-ok">
+                            <i class="fas fa-coins"></i>
+                            <span>$0.10 deploy</span>
+                        </div>
+                        <div class="metric metric-ok">
+                            <i class="fas fa-clock"></i>
+                            <span>2-5 min</span>
+                        </div>
+                        <div class="metric metric-good">
+                            <i class="fas fa-paper-plane"></i>
+                            <span>$0.00025 per tx</span>
+                        </div>
+                        <div class="metric metric-good">
+                            <i class="fas fa-tachometer-alt"></i>
+                            <span>65K TPS</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="comparison-card comparison-card-highlight">
+                    <div class="comparison-badge">Best Choice</div>
+                    <div class="comparison-header">
+                        <img src="MoltPrograms_Logo_256.png" class="comparison-icon" alt="MoltChain">
+                        <h3>MoltChain</h3>
+                    </div>
+                    <div class="comparison-metrics">
+                        <div class="metric metric-excellent">
+                            <i class="fas fa-coins"></i>
+                            <span>$2.50 deploy</span>
+                        </div>
+                        <div class="metric metric-excellent">
+                            <i class="fas fa-clock"></i>
+                            <span>1-3 seconds</span>
+                        </div>
+                        <div class="metric metric-excellent">
+                            <i class="fas fa-paper-plane"></i>
+                            <span>$0.0001 per tx</span>
+                        </div>
+                        <div class="metric metric-excellent">
+                            <i class="fas fa-robot"></i>
+                            <span>Agent-Native</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deploy Program Section - WIZARD TABS like website -->
+    <section class="section section-alt deploy-section" id="quickstart">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Deploy Your First Program</h2>
+                <p class="section-subtitle">5-step wizard to get you from zero to deployed in minutes</p>
+            </div>
+            
+            <!-- Wizard Tabs -->
+            <div class="wizard-tabs">
+                <button class="wizard-tab active" data-step="1">
+                    <span class="wizard-number">1</span>
+                    <span class="wizard-label">Install CLI</span>
+                </button>
+                <button class="wizard-tab" data-step="2">
+                    <span class="wizard-number">2</span>
+                    <span class="wizard-label">Create Project</span>
+                </button>
+                <button class="wizard-tab" data-step="3">
+                    <span class="wizard-number">3</span>
+                    <span class="wizard-label">Write Program</span>
+                </button>
+                <button class="wizard-tab" data-step="4">
+                    <span class="wizard-number">4</span>
+                    <span class="wizard-label">Build WASM</span>
+                </button>
+                <button class="wizard-tab" data-step="5">
+                    <span class="wizard-number">5</span>
+                    <span class="wizard-label">Deploy</span>
+                </button>
+            </div>
+            
+            <!-- Wizard Content -->
+            <div class="wizard-content">
+                <div class="wizard-step active" data-step="1">
+                    <h3>Step 1: Install CLI</h3>
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">terminal</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code>curl -fsSL https://molt.sh/install.sh | sh</code></pre>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="wizard-step" data-step="2">
+                    <h3>Step 2: Create Project</h3>
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">terminal</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code>molt init hello-world
+cd hello-world</code></pre>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="wizard-step" data-step="3">
+                    <h3>Step 3: Write Program</h3>
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">src/lib.rs</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code class="language-rust">#[no_mangle]
+pub extern "C" fn hello() {
+    msg!("Hello MoltChain!");
+}</code></pre>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="wizard-step" data-step="4">
+                    <h3>Step 4: Build WASM</h3>
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">terminal</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code>molt build --release</code></pre>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="wizard-step" data-step="5">
+                    <h3>Step 5: Deploy</h3>
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">terminal</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code>molt deploy --program target/hello.wasm</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="cta-banner">
+                <h3>Ready to try it?</h3>
+                <p>Skip the setup and start coding in our browser-based IDE</p>
+                <a href="playground.html" class="btn btn-primary btn-large">
+                    <i class="fas fa-play"></i> Launch Playground
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Examples Section -->
+    <section class="section" id="examples">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">29 Production-Ready Contracts</h2>
+                <p class="section-subtitle">Battle-tested with security hardening. 1,243 tests, 0 failures. Copy, modify, deploy.</p>
+            </div>
+            
+            <div class="examples-grid">
+                <!-- MoltCoin -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-coins"></i></div>
+                        <div class="example-badge">18.2 KB</div>
+                    </div>
+                    <h3>MoltCoin (MT-20)</h3>
+                    <p class="example-description">Fungible token standard with mint, burn, transfer, and allowance features</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Mint</span>
+                        <span class="feature-tag">Burn</span>
+                        <span class="feature-tag">Transfer</span>
+                        <span class="feature-tag">Allowance</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 450 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltcoin" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltcoin')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltSwap -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-exchange-alt"></i></div>
+                        <div class="example-badge">24.1 KB</div>
+                    </div>
+                    <h3>MoltSwap (DEX)</h3>
+                    <p class="example-description">AMM with TWAP oracle, price impact guards, flash loans, and protocol fees</p>
+                    <div class="example-features">
+                        <span class="feature-tag">AMM</span>
+                        <span class="feature-tag">TWAP Oracle</span>
+                        <span class="feature-tag">Flash Loans</span>
+                        <span class="feature-tag">Price Impact</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 680 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltswap" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltswap')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltPunks -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-image"></i></div>
+                        <div class="example-badge">16.7 KB</div>
+                    </div>
+                    <h3>MoltPunks (NFT)</h3>
+                    <p class="example-description">Non-fungible token standard with metadata, royalties, and marketplace support</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Mint</span>
+                        <span class="feature-tag">Metadata</span>
+                        <span class="feature-tag">Royalties</span>
+                        <span class="feature-tag">Transfer</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 520 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltpunks" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltpunks')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltDAO -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-landmark"></i></div>
+                        <div class="example-badge">15.3 KB</div>
+                    </div>
+                    <h3>MoltDAO (Governance)</h3>
+                    <p class="example-description">Decentralized governance with proposals, voting, and execution</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Proposals</span>
+                        <span class="feature-tag">Voting</span>
+                        <span class="feature-tag">Timelock</span>
+                        <span class="feature-tag">Execute</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 410 lines</span>
+                        <span><i class="fas fa-download"></i> 312 uses</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltdao" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltdao')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltOracle -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-eye"></i></div>
+                        <div class="example-badge">12.8 KB</div>
+                    </div>
+                    <h3>MoltOracle (Price Feeds)</h3>
+                    <p class="example-description">Decentralized price oracle with aggregation and verification</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Feeds</span>
+                        <span class="feature-tag">Aggregate</span>
+                        <span class="feature-tag">Verify</span>
+                        <span class="feature-tag">History</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 340 lines</span>
+                        <span><i class="fas fa-download"></i> 234 uses</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltoracle" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltoracle')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Molt Market -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-shopping-cart"></i></div>
+                        <div class="example-badge">19.4 KB</div>
+                    </div>
+                    <h3>MoltMarket (NFT Marketplace)</h3>
+                    <p class="example-description">NFT marketplace with listings, offers/bids, royalties, and marketplace stats</p>
+                    <div class="example-features">
+                        <span class="feature-tag">List</span>
+                        <span class="feature-tag">Offers</span>
+                        <span class="feature-tag">Royalties</span>
+                        <span class="feature-tag">Stats</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 590 lines</span>
+                        <span><i class="fas fa-download"></i> 421 uses</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltmarket" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltmarket')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltAuction -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-gavel"></i></div>
+                        <div class="example-badge">14.6 KB</div>
+                    </div>
+                    <h3>MoltAuction (Auction System)</h3>
+                    <p class="example-description">Auctions with anti-sniping, reserve prices, cancellation, and admin controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Anti-Sniping</span>
+                        <span class="feature-tag">Reserve Price</span>
+                        <span class="feature-tag">Cancel</span>
+                        <span class="feature-tag">Pause</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 430 lines</span>
+                        <span><i class="fas fa-download"></i> 178 uses</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=moltauction" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltauction')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltBridge -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-bridge"></i></div>
+                        <div class="example-badge">22.4 KB</div>
+                    </div>
+                    <h3>MoltBridge (Cross-Chain)</h3>
+                    <p class="example-description">Multi-call lock-and-mint bridge with validator confirmations and expiry protection</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Lock</span>
+                        <span class="feature-tag">Submit+Confirm</span>
+                        <span class="feature-tag">Validators</span>
+                        <span class="feature-tag">Expiry</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 720 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=bridge" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('bridge')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- LobsterLend -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-hand-holding-usd"></i></div>
+                        <div class="example-badge">26.8 KB</div>
+                    </div>
+                    <h3>LobsterLend (Lending)</h3>
+                    <p class="example-description">DeFi lending protocol with flash loans, liquidations, and reentrancy guards</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Deposit</span>
+                        <span class="feature-tag">Borrow</span>
+                        <span class="feature-tag">Flash Loans</span>
+                        <span class="feature-tag">Liquidate</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 810 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=lending" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lending')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- ClawPump -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-rocket"></i></div>
+                        <div class="example-badge">21.3 KB</div>
+                    </div>
+                    <h3>ClawPump (Launchpad)</h3>
+                    <p class="example-description">Bonding curve token launches with anti-manipulation, cooldowns, and creator royalties</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Bonding Curve</span>
+                        <span class="feature-tag">Graduation</span>
+                        <span class="feature-tag">Anti-Bot</span>
+                        <span class="feature-tag">Royalties</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 680 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=launchpad" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('launchpad')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- ClawPay -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-money-bill-wave"></i></div>
+                        <div class="example-badge">18.9 KB</div>
+                    </div>
+                    <h3>ClawPay (Streaming)</h3>
+                    <p class="example-description">Token streaming payments with cliff vesting, stream transfer, and admin controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Streams</span>
+                        <span class="feature-tag">Cliff Vesting</span>
+                        <span class="feature-tag">Transfer</span>
+                        <span class="feature-tag">Withdraw</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 520 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=streaming" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('streaming')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- ClawVault -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-vault"></i></div>
+                        <div class="example-badge">23.1 KB</div>
+                    </div>
+                    <h3>ClawVault (Yield)</h3>
+                    <p class="example-description">Auto-compounding yield aggregator with deposit caps, fees, risk tiers, and strategies</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Deposit</span>
+                        <span class="feature-tag">Strategies</span>
+                        <span class="feature-tag">Risk Tiers</span>
+                        <span class="feature-tag">Fees</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 740 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=vault" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('vault')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- MoltyID -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-fingerprint"></i></div>
+                        <div class="example-badge">20.7 KB</div>
+                    </div>
+                    <h3>MoltyID (Identity)</h3>
+                    <p class="example-description">Agent identity system with .molt naming, vouching, reputation, and admin controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Register</span>
+                        <span class="feature-tag">Vouch</span>
+                        <span class="feature-tag">Reputation</span>
+                        <span class="feature-tag">Cooldowns</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 620 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=identity" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('identity')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- ReefStorage -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-database"></i></div>
+                        <div class="example-badge">19.5 KB</div>
+                    </div>
+                    <h3>ReefStorage (Storage)</h3>
+                    <p class="example-description">Decentralized storage layer with proof-of-storage, provider staking, and slashing</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Upload</span>
+                        <span class="feature-tag">Challenges</span>
+                        <span class="feature-tag">Staking</span>
+                        <span class="feature-tag">Slashing</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 560 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=storage" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('storage')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- ComputeMarket -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-server"></i></div>
+                        <div class="example-badge">20.2 KB</div>
+                    </div>
+                    <h3>ComputeMarket (Compute)</h3>
+                    <p class="example-description">Decentralized compute marketplace with escrow, disputes, and arbitration</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Jobs</span>
+                        <span class="feature-tag">Escrow</span>
+                        <span class="feature-tag">Disputes</span>
+                        <span class="feature-tag">Providers</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 590 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=compute" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('compute')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ═══ MoltyDEX Suite (7 contracts) ═══ -->
+
+                <!-- DEX Core -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-chart-line"></i></div>
+                        <div class="example-badge">820 lines</div>
+                    </div>
+                    <h3>DEX Core (CLOB)</h3>
+                    <p class="example-description">Central Limit Order Book with price-time matching, self-trade prevention, and settlement</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Limit</span>
+                        <span class="feature-tag">Market</span>
+                        <span class="feature-tag">Stop-Limit</span>
+                        <span class="feature-tag">Post-Only</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 820 lines</span>
+                        <span><i class="fas fa-vial"></i> 93 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_core" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_core')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX AMM -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-water"></i></div>
+                        <div class="example-badge">720 lines</div>
+                    </div>
+                    <h3>DEX AMM (Liquidity)</h3>
+                    <p class="example-description">Concentrated liquidity AMM with 4 fee tiers, Q32.32 math, and tick-range positions</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Concentrated</span>
+                        <span class="feature-tag">Fee Tiers</span>
+                        <span class="feature-tag">Positions</span>
+                        <span class="feature-tag">Fee Accrual</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 720 lines</span>
+                        <span><i class="fas fa-vial"></i> 66 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_amm" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_amm')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX Router -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-route"></i></div>
+                        <div class="example-badge">520 lines</div>
+                    </div>
+                    <h3>DEX Router (Routing)</h3>
+                    <p class="example-description">Smart order routing across CLOB, AMM, and legacy MoltSwap with multi-hop and split routes</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Multi-Hop</span>
+                        <span class="feature-tag">Split</span>
+                        <span class="feature-tag">Simulate</span>
+                        <span class="feature-tag">Best Route</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 520 lines</span>
+                        <span><i class="fas fa-vial"></i> 31 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_router" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_router')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX Governance -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-balance-scale"></i></div>
+                        <div class="example-badge">450 lines</div>
+                    </div>
+                    <h3>DEX Governance (Voting)</h3>
+                    <p class="example-description">Pair listing & fee governance via proposals and token-weighted voting with 66% threshold</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Proposals</span>
+                        <span class="feature-tag">Voting</span>
+                        <span class="feature-tag">Finalize</span>
+                        <span class="feature-tag">Execute</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 450 lines</span>
+                        <span><i class="fas fa-vial"></i> 37 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_governance" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_governance')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX Rewards -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-gift"></i></div>
+                        <div class="example-badge">450 lines</div>
+                    </div>
+                    <h3>DEX Rewards (Mining)</h3>
+                    <p class="example-description">Trading rewards, LP mining, and referral program with 4 tiers and fee mining</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Tiers</span>
+                        <span class="feature-tag">LP Mining</span>
+                        <span class="feature-tag">Referrals</span>
+                        <span class="feature-tag">Fee Mining</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 450 lines</span>
+                        <span><i class="fas fa-vial"></i> 43 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_rewards" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_rewards')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX Margin -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-chart-area"></i></div>
+                        <div class="example-badge">550 lines</div>
+                    </div>
+                    <h3>DEX Margin (Leverage)</h3>
+                    <p class="example-description">Margin trading up to 100× leverage with isolated/cross margin, liquidation engine, insurance fund</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Isolated</span>
+                        <span class="feature-tag">Cross</span>
+                        <span class="feature-tag">Liquidation</span>
+                        <span class="feature-tag">Insurance</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 550 lines</span>
+                        <span><i class="fas fa-vial"></i> 128 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_margin" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_margin')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- DEX Analytics -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-chart-bar"></i></div>
+                        <div class="example-badge">450 lines</div>
+                    </div>
+                    <h3>DEX Analytics (Data)</h3>
+                    <p class="example-description">On-chain OHLCV candles (6 intervals), 24h rolling stats, and trader leaderboards</p>
+                    <div class="example-features">
+                        <span class="feature-tag">OHLCV</span>
+                        <span class="feature-tag">24h Stats</span>
+                        <span class="feature-tag">Leaderboard</span>
+                        <span class="feature-tag">6 Intervals</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 450 lines</span>
+                        <span><i class="fas fa-vial"></i> 25 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dex_analytics" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dex_analytics')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── BountyBoard ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-tasks"></i></div>
+                        <div class="example-badge">1389 lines</div>
+                    </div>
+                    <h3>BountyBoard</h3>
+                    <p class="example-description">On-chain task management with bounty creation, work submission, approval flow, and MOLT rewards</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Create</span>
+                        <span class="feature-tag">Submit</span>
+                        <span class="feature-tag">Approve</span>
+                        <span class="feature-tag">Reward</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 1389 lines</span>
+                        <span><i class="fas fa-vial"></i> 21 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=bounty" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('bounty')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── mUSD Stablecoin ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-dollar-sign"></i></div>
+                        <div class="example-badge">1178 lines</div>
+                    </div>
+                    <h3>mUSD Stablecoin</h3>
+                    <p class="example-description">Treasury-backed stablecoin with mint/burn, blacklist, rate limits, and epoch-based compliance</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Mint</span>
+                        <span class="feature-tag">Burn</span>
+                        <span class="feature-tag">Blacklist</span>
+                        <span class="feature-tag">Rate Limit</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 1178 lines</span>
+                        <span><i class="fas fa-vial"></i> 24 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=musd_token" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('musd_token')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Wrapped ETH ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-gem"></i></div>
+                        <div class="example-badge">853 lines</div>
+                    </div>
+                    <h3>Wrapped ETH (wETH)</h3>
+                    <p class="example-description">Wrapped ETH bridge token with deposit/withdraw, rate limits, pause, and epoch-based controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Wrap</span>
+                        <span class="feature-tag">Unwrap</span>
+                        <span class="feature-tag">Rate Limit</span>
+                        <span class="feature-tag">Pause</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 853 lines</span>
+                        <span><i class="fas fa-vial"></i> 8 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=weth_token" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('weth_token')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Wrapped SOL ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-sun"></i></div>
+                        <div class="example-badge">853 lines</div>
+                    </div>
+                    <h3>Wrapped SOL (wSOL)</h3>
+                    <p class="example-description">Wrapped SOL bridge token with deposit/withdraw, rate limits, pause, and epoch-based controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Wrap</span>
+                        <span class="feature-tag">Unwrap</span>
+                        <span class="feature-tag">Rate Limit</span>
+                        <span class="feature-tag">Pause</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 853 lines</span>
+                        <span><i class="fas fa-vial"></i> 8 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=wsol_token" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('wsol_token')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Wrapped BNB ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-coins"></i></div>
+                        <div class="example-badge">853 lines</div>
+                    </div>
+                    <h3>Wrapped BNB (wBNB)</h3>
+                    <p class="example-description">Wrapped BNB bridge token with deposit/withdraw, rate limits, pause, and epoch-based controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Wrap</span>
+                        <span class="feature-tag">Unwrap</span>
+                        <span class="feature-tag">Rate Limit</span>
+                        <span class="feature-tag">Pause</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 853 lines</span>
+                        <span><i class="fas fa-vial"></i> 8 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=wbnb_token" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('wbnb_token')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Shielded Pool ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-shield-halved"></i></div>
+                        <div class="example-badge">923 lines</div>
+                    </div>
+                    <h3>Shielded Pool</h3>
+                    <p class="example-description">Privacy-preserving transfers with Merkle commitments, nullifier tracking, and shielded balances</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Shield</span>
+                        <span class="feature-tag">Unshield</span>
+                        <span class="feature-tag">Transfer</span>
+                        <span class="feature-tag">Merkle</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 923 lines</span>
+                        <span><i class="fas fa-vial"></i> 6 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=shielded_pool" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('shielded_pool')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="cta-box">
+                <p><strong>29 production-ready contracts</strong> with security hardening, pause controls, and adversarial testing. <a href="playground.html" target="_blank">Try them all in the Playground</a></p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Language Support Section -->
+    <section class="section section-alt" id="languages">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Write Programs in Your Favorite Language</h2>
+                <p class="section-subtitle">WASM-powered. Language-agnostic. Choose what works for you.</p>
+            </div>
+            
+            <div class="language-tabs">
+                <button class="language-tab active" data-lang="rust">
+                    <i class="fab fa-rust"></i> Rust
+                </button>
+                <button class="language-tab" data-lang="c">
+                    <i class="fas fa-copyright"></i> C/C++
+                </button>
+                <button class="language-tab" data-lang="assemblyscript">
+                    <i class="fab fa-node-js"></i> AssemblyScript
+                </button>
+                <button class="language-tab" data-lang="solidity">
+                    <i class="fab fa-ethereum"></i> Solidity
+                </button>
+            </div>
+            
+            <!-- Rust -->
+            <div class="language-content active" data-lang="rust">
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">counter.rs</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code class="language-rust">// Counter program in Rust
+use moltchain_sdk::*;
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct Counter {
+    pub count: u64,
+}
+
+#[program]
+pub mod counter {
+    use super::*;
+
+    pub fn initialize(ctx: Context&lt;Initialize&gt;) -> Result&lt;()&gt; {
+        let counter = &mut ctx.accounts.counter;
+        counter.count = 0;
+        msg!("Counter initialized!");
+        Ok(())
+    }
+
+    pub fn increment(ctx: Context&lt;Update&gt;) -> Result&lt;()&gt; {
+        let counter = &mut ctx.accounts.counter;
+        counter.count += 1;
+        msg!("Count: {}", counter.count);
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Initialize&lt;'info&gt; {
+    #[account(init, payer = user, space = 8 + 8)]
+    pub counter: Account&lt;'info, Counter&gt;,
+    #[account(mut)]
+    pub user: Signer&lt;'info&gt;,
+    pub system_program: Program&lt;'info, System&gt;,
+}</code></pre>
+                    </div>
+                    
+                    <div class="language-info">
+                        <h4>Why Rust?</h4>
+                        <ul>
+                            <li><i class="fas fa-check"></i> Memory safe & blazing fast</li>
+                            <li><i class="fas fa-check"></i> Best-in-class WASM tooling</li>
+                            <li><i class="fas fa-check"></i> Growing ecosystem</li>
+                            <li><i class="fas fa-check"></i> Recommended for production</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <!-- C/C++ -->
+                <div class="language-content" data-lang="c">
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">counter.c</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code class="language-c">// Counter program in C
+#include &lt;stdint.h&gt;
+#include "moltchain.h"
+
+typedef struct {
+    uint64_t count;
+} Counter;
+
+EXPORT void initialize() {
+    Counter counter = { .count = 0 };
+    set_account_data(&counter, sizeof(Counter));
+    log("Counter initialized!");
+}
+
+EXPORT void increment() {
+    Counter counter;
+    get_account_data(&counter, sizeof(Counter));
+    counter.count++;
+    set_account_data(&counter, sizeof(Counter));
+    log("Count: %llu", counter.count);
+}
+
+EXPORT uint64_t get_count() {
+    Counter counter;
+    get_account_data(&counter, sizeof(Counter));
+    return counter.count;
+}</code></pre>
+                        </div>
+                    </div>
+                    
+                    <div class="language-info">
+                        <h4>Why C/C++?</h4>
+                        <ul>
+                            <li><i class="fas fa-check"></i> Maximum performance control</li>
+                            <li><i class="fas fa-check"></i> Smallest binary sizes</li>
+                            <li><i class="fas fa-check"></i> Decades of tooling</li>
+                            <li><i class="fas fa-check"></i> Great for low-level work</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <!-- AssemblyScript -->
+                <div class="language-content" data-lang="assemblyscript">
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">counter.ts</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code class="language-typescript">// Counter program in AssemblyScript
+import { Account, log } from "moltchain-sdk";
+
+@serializable
+class Counter {
+    count: u64 = 0;
+}
+
+export function initialize(): void {
+    const counter = new Counter();
+    Account.save(counter);
+    log("Counter initialized!");
+}
+
+export function increment(): void {
+    const counter = Account.load&lt;Counter&gt;();
+    counter.count++;
+    Account.save(counter);
+    log(`Count: ${counter.count}`);
+}
+
+export function getCount(): u64 {
+    const counter = Account.load&lt;Counter&gt;();
+    return counter.count;
+}</code></pre>
+                        </div>
+                    </div>
+                    
+                    <div class="language-info">
+                        <h4>Why AssemblyScript?</h4>
+                        <ul>
+                            <li><i class="fas fa-check"></i> TypeScript-like syntax</li>
+                            <li><i class="fas fa-check"></i> Easy for web developers</li>
+                            <li><i class="fas fa-check"></i> Fast compilation</li>
+                            <li><i class="fas fa-check"></i> Good for prototyping</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <!-- Solidity -->
+                <div class="language-content" data-lang="solidity">
+                    <div class="code-example">
+                        <div class="code-header">
+                            <span class="code-title">Counter.sol</span>
+                            <button class="copy-btn" onclick="copyCode(this)">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <div class="code-content">
+                            <pre><code class="language-solidity">// Counter program in Solidity (via transpiler)
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Counter {
+    uint256 public count;
+
+    event CountUpdated(uint256 newCount);
+
+    constructor() {
+        count = 0;
+    }
+
+    function increment() public {
+        count++;
+        emit CountUpdated(count);
+    }
+
+    function getCount() public view returns (uint256) {
+        return count;
+    }
+
+    function reset() public {
+        count = 0;
+        emit CountUpdated(0);
+    }
+}</code></pre>
+                        </div>
+                    </div>
+                    
+                    <div class="language-info">
+                        <h4>Why Solidity?</h4>
+                        <ul>
+                            <li><i class="fas fa-check"></i> Familiar for ETH devs</li>
+                            <li><i class="fas fa-check"></i> Huge community</li>
+                            <li><i class="fas fa-check"></i> Transpiles to WASM</li>
+                            <li><i class="fas fa-check"></i> Easy migration path</li>
+                        </ul>
+                        <p class="note"><strong>Note:</strong> Solidity support via sol2molt transpiler (beta)</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Grid Section -->
+    <section class="section" id="features">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Everything You Need to Build & Scale</h2>
+                <p class="section-subtitle">From development to deployment to production monitoring</p>
+            </div>
+            
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-bolt"></i>
+                    </div>
+                    <h3>Lightning Fast</h3>
+                    <p>Deploy programs in 1-3 seconds. Execute in milliseconds. 100K+ TPS capacity.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-coins"></i>
+                    </div>
+                    <h3>Ultra Cheap</h3>
+                    <p>1000x cheaper than Ethereum. $2.50 to deploy. $0.0001 per transaction.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3>Agent Native</h3>
+                    <p>Built for AI agents from day one. Programmable, composable, autonomous.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>Full IDE</h3>
+                    <p>Monaco editor with autocomplete. Build, test, deploy in browser. No setup needed.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-cubes"></i>
+                    </div>
+                    <h3>WASM Runtime</h3>
+                    <p>Write in any language that compiles to WASM. Rust, C, AssemblyScript, Solidity.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-shield-alt"></i>
+                    </div>
+                    <h3>Secure by Default</h3>
+                    <p>Memory-safe WASM sandbox. Account model security.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                    <h3>Code Verification</h3>
+                    <p>Verify source code on-chain. Build trust. Enable composability.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-plug"></i>
+                    </div>
+                    <h3>EVM Compatible</h3>
+                    <p>Dual address format. Port Ethereum contracts. Use existing tools.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-exchange-alt"></i>
+                    </div>
+                    <h3>Interoperable</h3>
+                    <p>Cross-chain bridges. Multi-chain messaging. Universal standards.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-layer-group"></i>
+                    </div>
+                    <h3>Composable</h3>
+                    <p>Program-to-program calls. Shared state. Build on existing programs.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h3>Production Ready</h3>
+                    <p>99.9% uptime. Real-time metrics. Professional monitoring tools.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-users"></i>
+                    </div>
+                    <h3>Active Community</h3>
+                    <p>Growing ecosystem. Developer grants. 24/7 support on Discord.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Playground Preview Section -->
+    <section class="section section-alt" id="playground">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Full-Featured Development Environment</h2>
+                <p class="section-subtitle">Everything you need in one place. No downloads required.</p>
+            </div>
+            
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>Monaco Editor</h3>
+                    <p>VS Code engine with autocomplete, syntax highlighting, and error checking</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-rocket"></i>
+                    </div>
+                    <h3>One-Click Build & Deploy</h3>
+                    <p>Compile to WASM and deploy to testnet or mainnet in seconds</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-terminal"></i>
+                    </div>
+                    <h3>Integrated Terminal</h3>
+                    <p>See build output, test results, and deployment logs in real-time</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-vial"></i>
+                    </div>
+                    <h3>Test & Interact</h3>
+                    <p>Call functions on your deployed programs directly from the IDE</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-wallet"></i>
+                    </div>
+                    <h3>Wallet Management</h3>
+                    <p>Create, import, and export wallets. Connect browser extensions</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                    <h3>Code Verification</h3>
+                    <p>Verify your source code on-chain for transparency and trust</p>
+                </div>
+            </div>
+            
+            <div class="cta-banner">
+                <h3>Ready to build?</h3>
+                <a href="playground.html" class="btn btn-primary btn-large">
+                    <i class="fas fa-play"></i> Launch Playground Now
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentation Section -->
+    <section class="section" id="docs">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Complete Documentation</h2>
+                <p class="section-subtitle">Everything you need to master MoltChain development</p>
+            </div>
+            
+            <div class="docs-grid">
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-rocket"></i>
+                    </div>
+                    <h3>Getting Started</h3>
+                    <p>Installation, quick start, and your first program</p>
+                </a>
+                
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-book"></i>
+                    </div>
+                    <h3>Core Concepts</h3>
+                    <p>Account model, programs, WASM runtime, gas & fees</p>
+                </a>
+                
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>SDK Reference</h3>
+                    <p>Rust, TypeScript, Python SDKs and CLI tools</p>
+                </a>
+                
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-plug"></i>
+                    </div>
+                    <h3>API Reference</h3>
+                    <p>JSON-RPC methods, WebSocket subscriptions, REST endpoints</p>
+                </a>
+                
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-file-code"></i>
+                    </div>
+                    <h3>Examples</h3>
+                    <p>Browse example contracts in the playground</p>
+                </a>
+                
+                <a href="playground.html" class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-graduation-cap"></i>
+                    </div>
+                    <h3>Advanced Topics</h3>
+                    <p>Cross-program calls, upgrades, optimization, security</p>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Community Section -->
+    <section class="section section-alt" id="community">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Join the Community</h2>
+                <p class="section-subtitle">Get help, share ideas, and build together</p>
+            </div>
+            
+            <div class="community-grid">
+                <a href="https://discord.gg/moltchain" target="_blank" class="community-card">
+                    <div class="community-icon">
+                        <i class="fab fa-discord"></i>
+                    </div>
+                    <h3>Discord</h3>
+                    <p>Join 5,000+ developers. Get help 24/7. Chat with the core team.</p>
+                    <span class="community-link">Join Server <i class="fas fa-arrow-right"></i></span>
+                </a>
+                
+                <a href="https://github.com/moltchain" target="_blank" class="community-card">
+                    <div class="community-icon">
+                        <i class="fab fa-github"></i>
+                    </div>
+                    <h3>GitHub</h3>
+                    <p>Star the repo. Report issues. Contribute code. 100+ examples.</p>
+                    <span class="community-link">View Repository <i class="fas fa-arrow-right"></i></span>
+                </a>
+                
+                <a href="https://twitter.com/moltchain" target="_blank" class="community-card">
+                    <div class="community-icon">
+                        <i class="fab fa-twitter"></i>
+                    </div>
+                    <h3>Twitter</h3>
+                    <p>Latest updates. Developer spotlights. Ecosystem news.</p>
+                    <span class="community-link">Follow Us <i class="fas fa-arrow-right"></i></span>
+                </a>
+                
+                <a href="https://docs.moltchain.network" target="_blank" class="community-card">
+                    <div class="community-icon">
+                        <i class="fas fa-book-open"></i>
+                    </div>
+                    <h3>Documentation</h3>
+                    <p>Comprehensive guides. API reference. Video tutorials.</p>
+                    <span class="community-link">Read Docs <i class="fas fa-arrow-right"></i></span>
+                </a>
+            </div>
+            
+            <div class="grants-banner">
+                <div class="grants-content">
+                    <div class="grants-icon">
+                        <i class="fas fa-gift"></i>
+                    </div>
+                    <div class="grants-text">
+                        <h3>Developer Grants Available</h3>
+                        <p>Building something awesome? Apply for funding up to $50K</p>
+                    </div>
+                    <a href="https://grants.moltchain.network" target="_blank" class="btn btn-primary">
+                        Apply Now <i class="fas fa-arrow-right"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltPrograms_Logo_256.png" class="logo-icon" alt="MoltChain Programs">
+                        <span class="logo-text">MoltChain</span>
+                    </div>
+                    <p class="footer-desc">
+                        The agent-first blockchain. Ultra-low fees, instant finality, multi-language smart contracts.
+                    </p>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="playground.html">Playground</a></li>
+                        <li><a href="playground.html">Documentation</a></li>
+                        <li><a href="playground.html">Examples</a></li>
+                        <li><a href="https://github.com/moltchain/moltchain">GitHub</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Tools</h4>
+                    <ul class="footer-links">
+                        <li><a href="../explorer/index.html">Explorer</a></li>
+                        <li><a href="../wallet/index.html">Wallet</a></li>
+                        <li><a href="http://localhost:9090">Faucet</a></li>
+                        <li><a href="https://github.com/moltchain/cli">CLI Tools</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Community</h4>
+                    <ul class="footer-links">
+                        <li><a href="https://discord.gg/moltchain">Discord</a></li>
+                        <li><a href="https://twitter.com/moltchain">Twitter</a></li>
+                        <li><a href="https://t.me/moltchain">Telegram</a></li>
+                        <li><a href="https://reddit.com/r/moltchain">Reddit</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 MoltChain. Open source under MIT License.</p>
+                <p>Built by agents, for agents. <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- JavaScript -->
+    <script src="shared/utils.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/landing.js"></script>
+</body>
+</html>
