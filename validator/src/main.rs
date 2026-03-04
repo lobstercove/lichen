@@ -4996,12 +4996,14 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 /// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
 const MICRO_SCALE: f64 = 1_000_000.0;
 
-/// Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB
-const BINANCE_WS_URL: &str =
+/// Default Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB.
+/// Override via MOLTCHAIN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
+const DEFAULT_BINANCE_WS_URL: &str =
     "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 
-/// Binance REST fallback URL
-const BINANCE_REST_URL: &str =
+/// Default Binance REST fallback URL.
+/// Override via MOLTCHAIN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
+const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
 
 /// REST ticker response
@@ -5044,6 +5046,14 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
         let feeder = deployer_pubkey.0; // genesis admin is the authorized feeder
         let molt_usd_default: f64 = 0.10;
 
+        // Configurable Binance endpoints via env vars (for geo-blocked regions)
+        let oracle_ws_url: String = std::env::var("MOLTCHAIN_ORACLE_WS_URL")
+            .unwrap_or_else(|_| DEFAULT_BINANCE_WS_URL.to_string());
+        let oracle_rest_url: String = std::env::var("MOLTCHAIN_ORACLE_REST_URL")
+            .unwrap_or_else(|_| DEFAULT_BINANCE_REST_URL.to_string());
+        info!("🔮 Oracle WS: {}", oracle_ws_url);
+        info!("🔮 Oracle REST: {}", oracle_rest_url);
+
         // Lock-free atomic price storage shared between WS reader and storage writer
         let wsol_micro = Arc::new(AtomicU64::new(0));
         let weth_micro = Arc::new(AtomicU64::new(0));
@@ -5056,8 +5066,9 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             let ws_weth = weth_micro.clone();
             let ws_wbnb = wbnb_micro.clone();
             let ws_flag = ws_healthy.clone();
+            let ws_url = oracle_ws_url.clone();
             tokio::spawn(async move {
-                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag).await;
+                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_url).await;
             });
         }
 
@@ -5066,6 +5077,8 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+
+        let rest_url = oracle_rest_url.clone();
 
         info!("🔮 Oracle price feeder started (WebSocket real-time + 1s storage writes)");
 
@@ -5092,7 +5105,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             if !ws_healthy.load(Ordering::Relaxed)
                 || (cur_wsol == 0 && cur_weth == 0 && cur_wbnb == 0)
             {
-                if let Ok(resp) = http.get(BINANCE_REST_URL).send().await {
+                if let Ok(resp) = http.get(&rest_url).send().await {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
                         for t in &tickers {
                             let p: f64 = t.price.parse().unwrap_or(0.0);
@@ -5354,14 +5367,15 @@ async fn binance_ws_loop(
     weth: Arc<AtomicU64>,
     wbnb: Arc<AtomicU64>,
     healthy: Arc<AtomicBool>,
+    ws_url: String,
 ) {
     let mut backoff_secs: u64 = 1;
 
     loop {
-        info!("🔮 Binance WebSocket connecting...");
+        info!("🔮 Binance WebSocket connecting to {}...", ws_url);
         healthy.store(false, Ordering::Relaxed);
 
-        match tokio_tungstenite::connect_async(BINANCE_WS_URL).await {
+        match tokio_tungstenite::connect_async(ws_url.as_str()).await {
             Ok((ws_stream, _)) => {
                 info!("🔮 Binance WebSocket connected (real-time aggTrade feed)");
                 backoff_secs = 1; // reset backoff on successful connect
@@ -10528,7 +10542,13 @@ async fn run_validator() {
     // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
     // and writes to moltoracle + dex_analytics storage every 1s when prices change.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
-    if let Ok(Some(gpk)) = state.get_genesis_pubkey() {
+    // Can be disabled via MOLTCHAIN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
+    let oracle_disabled = std::env::var("MOLTCHAIN_DISABLE_ORACLE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if oracle_disabled {
+        info!("🔮 Oracle price feeder disabled via MOLTCHAIN_DISABLE_ORACLE");
+    } else if let Ok(Some(gpk)) = state.get_genesis_pubkey() {
         let state_for_oracle = state.clone();
         spawn_oracle_price_feeder(state_for_oracle, gpk);
     } else {
