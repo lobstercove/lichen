@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
@@ -1149,6 +1145,7 @@ RUST_LOG=trace moltchain-validator --network testnet --rpc-port 8899 --ws-port 8
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
     <script>

@@ -23,7 +23,7 @@
                 <li><a href="index.html">Hub</a></li>
                 <li><a href="getting-started.html">Get Started</a></li>
                 <li><a href="rpc-reference.html">API</a></li>
-                <li><a href="sdk-python.html" class="active">SDK</a></li>
+                <li><a href="sdk-js.html" class="active">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
                 <li><a href="moltyid.html">MoltyID</a></li>
@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -116,7 +113,7 @@
                 <h2>Installation</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>pip install moltchain</pre></code>
+                    <pre><code>pip install moltchain</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>, <code>PyNaCl</code>, <code>base58</code>.</p>
@@ -128,7 +125,7 @@
                 <h2>Quick Start</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>import asyncio
+                    <pre><code>import asyncio
 from moltchain import Connection, Keypair, PublicKey, TransactionBuilder
 
 async def main():
@@ -157,7 +154,7 @@ async def main():
 
     await conn.close()
 
-asyncio.run(main())</pre></code>
+asyncio.run(main())</code></pre>
                 </div>
             </section>
 
@@ -181,7 +178,7 @@ asyncio.run(main())</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
-                    <code><pre>conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")</pre></code>
+                    <pre><code>conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")</code></pre>
                 </div>
             </div>
 
@@ -193,7 +190,7 @@ asyncio.run(main())</pre></code>
                 <p class="method-desc">Get the current slot number.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
-                    <code><pre>slot = await conn.get_slot()  # 42</pre></code>
+                    <pre><code>slot = await conn.get_slot()  # 42</code></pre>
                 </div>
             </div>
 
@@ -250,9 +247,9 @@ asyncio.run(main())</pre></code>
                 <p class="method-desc">Get account balance in shells and MOLT.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
+                    <pre><code>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
 print(balance["shells"])  # 5000000000
-print(balance["molt"])    # 5.0</pre></code>
+print(balance["molt"])    # 5.0</code></pre>
                 </div>
             </div>
 
@@ -279,14 +276,14 @@ print(balance["molt"])    # 5.0</pre></code>
                 <p class="method-desc">Serialize and submit a signed transaction. Returns the signature string.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>blockhash = await conn.get_recent_blockhash()
+                    <pre><code>blockhash = await conn.get_recent_blockhash()
 tx = (TransactionBuilder()
     .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
     .set_recent_blockhash(blockhash)
     .build_and_sign(kp))
 
 sig = await conn.send_transaction(tx)
-print(f"Signature: {sig}")</pre></code>
+print(f"Signature: {sig}")</code></pre>
                 </div>
             </div>
 
@@ -318,8 +315,8 @@ print(f"Signature: {sig}")</pre></code>
                 <p class="method-desc">Build, sign, and send a stake transaction. Amount in shells.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>validator = PublicKey("ValidatorPubkey...")
-sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</pre></code>
+                    <pre><code>validator = PublicKey("ValidatorPubkey...")
+sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</code></pre>
                 </div>
             </div>
 
@@ -421,9 +418,9 @@ sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</pre></code>
                 <p class="method-desc">Subscribe to slot updates. Unsubscribe with <code>off_slot(sub_id)</code>.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>sub_id = await conn.on_slot(lambda slot: print(f"Slot: {slot}"))
+                    <pre><code>sub_id = await conn.on_slot(lambda slot: print(f"Slot: {slot}"))
 # ... later
-await conn.off_slot(sub_id)</pre></code>
+await conn.off_slot(sub_id)</code></pre>
                 </div>
             </div>
 
@@ -478,8 +475,8 @@ await conn.off_slot(sub_id)</pre></code>
                 <p class="method-desc">Generate a new random keypair.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>kp = Keypair.generate()
-print(f"Address: {kp.public_key()}")</pre></code>
+                    <pre><code>kp = Keypair.generate()
+print(f"Address: {kp.public_key()}")</code></pre>
                 </div>
             </div>
 
@@ -488,8 +485,8 @@ print(f"Address: {kp.public_key()}")</pre></code>
                 <p class="method-desc">Derive a keypair from a 32-byte seed. Raises <code>ValueError</code> if seed is not 32 bytes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
-                    <code><pre>seed = b'\x00' * 32
-kp = Keypair.from_seed(seed)</pre></code>
+                    <pre><code>seed = b'\x00' * 32
+kp = Keypair.from_seed(seed)</code></pre>
                 </div>
             </div>
 
@@ -498,14 +495,14 @@ kp = Keypair.from_seed(seed)</pre></code>
                 <p class="method-desc">Load a keypair from a JSON file or save it to one. The JSON contains <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>from pathlib import Path
+                    <pre><code>from pathlib import Path
 
 kp = Keypair.generate()
 kp.save(Path("my-wallet.json"))
 
 # Later
 kp2 = Keypair.load(Path("my-wallet.json"))
-assert kp.public_key() == kp2.public_key()</pre></code>
+assert kp.public_key() == kp2.public_key()</code></pre>
                 </div>
             </div>
 
@@ -535,9 +532,9 @@ assert kp.public_key() == kp2.public_key()</pre></code>
                 <p class="method-desc">Create from a base58 string, bytes, or list of ints. Raises <code>ValueError</code> if not 32 bytes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>pk1 = PublicKey("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")
+                    <pre><code>pk1 = PublicKey("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")
 pk2 = PublicKey(b'\x00' * 32)
-pk3 = PublicKey([0] * 32)</pre></code>
+pk3 = PublicKey([0] * 32)</code></pre>
                 </div>
             </div>
 
@@ -573,7 +570,7 @@ pk3 = PublicKey([0] * 32)</pre></code>
                 <h3 class="method-name">Dataclasses</h3>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
-                    <code><pre>@dataclass
+                    <pre><code>@dataclass
 class Instruction:
     program_id: PublicKey
     accounts: List[PublicKey]
@@ -587,7 +584,7 @@ class Message:
 @dataclass
 class Transaction:
     signatures: List[str]  # hex-encoded
-    message: Message</pre></code>
+    message: Message</code></pre>
                 </div>
             </div>
 
@@ -625,7 +622,7 @@ class Transaction:
 
             <div class="code-block">
                 <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                <code><pre>try:
+                <pre><code>try:
     balance = await conn.get_balance(pubkey)
 except Exception as e:
     if "Account not found" in str(e):
@@ -633,7 +630,7 @@ except Exception as e:
     elif "Rate limit" in str(e):
         await asyncio.sleep(1)
     else:
-        raise</pre></code>
+        raise</code></pre>
             </div>
 
             <div class="callout callout-warning">
@@ -649,6 +646,7 @@ except Exception as e:
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

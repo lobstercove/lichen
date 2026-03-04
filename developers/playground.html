@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
@@ -120,13 +116,14 @@
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
     <script>
     (function() {
-        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const programsUrl = isLocal
-            ? 'http://localhost:3009/playground.html'
+        // Use MOLT_CONFIG for environment-aware URL resolution
+        const programsUrl = MOLT_CONFIG.isDev
+            ? MOLT_CONFIG.marketplace + '/playground.html'
             : '../programs/playground.html';
 
         const frame = document.getElementById('programsPlaygroundFrame');

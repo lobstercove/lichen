@@ -164,5 +164,14 @@ monitoring/
 keypairs/
 moltchain/
 
+# ── Operator credential files (never commit) ───────────────────
+VPS_CREDENTIALS.md
+DEPLOYMENT_STATUS.md
+*.credentials
+*.creds
+
+# ── Release signing keypair ────────────────────────────────────
+release-signing-keypair.json
+
 # ── Docs: track organized subdirs, ignore archive/internal ──────
 docs/archive/

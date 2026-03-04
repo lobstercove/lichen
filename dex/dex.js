@@ -8,9 +8,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ═══════════════════════════════════════════════════════════════════════
     // Configuration — override via window globals or <script> config block
+    // Uses MOLT_CONFIG (shared-config.js) for environment-aware defaults.
     // ═══════════════════════════════════════════════════════════════════════
-    const RPC_BASE  = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || (typeof getMoltRpcUrl === 'function' ? getMoltRpcUrl() : 'http://localhost:8899')).replace(/\/$/, '');
-    const WS_URL    = (localStorage.getItem('dexWsUrl') || window.MOLTCHAIN_WS  || RPC_BASE.replace(/^http/, 'ws').replace(/:8899/, ':8900')).replace(/\/$/, '');
+    const _moltRpc = (typeof MOLT_CONFIG !== 'undefined') ? MOLT_CONFIG.rpc('dexNetwork') : 'http://localhost:8899';
+    const _moltWs  = (typeof MOLT_CONFIG !== 'undefined') ? MOLT_CONFIG.ws('dexNetwork')  : 'ws://localhost:8900';
+    const RPC_BASE  = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || _moltRpc).replace(/\/$/, '');
+    const WS_URL    = (localStorage.getItem('dexWsUrl') || window.MOLTCHAIN_WS  || _moltWs).replace(/\/$/, '');
     const API_BASE  = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
 
@@ -1753,52 +1756,19 @@ document.addEventListener('DOMContentLoaded', () => {
     pollBlockHeight();
     setInterval(pollBlockHeight, 3000);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Footer Links (data-molt-app)
-    // ═══════════════════════════════════════════════════════════════════════
-    document.querySelectorAll('[data-molt-app]').forEach(link => {
-        const app = link.dataset.moltApp;
-        const port = window.location.port || '80';
-        // Resolve app names to local URLs (same host, different ports)
-        const appUrls = {
-            website: `${window.location.protocol}//${window.location.hostname}:3000`,
-            explorer: `${window.location.protocol}//${window.location.hostname}:3001`,
-            developers: `${window.location.protocol}//${window.location.hostname}:3002`,
-            faucet: `${window.location.protocol}//${window.location.hostname}:3003`,
-            wallet: `${window.location.protocol}//${window.location.hostname}:3004`,
-        };
-        if (appUrls[app]) {
-            link.href = appUrls[app];
-            link.target = '_blank';
-        }
-    });
+    // Footer links (data-molt-app) are auto-resolved by shared-config.js
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Network Selector
+    // Network Selector — wired to MOLT_CONFIG (shared-config.js)
     // ═══════════════════════════════════════════════════════════════════════
     const networkSelect = document.getElementById('networkSelect');
     if (networkSelect) {
-        // Set initial value based on current RPC endpoint
-        const currentHost = window.location.hostname;
-        if (currentHost === 'localhost' || currentHost === '127.0.0.1') {
-            networkSelect.value = 'local-testnet';
-        }
-        networkSelect.addEventListener('change', () => {
-            const network = networkSelect.value;
-            const networkConfigs = {
-                'local-testnet': { rpc: `${window.location.protocol}//${window.location.hostname}:8899`, ws: `ws://${window.location.hostname}:8900` },
-                'local-mainnet': { rpc: `${window.location.protocol}//${window.location.hostname}:8899`, ws: `ws://${window.location.hostname}:8900` },
-                'testnet': { rpc: 'https://testnet-rpc.moltchain.io', ws: 'wss://testnet-ws.moltchain.io' },
-                'mainnet': { rpc: 'https://rpc.moltchain.io', ws: 'wss://ws.moltchain.io' },
-            };
-            const cfg = networkConfigs[network];
-            if (cfg) {
-                localStorage.setItem('dexNetwork', network);
-                localStorage.setItem('dexRpcUrl', cfg.rpc);
-                localStorage.setItem('dexWsUrl', cfg.ws);
-                window.location.reload();
-            }
+        MOLT_CONFIG.initNetworkSelector(networkSelect, 'dexNetwork', (network, cfg) => {
+            localStorage.setItem('dexRpcUrl', cfg.rpc);
+            localStorage.setItem('dexWsUrl', cfg.ws);
+            window.location.reload();
         });
+
         // Restore saved network selection
         const savedNetwork = localStorage.getItem('dexNetwork');
         if (savedNetwork && networkSelect.querySelector(`option[value="${savedNetwork}"]`)) {

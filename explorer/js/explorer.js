@@ -1,39 +1,17 @@
 // Reef Explorer - MoltChain Blockchain Explorer
 // Real-time blockchain data with RPC
 
-const NETWORKS = {
-    mainnet: {
-        rpc: 'https://rpc.moltchain.network',
-        ws: null,
-    },
-    testnet: {
-        rpc: 'https://testnet-rpc.moltchain.network',
-        ws: null,
-    },
-    'local-testnet': {
-        rpc: 'http://localhost:8899',
-        ws: 'ws://localhost:8900',
-    },
-    'local-mainnet': {
-        rpc: 'http://localhost:9899',
-        ws: 'ws://localhost:9900',
-    }
-};
-
+// Network config is now centralized in shared-config.js (MOLT_CONFIG)
 const NETWORK_STORAGE_KEY = 'explorer_network';
-let currentNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || 'testnet';
-currentNetwork = resolveNetwork(currentNetwork);
+let currentNetwork = MOLT_CONFIG.currentNetwork(NETWORK_STORAGE_KEY);
 
 function resolveNetwork(name) {
-    if (name === 'local') {
-        return 'local-testnet';
-    }
-    return NETWORKS[name] ? name : 'mainnet';
+    return MOLT_CONFIG.resolveNetwork(name);
 }
 
 function getNetworkConfig(name) {
     const resolved = resolveNetwork(name);
-    return NETWORKS[resolved];
+    return MOLT_CONFIG.networks[resolved];
 }
 
 let RPC_URL = getNetworkConfig(currentNetwork).rpc;
@@ -354,11 +332,8 @@ function setExplorerNetwork(name, options = {}) {
 }
 
 function initExplorerNetworkSelector() {
-    const select = document.getElementById('explorerNetworkSelect');
-    if (!select) return;
-    select.value = currentNetwork;
-    select.addEventListener('change', () => {
-        setExplorerNetwork(select.value);
+    MOLT_CONFIG.initNetworkSelector('explorerNetworkSelect', NETWORK_STORAGE_KEY, (network) => {
+        setExplorerNetwork(network, { reload: true });
     });
 }
 

@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -116,7 +113,7 @@
                 <h2>Installation</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>npm install @moltchain/sdk</pre></code>
+                    <pre><code>npm install @moltchain/sdk</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>The SDK requires Node.js 18+ or a browser environment with <code>fetch</code> support. WebSocket features require the <code>ws</code> package in Node.js (included as a dependency).</p>
@@ -128,7 +125,7 @@
                 <h2>Quick Start</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>import { Connection, Keypair, PublicKey, TransactionBuilder } from '@moltchain/sdk';
+                    <pre><code>import { Connection, Keypair, PublicKey, TransactionBuilder } from '@moltchain/sdk';
 
 // Connect to a local validator
 const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');
@@ -151,7 +148,7 @@ const tx = new TransactionBuilder()
   .buildAndSign(keypair);
 
 const signature = await conn.sendTransaction(tx);
-console.log('TX Signature:', signature);</pre></code>
+console.log('TX Signature:', signature);</code></pre>
                 </div>
             </section>
 
@@ -175,7 +172,7 @@ console.log('TX Signature:', signature);</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');</pre></code>
+                    <pre><code>const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');</code></pre>
                 </div>
             </div>
 
@@ -187,8 +184,8 @@ console.log('TX Signature:', signature);</pre></code>
                 <p class="method-desc">Get the current slot number.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>const slot = await conn.getSlot();
-// 42</pre></code>
+                    <pre><code>const slot = await conn.getSlot();
+// 42</code></pre>
                 </div>
             </div>
 
@@ -197,8 +194,8 @@ console.log('TX Signature:', signature);</pre></code>
                 <p class="method-desc">Get the most recently produced block. Returns <code>{ slot, hash, parentHash, transactions, timestamp }</code>.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>const block = await conn.getLatestBlock();
-console.log(`Slot ${block.slot}, ${block.transactions} txs`);</pre></code>
+                    <pre><code>const block = await conn.getLatestBlock();
+console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
                 </div>
             </div>
 
@@ -207,7 +204,7 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</pre></code>
                 <p class="method-desc">Get a block by slot number.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>const block = await conn.getBlock(42);</pre></code>
+                    <pre><code>const block = await conn.getBlock(42);</code></pre>
                 </div>
             </div>
 
@@ -216,7 +213,7 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</pre></code>
                 <p class="method-desc">Get a recent blockhash for signing transactions.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>const blockhash = await conn.getRecentBlockhash();</pre></code>
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();</code></pre>
                 </div>
             </div>
 
@@ -267,9 +264,9 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const balance = await conn.getBalance(new PublicKey('7xKXtg2CW87d...'));
+                    <pre><code>const balance = await conn.getBalance(new PublicKey('7xKXtg2CW87d...'));
 console.log(balance.shells); // 5000000000
-console.log(balance.molt);   // 5.0</pre></code>
+console.log(balance.molt);   // 5.0</code></pre>
                 </div>
             </div>
 
@@ -305,14 +302,14 @@ console.log(balance.molt);   // 5.0</pre></code>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const blockhash = await conn.getRecentBlockhash();
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();
 const tx = new TransactionBuilder()
   .add(TransactionBuilder.transfer(from.pubkey(), to, 1_000_000_000))
   .setRecentBlockhash(blockhash)
   .buildAndSign(from);
 
 const sig = await conn.sendTransaction(tx);
-console.log('Signature:', sig);</pre></code>
+console.log('Signature:', sig);</code></pre>
                 </div>
             </div>
 
@@ -349,8 +346,8 @@ console.log('Signature:', sig);</pre></code>
                 <p class="method-desc">Build, sign, and send a stake transaction. Amount is in shells.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const validator = new PublicKey('ValidatorPubkey...');
-const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</pre></code>
+                    <pre><code>const validator = new PublicKey('ValidatorPubkey...');
+const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</code></pre>
                 </div>
             </div>
 
@@ -513,9 +510,9 @@ const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</pr
                 <p class="method-desc">Generate a new random keypair.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const kp = Keypair.generate();
+                    <pre><code>const kp = Keypair.generate();
 console.log('Public key:', kp.pubkey().toBase58());
-console.log('Secret key length:', kp.secretKey.length); // 64 bytes</pre></code>
+console.log('Secret key length:', kp.secretKey.length); // 64 bytes</code></pre>
                 </div>
             </div>
 
@@ -524,8 +521,8 @@ console.log('Secret key length:', kp.secretKey.length); // 64 bytes</pre></code>
                 <p class="method-desc">Derive a keypair from a 32-byte seed. Throws if seed is not exactly 32 bytes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>const seed = new Uint8Array(32); // deterministic seed
-const kp = Keypair.fromSeed(seed);</pre></code>
+                    <pre><code>const seed = new Uint8Array(32); // deterministic seed
+const kp = Keypair.fromSeed(seed);</code></pre>
                 </div>
             </div>
 
@@ -561,9 +558,9 @@ const kp = Keypair.fromSeed(seed);</pre></code>
                 <p class="method-desc">Create a PublicKey from a base58 string, Uint8Array, or number array. Throws if the resulting bytes are not exactly 32 bytes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const pk1 = new PublicKey('7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU');
+                    <pre><code>const pk1 = new PublicKey('7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU');
 const pk2 = new PublicKey(new Uint8Array(32));
-const pk3 = new PublicKey([0, 1, 2, /* ... 32 bytes */]);</pre></code>
+const pk3 = new PublicKey([0, 1, 2, /* ... 32 bytes */]);</code></pre>
                 </div>
             </div>
 
@@ -597,7 +594,7 @@ const pk3 = new PublicKey([0, 1, 2, /* ... 32 bytes */]);</pre></code>
                 <h3 class="method-name">Types</h3>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
-                    <code><pre>interface Instruction {
+                    <pre><code>interface Instruction {
   programId: PublicKey;
   accounts: PublicKey[];
   data: Uint8Array;
@@ -611,7 +608,7 @@ interface Message {
 interface Transaction {
   signatures: string[];  // hex-encoded
   message: Message;
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -638,7 +635,7 @@ interface Transaction {
                 </table>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>const blockhash = await conn.getRecentBlockhash();
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();
 
 const tx = new TransactionBuilder()
   .add(TransactionBuilder.transfer(
@@ -649,7 +646,7 @@ const tx = new TransactionBuilder()
   .setRecentBlockhash(blockhash)
   .buildAndSign(keypair);
 
-const sig = await conn.sendTransaction(tx);</pre></code>
+const sig = await conn.sendTransaction(tx);</code></pre>
                 </div>
             </div>
 
@@ -661,7 +658,7 @@ const sig = await conn.sendTransaction(tx);</pre></code>
 
             <div class="code-block">
                 <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                <code><pre>try {
+                <pre><code>try {
   const balance = await conn.getBalance(pubkey);
 } catch (error) {
   if (error.message.includes('Account not found')) {
@@ -672,7 +669,7 @@ const sig = await conn.sendTransaction(tx);</pre></code>
   } else {
     throw error;
   }
-}</pre></code>
+}</code></pre>
             </div>
 
             <div class="callout callout-warning">
@@ -688,6 +685,7 @@ const sig = await conn.sendTransaction(tx);</pre></code>
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

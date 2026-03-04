@@ -62,23 +62,13 @@ function getPrice(symbol) {
     return livePrices[symbol] || _OFFLINE_FALLBACK_PRICES[symbol] || 0;
 }
 
-// Network configuration
-const NETWORKS = {
-    'mainnet': 'https://rpc.moltchain.network',
-    'testnet': 'https://testnet-rpc.moltchain.network',
-    'local-testnet': 'http://localhost:8899',
-    'local-mainnet': 'http://localhost:9899'
-};
-
-const WS_ENDPOINTS = {
-    'mainnet': 'wss://rpc.moltchain.network/ws',
-    'testnet': 'wss://testnet-rpc.moltchain.network/ws',
-    'local-testnet': 'ws://localhost:8900',
-    'local-mainnet': 'ws://localhost:9900'
-};
+// Network configuration — centralized in shared-config.js (MOLT_CONFIG)
+const NETWORKS = MOLT_CONFIG.networks;
+const WS_ENDPOINTS = {};
+for (const [k, v] of Object.entries(NETWORKS)) { WS_ENDPOINTS[k] = v.ws; }
 
 function getSelectedNetwork() {
-    return localStorage.getItem('moltchain_wallet_network') || 'local-testnet';
+    return MOLT_CONFIG.currentNetwork('moltchain_wallet_network');
 }
 
 function getRpcEndpoint() {
@@ -87,11 +77,11 @@ function getRpcEndpoint() {
     const settings = walletState.settings || {};
     if (net === 'mainnet' && settings.mainnetRPC) return settings.mainnetRPC;
     if (net === 'testnet' && settings.testnetRPC) return settings.testnetRPC;
-    return NETWORKS[net] || NETWORKS['local-testnet'];
+    return MOLT_CONFIG.rpc(net);
 }
 
 function getWsEndpoint() {
-    return WS_ENDPOINTS[getSelectedNetwork()] || WS_ENDPOINTS['local-testnet'];
+    return MOLT_CONFIG.ws(getSelectedNetwork());
 }
 
 // ===== LIVE BALANCE WEBSOCKET =====
@@ -603,7 +593,7 @@ function loadWalletState() {
                     wallets: parsed.wallets,
                     activeWalletId: parsed.activeWalletId || null,
                     isLocked: parsed.isLocked !== false,
-                    network: parsed.network || 'local-testnet',
+                    network: parsed.network || MOLT_CONFIG.defaultNetwork,
                     settings: {
                         currency: (parsed.settings && parsed.settings.currency) || 'USD',
                         lockTimeout: (parsed.settings && typeof parsed.settings.lockTimeout === 'number') ? parsed.settings.lockTimeout : 300000,
@@ -2843,11 +2833,17 @@ async function refreshNFTs() {
 function showNFTDetail(mintId) {
     // Navigate to marketplace item detail page
     const id = encodeURIComponent(mintId || '');
-    window.open('../marketplace/item.html?id=' + id, '_blank');
+    const marketBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace)
+        ? String(MOLT_CONFIG.marketplace).replace(/\/+$/, '')
+        : '../marketplace';
+    window.open(marketBase + '/item.html?id=' + id, '_blank');
 }
 
 function openMarketplace() {
-    window.open('../marketplace/index.html', '_blank');
+    const marketBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace)
+        ? String(MOLT_CONFIG.marketplace).replace(/\/+$/, '')
+        : '../marketplace';
+    window.open(marketBase + '/index.html', '_blank');
 }
 
 function formatMolt(shells) {
@@ -4013,12 +4009,8 @@ document.addEventListener('touchmove', resetLockTimer);
 document.addEventListener('scroll', resetLockTimer, true);
 
 // ===== NETWORK SELECTOR=====
-const NETWORK_LABELS = {
-    'mainnet': 'Mainnet',
-    'testnet': 'Testnet',
-    'local-testnet': 'Local Testnet',
-    'local-mainnet': 'Local Mainnet'
-};
+const NETWORK_LABELS = {};
+for (const [k, v] of Object.entries(MOLT_CONFIG.networks)) { NETWORK_LABELS[k] = v.label; }
 
 const NETWORK_COLORS = {
     'mainnet': '#4ade80',
@@ -4028,13 +4020,13 @@ const NETWORK_COLORS = {
 };
 
 function initNetworkSelector() {
-    const networkSelect = document.getElementById('networkSelect');
-    if (!networkSelect) return;
+    MOLT_CONFIG.initNetworkSelector('networkSelect', 'moltchain_wallet_network', (network) => {
+        switchNetwork(network);
+    });
 
-    // Restore saved network
+    // Restore saved network into wallet state
     const savedNetwork = getSelectedNetwork();
     walletState.network = savedNetwork;
-    networkSelect.value = savedNetwork;
 }
 
 function switchNetwork(network) {

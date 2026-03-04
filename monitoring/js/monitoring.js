@@ -24,7 +24,10 @@ const SYMBOLS = [
 const REFRESH_MS = 3000;
 // SHELLS_PER_MOLT loaded from ../shared/utils.js
 
-let rpcUrl = NETWORKS[localStorage.getItem('moltchain_mon_network') || 'local-testnet'];
+const _monIsProduction = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.isProduction) ||
+    (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1');
+const _monDefaultNetwork = _monIsProduction ? 'mainnet' : 'local-testnet';
+let rpcUrl = NETWORKS[localStorage.getItem('moltchain_mon_network') || _monDefaultNetwork];
 let tpsHistory = [];
 let lastSlot = 0;
 let startTime = Date.now();
@@ -135,7 +138,7 @@ function clearEvents() {
 
 function switchNetwork(network) {
     localStorage.setItem('moltchain_mon_network', network);
-    rpcUrl = NETWORKS[network] || NETWORKS['local-testnet'];
+    rpcUrl = NETWORKS[network] || NETWORKS[_monDefaultNetwork];
     addEvent('info', 'exchange-alt', `Switched to ${network}`);
     refresh();
 }
@@ -1656,10 +1659,21 @@ function updateClock() {
 async function init() {
     addEvent('info', 'power-off', 'Mission Control initializing...');
 
-    // Set network selector
-    const savedNet = localStorage.getItem('moltchain_mon_network') || 'local-testnet';
+    // Set network selector — rebuild options, hide local-* in production
+    const savedNet = localStorage.getItem('moltchain_mon_network') || _monDefaultNetwork;
     const sel = document.getElementById('networkSelect');
-    if (sel) sel.value = savedNet;
+    if (sel) {
+        sel.innerHTML = '';
+        const labels = { mainnet: 'Mainnet', testnet: 'Testnet', 'local-testnet': 'Local Testnet', 'local-mainnet': 'Local Mainnet' };
+        for (const key of Object.keys(NETWORKS)) {
+            if (_monIsProduction && (key === 'local-testnet' || key === 'local-mainnet')) continue;
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.textContent = labels[key] || key;
+            sel.appendChild(opt);
+        }
+        sel.value = savedNet;
+    }
 
     // Clock
     setInterval(updateClock, 1000);

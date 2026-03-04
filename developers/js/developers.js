@@ -393,9 +393,9 @@ const SEARCH_INDEX = [
     { title: 'DEX Contracts', desc: 'Core DEX programs, governance and rewards', url: 'contract-reference.html#dex-core', category: 'Contracts' },
 
     // Tools
-    { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: '../explorer/index.html', category: 'Tools' },
-    { title: 'Faucet', desc: 'Get testnet MOLT tokens', url: '../faucet/index.html', category: 'Tools' },
-    { title: 'Marketplace', desc: 'MoltChain NFT and token marketplace', url: '../marketplace/index.html', category: 'Tools' },
+    { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.explorer) || '../explorer/index.html', category: 'Tools' },
+    { title: 'Faucet', desc: 'Get testnet MOLT tokens', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) || '../faucet/index.html', category: 'Tools' },
+    { title: 'Marketplace', desc: 'MoltChain NFT and token marketplace', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace) || '../marketplace/index.html', category: 'Tools' },
 ];
 
 function initSearch() {
@@ -561,56 +561,43 @@ function normalizeSearchText(text) {
 
 const NETWORK_STORAGE_KEY = 'moltchain_dev_network';
 
-const NETWORK_ENDPOINTS = {
-    'local-testnet': 'http://localhost:8899',
-    'local-mainnet': 'http://localhost:9899',
-    testnet: 'https://testnet-rpc.moltchain.network',
-    mainnet: 'https://rpc.moltchain.network',
-    devnet: 'http://localhost:8899'
-};
-
-const NETWORK_WS_ENDPOINTS = {
-    'local-testnet': 'ws://localhost:8900',
-    'local-mainnet': 'ws://localhost:9900',
-    testnet: 'wss://testnet-rpc.moltchain.network/ws',
-    mainnet: 'wss://rpc.moltchain.network/ws',
-    devnet: 'ws://localhost:8900'
-};
+// Network endpoints — centralized in shared-config.js (MOLT_CONFIG)
+const NETWORK_ENDPOINTS = {};
+const NETWORK_WS_ENDPOINTS = {};
+for (const [k, v] of Object.entries(MOLT_CONFIG.networks)) {
+    NETWORK_ENDPOINTS[k] = v.rpc;
+    NETWORK_WS_ENDPOINTS[k] = v.ws;
+}
 
 function initNetworkSelector() {
-    const select = document.getElementById('devNetworkSelect') || document.querySelector('.network-select');
-    if (!select) return;
+    MOLT_CONFIG.initNetworkSelector(
+        document.getElementById('devNetworkSelect') || document.querySelector('.network-select'),
+        NETWORK_STORAGE_KEY,
+        (network, cfg) => {
+            setActiveNetwork(network);
+        }
+    );
 
-    const availableValues = new Set(Array.from(select.options).map(option => option.value));
-    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || select.value || 'local-testnet';
-    const initialNetwork = availableValues.has(savedNetwork) ? savedNetwork : (select.value || 'local-testnet');
-
-    select.value = initialNetwork;
-    setActiveNetwork(initialNetwork);
-
-    select.addEventListener('change', () => {
-        const network = select.value;
-        if (!network) return;
-        localStorage.setItem(NETWORK_STORAGE_KEY, network);
-        setActiveNetwork(network);
-    });
+    // Set initial active network
+    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || MOLT_CONFIG.defaultNetwork;
+    setActiveNetwork(MOLT_CONFIG.resolveNetwork(savedNetwork));
 }
 
 function setActiveNetwork(network) {
-    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : 'local-testnet';
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : MOLT_CONFIG.defaultNetwork;
 
     // Update endpoint displays on the page
     document.querySelectorAll('.endpoint-display[data-type="rpc"]').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'];
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork);
     });
 
     document.querySelectorAll('.endpoint-display[data-type="ws"]').forEach(el => {
-        el.textContent = NETWORK_WS_ENDPOINTS[resolvedNetwork] || NETWORK_WS_ENDPOINTS['local-testnet'];
+        el.textContent = NETWORK_WS_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.ws(resolvedNetwork);
     });
 
     // Update any generic endpoint display
     document.querySelectorAll('.endpoint-display:not([data-type])').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'];
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork);
     });
 
     // Dispatch custom event for other scripts to react
@@ -628,12 +615,12 @@ function setActiveNetwork(network) {
  * @returns {{ network: string, rpc: string, ws: string }}
  */
 function getActiveNetwork() {
-    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || 'local-testnet';
-    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : 'local-testnet';
+    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || MOLT_CONFIG.defaultNetwork;
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : MOLT_CONFIG.defaultNetwork;
     return {
         network: resolvedNetwork,
-        rpc: NETWORK_ENDPOINTS[resolvedNetwork] || NETWORK_ENDPOINTS['local-testnet'],
-        ws: NETWORK_WS_ENDPOINTS[resolvedNetwork] || NETWORK_WS_ENDPOINTS['local-testnet']
+        rpc: NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork),
+        ws: NETWORK_WS_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.ws(resolvedNetwork)
     };
 }
 
@@ -656,8 +643,10 @@ function initNavHighlight() {
         // Resolve the link href relative to current location
         const linkPath = new URL(href, window.location.origin + currentPath).pathname;
 
-        if (currentPath === linkPath || currentPath.startsWith(linkPath.replace(/index\.html$/, ''))) {
+        if (currentPath === linkPath || currentPath.endsWith(linkPath)) {
             link.classList.add('active');
+        } else {
+            link.classList.remove('active');
         }
     });
 

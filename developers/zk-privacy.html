@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -232,28 +229,28 @@
             <!-- ── CLI Shield ── -->
             <section id="cli-shield">
                 <h2><code>zk-prove shield</code></h2>
-                <div class="code-block"><code><pre>./target/release/zk-prove shield --amount &lt;shells&gt; --pk-dir ~/.moltchain/zk</pre></code></div>
+                <div class="code-block"><pre><code>./target/release/zk-prove shield --amount &lt;shells&gt; --pk-dir ~/.moltchain/zk</code></pre></div>
                 <p>Generates a Groth16 proof for a shield operation.</p>
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><code><pre>{
+                <div class="code-block"><pre><code>{
   "type": "shield",
   "commitment": "912f53dd...",       // 32-byte hex — store on chain
   "blinding": "a1b2c3d4...",         // 32-byte hex — SAVE LOCALLY
   "serial": "e5f6a7b8...",           // 32-byte hex — SAVE LOCALLY
   "spending_key": "1234abcd...",     // 32-byte hex — SAVE LOCALLY
   "proof": "deadbeef..."            // 128-byte hex — Groth16 proof
-}</pre></code></div>
+}</code></pre></div>
             </section>
 
             <!-- ── CLI Unshield ── -->
             <section id="cli-unshield">
                 <h2><code>zk-prove unshield</code></h2>
-                <div class="code-block"><code><pre>./target/release/zk-prove unshield \
+                <div class="code-block"><pre><code>./target/release/zk-prove unshield \
   --amount &lt;shells&gt; \
   --blinding &lt;hex&gt; --serial &lt;hex&gt; --spending-key &lt;hex&gt; \
   --recipient &lt;base58_pubkey&gt; \
   --merkle-root &lt;hex&gt; --merkle-path &lt;hex,hex,...&gt; --path-bits 0,1,0,... \
-  --pk-dir ~/.moltchain/zk</pre></code></div>
+  --pk-dir ~/.moltchain/zk</code></pre></div>
                 <p>Generates a Groth16 proof for an unshield (withdrawal) operation.</p>
                 <h3>Prerequisites</h3>
                 <ul>
@@ -261,24 +258,24 @@
                     <li>The current Merkle root and path for the note's leaf index (from <code>getShieldedMerklePath</code>)</li>
                 </ul>
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><code><pre>{
+                <div class="code-block"><pre><code>{
   "type": "unshield",
   "nullifier": "f08d00a6...",        // 32-byte hex
   "recipient_hash": "c1d2e3f4...",   // 32-byte hex
   "proof": "abcdef01..."            // 128-byte hex
-}</pre></code></div>
+}</code></pre></div>
             </section>
 
             <!-- ── CLI Transfer ── -->
             <section id="cli-transfer">
                 <h2><code>zk-prove transfer</code></h2>
-                <div class="code-block"><code><pre>./target/release/zk-prove transfer \
+                <div class="code-block"><pre><code>./target/release/zk-prove transfer \
   --transfer-json witness.json \
-  --pk-dir ~/.moltchain/zk</pre></code></div>
+  --pk-dir ~/.moltchain/zk</code></pre></div>
                 <p>Generates a Groth16 proof for a 2-in-2-out shielded transfer.</p>
 
                 <h3>Witness file format (<code>witness.json</code>)</h3>
-                <div class="code-block"><code><pre>{
+                <div class="code-block"><pre><code>{
   "merkle_root": "&lt;hex 32-byte&gt;",
   "inputs": [
     {
@@ -295,7 +292,7 @@
     { "amount": 350000000 },
     { "amount": 150000000 }
   ]
-}</pre></code></div>
+}</code></pre></div>
                 <ul>
                     <li><code>merkle_path</code> — 20 sibling hashes from <code>getShieldedMerklePath</code></li>
                     <li><code>path_bits</code> — 20 booleans (left/right at each tree level)</li>
@@ -304,7 +301,7 @@
                 </ul>
 
                 <h3>Output (JSON)</h3>
-                <div class="code-block"><code><pre>{
+                <div class="code-block"><pre><code>{
   "type": "transfer",
   "merkle_root": "7047a713...",
   "nullifier_a": "8580318a...",
@@ -322,7 +319,7 @@
       "blinding": "...", "serial": "...", "commitment": "..."
     }
   ]
-}</pre></code></div>
+}</code></pre></div>
                 <p>The <code>outputs</code> array contains the secrets for each new note. The recipient
                 needs these values to spend the note later.</p>
             </section>
@@ -331,7 +328,7 @@
             <section id="python-sdk">
                 <h2>Python SDK</h2>
                 <p>The <code>moltchain</code> Python package provides instruction builders for all three operations:</p>
-                <div class="code-block"><code><pre>from moltchain import (
+                <div class="code-block"><pre><code>from moltchain import (
     Connection, Keypair, TransactionBuilder,
     shield_instruction, unshield_instruction, transfer_instruction,
 )
@@ -367,13 +364,13 @@ ix = transfer_instruction(
     output_commitments=[bytes.fromhex(t["commitment_c"]), bytes.fromhex(t["commitment_d"])],
     merkle_root=bytes.fromhex(t["merkle_root"]),
     proof=bytes.fromhex(t["proof"]),
-)</pre></code></div>
+)</code></pre></div>
             </section>
 
             <!-- ── Workflow ── -->
             <section id="workflow">
                 <h2>End-to-End Workflow</h2>
-                <div class="code-block"><code><pre># 1. Shield — deposit 0.5 MOLT into the pool
+                <div class="code-block"><pre><code># 1. Shield — deposit 0.5 MOLT into the pool
 zk-prove shield --amount 500000000 --pk-dir ~/.moltchain/zk > shield.json
 # → Save blinding, serial, spending_key from shield.json
 
@@ -392,7 +389,7 @@ zk-prove transfer --transfer-json witness.json --pk-dir ~/.moltchain/zk > transf
 # 5. Unshield — withdraw back to transparent account
 zk-prove unshield --amount 500000000 ... --pk-dir ~/.moltchain/zk > unshield.json
 ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
-# → Shells appear in recipient's transparent balance</pre></code></div>
+# → Shells appear in recipient's transparent balance</code></pre></div>
             </section>
 
             <!-- ── RPC Methods ── -->
@@ -402,7 +399,7 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
 
                 <h3><code>getShieldedPoolState</code></h3>
                 <p>Returns the full shielded pool state.</p>
-                <div class="code-block"><code><pre>// Request
+                <div class="code-block"><pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"getShieldedPoolState"}
 
 // Response
@@ -418,35 +415,35 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "vkShieldHash": "c0381284...",
   "vkUnshieldHash": "9d015c5b...",
   "vkTransferHash": "b705c04e..."
-}</pre></code></div>
+}</code></pre></div>
 
                 <h3><code>getShieldedMerkleRoot</code></h3>
                 <p>Returns just the current Merkle root.</p>
-                <div class="code-block"><code><pre>// Response
-{ "merkleRoot": "43b19b67fc7151e1..." }</pre></code></div>
+                <div class="code-block"><pre><code>// Response
+{ "merkleRoot": "43b19b67fc7151e1..." }</code></pre></div>
 
                 <h3><code>getShieldedMerklePath</code></h3>
                 <p>Returns the authentication path for a leaf at the given index.</p>
-                <div class="code-block"><code><pre>// Request
+                <div class="code-block"><pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"getShieldedMerklePath","params":[0]}
 
 // Response
 {
   "siblings": ["a1b2c3...", "d4e5f6...", ...],  // 20 hex strings
   "pathBits": [false, true, false, ...]          // 20 booleans
-}</pre></code></div>
+}</code></pre></div>
 
                 <h3><code>isNullifierSpent</code></h3>
                 <p>Checks whether a nullifier has been revealed (note spent).</p>
-                <div class="code-block"><code><pre>// Request
+                <div class="code-block"><pre><code>// Request
 {"jsonrpc":"2.0","id":1,"method":"isNullifierSpent","params":["8580318ad00a9c2a..."]}
 
 // Response
-{ "spent": true }</pre></code></div>
+{ "spent": true }</code></pre></div>
 
                 <h3><code>getShieldedCommitments</code></h3>
                 <p>Paginated list of all commitments in the Merkle tree.</p>
-                <div class="code-block"><code><pre>// Request (optional: from, limit)
+                <div class="code-block"><pre><code>// Request (optional: from, limit)
 {"jsonrpc":"2.0","id":1,"method":"getShieldedCommitments","params":[0, 100]}
 
 // Response
@@ -455,7 +452,7 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "total": 4,
   "from": 0,
   "limit": 100
-}</pre></code></div>
+}</code></pre></div>
             </section>
 
             <!-- ── REST Endpoints ── -->
@@ -541,6 +538,7 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

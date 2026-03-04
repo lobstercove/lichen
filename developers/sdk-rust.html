@@ -35,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
@@ -51,6 +47,7 @@
         </div>
     </div>
 
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="docs-layout">
         <aside class="docs-sidebar">
             <div class="sidebar-section">
@@ -115,16 +112,16 @@
                 <h2>Installation</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">toml</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre># Cargo.toml
+                    <pre><code># Cargo.toml
 [dependencies]
 moltchain-sdk = "0.1"
 tokio = { version = "1", features = ["full"] }
-</pre></code>
+</code></pre>
                 </div>
                 <p>Or via the command line:</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span></div>
-                    <code><pre>cargo add moltchain-sdk</pre></code>
+                    <pre><code>cargo add moltchain-sdk</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Re-exports: <code>moltchain_sdk::{Client, ClientBuilder, Keypair, TransactionBuilder, Balance, Block, NetworkInfo}</code></p>
@@ -136,7 +133,7 @@ tokio = { version = "1", features = ["full"] }
                 <h2>Quick Start</h2>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>use moltchain_sdk::{Client, Keypair, TransactionBuilder, Balance};
+                    <pre><code>use moltchain_sdk::{Client, Keypair, TransactionBuilder, Balance};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -162,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Signature: {sig}");
 
     Ok(())
-}</pre></code>
+}</code></pre>
                 </div>
             </section>
 
@@ -176,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 <p class="method-desc">Create a client pointing at the given JSON-RPC endpoint.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>let client = Client::new("http://localhost:8899");</pre></code>
+                    <pre><code>let client = Client::new("http://localhost:8899");</code></pre>
                 </div>
             </div>
 
@@ -185,10 +182,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 <p class="method-desc">Create a client with advanced options via the builder pattern.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>let client = Client::builder()
+                    <pre><code>let client = Client::builder()
     .rpc_url("http://localhost:8899")
     .timeout(std::time::Duration::from_secs(30))
-    .build()?;</pre></code>
+    .build()?;</code></pre>
                 </div>
                 <table class="param-table">
                     <thead><tr><th>Builder Method</th><th>Type</th><th>Description</th></tr></thead>
@@ -208,8 +205,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 <p class="method-desc">Get the current slot number.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>let slot = client.get_slot().await?;
-println!("Slot: {slot}");</pre></code>
+                    <pre><code>let slot = client.get_slot().await?;
+println!("Slot: {slot}");</code></pre>
                 </div>
             </div>
 
@@ -248,8 +245,8 @@ println!("Slot: {slot}");</pre></code>
                 <p class="method-desc">Get network information — chain ID, network ID, version, slot.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>let info = client.get_network_info().await?;
-println!("Chain: {} v{}", info.chain_id, info.version);</pre></code>
+                    <pre><code>let info = client.get_network_info().await?;
+println!("Chain: {} v{}", info.chain_id, info.version);</code></pre>
                 </div>
             </div>
 
@@ -271,8 +268,8 @@ println!("Chain: {} v{}", info.chain_id, info.version);</pre></code>
                 <p class="method-desc">Get account balance. Returns a strongly-typed <code>Balance</code>.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>let bal = client.get_balance("7xKXtg2CW87d...").await?;
-println!("{} shells  ({} MOLT)", bal.shells(), bal.molt());</pre></code>
+                    <pre><code>let bal = client.get_balance("7xKXtg2CW87d...").await?;
+println!("{} shells  ({} MOLT)", bal.shells(), bal.molt());</code></pre>
                 </div>
             </div>
 
@@ -294,7 +291,7 @@ println!("{} shells  ({} MOLT)", bal.shells(), bal.molt());</pre></code>
                 <p class="method-desc">Submit a signed transaction JSON. Returns the signature string.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>let blockhash = client.get_recent_blockhash().await?;
+                    <pre><code>let blockhash = client.get_recent_blockhash().await?;
 let tx = TransactionBuilder::new()
     .add_instruction(serde_json::json!({
         "type": 0,
@@ -305,7 +302,7 @@ let tx = TransactionBuilder::new()
     .recent_blockhash(&blockhash)
     .build_and_sign(&kp)?;
 
-let sig = client.send_transaction(&tx).await?;</pre></code>
+let sig = client.send_transaction(&tx).await?;</code></pre>
                 </div>
             </div>
 
@@ -342,11 +339,11 @@ let sig = client.send_transaction(&tx).await?;</pre></code>
                 <p class="method-desc">Stake MOLT to a validator. Amount in shells.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>let sig = client.stake(
+                    <pre><code>let sig = client.stake(
     &kp.pubkey(),
     "ValidatorPubkey...",
     10_000_000_000  // 10 MOLT
-).await?;</pre></code>
+).await?;</code></pre>
                 </div>
             </div>
 
@@ -450,8 +447,8 @@ let sig = client.send_transaction(&tx).await?;</pre></code>
                 <p class="method-desc">Generate a new random keypair.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>let kp = Keypair::new();
-println!("Pubkey: {}", kp.pubkey());</pre></code>
+                    <pre><code>let kp = Keypair::new();
+println!("Pubkey: {}", kp.pubkey());</code></pre>
                 </div>
             </div>
 
@@ -460,8 +457,8 @@ println!("Pubkey: {}", kp.pubkey());</pre></code>
                 <p class="method-desc">Derive a deterministic keypair from a 32-byte seed.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>let seed = [0u8; 32];
-let kp = Keypair::from_seed(&seed);</pre></code>
+                    <pre><code>let seed = [0u8; 32];
+let kp = Keypair::from_seed(&seed);</code></pre>
                 </div>
             </div>
 
@@ -511,7 +508,7 @@ let kp = Keypair::from_seed(&seed);</pre></code>
                 <p class="method-desc">Sign the instructions and return a transaction JSON object ready to submit.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                    <code><pre>use serde_json::json;
+                    <pre><code>use serde_json::json;
 
 let blockhash = client.get_recent_blockhash().await?;
 let tx = TransactionBuilder::new()
@@ -525,7 +522,7 @@ let tx = TransactionBuilder::new()
     .build_and_sign(&kp)?;
 
 let sig = client.send_transaction(&tx).await?;
-println!("Transfer complete: {sig}");</pre></code>
+println!("Transfer complete: {sig}");</code></pre>
                 </div>
             </div>
 
@@ -548,9 +545,9 @@ println!("Transfer complete: {sig}");</pre></code>
                 </table>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>let b = Balance::from_molt(25.0);
+                    <pre><code>let b = Balance::from_molt(25.0);
 assert_eq!(b.shells(), 25_000_000_000);
-assert_eq!(b.molt(), 25.0);</pre></code>
+assert_eq!(b.molt(), 25.0);</code></pre>
                 </div>
             </div>
 
@@ -559,14 +556,14 @@ assert_eq!(b.molt(), 25.0);</pre></code>
                 <p class="method-desc">Deserialized block data.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>#[derive(Debug, Deserialize)]
+                    <pre><code>#[derive(Debug, Deserialize)]
 pub struct Block {
     pub slot: u64,
     pub hash: String,
     pub parent_hash: String,
     pub timestamp: u64,
     pub transactions: Vec<Value>,
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -575,7 +572,7 @@ pub struct Block {
                 <p class="method-desc">Deserialized network information.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <code><pre>#[derive(Debug, Deserialize)]
+                    <pre><code>#[derive(Debug, Deserialize)]
 pub struct NetworkInfo {
     pub chain_id: String,
     pub network_id: String,
@@ -583,7 +580,7 @@ pub struct NetworkInfo {
     pub slot: u64,
     pub validator_count: u64,
     pub peer_count: u64,
-}</pre></code>
+}</code></pre>
                 </div>
             </div>
 
@@ -595,7 +592,7 @@ pub struct NetworkInfo {
 
             <div class="code-block">
                 <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                <code><pre>match client.get_balance("7xKXtg2CW87d...").await {
+                <pre><code>match client.get_balance("7xKXtg2CW87d...").await {
     Ok(balance) => println!("{} MOLT", balance.molt()),
     Err(e) => {
         let msg = e.to_string();
@@ -605,7 +602,7 @@ pub struct NetworkInfo {
             eprintln!("RPC error: {e}");
         }
     }
-}</pre></code>
+}</code></pre>
             </div>
 
             <div class="callout callout-warning">
@@ -688,6 +685,7 @@ async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     </div>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>

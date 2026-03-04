@@ -11,43 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <style>
-        .nav-menu a.active { color: var(--primary); }
-        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
-        .search-input:focus { outline: none; border-color: var(--primary); }
-        .search-container { position: relative; }
-        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
-        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-        .network-select:focus { outline: none; border-color: var(--primary); }
-        .nav-actions { display: flex; align-items: center; gap: 1rem; }
-        .dev-hero { padding: 10rem 0 4rem; text-align: center; position: relative; overflow: hidden; }
-        .dev-hero-bg { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(circle at 30% 40%, rgba(255,107,53,0.12) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(6,214,160,0.08) 0%, transparent 50%), radial-gradient(circle at 50% 80%, rgba(0,78,137,0.1) 0%, transparent 50%); }
-        .dev-hero-content { position: relative; z-index: 1; }
-        .dev-hero h1 { font-size: 4rem; font-weight: 900; margin-bottom: 1rem; line-height: 1.1; }
-        .dev-hero p { font-size: 1.25rem; color: var(--text-secondary); max-width: 640px; margin: 0 auto 2.5rem; line-height: 1.7; }
-        .dev-hero-cta { display: flex; gap: 1rem; justify-content: center; }
-        .stats-bar { padding: 3rem 0; background: var(--bg-darker); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
-        .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; text-align: center; transition: all 0.3s ease; }
-        .stat-card:hover { border-color: var(--primary); transform: translateY(-2px); }
-        .stat-card .stat-value { font-size: 2rem; font-weight: 800; color: var(--primary); margin-bottom: 0.25rem; font-family: 'JetBrains Mono', monospace; }
-        .stat-card .stat-label { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-        .hub-section { padding: 4rem 0; }
-        .hub-section-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; color: #fff; }
-        .quick-code { padding: 4rem 0; background: var(--bg-darker); }
-        .quick-code h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: #fff; }
-        .quick-code .subtitle { color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
-        .dev-footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; }
-        .dev-footer-links { display: flex; gap: 2rem; justify-content: center; margin-bottom: 1rem; }
-        .dev-footer-links a { color: var(--text-secondary); font-weight: 500; transition: color 0.2s; }
-        .dev-footer-links a:hover { color: var(--primary); }
-        .dev-footer-copy { color: var(--text-muted); font-size: 0.85rem; }
-        @media (max-width: 768px) {
-            .dev-hero h1 { font-size: 2.5rem; }
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .dev-hero-cta { flex-direction: column; align-items: center; }
-        }
-    </style>
 </head>
 <body>
     <nav class="nav">
@@ -72,10 +35,6 @@
                     <i class="fas fa-search search-icon"></i>
                 </div>
                 <select id="devNetworkSelect" class="network-select">
-                    <option value="mainnet">Mainnet</option>
-                    <option value="testnet">Testnet</option>
-                    <option value="local-testnet" selected>Local Testnet</option>
-                    <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
             <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
@@ -319,8 +278,8 @@ $ molt balance --url https://testnet-rpc.moltchain.io Mo1t...YourAddress
         <div class="container">
             <div class="dev-footer-links">
                 <a href="https://github.com/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
-                <a href="../explorer/index.html"><i class="fas fa-cube"></i> Explorer</a>
-                <a href="../marketplace/index.html"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
                 <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
             </div>
             <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
@@ -328,30 +287,18 @@ $ molt balance --url https://testnet-rpc.moltchain.io Mo1t...YourAddress
     </footer>
 
     <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
     <script>
     (function() {
-        // Determine RPC endpoint from network selector
-        const ENDPOINTS = {
-            'mainnet': 'https://rpc.moltchain.io',
-            'testnet': 'https://testnet-rpc.moltchain.io',
-            'local-testnet': 'http://localhost:8899',
-            'local-mainnet': 'http://localhost:8899'
-        };
-        const WS_ENDPOINTS = {
-            'mainnet': 'wss://rpc.moltchain.io/ws',
-            'testnet': 'wss://testnet-rpc.moltchain.io/ws',
-            'local-testnet': 'ws://localhost:8900',
-            'local-mainnet': 'ws://localhost:8900'
-        };
-
+        // Use MOLT_CONFIG for network endpoints (shared-config.js)
         function getNetwork() {
             const sel = document.getElementById('devNetworkSelect');
-            return sel ? sel.value : 'local-testnet';
+            return sel ? sel.value : MOLT_CONFIG.defaultNetwork;
         }
-        function getEndpoint() { return ENDPOINTS[getNetwork()] || 'http://localhost:8899'; }
-        function getWsEndpoint() { return WS_ENDPOINTS[getNetwork()] || 'ws://localhost:8900'; }
+        function getEndpoint() { return MOLT_CONFIG.rpc(getNetwork()); }
+        function getWsEndpoint() { return MOLT_CONFIG.ws(getNetwork()); }
 
         function fmt(n) {
             if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';

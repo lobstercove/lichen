@@ -835,11 +835,7 @@
                     <div class="settings-card-body">
                         <div class="form-group">
                             <label>Active Network</label>
-                            <select id="networkSelect" class="form-input" onchange="switchNetwork(this.value)">
-                                <option value="mainnet">Mainnet</option>
-                                <option value="testnet">Testnet</option>
-                                <option value="local-testnet">Local Testnet</option>
-                                <option value="local-mainnet">Local Mainnet</option>
+                            <select id="networkSelect" class="form-input">
                             </select>
                         </div>
                         <div class="form-group">
@@ -1119,6 +1115,7 @@
         </div>
     </div>
 
+    <script src="shared/env.js"></script>
     <script src="shared-config.js"></script>
     <script src="js/wallet.js"></script>
     <script src="js/identity.js"></script>

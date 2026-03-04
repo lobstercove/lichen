@@ -258,7 +258,7 @@ impl PeerManager {
         let same_ip = peer_addr.ip() == self.local_addr.ip();
         let loopback_pair = peer_addr.ip().is_loopback() && self.local_addr.ip().is_loopback();
         let unspecified_pair =
-            peer_addr.ip().is_unspecified() || self.local_addr.ip().is_unspecified();
+            peer_addr.ip().is_unspecified() && self.local_addr.ip().is_unspecified();
         if peer_addr == self.local_addr
             || (same_port && (same_ip || loopback_pair || unspecified_pair))
         {
@@ -627,7 +627,7 @@ impl PeerManager {
                             let loopback_pair =
                                 peer_addr.ip().is_loopback() && local_addr.ip().is_loopback();
                             let unspecified_pair =
-                                peer_addr.ip().is_unspecified() || local_addr.ip().is_unspecified();
+                                peer_addr.ip().is_unspecified() && local_addr.ip().is_unspecified();
                             if peer_addr == local_addr
                                 || (same_port && (same_ip || loopback_pair || unspecified_pair))
                             {

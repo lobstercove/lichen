@@ -1737,7 +1737,7 @@ pub fn build_rpc_router(
     };
 
     // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
-    // (comma-separated).  Defaults to localhost-only + moltchain.io subdomains.
+    // (comma-separated).  Defaults to localhost-only + moltchain.network subdomains.
     // Set to "*" for development-only wildcard (NOT recommended for production).
     let allowed_hosts: Vec<String> = std::env::var("MOLTCHAIN_CORS_ORIGINS")
         .ok()
@@ -1746,6 +1746,14 @@ pub fn build_rpc_router(
             vec![
                 "localhost".to_string(),
                 "127.0.0.1".to_string(),
+                "moltchain.network".to_string(),
+                "app.moltchain.network".to_string(),
+                "rpc.moltchain.network".to_string(),
+                "api.moltchain.network".to_string(),
+                "explorer.moltchain.network".to_string(),
+                "dex.moltchain.network".to_string(),
+                "faucet.moltchain.network".to_string(),
+                "wallet.moltchain.network".to_string(),
                 "moltchain.io".to_string(),
                 "app.moltchain.io".to_string(),
                 "rpc.moltchain.io".to_string(),
