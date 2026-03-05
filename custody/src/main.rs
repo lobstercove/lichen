@@ -2829,7 +2829,11 @@ async fn check_credit_confirmation(
     let Some(rpc_url) = state.config.molt_rpc_url.as_ref() else {
         return Ok(None);
     };
-    let result = molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await?;
+    let result = match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await {
+        Ok(v) => v,
+        Err(e) if e.contains("not found") || e.contains("not exist") => return Ok(None),
+        Err(e) => return Err(e),
+    };
     if result.is_null() {
         return Ok(None);
     }
@@ -3118,6 +3122,10 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
+                tracing::warn!(
+                    "credit mint failed for deposit={}: {}",
+                    job.deposit_id, err
+                );
                 mark_credit_failed(&mut job, err);
                 store_credit_job(&state.db, &job)?;
             }
@@ -3126,7 +3134,14 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
 
     let mut submitted = list_credit_jobs_by_status(&state.db, "submitted")?;
     for job in submitted.iter_mut() {
-        if let Some(confirmed) = check_credit_confirmation(state, job).await? {
+        let confirmation = match check_credit_confirmation(state, job).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("credit confirmation check failed for job={}: {}", job.job_id, e);
+                continue;
+            }
+        };
+        if let Some(confirmed) = confirmation {
             if confirmed {
                 job.status = "confirmed".to_string();
                 job.last_error = None;
@@ -3161,9 +3176,9 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
 }
 
 fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<CreditJob>, String> {
-    let amount_shells = match sweep.amount.as_ref() {
+    let raw_amount = match sweep.amount.as_ref() {
         Some(value) => value
-            .parse::<u64>()
+            .parse::<u128>()
             .map_err(|_| "invalid amount".to_string())?,
         None => return Ok(None),
     };
@@ -3190,6 +3205,28 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
             "no wrapped token contract configured for chain={} asset={}",
             source_chain,
             source_asset
+        );
+        return Ok(None);
+    }
+
+    // Convert from source chain decimals to MoltChain 9-decimal shells.
+    // EVM native (ETH/BNB) uses 18 decimals (wei), SOL uses 9 (lamports).
+    // MoltChain wrapped tokens all use 9 decimals.
+    let source_decimals: u32 = match source_chain.as_str() {
+        "eth" | "ethereum" | "bsc" | "bnb" => 18,
+        "sol" | "solana" => 9,
+        _ => 18, // default to EVM
+    };
+    let amount_shells: u64 = if source_decimals > 9 {
+        let divisor = 10u128.pow(source_decimals - 9);
+        (raw_amount / divisor) as u64
+    } else {
+        raw_amount as u64
+    };
+    if amount_shells == 0 {
+        tracing::warn!(
+            "converted amount is 0 shells (raw={}, chain={}), skipping credit",
+            raw_amount, source_chain
         );
         return Ok(None);
     }
