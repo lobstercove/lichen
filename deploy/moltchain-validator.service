@@ -18,7 +18,8 @@ ExecStart=/usr/local/bin/moltchain-validator \
     --rpc-port ${MOLTCHAIN_RPC_PORT} \
     --ws-port ${MOLTCHAIN_WS_PORT} \
     --p2p-port ${MOLTCHAIN_P2P_PORT} \
-    --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK}
+    --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK} \
+    ${MOLTCHAIN_EXTRA_ARGS:-}
 
 Restart=on-failure
 RestartSec=10

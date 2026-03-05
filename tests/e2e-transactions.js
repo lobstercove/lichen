@@ -285,7 +285,7 @@ async function waitForConfirmation(signature, timeoutMs = 10000) {
     while (Date.now() - start < timeoutMs) {
         try {
             const result = await rpc('confirmTransaction', [signature]);
-            if (result?.value?.confirmationStatus) return result;
+            if (result?.value?.confirmation_status) return result;
         } catch { /* not yet */ }
         await new Promise(r => setTimeout(r, 500));
     }
@@ -405,7 +405,7 @@ async function runTests() {
             await sleep(2000);
             try {
                 const conf = await rpc('confirmTransaction', [sig]);
-                assert(conf?.value !== undefined, `Transfer confirmed: ${JSON.stringify(conf?.value?.confirmationStatus || 'unknown')}`);
+                assert(conf?.value !== undefined, `Transfer confirmed: ${JSON.stringify(conf?.value?.confirmation_status || 'unknown')}`);
             } catch (e) {
                 console.warn(`  ⚠ confirmTransaction: ${e.message}`);
             }

@@ -972,11 +972,19 @@ impl PeerFingerprintStore {
 
         match store.get(&addr_str) {
             Some(known) if *known == hex_fp => Ok(false), // known, matches
-            Some(known) => Err(format!(
-                "TOFU VIOLATION: Peer {} certificate fingerprint changed! Known: {}, Got: {}. \
-                 This may indicate a MITM attack or unauthorized identity change.",
-                addr, known, hex_fp
-            )),
+            Some(known) => {
+                warn!(
+                    "TOFU: Peer {} certificate fingerprint changed (known: {}..., got: {}...). \
+                     Accepting updated identity (may be legitimate reinstall/state wipe).",
+                    addr, &known[..16], &hex_fp[..16]
+                );
+                drop(store);
+                // Update stored fingerprint to accept the new identity
+                self.fingerprints.lock().unwrap_or_else(|e| e.into_inner())
+                    .insert(addr_str, hex_fp);
+                self.save();
+                Ok(true) // updated peer
+            }
             None => {
                 store.insert(addr_str, hex_fp);
                 drop(store); // release lock before I/O

@@ -2458,7 +2458,7 @@ async fn solana_get_signature_status(
         .and_then(|v| v.get("confirmations"))
         .and_then(|v| v.as_u64());
     let confirmation_status = value
-        .and_then(|v| v.get("confirmationStatus"))
+        .and_then(|v| v.get("confirmation_status"))
         .and_then(|v| v.as_str())
         .map(|v| v.to_string());
     Ok(SignatureStatus {
@@ -2787,7 +2787,7 @@ async fn solana_get_signature_confirmed(
         return Ok(None);
     }
     let confirmed = value
-        .and_then(|v| v.get("confirmationStatus"))
+        .and_then(|v| v.get("confirmation_status"))
         .and_then(|v| v.as_str())
         .map(|status| status == "finalized")
         .unwrap_or(false);
@@ -7659,7 +7659,7 @@ fn assemble_signed_evm_tx(
 }
 
 /// Check if a Solana transaction is confirmed with enough confirmations
-/// AUDIT-FIX 1.18: Properly check confirmationStatus and confirmation count
+/// AUDIT-FIX 1.18: Properly check confirmation_status and confirmation count
 async fn check_solana_tx_confirmed(
     client: &reqwest::Client,
     url: &str,
@@ -7686,9 +7686,9 @@ async fn check_solana_tx_confirmed(
         return Ok(false);
     }
 
-    // Check confirmationStatus — "finalized" is the safest
+    // Check confirmation_status — "finalized" is the safest
     let confirmation_status = status
-        .get("confirmationStatus")
+        .get("confirmation_status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 

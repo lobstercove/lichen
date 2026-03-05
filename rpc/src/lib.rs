@@ -1094,6 +1094,56 @@ fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
     }
 }
 
+/// Extract token metadata from a contract-call instruction.
+/// Returns (symbol, token_amount_shells, decimals) if the target contract is a
+/// token/wrapped contract and the function carries an amount argument.
+/// Extracts token info from a contract call instruction.
+/// Returns (symbol, amount, decimals, optional_recipient_base58).
+fn extract_token_info(
+    state: &StateStore,
+    ix: &Instruction,
+) -> Option<(String, u64, u64, Option<String>)> {
+    if ix.program_id != CONTRACT_PROGRAM_ID {
+        return None;
+    }
+    let contract_addr = ix.accounts.get(1)?;
+    let entry = state.get_symbol_registry_by_program(contract_addr).ok()??;
+    let template = entry.template.as_deref()
+        .or_else(|| entry.metadata.as_ref()
+            .and_then(|m| m.get("template"))
+            .and_then(|v| v.as_str()))?;
+    if template != "wrapped" && template != "token" {
+        return None;
+    }
+    let decimals = entry.metadata.as_ref()
+        .and_then(|m| m.get("decimals"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(9);
+    let function = parse_contract_function(ix)?;
+    let args = parse_contract_call_args(ix)?;
+    let (amount, recipient) = match function.as_str() {
+        "mint" if args.len() >= 72 => {
+            // mint(caller: [u8;32], to: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
+            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
+            (amt, Some(to.to_base58()))
+        }
+        "burn" if args.len() >= 40 => {
+            // burn(caller: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[32..40].try_into().ok()?);
+            (amt, None)
+        }
+        "transfer" if args.len() >= 72 => {
+            // transfer(from: [u8;32], to: [u8;32], amount: u64)
+            let amt = u64::from_le_bytes(args[64..72].try_into().ok()?);
+            let to = Pubkey::new(<[u8; 32]>::try_from(&args[32..64]).ok()?);
+            (amt, Some(to.to_base58()))
+        }
+        _ => return Some((entry.symbol.clone(), 0, decimals, None)),
+    };
+    Some((entry.symbol.clone(), amount, decimals, recipient))
+}
+
 fn instruction_type(ix: &Instruction) -> &'static str {
     if ix.program_id == SYSTEM_PROGRAM_ID {
         if ix.data.first() == Some(&0) {
@@ -2552,6 +2602,7 @@ fn symbol_registry_entry_to_json(entry: SymbolRegistryEntry) -> serde_json::Valu
         "name": entry.name,
         "template": entry.template,
         "metadata": entry.metadata,
+        "decimals": entry.decimals,
     })
 }
 
@@ -3123,8 +3174,25 @@ async fn handle_get_transaction(
             // Add commitment status to transaction response
             let (status, confirmations) = tx_commitment_status(state, slot);
             if let Some(obj) = json.as_object_mut() {
-                obj.insert("confirmationStatus".to_string(), serde_json::json!(status));
+                obj.insert("confirmation_status".to_string(), serde_json::json!(status));
                 obj.insert("confirmations".to_string(), confirmations);
+                // Enrich contract-call transactions with token metadata
+                if obj.get("type").and_then(|v| v.as_str()) == Some("Contract") {
+                    if let Some(ix) = tx.message.instructions.first() {
+                        if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                            obj.insert("token_symbol".to_string(), serde_json::json!(symbol));
+                            obj.insert("token_amount".to_string(), serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)));
+                            obj.insert("token_amount_shells".to_string(), serde_json::json!(token_amt));
+                            obj.insert("token_decimals".to_string(), serde_json::json!(decimals));
+                            if let Some(ref to_addr) = token_to {
+                                obj.insert("token_to".to_string(), serde_json::json!(to_addr));
+                            }
+                            if let Some(func) = parse_contract_function(ix) {
+                                obj.insert("contract_function".to_string(), serde_json::json!(func));
+                            }
+                        }
+                    }
+                }
             }
             Ok(json)
         }
@@ -3262,7 +3330,7 @@ async fn handle_get_transactions_by_address(
 
         let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
 
-        results.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
             "signature": tx.signature().to_hex(),
             "slot": slot,
@@ -3276,7 +3344,27 @@ async fn handle_get_transactions_by_address(
             "fee_shells": fee,
             "fee_molt": fee as f64 / 1_000_000_000.0,
             "success": true,
-        }));
+        });
+
+        // Enrich contract-call transactions with token metadata
+        if tx_type == "Contract" {
+            if let Some(ix) = first_ix {
+                if let Some(func) = parse_contract_function(ix) {
+                    entry["contract_function"] = serde_json::json!(func);
+                }
+                if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                    entry["token_symbol"] = serde_json::json!(symbol);
+                    entry["token_amount"] = serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
+                    entry["token_amount_shells"] = serde_json::json!(token_amt);
+                    entry["token_decimals"] = serde_json::json!(decimals);
+                    if let Some(ref to_addr) = token_to {
+                        entry["token_to"] = serde_json::json!(to_addr);
+                    }
+                }
+            }
+        }
+
+        results.push(entry);
 
         last_slot = Some(*slot);
     }
@@ -3375,7 +3463,7 @@ async fn handle_get_recent_transactions(
 
         let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
 
-        results.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "hash": tx.signature().to_hex(),
             "signature": tx.signature().to_hex(),
             "slot": slot,
@@ -3389,7 +3477,27 @@ async fn handle_get_recent_transactions(
             "fee_shells": fee,
             "fee_molt": fee as f64 / 1_000_000_000.0,
             "success": true,
-        }));
+        });
+
+        // Enrich contract-call transactions with token metadata
+        if tx_type == "Contract" {
+            if let Some(ix) = first_ix {
+                if let Some(func) = parse_contract_function(ix) {
+                    entry["contract_function"] = serde_json::json!(func);
+                }
+                if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                    entry["token_symbol"] = serde_json::json!(symbol);
+                    entry["token_amount"] = serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
+                    entry["token_amount_shells"] = serde_json::json!(token_amt);
+                    entry["token_decimals"] = serde_json::json!(decimals);
+                    if let Some(ref to_addr) = token_to {
+                        entry["token_to"] = serde_json::json!(to_addr);
+                    }
+                }
+            }
+        }
+
+        results.push(entry);
 
         last_slot = Some(*slot);
     }
@@ -3573,7 +3681,7 @@ fn parse_commitment(params: &Option<serde_json::Value>) -> &str {
 }
 
 /// Determine the commitment status of a transaction given its slot.
-/// Returns (confirmationStatus, confirmations_or_null).
+/// Returns (confirmation_status, confirmations_or_null).
 fn tx_commitment_status(state: &RpcState, tx_slot: u64) -> (&'static str, serde_json::Value) {
     if let Some(ref ft) = state.finality {
         let status = ft.commitment_for_slot(tx_slot);
@@ -3605,7 +3713,7 @@ fn tx_commitment_status(state: &RpcState, tx_slot: u64) -> (&'static str, serde_
 /// ```json
 /// {
 ///   "value": {
-///     "confirmationStatus": "processed"|"confirmed"|"finalized",
+///     "confirmation_status": "processed"|"confirmed"|"finalized",
 ///     "slot": 42,
 ///     "confirmations": 5 | null,
 ///     "err": null
@@ -3678,7 +3786,7 @@ async fn handle_confirm_transaction(
 
     Ok(serde_json::json!({
         "value": {
-            "confirmationStatus": status,
+            "confirmation_status": status,
             "slot": tx_slot,
             "confirmations": confirmations,
             "err": null,
@@ -4421,7 +4529,7 @@ async fn handle_solana_get_signature_statuses(
                 "slot": tx_slot,
                 "confirmations": confirmations,
                 "err": serde_json::Value::Null,
-                "confirmationStatus": status,
+                "confirmation_status": status,
             }));
         } else {
             values.push(serde_json::Value::Null);
@@ -4520,7 +4628,7 @@ async fn handle_solana_get_signatures_for_address(
             "err": serde_json::Value::Null,
             "memo": serde_json::Value::Null,
             "blockTime": block_time,
-            "confirmationStatus": "finalized",
+            "confirmation_status": "finalized",
         }));
     }
 
@@ -6187,64 +6295,38 @@ async fn handle_get_contract_info(
                 .map(|a| a.functions.iter().map(|f| f.name.clone()).collect())
                 .unwrap_or_default();
 
-            // Extract MT-20 token metadata from contract storage.
+            // Extract MT-20 token metadata from contract storage + registry.
             //
-            // Wrapped tokens (wBNB/wETH/wSOL/mUSD) use prefixed keys: {prefix}_supply
-            // SDK standard tokens use: total_supply
-            // Check prefixed keys FIRST (primary), then fall back to total_supply.
+            // All tokens use prefixed keys: {prefix}_supply (e.g. molt_supply, wbnb_supply).
+            // Primary source: symbol registry entry (has name, symbol, decimals).
+            // Supply value: read directly via {symbol_lowercase}_supply key.
             let mut tmeta = serde_json::Map::new();
 
-            // Primary: scan for prefixed supply keys (wbnb_supply, weth_supply, etc.)
-            for (key, val) in ca.storage.iter() {
-                if let Ok(k) = std::str::from_utf8(key) {
-                    if k.ends_with("_supply")
-                        && !k.ends_with("_minted")
-                        && !k.ends_with("_burned")
-                    {
-                        if val.len() == 8 {
-                            let supply = u64::from_le_bytes([
-                                val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
-                            ]);
-                            tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
-                        }
-                        break;
+            // Look up registry entry for this contract to get the prefix
+            let reg_entry = state.state.get_symbol_registry_by_program(&contract_id).ok().flatten();
+            if let Some(ref entry) = reg_entry {
+                let prefix = entry.symbol.to_lowercase();
+                let supply_key = format!("{}_supply", prefix);
+                if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
+                    if v.len() == 8 {
+                        let supply = u64::from_le_bytes([
+                            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                        ]);
+                        tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                     }
                 }
+                // Pull name/symbol/decimals from registry metadata
+                if let Some(ref meta) = entry.metadata {
+                    if let Some(v) = meta.get("decimals") {
+                        tmeta.insert("decimals".to_string(), v.clone());
+                    }
+                    if let Some(v) = meta.get("name") {
+                        tmeta.insert("token_name".to_string(), v.clone());
+                    }
+                }
+                tmeta.insert("token_symbol".to_string(), serde_json::json!(&entry.symbol));
             }
 
-            // Fallback: SDK standard `total_supply` key (user-created tokens)
-            if !tmeta.contains_key("total_supply") {
-                if let Some(v) = ca.storage.get(b"total_supply".as_ref()) {
-                    if v.len() == 8 {
-                        let supply =
-                            u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
-                        tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
-                    } else if let Ok(s) = std::str::from_utf8(v) {
-                        if let Ok(n) = s.parse::<u64>() {
-                            tmeta.insert("total_supply".to_string(), serde_json::json!(n));
-                        }
-                    }
-                }
-            }
-            if let Some(v) = ca.storage.get(b"token_decimals".as_ref()) {
-                if let Ok(s) = std::str::from_utf8(v) {
-                    if let Ok(n) = s.parse::<u8>() {
-                        tmeta.insert("decimals".to_string(), serde_json::json!(n));
-                    }
-                } else if v.len() == 1 {
-                    tmeta.insert("decimals".to_string(), serde_json::json!(v[0]));
-                }
-            }
-            if let Some(v) = ca.storage.get(b"token_name".as_ref()) {
-                if let Ok(s) = std::str::from_utf8(v) {
-                    tmeta.insert("token_name".to_string(), serde_json::json!(s));
-                }
-            }
-            if let Some(v) = ca.storage.get(b"token_symbol".as_ref()) {
-                if let Ok(s) = std::str::from_utf8(v) {
-                    tmeta.insert("token_symbol".to_string(), serde_json::json!(s));
-                }
-            }
             // Detect mintable/burnable from ABI function names
             let has_mint = abi_fn_names.iter().any(|n| n == "mint");
             let has_burn = abi_fn_names.iter().any(|n| n == "burn");
@@ -6306,44 +6388,10 @@ async fn handle_get_contract_info(
             .insert("token_metadata".to_string(), tm);
     }
 
-    // Enrich with registry metadata fallback (for supply, decimals, etc.)
+    // Enrich with registry metadata (is_native flag)
     if let Ok(Some(reg)) = state.state.get_symbol_registry_by_program(&contract_id) {
         if let Some(reg_meta) = &reg.metadata {
             let rm = result.as_object_mut().unwrap();
-            // If token_metadata doesn't exist yet, create it from registry
-            if !rm.contains_key("token_metadata") {
-                let mut tmeta = serde_json::Map::new();
-                if let Some(v) = reg_meta.get("total_supply") {
-                    tmeta.insert("total_supply".to_string(), v.clone());
-                }
-                if let Some(v) = reg_meta.get("decimals") {
-                    tmeta.insert("decimals".to_string(), v.clone());
-                }
-                if let Some(v) = reg_meta.get("mintable") {
-                    tmeta.insert("mintable".to_string(), v.clone());
-                }
-                if let Some(v) = reg_meta.get("burnable") {
-                    tmeta.insert("burnable".to_string(), v.clone());
-                }
-                if !tmeta.is_empty() {
-                    rm.insert(
-                        "token_metadata".to_string(),
-                        serde_json::Value::Object(tmeta),
-                    );
-                }
-            } else if let Some(tm) = rm.get_mut("token_metadata") {
-                // Merge missing fields from registry into existing token_metadata
-                if let Some(tm_obj) = tm.as_object_mut() {
-                    for key in &["total_supply", "decimals", "mintable", "burnable"] {
-                        if !tm_obj.contains_key(*key) {
-                            if let Some(v) = reg_meta.get(*key) {
-                                tm_obj.insert(key.to_string(), v.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            // Add is_native flag if present
             if reg_meta.get("is_native").and_then(|v| v.as_bool()) == Some(true) {
                 rm.insert("is_native".to_string(), serde_json::json!(true));
             }
@@ -6983,6 +7031,10 @@ async fn handle_deploy_contract(
                             .and_then(|t| t.as_str())
                             .map(|s| s.to_string()),
                         metadata: registry_data.get("metadata").cloned(),
+                        decimals: registry_data
+                            .get("decimals")
+                            .and_then(|d| d.as_u64())
+                            .map(|d| d as u8),
                     };
                     if let Err(e) = state.state.register_symbol(symbol, entry) {
                         warn!("deployContract: register_symbol failed: {}", e);

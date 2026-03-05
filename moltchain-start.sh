@@ -181,12 +181,13 @@ if lsof -i ":$P2P_PORT" >/dev/null 2>&1; then
 fi
 
 # ── Build binary ──
-if $FORCE_BUILD || [ ! -x "$BIN_PATH" ]; then
-    echo -e "${CYAN}[1/4]${NC} Building moltchain-validator..."
-    cargo build --release --bin moltchain-validator 2>&1 | tail -5
+GENESIS_BIN="./target/release/moltchain-genesis"
+if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ]; then
+    echo -e "${CYAN}[1/4]${NC} Building moltchain binaries..."
+    cargo build --release --bin moltchain-validator --bin moltchain-genesis 2>&1 | tail -5
     echo -e "  ${GREEN}✅ Build complete${NC}"
 else
-    echo -e "${CYAN}[1/4]${NC} Binary found: $BIN_PATH"
+    echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN"
 fi
 echo ""
 
@@ -209,12 +210,15 @@ VALIDATOR_CMD=("$BIN_PATH"
 
 if [ -n "$BOOTSTRAP_PEERS" ]; then
     VALIDATOR_CMD+=(--bootstrap-peers "$BOOTSTRAP_PEERS")
+    # External bootstrap requires binding on all interfaces so QUIC can
+    # reach remote peers (127.0.0.1 loopback can't route to public IPs).
+    VALIDATOR_CMD+=(--listen-addr 0.0.0.0)
 fi
 
 # ── Start validator ──
 if $IS_GENESIS; then
-    echo -e "${CYAN}[2/4]${NC} Starting ${GREEN}GENESIS${NC} validator..."
-    echo -e "  🎯 This validator will create the chain and treasury"
+    echo -e "${CYAN}[2/4]${NC} Running ${GREEN}GENESIS${NC} creation..."
+    echo -e "  🎯 Creating genesis block and treasury"
     echo -e "     Treasury keys will be saved to: ${DB_PATH}/genesis-keys/"
 
     # Fetch real-time prices from Binance for genesis pool pricing
@@ -240,6 +244,18 @@ except: pass
     else
         echo -e "  ${YELLOW}⚠  Could not fetch prices, using defaults${NC}"
     fi
+
+    # Run standalone genesis tool BEFORE starting the validator
+    echo -e "  🔨 Running moltchain-genesis..."
+    "$GENESIS_BIN" --network "$NETWORK" --db-path "$DB_PATH"
+    GENESIS_EXIT=$?
+    if [ $GENESIS_EXIT -ne 0 ]; then
+        echo -e "  ${RED}❌ Genesis creation failed (exit code: $GENESIS_EXIT)${NC}"
+        exit 1
+    fi
+    echo -e "  ${GREEN}✅ Genesis block created successfully${NC}"
+    echo ""
+    echo -e "  Starting validator on top of genesis state..."
 else
     echo -e "${CYAN}[2/4]${NC} Starting validator..."
 fi

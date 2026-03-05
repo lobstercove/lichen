@@ -70,7 +70,7 @@ chown "$USER":"$GROUP" "$DATA_DIR" "$LOG_DIR"
 echo "✅ Directories created"
 
 # ── 3. Copy binaries ──
-for bin in moltchain-validator molt moltchain-faucet; do
+for bin in moltchain-validator moltchain-genesis molt moltchain-faucet; do
     if [ -f "target/release/$bin" ]; then
         cp "target/release/$bin" "$INSTALL_DIR/$bin"
         chmod +x "$INSTALL_DIR/$bin"
@@ -79,6 +79,15 @@ for bin in moltchain-validator molt moltchain-faucet; do
         echo "   ⚠  $bin not found in target/release/ (skipping)"
     fi
 done
+
+# ── 3b. Copy seeds.json to config dir ──
+if [ -f "seeds.json" ]; then
+    cp seeds.json "$CONFIG_DIR/seeds.json"
+    chmod 644 "$CONFIG_DIR/seeds.json"
+    echo "✅ Installed seeds.json → $CONFIG_DIR/seeds.json"
+else
+    echo "   ⚠  seeds.json not found (validators will need --bootstrap-peers)"
+fi
 
 # ── 4. Generate env file + install systemd per network ──
 for net in "${NETWORKS[@]}"; do
@@ -104,6 +113,8 @@ MOLTCHAIN_P2P_PORT=$P2P_PORT
 # P9-INF-09: Custody signer binds to loopback only (not all interfaces)
 MOLTCHAIN_SIGNER_BIND=127.0.0.1:$SIGNER_PORT
 RUST_LOG=info
+# Extra CLI args passed to the validator
+MOLTCHAIN_EXTRA_ARGS=
 # MOLTCHAIN_ADMIN_TOKEN=your-secret-token-here
 EOF
     chmod 600 "$ENV_FILE"
@@ -150,6 +161,8 @@ for net in "${NETWORKS[@]}"; do
     esac
 done
 echo ""
-echo "⚠  First boot: the first validator on a network creates genesis automatically."
+echo "⚠  Genesis: The FIRST validator on a network creates genesis automatically."
+echo "   All subsequent validators discover seeds via seeds.json and sync from"
+echo "   the existing network. Never multiple genesis — seeds.json ensures it."
 echo "   Genesis keys (treasury) will be in: $DATA_DIR/state-<network>/genesis-keys/"
 echo "   Keep those keys secure — they control the 1B MOLT treasury."

@@ -52,7 +52,7 @@ static mut TOKEN: Option<Token> = None;
 pub extern "C" fn initialize(owner_ptr: *const u8) {
     // Initialize your token
     unsafe {
-        TOKEN = Some(Token::new("MyToken", "MTK", 9));
+        TOKEN = Some(Token::new("MyToken", "MTK", 9, "mtk"));
     }
     log_info("Token initialized!");
 }
@@ -100,7 +100,7 @@ pub trait MT20 {
 ```rust
 use moltchain_sdk::Token;
 
-let mut token = Token::new("MyCoin", "MYC", 9);
+let mut token = Token::new("MyCoin", "MYC", 9, "myc");
 
 // Initialize with 1 million tokens
 token.initialize(1_000_000_000_000_000, owner_address)?;

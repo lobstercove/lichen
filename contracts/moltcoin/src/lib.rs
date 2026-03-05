@@ -24,9 +24,14 @@ fn reentrancy_exit() {
     storage_set(REENTRANCY_KEY, &[0u8]);
 }
 
-/// Read the contract owner from persistent storage.
+const TOKEN_NAME: &[u8] = b"MoltCoin";
+const TOKEN_SYMBOL: &[u8] = b"MOLT";
+const DECIMALS: u8 = 9;
+const ADMIN_KEY: &[u8] = b"molt_admin";
+
+/// Read the contract admin from persistent storage.
 fn get_owner() -> Address {
-    match storage_get(b"owner") {
+    match storage_get(ADMIN_KEY) {
         Some(bytes) if bytes.len() == 32 => {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&bytes);
@@ -39,37 +44,36 @@ fn get_owner() -> Address {
 /// Build a lightweight Token handle.
 /// All mutable state (balances, allowances, total_supply) lives in storage.
 fn make_token() -> Token {
-    Token::new("MoltCoin", "MOLT", 9)
+    Token::new("MoltCoin", "MOLT", 9, "molt")
 }
 
 /// Initialize the token contract
 #[no_mangle]
-pub extern "C" fn initialize(owner_ptr: *const u8) {
-    // Re-initialization guard: reject if owner is already set
-    if storage_get(b"owner").is_some() {
+pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
+    // Re-initialization guard: reject if admin is already set
+    if storage_get(ADMIN_KEY).is_some() {
         log_info("MoltCoin already initialized — ignoring");
-        return;
+        return 0;
     }
 
     let mut owner_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
     let owner = Address::new(owner_array);
 
-    // Persist owner to storage
-    storage_set(b"owner", &owner.0);
-
-    // Store token metadata in storage for discoverability
-    storage_set(b"token_name", b"MoltCoin");
-    storage_set(b"token_symbol", b"MOLT");
-    storage_set(b"token_decimals", &[9u8]);
+    // Persist admin to storage (unified key: molt_admin)
+    storage_set(ADMIN_KEY, &owner.0);
 
     // AUDIT-FIX GX-03: Initial supply must match genesis allocation (1B MOLT)
     // 1B MOLT = 1_000_000_000 * 1_000_000_000 shells (9 decimal places)
     let initial_supply: u64 = 1_000_000_000_000_000_000; // 1B MOLT in shells
     let mut token = make_token();
-    token.initialize(initial_supply, owner).expect("Initialization failed");
+    if token.initialize(initial_supply, owner).is_err() {
+        log_info("MoltCoin initialization failed");
+        return 0;
+    }
 
     log_info("MoltCoin initialized");
+    1
 }
 
 /// Get balance of an account
@@ -272,10 +276,7 @@ pub extern "C" fn transfer_from(spender_ptr: *const u8, from_ptr: *const u8, to_
 /// Get total supply (read from persistent storage)
 #[no_mangle]
 pub extern "C" fn total_supply() -> u64 {
-    match storage_get(b"total_supply") {
-        Some(bytes) => bytes_to_u64(&bytes),
-        None => 0,
-    }
+    make_token().get_total_supply()
 }
 
 // Build instructions:
@@ -297,19 +298,15 @@ mod tests {
     fn test_initialize() {
         setup();
         let owner = [1u8; 32];
-        initialize(owner.as_ptr());
+        let result = initialize(owner.as_ptr());
+        assert_eq!(result, 1); // success
 
-        // Check owner stored
-        let stored_owner = test_mock::get_storage(b"owner");
-        assert_eq!(stored_owner, Some(owner.to_vec()));
+        // Check admin stored under unified key
+        let stored_admin = test_mock::get_storage(ADMIN_KEY);
+        assert_eq!(stored_admin, Some(owner.to_vec()));
 
-        // Check token metadata
-        assert_eq!(test_mock::get_storage(b"token_name"), Some(b"MoltCoin".to_vec()));
-        assert_eq!(test_mock::get_storage(b"token_symbol"), Some(b"MOLT".to_vec()));
-        assert_eq!(test_mock::get_storage(b"token_decimals"), Some([9u8].to_vec()));
-
-        // Check total supply (1B * 10^9 = 1_000_000_000_000_000_000)
-        let supply_bytes = test_mock::get_storage(b"total_supply").unwrap();
+        // Check total supply via unified key (molt_supply)
+        let supply_bytes = test_mock::get_storage(b"molt_supply").unwrap();
         let supply = bytes_to_u64(&supply_bytes);
         assert_eq!(supply, 1_000_000_000_000_000_000); // 1B MOLT
     }
@@ -318,7 +315,8 @@ mod tests {
     fn test_balance_of_owner_after_init() {
         setup();
         let owner = [1u8; 32];
-        initialize(owner.as_ptr());
+        let result = initialize(owner.as_ptr());
+        assert_eq!(result, 1);
 
         let bal = balance_of(owner.as_ptr());
         assert_eq!(bal, 1_000_000_000_000_000_000); // 1B MOLT
@@ -329,7 +327,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let recipient = [2u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         test_mock::set_caller(owner);
         let amount: u64 = 500_000_000; // 0.5 MOLT
@@ -347,7 +345,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let recipient = [2u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Try to transfer more than balance from recipient (who has 0)
         test_mock::set_caller(recipient);
@@ -360,7 +358,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let recipient = [3u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         test_mock::set_caller(owner);
         let mint_amount: u64 = 1_000_000_000;
@@ -381,7 +379,7 @@ mod tests {
         let owner = [1u8; 32];
         let other = [2u8; 32];
         let recipient = [3u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Non-owner tries to mint
         let result = mint(other.as_ptr(), recipient.as_ptr(), 100);
@@ -392,7 +390,7 @@ mod tests {
     fn test_burn() {
         setup();
         let owner = [1u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         test_mock::set_caller(owner);
         let burn_amount: u64 = 100_000_000_000;
@@ -411,7 +409,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let nobody = [9u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Try to burn from account with 0 balance
         test_mock::set_caller(nobody);
@@ -424,7 +422,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let spender = [2u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         test_mock::set_caller(owner);
         let result = approve(owner.as_ptr(), spender.as_ptr(), 5000);
@@ -438,7 +436,7 @@ mod tests {
         let owner = [1u8; 32];
         let spender = [2u8; 32];
         let recipient = [3u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Owner approves spender for 100 tokens
         test_mock::set_caller(owner);
@@ -467,7 +465,7 @@ mod tests {
         let owner = [1u8; 32];
         let spender = [2u8; 32];
         let recipient = [3u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Owner approves spender for 100 tokens
         test_mock::set_caller(owner);
@@ -485,7 +483,7 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let recipient = [3u8; 32];
-        initialize(owner.as_ptr());
+        let _ = initialize(owner.as_ptr());
 
         // Try to mint more than MAX_SUPPLY (10B MOLT = 10_000_000_000_000_000_000 shells)
         // Current supply after init = 1_000_000_000_000_000 (1M MOLT)

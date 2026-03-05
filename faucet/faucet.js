@@ -9,7 +9,7 @@ const EXPLORER_BASE =
     (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG?.explorer) ||
     (typeof window !== 'undefined' && window.MOLT_CONFIG?.explorer) ||
     '../explorer';
-const MOLT_PER_REQUEST = 100;
+let MOLT_PER_REQUEST = 100; // default; overwritten by /faucet/config
 
 function formatCooldown(seconds) {
     const value = Number(seconds || 0);
@@ -104,7 +104,8 @@ async function updateStats() {
         const cooldownEl = document.getElementById('statCooldown');
         const dailyLimitEl = document.getElementById('statDailyLimit');
 
-        if (perRequestEl) perRequestEl.textContent = `${Number(data.max_per_request || MOLT_PER_REQUEST)} MOLT`;
+        if (data.max_per_request) MOLT_PER_REQUEST = Number(data.max_per_request);
+        if (perRequestEl) perRequestEl.textContent = `${MOLT_PER_REQUEST} MOLT`;
         if (cooldownEl) cooldownEl.textContent = formatCooldown(data.cooldown_seconds || 0);
         if (dailyLimitEl) dailyLimitEl.textContent = `${Number(data.daily_limit_per_ip || 0)} MOLT / IP`;
 
