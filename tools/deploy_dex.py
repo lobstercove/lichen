@@ -117,6 +117,45 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
     return PublicKey(h[:32])
 
 
+# Maps symbol registry names → deploy_dex contract names
+SYMBOL_TO_CONTRACT = {
+    "MUSD": "musd_token",
+    "WSOL": "wsol_token",
+    "WETH": "weth_token",
+    "WBNB": "wbnb_token",
+    "DEX": "dex_core",
+    "DEXAMM": "dex_amm",
+    "DEXROUTER": "dex_router",
+    "DEXMARGIN": "dex_margin",
+    "DEXREWARDS": "dex_rewards",
+    "DEXGOV": "dex_governance",
+    "ANALYTICS": "dex_analytics",
+    "PREDICT": "prediction_market",
+}
+
+
+async def discover_existing_contracts(conn: Connection) -> Dict[str, PublicKey]:
+    """Query the symbol registry for contracts already deployed (e.g. at genesis).
+    Returns {contract_name: PublicKey} for any contracts we manage."""
+    try:
+        result = await conn._rpc("getAllSymbolRegistry")
+        entries = result.get("entries", [])
+    except Exception:
+        return {}
+    found = {}
+    for entry in entries:
+        sym = entry.get("symbol", "")
+        prog = entry.get("program", "")
+        if sym in SYMBOL_TO_CONTRACT and prog:
+            contract_name = SYMBOL_TO_CONTRACT[sym]
+            found[contract_name] = PublicKey.from_base58(prog)
+    if found:
+        print(f"\n🔍 Discovered {len(found)} existing contract(s) on-chain (genesis-deployed):")
+        for name, pk in sorted(found.items()):
+            print(f"   {name:20s} → {pk}")
+    return found
+
+
 async def deploy_contract(
     conn: Connection, deployer: Keypair, name: str, wasm_bytes: bytes,
     treasury_pubkey: PublicKey = None
@@ -196,23 +235,32 @@ async def call_contract_raw(
 
 async def phase_deploy(
     conn: Connection, deployer: Keypair, contracts: list, label: str,
-    treasury_pubkey: PublicKey = None
+    treasury_pubkey: PublicKey = None,
+    existing: Dict[str, PublicKey] = None
 ) -> Dict[str, PublicKey]:
-    """Deploy a batch of contracts. Returns {name: pubkey}."""
+    """Deploy a batch of contracts. Skips already-deployed (genesis) contracts.
+    Returns {name: pubkey}."""
     print(f"\n{'═' * 60}")
     print(f"  {label}")
     print(f"{'═' * 60}")
     deployed = {}
     for c in contracts:
+        name = c["name"]
+        # Skip if already on-chain (genesis-deployed)
+        if existing and name in existing:
+            deployed[name] = existing[name]
+            print(f"\n  📦 {name} — already on-chain (genesis)")
+            print(f"     📍 Address   {existing[name]}")
+            continue
         wasm_path = find_wasm(c["wasm"])
         if not wasm_path:
-            print(f"  ⚠️  {c['name']}: WASM not found ({c['wasm']}), skipping")
+            print(f"  ⚠️  {name}: WASM not found ({c['wasm']}), skipping")
             continue
         wasm_bytes = wasm_path.read_bytes()
-        print(f"\n  📦 {c['name']} — {len(wasm_bytes):,} bytes")
+        print(f"\n  📦 {name} — {len(wasm_bytes):,} bytes")
         try:
-            sig, pubkey = await deploy_contract(conn, deployer, c["name"], wasm_bytes, treasury_pubkey)
-            deployed[c["name"]] = pubkey
+            sig, pubkey = await deploy_contract(conn, deployer, name, wasm_bytes, treasury_pubkey)
+            deployed[name] = pubkey
             print(f"     ✅ Deployed  sig={sig}")
             print(f"     📍 Address   {pubkey}")
         except Exception as e:
@@ -566,27 +614,30 @@ async def main():
 
     all_addrs: Dict[str, PublicKey] = {}
 
+    # ── Pre-check: discover contracts deployed at genesis ──
+    existing = await discover_existing_contracts(conn)
+
     # ── Phase 1: Wrapped Tokens ──
     # Resolve treasury pubkey for deploy instruction accounts
     treasury_pubkey = admin_pubkey
 
-    addrs = await phase_deploy(conn, deployer, PHASE_1_TOKENS, "PHASE 1 — WRAPPED TOKEN CONTRACTS", treasury_pubkey)
+    addrs = await phase_deploy(conn, deployer, PHASE_1_TOKENS, "PHASE 1 — WRAPPED TOKEN CONTRACTS", treasury_pubkey, existing)
     all_addrs.update(addrs)
     await phase_initialize_tokens(conn, deployer, all_addrs, admin_pubkey)
 
     # ── Phase 2: DEX Core ──
-    addrs = await phase_deploy(conn, deployer, PHASE_2_DEX_CORE, "PHASE 2 — DEX CORE CONTRACTS", treasury_pubkey)
+    addrs = await phase_deploy(conn, deployer, PHASE_2_DEX_CORE, "PHASE 2 — DEX CORE CONTRACTS", treasury_pubkey, existing)
     all_addrs.update(addrs)
 
     # ── Phase 3: DEX Modules ──
-    addrs = await phase_deploy(conn, deployer, PHASE_3_DEX_MODULES, "PHASE 3 — DEX MODULE CONTRACTS", treasury_pubkey)
+    addrs = await phase_deploy(conn, deployer, PHASE_3_DEX_MODULES, "PHASE 3 — DEX MODULE CONTRACTS", treasury_pubkey, existing)
     all_addrs.update(addrs)
 
     # Initialize DEX + wire everything together
     await phase_initialize_dex(conn, deployer, all_addrs, admin_pubkey)
 
     # ── Phase 4: Prediction Market ──
-    addrs = await phase_deploy(conn, deployer, PHASE_4_PREDICTION, "PHASE 4 — PREDICTION MARKET", treasury_pubkey)
+    addrs = await phase_deploy(conn, deployer, PHASE_4_PREDICTION, "PHASE 4 — PREDICTION MARKET", treasury_pubkey, existing)
     all_addrs.update(addrs)
 
     # Initialize prediction market + wire cross-references
