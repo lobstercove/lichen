@@ -12294,6 +12294,19 @@ async fn handle_create_bridge_deposit(
         });
     }
 
+    // Validate user_id is a valid MoltChain base58 public key (32 bytes)
+    if bs58::decode(user_id)
+        .into_vec()
+        .map(|v| v.len())
+        .unwrap_or(0)
+        != 32
+    {
+        return Err(RpcError {
+            code: -32602,
+            message: "user_id must be a valid MoltChain base58 public key (32 bytes)".to_string(),
+        });
+    }
+
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/deposits", custody_url))

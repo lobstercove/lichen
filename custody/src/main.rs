@@ -935,6 +935,14 @@ async fn create_deposit(
         return Err(Json(ErrorResponse::invalid("Missing user_id/chain/asset")));
     }
 
+    // Validate user_id is a valid MoltChain base58 pubkey (32 bytes).
+    // Reject early so build_credit_job never silently drops a credit.
+    if Pubkey::from_base58(&payload.user_id).is_err() {
+        return Err(Json(ErrorResponse::invalid(
+            "user_id must be a valid MoltChain base58 public key (32 bytes)",
+        )));
+    }
+
     // AUDIT-FIX W-H4: Rate limit deposit creation (60/min global, 10s per-user cooldown)
     {
         let mut dr = state.deposit_rate.lock().await;
@@ -3210,23 +3218,26 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     }
 
     // Convert from source chain decimals to MoltChain 9-decimal shells.
-    // EVM native (ETH/BNB) uses 18 decimals (wei), SOL uses 9 (lamports).
-    // MoltChain wrapped tokens all use 9 decimals.
-    let source_decimals: u32 = match source_chain.as_str() {
-        "eth" | "ethereum" | "bsc" | "bnb" => 18,
-        "sol" | "solana" => 9,
-        _ => 18, // default to EVM
-    };
+    // Must be ASSET-AWARE: native tokens and ERC-20/SPL tokens have different decimals.
+    //   ETH native: 18 dec (wei)    | BNB native: 18 dec (wei)
+    //   SOL native: 9 dec (lamports)
+    //   USDT/USDC on Ethereum: 6 dec | USDT/USDC on BSC: 18 dec
+    //   USDT/USDC on Solana: 6 dec
+    // MoltChain wrapped tokens all use 9 decimals (shells).
+    let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset);
     let amount_shells: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
         (raw_amount / divisor) as u64
+    } else if source_decimals < 9 {
+        let multiplier = 10u128.pow(9 - source_decimals);
+        (raw_amount.saturating_mul(multiplier)) as u64
     } else {
         raw_amount as u64
     };
     if amount_shells == 0 {
         tracing::warn!(
-            "converted amount is 0 shells (raw={}, chain={}), skipping credit",
-            raw_amount, source_chain
+            "converted amount is 0 shells (raw={}, chain={}, asset={}, source_dec={}), skipping credit",
+            raw_amount, source_chain, source_asset, source_decimals
         );
         return Ok(None);
     }
@@ -4101,6 +4112,51 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
     );
 
     molt_send_transaction(&state.http, rpc_url, &tx_base64).await
+}
+
+/// Returns the native decimal precision for a given (chain, asset) pair.
+///
+/// Used by deposit → credit conversion AND withdrawal → outbound conversion.
+///
+/// Native tokens:
+///   ETH on Ethereum:             18 decimals (wei)
+///   BNB on BSC:                  18 decimals (wei)
+///   SOL on Solana:               9 decimals (lamports)
+///
+/// ERC-20 / SPL tokens:
+///   USDT/USDC on Ethereum:       6 decimals
+///   USDT/USDC on BSC (BEP-20):  18 decimals
+///   USDT/USDC on Solana (SPL):   6 decimals
+fn source_chain_decimals(chain: &str, asset: &str) -> u32 {
+    match (chain, asset) {
+        // EVM native
+        ("eth" | "ethereum", "eth") => 18,
+        ("bsc" | "bnb", "bnb") => 18,
+        // ERC-20 stablecoins on Ethereum: 6 decimals
+        ("eth" | "ethereum", "usdt" | "usdc") => 6,
+        // BEP-20 stablecoins on BSC: 18 decimals
+        ("bsc" | "bnb", "usdt" | "usdc") => 18,
+        // Solana native
+        ("sol" | "solana", "sol") => 9,
+        // SPL stablecoins on Solana: 6 decimals
+        ("sol" | "solana", "usdt" | "usdc") => 6,
+        // Default to 18 for unknown EVM-like chains
+        _ => 18,
+    }
+}
+
+/// Convert MoltChain shells (9 decimals) to the target chain's native amount.
+///
+/// Inverse of the deposit conversion in `build_credit_job`.
+fn shells_to_chain_amount(shells: u64, chain: &str, asset: &str) -> u128 {
+    let target_decimals = source_chain_decimals(chain, asset);
+    if target_decimals > 9 {
+        (shells as u128).saturating_mul(10u128.pow(target_decimals - 9))
+    } else if target_decimals < 9 {
+        (shells as u128) / 10u128.pow(9 - target_decimals)
+    } else {
+        shells as u128
+    }
 }
 
 /// Resolve deposited asset → MoltChain wrapped token contract address.
@@ -7212,13 +7268,14 @@ async fn broadcast_self_custody_evm_withdrawal(
     let chain_id = evm_get_chain_id(&state.http, url).await?;
 
     if outbound_asset == "eth" || outbound_asset == "bnb" {
-        // Native value transfer
+        // Native value transfer — convert shells (9 dec) → wei (18 dec)
+        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
         let gas_limit = evm_estimate_gas(
             &state.http,
             url,
             &from_address,
             to_address,
-            job.amount as u128,
+            chain_amount,
             None,
             21_000,
         )
@@ -7230,7 +7287,7 @@ async fn broadcast_self_custody_evm_withdrawal(
             gas_price,
             gas_limit,
             to_address,
-            job.amount as u128,
+            chain_amount,
             chain_id,
         )?;
         let tx_hex = format!("0x{}", hex::encode(raw_tx));
@@ -7241,9 +7298,10 @@ async fn broadcast_self_custody_evm_withdrawal(
             .map(|s| s.to_string())
             .ok_or_else(|| "no tx hash returned".to_string())
     } else {
-        // ERC-20 transfer for stablecoins
+        // ERC-20 transfer for stablecoins — convert shells (9 dec) → token decimals
         let contract = evm_contract_for_asset(&state.config, outbound_asset)?;
-        let transfer_data = evm_encode_erc20_transfer(to_address, job.amount as u128)?;
+        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
+        let transfer_data = evm_encode_erc20_transfer(to_address, chain_amount)?;
         let gas_limit = evm_estimate_gas(
             &state.http,
             url,
@@ -9065,5 +9123,105 @@ mod tests {
         // Different secret should produce different output
         let sig3 = compute_webhook_signature(payload, "different_secret");
         assert_ne!(sig, sig3);
+    }
+
+    // ── Decimal conversion tests ──
+
+    #[test]
+    fn test_source_chain_decimals() {
+        // Native tokens
+        assert_eq!(source_chain_decimals("ethereum", "eth"), 18);
+        assert_eq!(source_chain_decimals("eth", "eth"), 18);
+        assert_eq!(source_chain_decimals("bsc", "bnb"), 18);
+        assert_eq!(source_chain_decimals("bnb", "bnb"), 18);
+        assert_eq!(source_chain_decimals("solana", "sol"), 9);
+        assert_eq!(source_chain_decimals("sol", "sol"), 9);
+
+        // Stablecoins on Ethereum: 6 decimals
+        assert_eq!(source_chain_decimals("ethereum", "usdt"), 6);
+        assert_eq!(source_chain_decimals("eth", "usdc"), 6);
+
+        // Stablecoins on BSC: 18 decimals (BEP-20)
+        assert_eq!(source_chain_decimals("bsc", "usdt"), 18);
+        assert_eq!(source_chain_decimals("bnb", "usdc"), 18);
+
+        // Stablecoins on Solana: 6 decimals (SPL)
+        assert_eq!(source_chain_decimals("solana", "usdt"), 6);
+        assert_eq!(source_chain_decimals("sol", "usdc"), 6);
+    }
+
+    #[test]
+    fn test_shells_to_chain_amount() {
+        // ETH: 1 wETH = 1_000_000_000 shells → 1_000_000_000_000_000_000 wei
+        assert_eq!(
+            shells_to_chain_amount(1_000_000_000, "ethereum", "eth"),
+            1_000_000_000_000_000_000u128
+        );
+
+        // BNB: 0.05 wBNB = 50_000_000 shells → 50_000_000_000_000_000 wei
+        assert_eq!(
+            shells_to_chain_amount(50_000_000, "bsc", "bnb"),
+            50_000_000_000_000_000u128
+        );
+
+        // SOL: 1 wSOL = 1_000_000_000 shells → 1_000_000_000 lamports (same)
+        assert_eq!(
+            shells_to_chain_amount(1_000_000_000, "solana", "sol"),
+            1_000_000_000u128
+        );
+
+        // USDT on Ethereum: 100 mUSD = 100_000_000_000 shells → 100_000_000 atoms (6 dec)
+        assert_eq!(
+            shells_to_chain_amount(100_000_000_000, "ethereum", "usdt"),
+            100_000_000u128
+        );
+
+        // USDT on BSC: 100 mUSD = 100_000_000_000 shells → 100_000_000_000_000_000_000 atoms (18 dec)
+        assert_eq!(
+            shells_to_chain_amount(100_000_000_000, "bsc", "usdt"),
+            100_000_000_000_000_000_000u128
+        );
+
+        // USDC on Solana: 100 mUSD = 100_000_000_000 shells → 100_000_000 atoms (6 dec)
+        assert_eq!(
+            shells_to_chain_amount(100_000_000_000, "solana", "usdc"),
+            100_000_000u128
+        );
+    }
+
+    #[test]
+    fn test_deposit_credit_conversion_roundtrip() {
+        // Verify deposit conversion (chain → shells) and withdrawal conversion
+        // (shells → chain) are exact inverses for whole-unit amounts.
+
+        // 1 ETH deposit: 10^18 wei → 10^9 shells → 10^18 wei
+        let raw_eth: u128 = 1_000_000_000_000_000_000;
+        let dec = source_chain_decimals("ethereum", "eth");
+        let shells = (raw_eth / 10u128.pow(dec - 9)) as u64;
+        assert_eq!(shells, 1_000_000_000);
+        assert_eq!(
+            shells_to_chain_amount(shells, "ethereum", "eth"),
+            raw_eth
+        );
+
+        // 100 USDT on ETH: 100_000_000 (6 dec) → 100_000_000_000 shells → 100_000_000 (6 dec)
+        let raw_usdt: u128 = 100_000_000;
+        let dec = source_chain_decimals("ethereum", "usdt");
+        let shells = (raw_usdt * 10u128.pow(9 - dec)) as u64;
+        assert_eq!(shells, 100_000_000_000);
+        assert_eq!(
+            shells_to_chain_amount(shells, "ethereum", "usdt"),
+            raw_usdt
+        );
+
+        // 1 SOL: 1_000_000_000 lamports → 1_000_000_000 shells → 1_000_000_000 lamports
+        let raw_sol: u128 = 1_000_000_000;
+        let dec = source_chain_decimals("solana", "sol");
+        assert_eq!(dec, 9);
+        let shells = raw_sol as u64;
+        assert_eq!(
+            shells_to_chain_amount(shells, "solana", "sol"),
+            raw_sol
+        );
     }
 }
