@@ -1974,7 +1974,10 @@ async fn process_evm_deposits_for_chains(
     let deposits = list_pending_deposits_for_chains(&state.db, chains)?;
     let block_number = evm_get_block_number(&state.http, url).await?;
 
-    process_evm_erc20_deposits(state, url, &deposits, block_number).await?;
+    // ERC20 failures should not block native balance detection
+    if let Err(e) = process_evm_erc20_deposits(state, url, &deposits, block_number).await {
+        tracing::warn!("erc20 log scan failed (non-fatal): {}", e);
+    }
 
     for deposit in deposits {
         let balance = evm_get_balance(&state.http, url, &deposit.address).await?;
@@ -2230,7 +2233,10 @@ async fn process_evm_deposits(state: &CustodyState, url: &str) -> Result<(), Str
     let deposits = list_pending_deposits_for_chains(&state.db, &["ethereum", "eth", "bsc", "bnb"])?;
     let block_number = evm_get_block_number(&state.http, url).await?;
 
-    process_evm_erc20_deposits(state, url, &deposits, block_number).await?;
+    // ERC20 failures should not block native balance detection
+    if let Err(e) = process_evm_erc20_deposits(state, url, &deposits, block_number).await {
+        tracing::warn!("erc20 log scan failed (non-fatal): {}", e);
+    }
 
     for deposit in deposits {
         let balance = evm_get_balance(&state.http, url, &deposit.address).await?;
@@ -2331,6 +2337,12 @@ async fn process_evm_erc20_deposits(
         if to_block < from_block {
             continue;
         }
+        // Cap block range to 10,000 to avoid RPC limits (BSC testnet caps at 50k)
+        let from_block = if to_block - from_block > 10_000 {
+            to_block - 10_000
+        } else {
+            from_block
+        };
 
         let logs = evm_get_transfer_logs(&state.http, url, &contract, from_block, to_block).await?;
         for log in logs {
