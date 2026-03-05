@@ -874,7 +874,11 @@ async fn main() {
         .route("/events", get(list_events))
         .with_state(state);
 
-    let addr: SocketAddr = "0.0.0.0:9105".parse().expect("valid bind addr");
+    let port = std::env::var("CUSTODY_LISTEN_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(9105);
+    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("valid bind addr");
     info!("custody service listening on {}", addr);
 
     axum::serve(
