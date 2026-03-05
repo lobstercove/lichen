@@ -24,7 +24,7 @@ pub struct TxResult {
     /// Contract return code (if the transaction includes a contract call).
     /// This is the raw WASM function return value — interpretation depends on the
     /// contract's ABI. For MoltyID: 0=success, 1=bad input, 2=identity not found, etc.
-    pub return_code: Option<i32>,
+    pub return_code: Option<i64>,
     /// Log messages emitted by the contract during execution.
     pub contract_logs: Vec<String>,
 }
@@ -39,7 +39,7 @@ pub struct SimulationResult {
     pub compute_used: u64,
     pub return_data: Option<Vec<u8>>,
     /// Contract function return code (if a contract call was simulated).
-    pub return_code: Option<i32>,
+    pub return_code: Option<i64>,
     /// Number of storage changes that would be produced by the TX.
     /// Used by preflight to detect silent failures (success=true, 0 changes).
     pub state_changes: usize,
@@ -136,7 +136,7 @@ pub struct TxProcessor {
     batch: Mutex<Option<StateBatch>>,
     /// Metadata from the most recent contract call execution, accumulated
     /// during process_transaction and drained into TxResult.
-    contract_meta: Mutex<(Option<i32>, Vec<String>)>,
+    contract_meta: Mutex<(Option<i64>, Vec<String>)>,
     /// ZK proof verifier for shielded pool operations
     #[cfg(feature = "zk")]
     zk_verifier: Mutex<crate::zk::Verifier>,
@@ -155,7 +155,7 @@ impl TxProcessor {
 
     /// Drain accumulated contract execution metadata (return_code, logs).
     /// Called when building a TxResult to capture the contract's diagnostics.
-    fn drain_contract_meta(&self) -> (Option<i32>, Vec<String>) {
+    fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>) {
         let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
         (meta.0.take(), std::mem::take(&mut meta.1))
     }
@@ -469,6 +469,22 @@ impl TxProcessor {
             batch.delete_contract_storage(program, storage_key)
         } else {
             self.state.delete_contract_storage(program, storage_key)
+        }
+    }
+
+    /// Update token balance indexes (forward + reverse) within the batch.
+    fn b_update_token_balance(
+        &self,
+        token_program: &Pubkey,
+        holder: &Pubkey,
+        balance: u64,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.update_token_balance(token_program, holder, balance)
+        } else {
+            self.state
+                .update_token_balance(token_program, holder, balance)
         }
     }
 
@@ -1027,7 +1043,7 @@ impl TxProcessor {
     /// Returns the result with estimated fee, logs, and any errors.
     pub fn simulate_transaction(&self, tx: &Transaction) -> SimulationResult {
         let mut logs = Vec::new();
-        let mut last_return_code: Option<i32> = None;
+        let mut last_return_code: Option<i64> = None;
 
         // B-6: Mirror process_transaction blockhash guards for simulation consistency
         // Reject zero blockhash
@@ -1848,6 +1864,10 @@ impl TxProcessor {
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string()),
             metadata: payload.get("metadata").cloned(),
+            decimals: payload
+                .get("decimals")
+                .and_then(|d| d.as_u64())
+                .map(|d| d as u8),
         };
 
         self.b_register_symbol(symbol, entry)?;
@@ -3037,6 +3057,10 @@ impl TxProcessor {
                                 .and_then(|t| t.as_str())
                                 .map(|s| s.to_string()),
                             metadata: registry_data.get("metadata").cloned(),
+                            decimals: registry_data
+                                .get("decimals")
+                                .and_then(|d| d.as_u64())
+                                .map(|d| d as u8),
                         };
                         // AUDIT-FIX 2.5: Route through batch
                         if let Err(e) = self.b_register_symbol(symbol, entry) {
@@ -3239,6 +3263,7 @@ impl TxProcessor {
                     name: registry.name.clone(),
                     template: registry.template.clone(),
                     metadata: registry.metadata.clone(),
+                    decimals: registry.decimals,
                 };
                 self.b_register_symbol(&entry.symbol.clone(), entry)?;
             }
@@ -3416,6 +3441,9 @@ impl TxProcessor {
             self.b_put_account(contract_address, &account)?;
         }
 
+        // Index token balances from top-level storage changes
+        self.index_token_balances_from_map(contract_address, &result.storage_changes)?;
+
         // ── Apply cross-contract call storage changes ────────────────
         // These are storage mutations produced by sub-calls to other contracts
         // during execution. Each target contract's changes are applied
@@ -3448,8 +3476,62 @@ impl TxProcessor {
             updated_target.data = serde_json::to_vec(&target_contract)
                 .map_err(|e| format!("Failed to serialize cross-call target: {}", e))?;
             self.b_put_account(target_addr, &updated_target)?;
+
+            // Index token balances from cross-call storage changes
+            self.index_token_balances_from_map(target_addr, changes)?;
         }
 
+        Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TOKEN BALANCE INDEXING (post-execution hook)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Scan storage changes for token balance keys (`_bal_` pattern) and update
+    /// the token balance indexes (CF_TOKEN_BALANCES / CF_HOLDER_TOKENS).
+    /// Key format in contracts: `{prefix}_bal_{64-hex-of-32-byte-address}` → u64 LE
+    fn index_token_balances_from_map(
+        &self,
+        program: &Pubkey,
+        changes: &std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
+    ) -> Result<(), String> {
+        for (key, value_opt) in changes {
+            self.maybe_index_token_balance(program, key, value_opt)?;
+        }
+        Ok(())
+    }
+
+    /// Check a single storage key for `_bal_` pattern and update token balance index.
+    fn maybe_index_token_balance(
+        &self,
+        program: &Pubkey,
+        key: &[u8],
+        value_opt: &Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let key_str = match std::str::from_utf8(key) {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
+        if let Some(pos) = key_str.find("_bal_") {
+            let hex_part = &key_str[pos + 5..];
+            if hex_part.len() != 64 {
+                return Ok(());
+            }
+            let mut holder_bytes = [0u8; 32];
+            if hex::decode_to_slice(hex_part, &mut holder_bytes).is_err() {
+                return Ok(());
+            }
+            let holder = Pubkey(holder_bytes);
+            let balance = match value_opt {
+                Some(val) if val.len() == 8 => {
+                    u64::from_le_bytes(val.as_slice().try_into().unwrap())
+                }
+                None => 0, // key deleted → zero balance
+                _ => return Ok(()),
+            };
+            self.b_update_token_balance(program, &holder, balance)?;
+        }
         Ok(())
     }
 
@@ -4292,6 +4374,8 @@ struct DeployRegistryData {
     make_public: Option<bool>,
     /// Explicit ABI provided by the deployer (takes priority over auto-extracted)
     abi: Option<ContractAbi>,
+    /// Token decimals (e.g. 9 for MOLT, 18 for ERC-20 style)
+    decimals: Option<u8>,
 }
 
 impl DeployRegistryData {

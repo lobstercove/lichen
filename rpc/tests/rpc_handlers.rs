@@ -277,6 +277,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
                 name: Some("MoltyID Identity".to_string()),
                 template: Some("identity".to_string()),
                 metadata: None,
+                decimals: None,
             },
         )
         .expect("register symbol");

@@ -531,11 +531,13 @@ pub struct ContractResult {
     pub error: Option<String>,
     /// Compute units consumed
     pub compute_used: u64,
-    /// WASM function return code (first I32 return value), if any.
+    /// WASM function return code (first I32/I64 return value), if any.
     /// Informational — contracts use inconsistent conventions:
     /// some return 0=success, others return 1=success. Callers can
     /// inspect this to implement contract-specific error handling.
-    pub return_code: Option<i32>,
+    /// Widened to i64 so that u64-returning functions (balance_of,
+    /// total_supply) are captured without silent truncation.
+    pub return_code: Option<i64>,
     /// Accumulated storage changes from cross-contract sub-calls, keyed by
     /// target contract address. Applied by the processor alongside the
     /// top-level contract's own storage_changes.
@@ -1077,7 +1079,8 @@ impl ContractRuntime {
                 // the JSON arg encoding fix ensures args arrive correctly,
                 // and a WASM trap is the only true execution failure.
                 let ret_code = values.first().and_then(|v| match v {
-                    Value::I32(n) => Some(*n),
+                    Value::I32(n) => Some(*n as i64),
+                    Value::I64(n) => Some(*n),
                     _ => None,
                 });
 

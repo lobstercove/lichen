@@ -100,6 +100,8 @@ pub struct SymbolRegistryEntry {
     pub name: Option<String>,
     pub template: Option<String>,
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
 }
 
 /// Token transfer record stored in CF_TOKEN_TRANSFERS
@@ -2144,7 +2146,33 @@ impl StateStore {
 
         Ok(())
     }
+}
 
+/// Extracts the token recipient pubkey from a contract call instruction's args.
+/// For mint(caller[32]+to[32]+amount[8]) and transfer(from[32]+to[32]+amount[8]),
+/// the recipient is at args[32..64].  Returns None for non-token ops.
+fn extract_token_recipient_from_ix(ix: &crate::transaction::Instruction) -> Option<Pubkey> {
+    let json_str = std::str::from_utf8(&ix.data).ok()?;
+    let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let call = val.get("Call")?;
+    let function = call.get("function")?.as_str()?;
+    match function {
+        "mint" | "transfer" | "transfer_from" => {
+            let args = call.get("args")?.as_array()?;
+            if args.len() < 64 {
+                return None;
+            }
+            let mut to_bytes = [0u8; 32];
+            for (i, item) in args[32..64].iter().enumerate() {
+                to_bytes[i] = item.as_u64()? as u8;
+            }
+            Some(Pubkey::new(to_bytes))
+        }
+        _ => None,
+    }
+}
+
+impl StateStore {
     fn index_account_transactions(&self, block: &Block) -> Result<(), String> {
         let cf = self
             .db
@@ -2153,11 +2181,22 @@ impl StateStore {
 
         let cf_stats = self.db.cf_handle(CF_STATS);
 
+        let contract_program_id = crate::processor::CONTRACT_PROGRAM_ID;
+
         for (tx_index, tx) in block.transactions.iter().enumerate() {
             let mut accounts = std::collections::HashSet::new();
             for ix in &tx.message.instructions {
                 for account in &ix.accounts {
                     accounts.insert(*account);
+                }
+                // For contract calls (mint/transfer), also index the token
+                // recipient whose pubkey is embedded in the args data, not in
+                // ix.accounts.  Without this, token recipients never see the
+                // mint/transfer transaction in their history.
+                if ix.program_id == contract_program_id {
+                    if let Some(recipient) = extract_token_recipient_from_ix(ix) {
+                        accounts.insert(recipient);
+                    }
                 }
             }
 
@@ -3801,6 +3840,41 @@ impl StateBatch {
         key.extend_from_slice(&program.0);
         key.extend_from_slice(storage_key);
         self.batch.delete_cf(&cf, &key);
+        Ok(())
+    }
+
+    /// Update token balance indexes within the batch.
+    /// Mirrors StateStore::update_token_balance but writes to the batch.
+    pub fn update_token_balance(
+        &mut self,
+        token_program: &Pubkey,
+        holder: &Pubkey,
+        balance: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TOKEN_BALANCES)
+            .ok_or_else(|| "Token balances CF not found".to_string())?;
+        let rev_cf = self
+            .db
+            .cf_handle(CF_HOLDER_TOKENS)
+            .ok_or_else(|| "Holder tokens CF not found".to_string())?;
+
+        let mut key = Vec::with_capacity(64);
+        key.extend_from_slice(&token_program.0);
+        key.extend_from_slice(&holder.0);
+
+        let mut rev_key = Vec::with_capacity(64);
+        rev_key.extend_from_slice(&holder.0);
+        rev_key.extend_from_slice(&token_program.0);
+
+        if balance == 0 {
+            self.batch.delete_cf(&cf, &key);
+            self.batch.delete_cf(&rev_cf, &rev_key);
+        } else {
+            self.batch.put_cf(&cf, &key, &balance.to_le_bytes());
+            self.batch.put_cf(&rev_cf, &rev_key, &balance.to_le_bytes());
+        }
         Ok(())
     }
 

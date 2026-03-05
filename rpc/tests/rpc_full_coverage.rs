@@ -121,6 +121,7 @@ fn app_with_state() -> (axum::Router, String) {
                 name: Some("Test Contract".to_string()),
                 template: Some("token".to_string()),
                 metadata: None,
+                decimals: Some(9),
             },
         )
         .expect("register");
@@ -1969,6 +1970,7 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
                 name: Some("Test Contract".to_string()),
                 template: Some("token".to_string()),
                 metadata: None,
+                decimals: Some(9),
             },
         )
         .expect("register");

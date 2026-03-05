@@ -299,6 +299,7 @@ impl SyncManager {
     }
 
     /// Check if a slot has been requested
+    #[allow(dead_code)]
     pub async fn is_requested(&self, slot: u64) -> bool {
         let requested = self.requested_slots.lock().await;
         requested.contains(&slot)
