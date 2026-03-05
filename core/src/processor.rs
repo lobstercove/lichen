@@ -3361,20 +3361,16 @@ impl TxProcessor {
             meta.1.extend(result.cross_call_logs.iter().cloned());
         }
 
-        // Diagnostic: log when a contract call produces no storage changes despite
-        // returning success — this helps diagnose "silent failure" issues where the
-        // contract returns a non-zero error code but doesn't trap.
-        if result.success
-            && result.storage_changes.is_empty()
-            && result.cross_call_changes.is_empty()
-        {
+        // Fail the transaction when a contract returns a non-zero error code.
+        // Previously this only logged a warning, allowing failed mints (e.g. "not admin"
+        // → return 2) to be recorded as "Success" with 0 storage changes.
+        if result.success {
             if let Some(rc) = result.return_code {
-                if rc != 0 {
-                    eprintln!(
-                        "[contract_call] WARNING: '{}' returned non-zero code {} with 0 storage changes. \
-                         Logs: {:?}. The contract likely hit an error branch.",
+                if rc != 0 && result.storage_changes.is_empty() && result.cross_call_changes.is_empty() {
+                    return Err(format!(
+                        "Contract '{}' returned error code {} with no state changes. Logs: {:?}",
                         function, rc, result.logs
-                    );
+                    ));
                 }
             }
         }

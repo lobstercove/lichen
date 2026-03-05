@@ -54,6 +54,7 @@ PHASE_1_TOKENS = [
     {"name": "musd_token",  "wasm": "musd_token.wasm"},
     {"name": "wsol_token",  "wasm": "wsol_token.wasm"},
     {"name": "weth_token",  "wasm": "weth_token.wasm"},
+    {"name": "wbnb_token",  "wasm": "wbnb_token.wasm"},
 ]
 
 PHASE_2_DEX_CORE = [
@@ -230,7 +231,7 @@ async def phase_initialize_tokens(
     print(f"  Admin: {admin_pubkey}")
     admin_bytes = list(admin_pubkey.to_bytes())  # 32-byte admin address
 
-    for name in ["musd_token", "wsol_token", "weth_token"]:
+    for name in ["musd_token", "wsol_token", "weth_token", "wbnb_token"]:
         if name not in addrs:
             print(f"  ⚠️  {name} not deployed, skipping init")
             continue
@@ -273,6 +274,7 @@ async def phase_initialize_dex(
             "musd_token": "mUSD",
             "wsol_token": "wSOL",
             "weth_token": "wETH",
+            "wbnb_token": "wBNB",
         }
         for contract_name, symbol in token_map.items():
             if contract_name not in addrs:
@@ -293,9 +295,11 @@ async def phase_initialize_dex(
             ("MOLT", "mUSD"),   # Native MOLT priced in mUSD
             ("wSOL", "mUSD"),   # Wrapped SOL priced in mUSD
             ("wETH", "mUSD"),   # Wrapped ETH priced in mUSD
+            ("wBNB", "mUSD"),   # Wrapped BNB priced in mUSD
             ("REEF", "mUSD"),   # REEF priced in mUSD
             ("wSOL", "MOLT"),   # Direct SOL/MOLT pair
             ("wETH", "MOLT"),   # Direct ETH/MOLT pair
+            ("wBNB", "MOLT"),   # Direct BNB/MOLT pair
             ("REEF", "MOLT"),   # REEF/MOLT pair
         ]
         for base, quote in pairs:
@@ -496,6 +500,7 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             "mUSD": str(addrs["musd_token"]) if "musd_token" in addrs else None,
             "wSOL": str(addrs["wsol_token"]) if "wsol_token" in addrs else None,
             "wETH": str(addrs["weth_token"]) if "weth_token" in addrs else None,
+            "wBNB": str(addrs["wbnb_token"]) if "wbnb_token" in addrs else None,
         },
         "dex_contracts": {
             name: str(addrs[name])
@@ -505,8 +510,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             if name in addrs
         },
         "trading_pairs": [
-            "MOLT/mUSD", "wSOL/mUSD", "wETH/mUSD", "REEF/mUSD",
-            "wSOL/MOLT", "wETH/MOLT", "REEF/MOLT",
+            "MOLT/mUSD", "wSOL/mUSD", "wETH/mUSD", "wBNB/mUSD", "REEF/mUSD",
+            "wSOL/MOLT", "wETH/MOLT", "wBNB/MOLT", "REEF/MOLT",
         ],
     }
     OUTPUT_PATH.write_text(json.dumps(manifest, indent=2))
@@ -617,13 +622,16 @@ async def main():
         print(f"  Build WASM first: cargo build --release --target wasm32-unknown-unknown")
 
     print(f"\n  Next steps:")
-    print(f"  1. Copy token addresses to custody config:")
-    for name in ["musd_token", "wsol_token", "weth_token"]:
+    print(f"  1. Copy deployer keypair to custody treasury (CRITICAL — admin must match):")
+    print(f"     sudo cp {DEPLOYER_PATH} /etc/moltchain/custody-treasury.json")
+    print(f"  2. Copy token addresses to custody config:")
+    for name in ["musd_token", "wsol_token", "weth_token", "wbnb_token"]:
         if name in all_addrs:
             env_key = f"CUSTODY_{name.upper()}_ADDR"
             print(f"     export {env_key}={all_addrs[name]}")
-    print(f"  2. Restart custody service with new env vars")
-    print(f"  3. First deposit will trigger wrapped token minting ✅")
+    print(f"  3. Set CUSTODY_TREASURY_KEYPAIR=/etc/moltchain/custody-treasury.json in custody env")
+    print(f"  4. Restart custody service with new env vars")
+    print(f"  5. First deposit will trigger wrapped token minting ✅")
 
 
 if __name__ == "__main__":

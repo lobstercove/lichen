@@ -2054,6 +2054,7 @@ async fn handle_rpc(
         "getMusdStats" => handle_get_musd_stats(&state).await,
         "getWethStats" => handle_get_weth_stats(&state).await,
         "getWsolStats" => handle_get_wsol_stats(&state).await,
+        "getWbnbStats" => handle_get_wbnb_stats(&state).await,
         // Platform contract stats — previously missing RPC wiring
         "getClawVaultStats" => handle_get_clawvault_stats(&state).await,
         "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
@@ -6186,34 +6187,41 @@ async fn handle_get_contract_info(
                 .map(|a| a.functions.iter().map(|f| f.name.clone()).collect())
                 .unwrap_or_default();
 
-            // Extract MT-20 token metadata from contract storage (well-known keys)
+            // Extract MT-20 token metadata from contract storage.
+            //
+            // Wrapped tokens (wBNB/wETH/wSOL/mUSD) use prefixed keys: {prefix}_supply
+            // SDK standard tokens use: total_supply
+            // Check prefixed keys FIRST (primary), then fall back to total_supply.
             let mut tmeta = serde_json::Map::new();
-            if let Some(v) = ca.storage.get(b"total_supply".as_ref()) {
-                if v.len() == 8 {
-                    let supply =
-                        u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
-                    tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
-                } else if let Ok(s) = std::str::from_utf8(v) {
-                    if let Ok(n) = s.parse::<u64>() {
-                        tmeta.insert("total_supply".to_string(), serde_json::json!(n));
+
+            // Primary: scan for prefixed supply keys (wbnb_supply, weth_supply, etc.)
+            for (key, val) in ca.storage.iter() {
+                if let Ok(k) = std::str::from_utf8(key) {
+                    if k.ends_with("_supply")
+                        && !k.ends_with("_minted")
+                        && !k.ends_with("_burned")
+                    {
+                        if val.len() == 8 {
+                            let supply = u64::from_le_bytes([
+                                val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
+                            ]);
+                            tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                        }
+                        break;
                     }
                 }
             }
-            // Also check for prefixed supply keys (wrapped tokens: musd_supply, wsol_supply, weth_supply)
+
+            // Fallback: SDK standard `total_supply` key (user-created tokens)
             if !tmeta.contains_key("total_supply") {
-                for (key, val) in ca.storage.iter() {
-                    if let Ok(k) = std::str::from_utf8(key) {
-                        if k.ends_with("_supply")
-                            && !k.ends_with("_minted")
-                            && !k.ends_with("_burned")
-                        {
-                            if val.len() == 8 {
-                                let supply = u64::from_le_bytes([
-                                    val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
-                                ]);
-                                tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
-                            }
-                            break;
+                if let Some(v) = ca.storage.get(b"total_supply".as_ref()) {
+                    if v.len() == 8 {
+                        let supply =
+                            u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
+                        tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
+                    } else if let Ok(s) = std::str::from_utf8(v) {
+                        if let Ok(n) = s.parse::<u64>() {
+                            tmeta.insert("total_supply".to_string(), serde_json::json!(n));
                         }
                     }
                 }
@@ -12163,6 +12171,22 @@ async fn handle_get_wsol_stats(state: &RpcState) -> Result<serde_json::Value, Rp
         "attestation_count": cf_stats_u64(state, "WSOL", b"wsol_att_count"),
         "reserve_attested": cf_stats_u64(state, "WSOL", b"wsol_reserve_att"),
         "paused": cf_stats_bool(state, "WSOL", b"wsol_paused"),
+    }))
+}
+
+/// getWbnbStats — Wrapped BNB stats
+async fn handle_get_wbnb_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "WBNB")?;
+    Ok(serde_json::json!({
+        "supply": cf_stats_u64(state, "WBNB", b"wbnb_supply"),
+        "total_minted": cf_stats_u64(state, "WBNB", b"wbnb_minted"),
+        "total_burned": cf_stats_u64(state, "WBNB", b"wbnb_burned"),
+        "mint_events": cf_stats_u64(state, "WBNB", b"wbnb_mint_evt"),
+        "burn_events": cf_stats_u64(state, "WBNB", b"wbnb_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "WBNB", b"wbnb_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "WBNB", b"wbnb_att_count"),
+        "reserve_attested": cf_stats_u64(state, "WBNB", b"wbnb_reserve_att"),
+        "paused": cf_stats_bool(state, "WBNB", b"wbnb_paused"),
     }))
 }
 

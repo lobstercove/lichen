@@ -146,6 +146,20 @@ if [ $DEPLOY_EXIT -ne 0 ]; then
     echo -e "  ${YELLOW}   Some contracts may not have deployed. Check logs above.${NC}"
 fi
 
+# Copy deployer keypair to custody treasury location.
+# Critical: the custody service must use the SAME keypair that initialized
+# the wrapped token contracts, otherwise mint() calls will fail with
+# "not admin" (error code 2).
+CUSTODY_TREASURY_TARGET="/etc/moltchain/custody-treasury.json"
+DEPLOYER_KP="${SCRIPT_DIR}/../keypairs/deployer.json"
+if [ -f "$DEPLOYER_KP" ]; then
+    echo -e "  Copying deployer keypair to custody treasury: ${CUSTODY_TREASURY_TARGET}"
+    sudo mkdir -p /etc/moltchain
+    sudo cp "$DEPLOYER_KP" "$CUSTODY_TREASURY_TARGET"
+    sudo chmod 600 "$CUSTODY_TREASURY_TARGET"
+    echo -e "  ${GREEN}✅ Custody treasury keypair aligned with contract admin${NC}"
+fi
+
 # ─────────────────────────────────────────────────────────
 # Step 5: Deploy core contracts (if we have deploy_contract.py)
 # ─────────────────────────────────────────────────────────
