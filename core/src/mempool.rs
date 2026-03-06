@@ -301,6 +301,16 @@ impl Mempool {
         self.transactions.contains_key(tx_hash)
     }
 
+    /// P3-3: Retrieve a transaction by hash (for compact block reconstruction).
+    pub fn get(&self, tx_hash: &Hash) -> Option<&Transaction> {
+        self.transactions.get(tx_hash)
+    }
+
+    /// P3-3: Return all transactions in the mempool (for compact block reconstruction).
+    pub fn all_transactions(&self) -> Vec<Transaction> {
+        self.transactions.values().cloned().collect()
+    }
+
     /// Clear mempool
     pub fn clear(&mut self) {
         self.queue.clear();
@@ -439,5 +449,30 @@ mod tests {
         assert_eq!(make_ptx(10_000, 5_000).effective_priority(), 20_000);
         // Tier 5 (rep 10000): 3.0x
         assert_eq!(make_ptx(10_000, 10_000).effective_priority(), 30_000);
+    }
+
+    // ── P3-3: Compact block helpers ──
+
+    #[test]
+    fn test_mempool_get() {
+        let mut pool = Mempool::new(100, 60);
+        let tx = create_test_transaction(1);
+        let tx_hash = tx.hash();
+        pool.add_transaction(tx.clone(), 1000, 0).unwrap();
+        assert!(pool.get(&tx_hash).is_some());
+        assert_eq!(pool.get(&tx_hash).unwrap().hash(), tx_hash);
+        assert!(pool.get(&Hash([0xFF; 32])).is_none());
+    }
+
+    #[test]
+    fn test_mempool_all_transactions() {
+        let mut pool = Mempool::new(100, 60);
+        assert!(pool.all_transactions().is_empty());
+        let tx1 = create_test_transaction(1);
+        let tx2 = create_test_transaction(2);
+        pool.add_transaction(tx1, 1000, 0).unwrap();
+        pool.add_transaction(tx2, 2000, 0).unwrap();
+        let all = pool.all_transactions();
+        assert_eq!(all.len(), 2);
     }
 }

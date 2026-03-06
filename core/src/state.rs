@@ -80,6 +80,16 @@ const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> 
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
 
+// ─── P2-3: Cold storage column family names ─────────────────────────────────
+// Cold DB mirrors a subset of hot CFs for archival data (old blocks, txns).
+const COLD_CF_BLOCKS: &str = "blocks";
+const COLD_CF_TRANSACTIONS: &str = "transactions";
+const COLD_CF_TX_TO_SLOT: &str = "tx_to_slot";
+
+/// Default number of slots to retain in the hot DB before migration-eligible.
+/// Blocks older than `current_slot - COLD_RETENTION_SLOTS` can be moved.
+pub const COLD_RETENTION_SLOTS: u64 = 100_000;
+
 // ─── PERF-OPT 3: In-process blockhash cache ─────────────────────────────────
 
 /// Cached (slot, hash) pairs for the recent 300 slots.
@@ -603,6 +613,11 @@ impl MetricsStore {
 #[derive(Clone)]
 pub struct StateStore {
     db: Arc<DB>,
+    /// Optional cold/archival DB for historical blocks and transactions.
+    /// When present, `get_block_by_slot` and `get_transaction` fall through
+    /// to cold storage if the key is missing from the hot DB. Populated by
+    /// `migrate_to_cold()` which moves old data out of the hot DB.
+    cold_db: Option<Arc<DB>>,
     metrics: Arc<MetricsStore>,
     /// AUDIT-FIX H6: Mutex to serialize next_event_seq read-modify-write operations,
     /// preventing duplicate sequence numbers under concurrent access.
@@ -669,6 +684,20 @@ impl StateStore {
     /// - Small/singleton CFs (stats, validators, stake_pool): minimal config
     /// - Write-heavy CFs (events, token_transfers): larger write buffers
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        Self::open_with_cache_mb(path, None)
+    }
+
+    /// Open the state store with a configurable LRU cache size.
+    ///
+    /// `cache_mb`: If `Some(n)`, use `n` MB for the shared block cache.
+    ///             If `None`, auto-detect: use 25% of total RAM, capped at 4096 MB, floor 256 MB.
+    ///
+    /// Each CF gets custom Options based on its access pattern:
+    /// - Point-lookup CFs (accounts, transactions, blocks): bloom filters, larger block cache
+    /// - Prefix-scan CFs (account_txs, nft_*, program_calls): prefix bloom + prefix extractor
+    /// - Small/singleton CFs (stats, validators, stake_pool): minimal config
+    /// - Write-heavy CFs (events, token_transfers): larger write buffers
+    pub fn open_with_cache_mb<P: AsRef<Path>>(path: P, cache_mb: Option<usize>) -> Result<Self, String> {
         // ── Global DB options ────────────────────────────────────────
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
@@ -682,8 +711,44 @@ impl StateStore {
         db_opts.increase_parallelism(num_cpus());
         db_opts.set_max_background_jobs(4);
 
-        // ── Shared block cache: 512 MB LRU ───────────────────────────
-        let shared_cache = Cache::new_lru_cache(512 * 1024 * 1024);
+        // ── Shared block cache: configurable LRU ─────────────────────
+        let cache_size_mb = cache_mb.unwrap_or_else(|| {
+            // Auto-detect: 25% of total RAM, capped at 4GB, floor 256MB
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+                    if let Some(line) = meminfo.lines().find(|l| l.starts_with("MemTotal:")) {
+                        if let Some(kb_str) = line.split_whitespace().nth(1) {
+                            if let Ok(total_kb) = kb_str.parse::<usize>() {
+                                let total_mb = total_kb / 1024;
+                                return (total_mb / 4).min(4096).max(256);
+                            }
+                        }
+                    }
+                }
+                512 // fallback
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // sysctl hw.memsize returns bytes
+                use std::process::Command;
+                if let Ok(output) = Command::new("sysctl").arg("-n").arg("hw.memsize").output() {
+                    if let Ok(s) = String::from_utf8(output.stdout) {
+                        if let Ok(bytes) = s.trim().parse::<usize>() {
+                            let total_mb = bytes / (1024 * 1024);
+                            return (total_mb / 4).min(4096).max(256);
+                        }
+                    }
+                }
+                512 // fallback
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                512 // default fallback
+            }
+        });
+        tracing::info!("🗄️  RocksDB shared cache: {} MB", cache_size_mb);
+        let shared_cache = Cache::new_lru_cache(cache_size_mb * 1024 * 1024);
 
         // ── Helper closures for CF option presets ─────────────────────
 
@@ -840,6 +905,7 @@ impl StateStore {
 
         Ok(StateStore {
             db: db_arc,
+            cold_db: None,
             metrics,
             event_seq_lock: Arc::new(std::sync::Mutex::new(())),
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
@@ -1144,7 +1210,26 @@ impl StateStore {
                 };
                 Ok(Some(block))
             }
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                // P2-3: Fall through to cold storage for historical blocks
+                if let Some(ref cold) = self.cold_db {
+                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_BLOCKS) {
+                        if let Ok(Some(data)) = cold.get_cf(&cold_cf, hash.0) {
+                            let block: Block = if data.first() == Some(&0xBC) {
+                                bincode::deserialize(&data[1..]).map_err(|e| {
+                                    format!("Failed to deserialize cold block (bincode): {}", e)
+                                })?
+                            } else {
+                                serde_json::from_slice(&data).map_err(|e| {
+                                    format!("Failed to deserialize cold block (json): {}", e)
+                                })?
+                            };
+                            return Ok(Some(block));
+                        }
+                    }
+                }
+                Ok(None)
+            }
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -1204,7 +1289,32 @@ impl StateStore {
                 };
                 Ok(Some(tx))
             }
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                // P2-3: Fall through to cold storage for historical transactions
+                if let Some(ref cold) = self.cold_db {
+                    if let Some(cold_cf) = cold.cf_handle(COLD_CF_TRANSACTIONS) {
+                        if let Ok(Some(data)) = cold.get_cf(&cold_cf, sig.0) {
+                            let tx: Transaction = if data.first() == Some(&0xBC) {
+                                bincode::deserialize(&data[1..]).map_err(|e| {
+                                    format!(
+                                        "Failed to deserialize cold transaction (bincode): {}",
+                                        e
+                                    )
+                                })?
+                            } else {
+                                serde_json::from_slice(&data).map_err(|e| {
+                                    format!(
+                                        "Failed to deserialize cold transaction (json): {}",
+                                        e
+                                    )
+                                })?
+                            };
+                            return Ok(Some(tx));
+                        }
+                    }
+                }
+                Ok(None)
+            }
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -1480,7 +1590,7 @@ impl StateStore {
 
     /// Full scan state root computation — used for cold start and fallback.
     /// Populates CF_MERKLE_LEAVES so subsequent calls are incremental.
-    fn compute_state_root_cold_start(&self) -> Hash {
+    pub fn compute_state_root_cold_start(&self) -> Hash {
         let cf_accounts = match self.db.cf_handle(CF_ACCOUNTS) {
             Some(h) => h,
             None => return Hash::default(),
@@ -6246,6 +6356,180 @@ pub struct CheckpointMeta {
 }
 
 impl StateStore {
+    // ── P2-3: Cold/archival storage ──────────────────────────────────
+
+    /// Open (or create) the cold archival DB at `cold_path` and attach it to
+    /// this store. Once attached, `get_block` and `get_transaction` will
+    /// fall through to the cold DB if the key is missing from hot storage.
+    pub fn open_cold_store<P: AsRef<Path>>(&mut self, cold_path: P) -> Result<(), String> {
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_max_open_files(256);
+        db_opts.set_keep_log_file_num(3);
+        db_opts.set_max_total_wal_size(64 * 1024 * 1024);
+        db_opts.increase_parallelism(2);
+        db_opts.set_max_background_jobs(2);
+
+        // Archival tuning: Zstd compression, large block sizes
+        let archival_cf_opts = || {
+            let mut opts = Options::default();
+            opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+            let mut bbo = BlockBasedOptions::default();
+            bbo.set_bloom_filter(10.0, false);
+            bbo.set_block_size(32 * 1024); // 32KB blocks for better compression
+            opts.set_block_based_table_factory(&bbo);
+            opts.set_write_buffer_size(32 * 1024 * 1024);
+            opts
+        };
+
+        let cf_descs = vec![
+            ColumnFamilyDescriptor::new(COLD_CF_BLOCKS, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_TRANSACTIONS, archival_cf_opts()),
+            ColumnFamilyDescriptor::new(COLD_CF_TX_TO_SLOT, archival_cf_opts()),
+        ];
+
+        let cold = DB::open_cf_descriptors(&db_opts, cold_path.as_ref(), cf_descs)
+            .map_err(|e| format!("Failed to open cold DB: {}", e))?;
+
+        self.cold_db = Some(Arc::new(cold));
+        tracing::info!(
+            "🗄️  Cold storage opened at {}",
+            cold_path.as_ref().display()
+        );
+        Ok(())
+    }
+
+    /// Migrate old blocks and transactions from the hot DB to the cold DB.
+    ///
+    /// Moves all blocks with slot < `cutoff_slot` and their associated
+    /// transactions. Data is written to cold first, then deleted from hot
+    /// in a single atomic batch to avoid data loss.
+    ///
+    /// Returns the number of blocks migrated.
+    pub fn migrate_to_cold(&self, cutoff_slot: u64) -> Result<u64, String> {
+        let cold = self
+            .cold_db
+            .as_ref()
+            .ok_or_else(|| "Cold storage not attached".to_string())?;
+
+        let hot_blocks_cf = self
+            .db
+            .cf_handle(CF_BLOCKS)
+            .ok_or_else(|| "Blocks CF not found".to_string())?;
+        let hot_slots_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let hot_txs_cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        let hot_tx_to_slot_cf = self
+            .db
+            .cf_handle(CF_TX_TO_SLOT)
+            .ok_or_else(|| "tx_to_slot CF not found".to_string())?;
+
+        let cold_blocks_cf = cold
+            .cf_handle(COLD_CF_BLOCKS)
+            .ok_or_else(|| "Cold blocks CF not found".to_string())?;
+        let cold_txs_cf = cold
+            .cf_handle(COLD_CF_TRANSACTIONS)
+            .ok_or_else(|| "Cold transactions CF not found".to_string())?;
+        let cold_tx_to_slot_cf = cold
+            .cf_handle(COLD_CF_TX_TO_SLOT)
+            .ok_or_else(|| "Cold tx_to_slot CF not found".to_string())?;
+
+        let mut migrated: u64 = 0;
+        let mut hot_delete_batch = WriteBatch::default();
+
+        // Scan slots 0..cutoff_slot in the hot DB
+        let iter = self.db.iterator_cf(
+            &hot_slots_cf,
+            rocksdb::IteratorMode::From(&0u64.to_le_bytes(), Direction::Forward),
+        );
+
+        for item in iter.flatten() {
+            // Slot keys are 8-byte LE u64 except "last_slot" which is a string key
+            if item.0.len() != 8 {
+                continue;
+            }
+            let slot = u64::from_le_bytes(item.0[..8].try_into().unwrap());
+            if slot >= cutoff_slot {
+                break;
+            }
+
+            // item.1 is the block hash (32 bytes)
+            if item.1.len() != 32 {
+                continue;
+            }
+            let block_hash: [u8; 32] = item.1[..32].try_into().unwrap();
+
+            // Read the block from hot
+            if let Ok(Some(block_data)) = self.db.get_cf(&hot_blocks_cf, &block_hash) {
+                // Write to cold
+                cold.put_cf(&cold_blocks_cf, &block_hash, &block_data)
+                    .map_err(|e| format!("Cold write error (block): {}", e))?;
+
+                // Deserialize block to get transaction signatures
+                let block: Option<Block> = if block_data.first() == Some(&0xBC) {
+                    bincode::deserialize(&block_data[1..]).ok()
+                } else {
+                    serde_json::from_slice(&block_data).ok()
+                };
+
+                if let Some(block) = block {
+                    for tx in &block.transactions {
+                        let sig = tx.signature();
+                        // Migrate transaction data
+                        if let Ok(Some(tx_data)) = self.db.get_cf(&hot_txs_cf, sig.0) {
+                            cold.put_cf(&cold_txs_cf, sig.0, &tx_data)
+                                .map_err(|e| format!("Cold write error (tx): {}", e))?;
+                            hot_delete_batch.delete_cf(&hot_txs_cf, sig.0);
+                        }
+                        // Migrate tx_to_slot mapping
+                        if let Ok(Some(slot_data)) =
+                            self.db.get_cf(&hot_tx_to_slot_cf, sig.0)
+                        {
+                            cold.put_cf(&cold_tx_to_slot_cf, sig.0, &slot_data)
+                                .map_err(|e| format!("Cold write error (tx_to_slot): {}", e))?;
+                            hot_delete_batch.delete_cf(&hot_tx_to_slot_cf, sig.0);
+                        }
+                    }
+                }
+
+                // Delete block from hot
+                hot_delete_batch.delete_cf(&hot_blocks_cf, &block_hash);
+                migrated += 1;
+            }
+
+            // Note: we do NOT delete the slot→hash mapping from hot_slots_cf,
+            // so `get_block_by_slot` can still resolve the hash and then fall
+            // through to cold storage via `get_block`.
+        }
+
+        // Atomically remove migrated data from hot DB
+        if migrated > 0 {
+            self.db
+                .write(hot_delete_batch)
+                .map_err(|e| format!("Failed to delete migrated data from hot DB: {}", e))?;
+            tracing::info!(
+                "🗄️  Migrated {} blocks (slots < {}) to cold storage",
+                migrated,
+                cutoff_slot
+            );
+        }
+
+        Ok(migrated)
+    }
+
+    /// Returns true if a cold DB is attached.
+    pub fn has_cold_storage(&self) -> bool {
+        self.cold_db.is_some()
+    }
+}
+
+impl StateStore {
     // ── Checkpoint creation (RocksDB native hardlink snapshot) ────────────
 
     /// Create a point-in-time checkpoint of the entire database.
@@ -7286,5 +7570,128 @@ mod tests {
         let loaded = state.get_shielded_pool_state().unwrap();
         assert_eq!(loaded.commitment_count, 10);
         assert_eq!(loaded.total_shielded, 5_000);
+    }
+
+    // ── P2-3: Cold storage tests ──
+
+    fn make_test_block(slot: u64) -> Block {
+        Block::new(
+            slot,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn test_cold_storage_open_and_attach() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        assert!(!state.has_cold_storage());
+
+        state.open_cold_store(cold_dir.path()).unwrap();
+        assert!(state.has_cold_storage());
+    }
+
+    #[test]
+    fn test_cold_storage_migrate_and_fallthrough() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        // Store blocks at slots 0..10
+        for slot in 0..10u64 {
+            let block = make_test_block(slot);
+            state.put_block(&block).unwrap();
+        }
+
+        // All blocks readable from hot
+        for slot in 0..10u64 {
+            assert!(state.get_block_by_slot(slot).unwrap().is_some());
+        }
+
+        // Migrate blocks older than slot 5
+        let migrated = state.migrate_to_cold(5).unwrap();
+        assert_eq!(migrated, 5);
+
+        // Slots 0..5 are now only in cold (fall-through read)
+        for slot in 0..5u64 {
+            let block = state.get_block_by_slot(slot).unwrap();
+            assert!(block.is_some(), "slot {} should fall through to cold", slot);
+            assert_eq!(block.unwrap().header.slot, slot);
+        }
+
+        // Slots 5..10 remain in hot
+        for slot in 5..10u64 {
+            let block = state.get_block_by_slot(slot).unwrap();
+            assert!(block.is_some(), "slot {} should still be in hot", slot);
+        }
+    }
+
+    #[test]
+    fn test_cold_migration_without_cold_db_errors() {
+        let hot_dir = tempdir().unwrap();
+        let state = StateStore::open(hot_dir.path()).unwrap();
+        let result = state.migrate_to_cold(100);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not attached"));
+    }
+
+    #[test]
+    fn test_cold_migration_nothing_to_migrate() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        // No blocks stored — nothing to migrate
+        let migrated = state.migrate_to_cold(100).unwrap();
+        assert_eq!(migrated, 0);
+    }
+
+    #[test]
+    fn test_cold_migration_idempotent() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        for slot in 0..5u64 {
+            state.put_block(&make_test_block(slot)).unwrap();
+        }
+
+        // First migration moves 3 blocks
+        let migrated1 = state.migrate_to_cold(3).unwrap();
+        assert_eq!(migrated1, 3);
+
+        // Second migration with same cutoff: nothing to move (already in cold)
+        let migrated2 = state.migrate_to_cold(3).unwrap();
+        assert_eq!(migrated2, 0);
+
+        // All blocks still readable
+        for slot in 0..5u64 {
+            assert!(state.get_block_by_slot(slot).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn test_cold_clone_shares_cold_db() {
+        let hot_dir = tempdir().unwrap();
+        let cold_dir = tempdir().unwrap();
+        let mut state = StateStore::open(hot_dir.path()).unwrap();
+        state.open_cold_store(cold_dir.path()).unwrap();
+
+        // Store and migrate a block
+        state.put_block(&make_test_block(0)).unwrap();
+        state.migrate_to_cold(1).unwrap();
+
+        // Clone should share the same cold DB
+        let cloned = state.clone();
+        assert!(cloned.has_cold_storage());
+        let block = cloned.get_block_by_slot(0).unwrap();
+        assert!(block.is_some(), "clone should read from shared cold DB");
     }
 }

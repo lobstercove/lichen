@@ -4,12 +4,13 @@ use crate::message::P2PMessage;
 use crate::peer_ban::PeerBanList;
 use crate::peer_store::PeerStore;
 use dashmap::DashMap;
+use moltchain_core::Pubkey;
 use quinn::{Connection, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,20 +26,40 @@ pub struct PeerInfo {
     pub reputation: u64,
     pub is_validator: bool,
     pub score: i64,
+    /// P3-2: Kademlia node ID (SHA-256 of public key). [0; 32] if unknown.
+    pub node_id: [u8; 32],
+    /// P3-5: Validator pubkey (set when we receive a verified ValidatorAnnounce from this peer)
+    pub validator_pubkey: Option<Pubkey>,
+    /// Peer scoring: rolling average response latency in milliseconds.
+    /// Updated on each successful block/status response from this peer.
+    pub avg_response_ms: Option<f64>,
+    /// Bandwidth metering: total bytes received from this peer since connection.
+    pub bytes_received: u64,
+    /// Bandwidth metering: total bytes sent to this peer since connection.
+    pub bytes_sent: u64,
+    /// Bandwidth metering: timestamp when tracking started (connection time).
+    pub tracking_since: u64,
 }
 
 impl PeerInfo {
     pub fn new(address: SocketAddr) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         PeerInfo {
             address,
             connection: None,
-            last_seen: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            last_seen: now,
             reputation: 500,
             is_validator: false,
             score: 0,
+            node_id: [0u8; 32],
+            validator_pubkey: None,
+            avg_response_ms: None,
+            bytes_received: 0,
+            bytes_sent: 0,
+            tracking_since: now,
         }
     }
 
@@ -51,6 +72,36 @@ impl PeerInfo {
 
     pub fn adjust_score(&mut self, delta: i64) {
         self.score = self.score.saturating_add(delta).clamp(-20, 20);
+    }
+
+    /// Update the rolling average response latency (exponential moving average, alpha=0.3).
+    pub fn record_latency(&mut self, latency_ms: f64) {
+        const ALPHA: f64 = 0.3;
+        self.avg_response_ms = Some(match self.avg_response_ms {
+            Some(prev) => prev * (1.0 - ALPHA) + latency_ms * ALPHA,
+            None => latency_ms,
+        });
+    }
+
+    /// Record bytes received from this peer.
+    pub fn add_bytes_received(&mut self, bytes: u64) {
+        self.bytes_received = self.bytes_received.saturating_add(bytes);
+    }
+
+    /// Record bytes sent to this peer.
+    pub fn add_bytes_sent(&mut self, bytes: u64) {
+        self.bytes_sent = self.bytes_sent.saturating_add(bytes);
+    }
+
+    /// Bytes per second received from this peer (average since tracking start).
+    pub fn recv_bandwidth_bps(&self) -> f64 {
+        let elapsed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(self.tracking_since)
+            .max(1);
+        self.bytes_received as f64 / elapsed as f64
     }
 }
 
@@ -140,6 +191,27 @@ pub struct PeerManager {
 
     /// Reserved peer addresses that are never evicted
     reserved_peers: Vec<SocketAddr>,
+
+    /// P3-2: Kademlia routing table for O(log N) peer routing
+    kademlia: Arc<Mutex<crate::kademlia::KademliaTable>>,
+}
+
+/// Check whether two IPs share the same subnet.
+/// IPv4: /24 prefix (first 3 octets).  IPv6: /48 prefix (first 3 hextets).
+fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
+    match (a, b) {
+        (IpAddr::V4(a4), IpAddr::V4(b4)) => {
+            let ao = a4.octets();
+            let bo = b4.octets();
+            ao[0] == bo[0] && ao[1] == bo[1] && ao[2] == bo[2]
+        }
+        (IpAddr::V6(a6), IpAddr::V6(b6)) => {
+            let as6 = a6.segments();
+            let bs6 = b6.segments();
+            as6[0] == bs6[0] && as6[1] == bs6[1] && as6[2] == bs6[2]
+        }
+        _ => false, // v4 vs v6 — different subnets by definition
+    }
 }
 
 impl PeerManager {
@@ -236,11 +308,15 @@ impl PeerManager {
             seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
             max_peers,
             reserved_peers,
+            kademlia: Arc::new(Mutex::new(crate::kademlia::KademliaTable::new(local_fingerprint))),
         })
     }
 
     /// Maximum number of concurrent peer connections (configurable per role)
     pub const MAX_PEERS: usize = 50;
+
+    /// Eclipse-attack resistance: max peers from the same /24 (IPv4) or /48 (IPv6) subnet.
+    pub const MAX_PEERS_PER_SUBNET: usize = 2;
 
     /// Get the effective max peers for this manager instance
     pub fn effective_max_peers(&self) -> usize {
@@ -250,6 +326,63 @@ impl PeerManager {
     /// Check if a peer address is reserved (never evicted)
     pub fn is_reserved(&self, addr: &SocketAddr) -> bool {
         self.reserved_peers.contains(addr)
+    }
+
+    /// Count how many currently-connected peers share the same subnet as `ip`.
+    /// IPv4: /24 prefix (first 3 octets).  IPv6: /48 prefix (first 3 hextets).
+    pub fn count_peers_in_subnet(&self, ip: &IpAddr) -> usize {
+        self.peers.iter().filter(|entry| {
+            same_subnet(&entry.key().ip(), ip)
+        }).count()
+    }
+
+    /// Return peers sorted by lowest average response latency (best first).
+    /// Peers without recorded latency are placed at the end.
+    pub fn fastest_peers(&self, count: usize) -> Vec<SocketAddr> {
+        let mut peers: Vec<(SocketAddr, f64)> = self
+            .peers
+            .iter()
+            .map(|e| {
+                let lat = e.value().avg_response_ms.unwrap_or(f64::MAX);
+                (*e.key(), lat)
+            })
+            .collect();
+        peers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        peers.into_iter().take(count).map(|(addr, _)| addr).collect()
+    }
+
+    /// Record a response latency sample for a peer.
+    pub fn record_peer_latency(&self, peer_addr: &SocketAddr, latency_ms: f64) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.record_latency(latency_ms);
+        }
+    }
+
+    /// Record inbound bytes for a peer.
+    pub fn record_bytes_received(&self, peer_addr: &SocketAddr, bytes: u64) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.add_bytes_received(bytes);
+        }
+    }
+
+    /// Record outbound bytes for a peer.
+    pub fn record_bytes_sent(&self, peer_addr: &SocketAddr, bytes: u64) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.add_bytes_sent(bytes);
+        }
+    }
+
+    /// Return (recv_bps, sent_bps) for a peer, or None if the peer is not connected.
+    pub fn bandwidth_stats(&self, peer_addr: &SocketAddr) -> Option<(f64, f64)> {
+        self.peers.get(peer_addr).map(|p| {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(p.tracking_since)
+                .max(1) as f64;
+            (p.bytes_received as f64 / elapsed, p.bytes_sent as f64 / elapsed)
+        })
     }
 
     /// Connect to a peer
@@ -275,6 +408,14 @@ impl PeerManager {
             .is_banned(&peer_addr)
         {
             return Err("Peer is banned".to_string());
+        }
+        // Eclipse-attack resistance: limit peers per /24 subnet
+        if self.count_peers_in_subnet(&peer_addr.ip()) >= Self::MAX_PEERS_PER_SUBNET {
+            return Err(format!(
+                "Subnet limit reached ({}) for {}",
+                Self::MAX_PEERS_PER_SUBNET,
+                peer_addr
+            ));
         }
         if self.peers.contains_key(&peer_addr) {
             return Ok(());
@@ -355,6 +496,8 @@ impl PeerManager {
                             return Err(e);
                         }
                     }
+                    // P3-2: Register peer in Kademlia routing table using certificate fingerprint
+                    self.update_kademlia(fp, peer_addr);
                 }
             }
         }
@@ -427,6 +570,11 @@ impl PeerManager {
             send_stream
                 .finish()
                 .map_err(|e| format!("Failed to finish stream: {}", e))?;
+
+            // Bandwidth metering: track outbound bytes
+            if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+                peer.add_bytes_sent(bytes.len() as u64);
+            }
 
             Ok(())
         } else {
@@ -541,6 +689,152 @@ impl PeerManager {
         self.peers.iter().map(|entry| *entry.key()).collect()
     }
 
+    /// P3-2: Route a message to the `count` closest peers by XOR distance
+    /// to `target_id`. Falls back to all peers if the routing table is empty.
+    pub async fn route_to_closest(
+        &self,
+        target_id: &[u8; 32],
+        count: usize,
+        message: P2PMessage,
+    ) {
+        let closest = {
+            let table = self.kademlia.lock().unwrap();
+            table.closest(target_id, count)
+        };
+
+        if closest.is_empty() {
+            // Routing table empty — fall back to broadcast
+            self.broadcast(message).await;
+            return;
+        }
+
+        let bytes = match message.serialize() {
+            Ok(b) => std::sync::Arc::new(b),
+            Err(e) => {
+                warn!("P2P: route serialize error: {}", e);
+                return;
+            }
+        };
+
+        let mut handles = Vec::with_capacity(closest.len());
+        for entry in closest {
+            let conn = self
+                .peers
+                .get(&entry.address)
+                .and_then(|p| p.connection.clone());
+            let bytes = bytes.clone();
+            let addr = entry.address;
+            handles.push(tokio::spawn(async move {
+                if let Some(conn) = conn {
+                    match conn.open_uni().await {
+                        Ok(mut stream) => {
+                            if let Err(e) = stream.write_all(&bytes).await {
+                                warn!("P2P: routed send to {} failed: {}", addr, e);
+                            }
+                            let _ = stream.finish();
+                        }
+                        Err(e) => warn!("P2P: routed stream to {} failed: {}", addr, e),
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// P3-2: Update the Kademlia routing table when a peer's node_id is learned.
+    pub fn update_kademlia(&self, node_id: [u8; 32], address: SocketAddr) {
+        if node_id == [0u8; 32] {
+            return; // Unknown node_id — skip
+        }
+        let mut table = self.kademlia.lock().unwrap();
+        table.insert(node_id, address);
+    }
+
+    /// P3-2: Get the number of entries in the Kademlia routing table.
+    pub fn kademlia_size(&self) -> usize {
+        let table = self.kademlia.lock().unwrap();
+        table.len()
+    }
+
+    /// P3-2: Return the closest nodes to `target_id` as (node_id, address) pairs.
+    pub fn kademlia_closest(&self, target_id: &[u8; 32], count: usize) -> Vec<([u8; 32], String)> {
+        let table = self.kademlia.lock().unwrap();
+        table
+            .closest(target_id, count)
+            .into_iter()
+            .map(|e| (e.node_id, e.address.to_string()))
+            .collect()
+    }
+
+    /// P3-5: Mark a peer as a validator with their pubkey.
+    /// Called when we receive a verified ValidatorAnnounce from this peer.
+    pub fn mark_validator(&self, peer_addr: &SocketAddr, pubkey: Pubkey) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.is_validator = true;
+            peer.validator_pubkey = Some(pubkey);
+            // Boost score: validators get +5 priority to resist eviction
+            peer.adjust_score(5);
+        }
+    }
+
+    /// P3-5: Broadcast message only to peers marked as validators.
+    /// Falls back to full broadcast if no validator peers are connected.
+    pub async fn broadcast_to_validators(&self, message: P2PMessage) {
+        let validator_addrs: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .filter(|entry| entry.value().is_validator)
+            .map(|entry| *entry.key())
+            .collect();
+
+        if validator_addrs.is_empty() {
+            // No validator peers known — fall back to full broadcast
+            self.broadcast(message).await;
+            return;
+        }
+
+        let bytes = match message.serialize() {
+            Ok(b) => std::sync::Arc::new(b),
+            Err(e) => {
+                warn!("P2P: validator broadcast serialize error: {}", e);
+                return;
+            }
+        };
+
+        let mut handles = Vec::with_capacity(validator_addrs.len());
+        for addr in validator_addrs {
+            let conn = self.peers.get(&addr).and_then(|p| p.connection.clone());
+            let bytes = bytes.clone();
+            handles.push(tokio::spawn(async move {
+                if let Some(conn) = conn {
+                    match conn.open_uni().await {
+                        Ok(mut stream) => {
+                            if let Err(e) = stream.write_all(&bytes).await {
+                                warn!("P2P: validator send to {} failed: {}", addr, e);
+                            }
+                            let _ = stream.finish();
+                        }
+                        Err(e) => warn!("P2P: validator stream to {} failed: {}", addr, e),
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// P3-5: Get addresses of all connected validator peers.
+    pub fn validator_peers(&self) -> Vec<SocketAddr> {
+        self.peers
+            .iter()
+            .filter(|entry| entry.value().is_validator)
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
     /// Get peer info for all connected peers (address + score).
     /// AUDIT-FIX M3: Gossip needs actual peer scores instead of hardcoded 500.
     pub fn get_peer_infos(&self) -> Vec<(SocketAddr, i64)> {
@@ -605,6 +899,7 @@ impl PeerManager {
         let ban_list = self.ban_list.clone();
         let fingerprint_store = self.fingerprint_store.clone();
         let seen_messages = self.seen_messages.clone();
+        let kademlia = self.kademlia.clone();
         let max_peers = self.max_peers;
         let local_addr = self.local_addr;
         let local_fingerprint = self.local_fingerprint;
@@ -617,6 +912,7 @@ impl PeerManager {
                 let ban_list = ban_list.clone();
                 let fingerprint_store = fingerprint_store.clone();
                 let seen_messages = seen_messages.clone();
+                let kademlia = kademlia.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -642,6 +938,19 @@ impl PeerManager {
                             {
                                 warn!("P2P: Rejected banned peer {}", peer_addr);
                                 return;
+                            }
+                            // Eclipse-attack resistance: limit peers per /24 subnet
+                            {
+                                let subnet_count = peers.iter().filter(|e| {
+                                    same_subnet(&e.key().ip(), &peer_addr.ip())
+                                }).count();
+                                if subnet_count >= PeerManager::MAX_PEERS_PER_SUBNET {
+                                    warn!(
+                                        "P2P: Rejected inbound {} — subnet limit ({})",
+                                        peer_addr, PeerManager::MAX_PEERS_PER_SUBNET
+                                    );
+                                    return;
+                                }
                             }
                             // Enforce max_peers on inbound connections too
                             if peers.len() >= max_peers {
@@ -677,6 +986,11 @@ impl PeerManager {
                                                 connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
                                                 return;
                                             }
+                                        }
+                                        // P3-2: Register inbound peer in Kademlia routing table
+                                        if fp != [0u8; 32] {
+                                            let mut table = kademlia.lock().unwrap();
+                                            table.insert(fp, peer_addr);
                                         }
                                     }
                                 }
@@ -776,6 +1090,11 @@ async fn handle_connection(
             // Previous 2MB limit silently rejected valid state snapshot chunks.
             .await
             .map_err(|e| format!("Failed to read: {}", e))?;
+
+        // Bandwidth metering: track inbound bytes from this peer
+        if let Some(mut peer) = peers.get_mut(&peer_addr) {
+            peer.add_bytes_received(bytes.len() as u64);
+        }
 
         // Deserialize message
         match P2PMessage::deserialize(&bytes) {
@@ -973,21 +1292,13 @@ impl PeerFingerprintStore {
         match store.get(&addr_str) {
             Some(known) if *known == hex_fp => Ok(false), // known, matches
             Some(known) => {
-                warn!(
-                    "TOFU: Peer {} certificate fingerprint changed (known: {}..., got: {}...). \
-                     Accepting updated identity (may be legitimate reinstall/state wipe).",
+                Err(format!(
+                    "TOFU VIOLATION: Peer {} certificate fingerprint changed! \
+                     Known: {}..., Got: {}... — possible MITM or unauthorized identity change.",
                     addr,
                     &known[..16],
                     &hex_fp[..16]
-                );
-                drop(store);
-                // Update stored fingerprint to accept the new identity
-                self.fingerprints
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(addr_str, hex_fp);
-                self.save();
-                Ok(true) // updated peer
+                ))
             }
             None => {
                 store.insert(addr_str, hex_fp);
@@ -1615,5 +1926,263 @@ mod tests {
         assert!(cache.check_and_insert(h3));
         // h2 was evicted
         assert!(!cache.check_and_insert(h2));
+    }
+
+    // =========================================================================
+    // P3-5 Tests: Validator-tier peering
+    // =========================================================================
+
+    #[test]
+    fn test_peer_info_validator_pubkey_default() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let peer = PeerInfo::new(addr);
+        assert!(!peer.is_validator);
+        assert!(peer.validator_pubkey.is_none());
+    }
+
+    #[test]
+    fn test_peer_info_mark_as_validator() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let mut peer = PeerInfo::new(addr);
+        let pubkey = Pubkey([42u8; 32]);
+        peer.is_validator = true;
+        peer.validator_pubkey = Some(pubkey);
+        assert!(peer.is_validator);
+        assert_eq!(peer.validator_pubkey.unwrap(), pubkey);
+    }
+
+    #[test]
+    fn test_validator_score_boost() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let mut peer = PeerInfo::new(addr);
+        assert_eq!(peer.score, 0);
+        // Simulate mark_validator boosting score by +5
+        peer.adjust_score(5);
+        assert_eq!(peer.score, 5);
+        // Even after a violation, validator stays above eviction threshold
+        peer.adjust_score(-2);
+        assert_eq!(peer.score, 3);
+    }
+
+    #[test]
+    fn test_validator_peer_filtering() {
+        let peers: DashMap<SocketAddr, PeerInfo> = DashMap::new();
+
+        let addr1: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        let addr2: SocketAddr = "10.0.0.2:7001".parse().unwrap();
+        let addr3: SocketAddr = "10.0.0.3:7001".parse().unwrap();
+
+        let mut p1 = PeerInfo::new(addr1);
+        p1.is_validator = true;
+        p1.validator_pubkey = Some(Pubkey([1u8; 32]));
+
+        let p2 = PeerInfo::new(addr2); // observer
+
+        let mut p3 = PeerInfo::new(addr3);
+        p3.is_validator = true;
+        p3.validator_pubkey = Some(Pubkey([3u8; 32]));
+
+        peers.insert(addr1, p1);
+        peers.insert(addr2, p2);
+        peers.insert(addr3, p3);
+
+        // Filter validators only
+        let validator_addrs: Vec<SocketAddr> = peers
+            .iter()
+            .filter(|entry| entry.value().is_validator)
+            .map(|entry| *entry.key())
+            .collect();
+
+        assert_eq!(validator_addrs.len(), 2);
+        assert!(validator_addrs.contains(&addr1));
+        assert!(validator_addrs.contains(&addr3));
+        assert!(!validator_addrs.contains(&addr2));
+    }
+
+    #[test]
+    fn test_validator_eviction_resistance() {
+        // Validators start with +5 boost from mark_validator.
+        // Two violations (-2 each) still keep score positive.
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        peer.adjust_score(5); // validator boost
+        peer.adjust_score(-2); // violation 1
+        peer.adjust_score(-2); // violation 2
+        assert_eq!(peer.score, 1); // still positive — wouldn't be evicted
+    }
+
+    // ── Eclipse Attack Resistance ────────────────────────────────────
+
+    #[test]
+    fn test_same_subnet_ipv4() {
+        let a: IpAddr = "10.0.1.5".parse().unwrap();
+        let b: IpAddr = "10.0.1.99".parse().unwrap();
+        let c: IpAddr = "10.0.2.5".parse().unwrap();
+        assert!(same_subnet(&a, &b)); // same /24
+        assert!(!same_subnet(&a, &c)); // different /24
+    }
+
+    #[test]
+    fn test_same_subnet_ipv6() {
+        let a: IpAddr = "2001:db8:abcd::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:abcd::ffff".parse().unwrap();
+        let c: IpAddr = "2001:db8:abce::1".parse().unwrap();
+        assert!(same_subnet(&a, &b)); // same /48
+        assert!(!same_subnet(&a, &c)); // different /48
+    }
+
+    #[test]
+    fn test_same_subnet_mixed_families() {
+        let v4: IpAddr = "10.0.1.1".parse().unwrap();
+        let v6: IpAddr = "::ffff:10.0.1.1".parse().unwrap();
+        // Mixed address families are never the same subnet (by design)
+        assert!(!same_subnet(&v4, &v6));
+    }
+
+    #[tokio::test]
+    async fn test_subnet_limit_in_connect_peer() {
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+            .await
+            .unwrap();
+
+        // Manually insert MAX_PEERS_PER_SUBNET peers from the same /24
+        for i in 0..PeerManager::MAX_PEERS_PER_SUBNET {
+            let addr: SocketAddr = format!("10.0.1.{}:7001", i + 1).parse().unwrap();
+            mgr.peers.insert(addr, PeerInfo::new(addr));
+        }
+
+        // Next peer in same /24 should be rejected
+        let result = mgr
+            .connect_peer("10.0.1.200:7001".parse().unwrap())
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Subnet limit"));
+
+        // Peer from different /24 should be fine (will fail TLS but won't hit subnet check)
+        let result2 = mgr
+            .connect_peer("10.0.2.1:7001".parse().unwrap())
+            .await;
+        // Won't succeed because there's no real server, but error should NOT be about subnet
+        assert!(
+            !result2
+                .as_ref()
+                .err()
+                .map(|e| e.contains("Subnet limit"))
+                .unwrap_or(false)
+        );
+    }
+
+    // ── Peer Scoring / Latency Tracking ──────────────────────────────
+
+    #[test]
+    fn test_record_latency_initial() {
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        assert!(peer.avg_response_ms.is_none());
+        peer.record_latency(100.0);
+        assert_eq!(peer.avg_response_ms, Some(100.0)); // first sample = exact
+    }
+
+    #[test]
+    fn test_record_latency_ema_converges() {
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        // Seed with 100ms then send many 50ms samples — should converge towards 50
+        peer.record_latency(100.0);
+        for _ in 0..20 {
+            peer.record_latency(50.0);
+        }
+        let avg = peer.avg_response_ms.unwrap();
+        assert!(avg > 49.5 && avg < 52.0, "EMA should converge to ~50, got {}", avg);
+    }
+
+    #[tokio::test]
+    async fn test_fastest_peers_sorting() {
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+            .await
+            .unwrap();
+
+        let fast: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        let medium: SocketAddr = "10.0.1.1:7001".parse().unwrap();
+        let slow: SocketAddr = "10.0.2.1:7001".parse().unwrap();
+        let unknown: SocketAddr = "10.0.3.1:7001".parse().unwrap();
+
+        for addr in [fast, medium, slow, unknown] {
+            mgr.peers.insert(addr, PeerInfo::new(addr));
+        }
+        mgr.record_peer_latency(&fast, 10.0);
+        mgr.record_peer_latency(&medium, 50.0);
+        mgr.record_peer_latency(&slow, 200.0);
+        // 'unknown' has no samples — should sort last
+
+        let top3 = mgr.fastest_peers(3);
+        assert_eq!(top3.len(), 3);
+        assert_eq!(top3[0], fast);
+        assert_eq!(top3[1], medium);
+        assert_eq!(top3[2], slow);
+    }
+
+    // ── Bandwidth Metering ───────────────────────────────────────────
+
+    #[test]
+    fn test_bytes_tracking() {
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        assert_eq!(peer.bytes_received, 0);
+        assert_eq!(peer.bytes_sent, 0);
+
+        peer.add_bytes_received(1500);
+        peer.add_bytes_received(500);
+        assert_eq!(peer.bytes_received, 2000);
+
+        peer.add_bytes_sent(3000);
+        assert_eq!(peer.bytes_sent, 3000);
+    }
+
+    #[test]
+    fn test_bytes_tracking_saturates() {
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        peer.bytes_received = u64::MAX - 10;
+        peer.add_bytes_received(100);
+        assert_eq!(peer.bytes_received, u64::MAX); // saturating, no panic
+    }
+
+    #[tokio::test]
+    async fn test_bandwidth_stats() {
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+            .await
+            .unwrap();
+
+        let addr: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        mgr.peers.insert(addr, PeerInfo::new(addr));
+
+        mgr.record_bytes_received(&addr, 10_000);
+        mgr.record_bytes_sent(&addr, 5_000);
+
+        let stats = mgr.bandwidth_stats(&addr);
+        assert!(stats.is_some());
+        let (recv_bps, send_bps) = stats.unwrap();
+        // With tracking_since ≈ now, elapsed rounds to 1s max, so bps ≈ bytes
+        assert!(recv_bps >= 1.0, "recv_bps should be positive, got {}", recv_bps);
+        assert!(send_bps >= 1.0, "send_bps should be positive, got {}", send_bps);
+    }
+
+    #[tokio::test]
+    async fn test_bandwidth_stats_unknown_peer() {
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+            .await
+            .unwrap();
+
+        let stats = mgr.bandwidth_stats(&"10.0.0.1:7001".parse().unwrap());
+        assert!(stats.is_none());
+    }
+
+    #[test]
+    fn test_recv_bandwidth_bps() {
+        let mut peer = PeerInfo::new("10.0.0.1:7001".parse().unwrap());
+        // tracking_since is ~now, so elapsed ≈ 1 (clamped min)
+        peer.add_bytes_received(10_000);
+        let bps = peer.recv_bandwidth_bps();
+        assert!(bps >= 1.0, "bps should be positive, got {}", bps);
     }
 }

@@ -74,6 +74,9 @@ pub struct P2PConfig {
     pub max_peers: Option<usize>,
     /// Reserved relay/seed peer addresses that are never evicted
     pub reserved_relay_peers: Vec<String>,
+    /// P3-6: Externally-reachable address for NAT traversal (if known).
+    /// If None, peers behind NAT will use relay-assisted hole punching.
+    pub external_addr: Option<SocketAddr>,
 }
 
 impl Default for P2PConfig {
@@ -88,6 +91,7 @@ impl Default for P2PConfig {
             role: NodeRole::Validator,
             max_peers: None,
             reserved_relay_peers: Vec::new(),
+            external_addr: None,
         }
     }
 }
@@ -167,6 +171,37 @@ pub struct SnapshotResponseMsg {
     pub checkpoint_meta: Option<(u64, [u8; 32], u64)>,
 }
 
+/// P3-3: Compact block received from a peer
+#[derive(Debug, Clone)]
+pub struct CompactBlockMsg {
+    pub compact_block: crate::message::CompactBlock,
+    pub sender: SocketAddr,
+}
+
+/// P3-3: Request for missing transactions in a compact block
+#[derive(Debug, Clone)]
+pub struct GetBlockTxsMsg {
+    pub slot: u64,
+    pub missing_hashes: Vec<moltchain_core::Hash>,
+    pub requester: SocketAddr,
+}
+
+/// P3-4: Erasure shard request received from a peer
+#[derive(Debug, Clone)]
+pub struct ErasureShardRequestMsg {
+    pub slot: u64,
+    pub shard_indices: Vec<usize>,
+    pub requester: SocketAddr,
+}
+
+/// P3-4: Erasure shard response received from a peer
+#[derive(Debug, Clone)]
+pub struct ErasureShardResponseMsg {
+    pub slot: u64,
+    pub shards: Vec<crate::erasure::ErasureShard>,
+    pub sender: SocketAddr,
+}
+
 /// Main P2P network manager
 pub struct P2PNetwork {
     /// Peer manager (public for broadcasting)
@@ -216,6 +251,18 @@ pub struct P2PNetwork {
 
     /// Outgoing slashing evidence channel
     slashing_evidence_tx: mpsc::Sender<moltchain_core::SlashingEvidence>,
+
+    /// P3-3: Outgoing compact block channel
+    compact_block_tx: mpsc::Sender<CompactBlockMsg>,
+
+    /// P3-3: Outgoing get-block-txs request channel
+    get_block_txs_tx: mpsc::Sender<GetBlockTxsMsg>,
+
+    /// P3-4: Outgoing erasure shard request channel
+    erasure_shard_request_tx: mpsc::Sender<ErasureShardRequestMsg>,
+
+    /// P3-4: Outgoing erasure shard response channel
+    erasure_shard_response_tx: mpsc::Sender<ErasureShardResponseMsg>,
 }
 
 impl P2PNetwork {
@@ -234,6 +281,10 @@ impl P2PNetwork {
         snapshot_request_tx: mpsc::Sender<SnapshotRequestMsg>,
         snapshot_response_tx: mpsc::Sender<SnapshotResponseMsg>,
         slashing_evidence_tx: mpsc::Sender<moltchain_core::SlashingEvidence>,
+        compact_block_tx: mpsc::Sender<CompactBlockMsg>,
+        get_block_txs_tx: mpsc::Sender<GetBlockTxsMsg>,
+        erasure_shard_request_tx: mpsc::Sender<ErasureShardRequestMsg>,
+        erasure_shard_response_tx: mpsc::Sender<ErasureShardResponseMsg>,
     ) -> Result<Self, String> {
         let effective_max_peers = config.effective_max_peers();
         info!(
@@ -298,6 +349,10 @@ impl P2PNetwork {
             snapshot_request_tx,
             snapshot_response_tx,
             slashing_evidence_tx,
+            compact_block_tx,
+            get_block_txs_tx,
+            erasure_shard_request_tx,
+            erasure_shard_response_tx,
         })
     }
 
@@ -332,6 +387,7 @@ impl P2PNetwork {
                     | MessageType::Transaction(_)
                     | MessageType::ValidatorAnnounce { .. }
                     | MessageType::SlashingEvidence(_)
+                    | MessageType::CompactBlockMsg(_)
             )
         {
             self.peer_manager
@@ -460,7 +516,7 @@ impl P2PNetwork {
             } => {
                 // AUDIT-FIX H1: Cap max block range to prevent DoS via unbounded requests.
                 // A malicious peer could request start=0, end=u64::MAX causing OOM.
-                const MAX_BLOCK_RANGE: u64 = 100;
+                const MAX_BLOCK_RANGE: u64 = 500;
                 let range = end_slot.saturating_sub(start_slot);
                 if range > MAX_BLOCK_RANGE {
                     warn!(
@@ -729,6 +785,8 @@ impl P2PNetwork {
                     current_slot,
                     if version.is_empty() { "unknown" } else { &version }
                 );
+                // P3-5: Tag the peer as a validator in the peer manager
+                self.peer_manager.mark_validator(&peer_addr, pubkey);
                 let announcement = ValidatorAnnouncement {
                     pubkey,
                     stake,
@@ -757,6 +815,138 @@ impl P2PNetwork {
                         peer_addr, e
                     );
                 }
+            }
+
+            MessageType::FindNode { target_id } => {
+                debug!("P2P: Received FindNode from {} for target {:?}", peer_addr, &target_id[..4]);
+                let closest = self.peer_manager.kademlia_closest(&target_id, 20);
+                let response = P2PMessage::new(
+                    MessageType::FindNodeResponse { target_id, closest },
+                    self.local_addr,
+                );
+                let pm = self.peer_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = pm.send_to_peer(&peer_addr, response).await {
+                        warn!("P2P: Failed to send FindNodeResponse to {}: {}", peer_addr, e);
+                    }
+                });
+            }
+
+            MessageType::FindNodeResponse { target_id: _, closest } => {
+                debug!("P2P: Received FindNodeResponse from {} ({} entries)", peer_addr, closest.len());
+                for (node_id, addr_str) in closest {
+                    if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+                        self.peer_manager.update_kademlia(node_id, addr);
+                    }
+                }
+            }
+
+            MessageType::CompactBlockMsg(compact_block) => {
+                debug!(
+                    "P2P: Received compact block slot {} from {} ({} txs)",
+                    compact_block.header.slot, peer_addr, compact_block.short_ids.len()
+                );
+                let msg = CompactBlockMsg { compact_block, sender: peer_addr };
+                if let Err(e) = self.compact_block_tx.try_send(msg) {
+                    warn!("P2P: Compact block channel full, dropping from {} ({})", peer_addr, e);
+                }
+            }
+
+            MessageType::GetBlockTxs { slot, missing_hashes } => {
+                debug!(
+                    "P2P: Received GetBlockTxs for slot {} from {} ({} hashes)",
+                    slot, peer_addr, missing_hashes.len()
+                );
+                let msg = GetBlockTxsMsg { slot, missing_hashes, requester: peer_addr };
+                if let Err(e) = self.get_block_txs_tx.try_send(msg) {
+                    warn!("P2P: GetBlockTxs channel full, dropping from {} ({})", peer_addr, e);
+                }
+            }
+
+            MessageType::BlockTxs { slot, transactions } => {
+                debug!(
+                    "P2P: Received BlockTxs for slot {} from {} ({} txs)",
+                    slot, peer_addr, transactions.len()
+                );
+                // Forward individual transactions to the normal tx channel so the
+                // compact block reconstruction path in the validator can pick them up.
+                for tx in transactions {
+                    if let Err(e) = self.transaction_tx.try_send(tx) {
+                        warn!("P2P: BlockTxs tx channel full, dropping ({})", e);
+                        break;
+                    }
+                }
+            }
+
+            MessageType::ErasureShardRequest { slot, shard_indices } => {
+                debug!(
+                    "P2P: Received ErasureShardRequest for slot {} from {} ({} indices)",
+                    slot, peer_addr, shard_indices.len()
+                );
+                let msg = ErasureShardRequestMsg { slot, shard_indices, requester: peer_addr };
+                if let Err(e) = self.erasure_shard_request_tx.try_send(msg) {
+                    warn!("P2P: ErasureShardRequest channel full, dropping from {} ({})", peer_addr, e);
+                }
+            }
+
+            MessageType::ErasureShardResponse { slot, shards } => {
+                debug!(
+                    "P2P: Received ErasureShardResponse for slot {} from {} ({} shards)",
+                    slot, peer_addr, shards.len()
+                );
+                let msg = ErasureShardResponseMsg { slot, shards, sender: peer_addr };
+                if let Err(e) = self.erasure_shard_response_tx.try_send(msg) {
+                    warn!("P2P: ErasureShardResponse channel full, dropping from {} ({})", peer_addr, e);
+                }
+            }
+
+            // P3-6: Relay-assisted hole punch request — only relay/seed nodes process this.
+            // The relay forwards a HolePunchNotify to the target peer.
+            MessageType::HolePunchRequest {
+                target_addr,
+                requester_observed_addr,
+            } => {
+                if self.role == NodeRole::Relay || self.role == NodeRole::Seed {
+                    info!(
+                        "P2P: Relaying hole punch from {} (observed: {}) to target {}",
+                        peer_addr, requester_observed_addr, target_addr
+                    );
+                    let notify = P2PMessage::new(
+                        MessageType::HolePunchNotify {
+                            peer_observed_addr: requester_observed_addr,
+                        },
+                        self.local_addr,
+                    );
+                    let pm = self.peer_manager.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = pm.send_to_peer(&target_addr, notify).await {
+                            warn!("P2P: Failed to relay hole punch to {}: {}", target_addr, e);
+                        }
+                    });
+                } else {
+                    debug!(
+                        "P2P: Ignoring HolePunchRequest from {} (not a relay)",
+                        peer_addr
+                    );
+                }
+            }
+
+            // P3-6: Hole punch notification — a relay is telling us to send a
+            // packet to the given address to punch through their NAT.
+            MessageType::HolePunchNotify { peer_observed_addr } => {
+                info!(
+                    "P2P: Received hole punch notify — attempting connection to {}",
+                    peer_observed_addr
+                );
+                let pm = self.peer_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = pm.connect_peer(peer_observed_addr).await {
+                        warn!(
+                            "P2P: Hole punch connection to {} failed: {}",
+                            peer_observed_addr, e
+                        );
+                    }
+                });
             }
         }
 

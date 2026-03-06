@@ -7,22 +7,58 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+/// Sync mode determines how blocks are validated during catch-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Full TX re-execution (signatures, state transitions) for every block.
+    Full,
+    /// Header-only validation (producer signature, parent hash, slot sequence).
+    /// Used during fast catch-up; the last N blocks switch to `Full` for state
+    /// verification. Requires trust in PoS finality (2/3+ stake signed).
+    HeaderOnly,
+    /// Warp sync: download the latest state snapshot directly, verify the
+    /// state root against the finalized block header, then switch to `Full`
+    /// for the final blocks at the tip. Zero block replay for the bulk of
+    /// the chain. Only used when the gap exceeds `WARP_SYNC_THRESHOLD`.
+    Warp,
+}
+
+/// Minimum gap (in blocks) to trigger warp sync instead of header-only sync.
+/// Below this threshold, header-only sync is more efficient because the
+/// overhead of downloading a full state snapshot exceeds replaying headers.
+pub const WARP_SYNC_THRESHOLD: u64 = 10_000;
+
+/// Number of blocks at the chain tip that always use full re-execution,
+/// even during header-only sync. This ensures the final state is verified.
+pub const HEADER_SYNC_FULL_EXECUTION_WINDOW: u64 = 100;
+
 /// Maximum blocks to request in a single sync batch.
 /// This is the overall catch-up window; actual P2P requests are chunked
 /// into sub-batches of `P2P_BLOCK_RANGE_LIMIT` to stay within the P2P
 /// layer's per-request cap (AUDIT-FIX H1).
-const SYNC_BATCH_SIZE: u64 = 500;
+const SYNC_BATCH_SIZE: u64 = 2000;
 
 /// The per-request chunk size that the P2P layer allows.
 /// Must match `MAX_BLOCK_RANGE` in `p2p/src/network.rs`.
-pub const P2P_BLOCK_RANGE_LIMIT: u64 = 100;
+pub const P2P_BLOCK_RANGE_LIMIT: u64 = 500;
 
-/// Maximum blocks to hold in pending state (memory limit)
-const MAX_PENDING_BLOCKS: usize = 500;
+/// Pipeline depth: when far behind, prefetch this many batches concurrently.
+/// Overlaps download and application to eliminate idle time between batches.
+pub const SYNC_PIPELINE_DEPTH: u64 = 3;
+
+/// Maximum blocks to hold in pending state (memory limit).
+/// Sized to hold one full pipeline: SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH.
+const MAX_PENDING_BLOCKS: usize = (SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH) as usize;
 
 /// Checkpoint interval - only need to sync from last checkpoint
 /// Set to 0 to disable checkpointing
-const CHECKPOINT_INTERVAL: u64 = 10000; // Every 10k blocks
+const CHECKPOINT_INTERVAL: u64 = 1000; // Every 1k blocks
+
+/// Base sync cooldown in seconds between sync triggers.
+const SYNC_COOLDOWN_BASE_SECS: u64 = 2;
+
+/// Maximum cooldown after consecutive failures (exponential backoff cap).
+const SYNC_COOLDOWN_MAX_SECS: u64 = 30;
 
 /// Tracks chain synchronization state
 pub struct SyncManager {
@@ -49,6 +85,12 @@ pub struct SyncManager {
 
     /// Cooldown: when the last sync was triggered (prevents request storms)
     last_sync_triggered_at: Arc<Mutex<Instant>>,
+
+    /// Consecutive sync failures for exponential backoff on cooldown
+    consecutive_failures: Arc<Mutex<u32>>,
+
+    /// Current sync mode (header-only vs full re-execution)
+    sync_mode: Arc<Mutex<SyncMode>>,
 }
 
 impl SyncManager {
@@ -64,6 +106,8 @@ impl SyncManager {
             last_sync_triggered_at: Arc::new(Mutex::new(
                 Instant::now() - std::time::Duration::from_secs(60),
             )),
+            consecutive_failures: Arc::new(Mutex::new(0)),
+            sync_mode: Arc::new(Mutex::new(SyncMode::Full)),
         }
     }
 
@@ -186,11 +230,18 @@ impl SyncManager {
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = self.current_sync_batch.lock().await;
 
-        // Cooldown: don't re-trigger sync within 10 seconds of last trigger.
+        // Cooldown: don't re-trigger sync within the adaptive cooldown period.
+        // Base: 2s. On consecutive failures: 2s → 4s → 8s → 16s → 30s (capped).
         // Without this, every incoming pending block fires another batch of
         // range requests, flooding the responder and saturating QUIC.
         let last_triggered = *self.last_sync_triggered_at.lock().await;
-        if last_triggered.elapsed() < std::time::Duration::from_secs(10) {
+        let failures = *self.consecutive_failures.lock().await;
+        let cooldown_secs = if failures == 0 {
+            SYNC_COOLDOWN_BASE_SECS
+        } else {
+            (SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)
+        };
+        if last_triggered.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
             return None;
         }
 
@@ -230,8 +281,17 @@ impl SyncManager {
                 current_slot // Include overlap for fork resolution
             };
 
-            // Calculate batch end (don't request more than SYNC_BATCH_SIZE at once)
-            let batch_end = std::cmp::min(start_slot + SYNC_BATCH_SIZE - 1, highest);
+            // Calculate batch end.
+            // P2-5: When far behind, use pipelined prefetch — request up
+            // to PIPELINE_DEPTH batches ahead so the next batch is already
+            // downloading while we apply the current one.
+            let gap = highest.saturating_sub(start_slot);
+            let effective_batch = if gap > SYNC_BATCH_SIZE {
+                SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH
+            } else {
+                SYNC_BATCH_SIZE
+            };
+            let batch_end = std::cmp::min(start_slot + effective_batch - 1, highest);
 
             if batch_end >= start_slot {
                 Some((start_slot, batch_end))
@@ -271,6 +331,56 @@ impl SyncManager {
         *batch = None;
 
         info!("✅ Sync batch completed");
+    }
+
+    /// Record a sync failure — increases cooldown via exponential backoff.
+    pub async fn record_sync_failure(&self) {
+        let mut failures = self.consecutive_failures.lock().await;
+        *failures = failures.saturating_add(1);
+        let cooldown_secs = (SYNC_COOLDOWN_BASE_SECS << (*failures).min(4))
+            .min(SYNC_COOLDOWN_MAX_SECS);
+        warn!(
+            "⚠️  Sync failure #{} — cooldown increased to {}s",
+            *failures, cooldown_secs
+        );
+    }
+
+    /// Reset failure counter on successful sync progress.
+    pub async fn record_sync_success(&self) {
+        let mut failures = self.consecutive_failures.lock().await;
+        if *failures > 0 {
+            info!("✅ Sync success — resetting failure backoff (was {})", *failures);
+            *failures = 0;
+        }
+    }
+
+    /// Set sync mode (header-only vs full re-execution)
+    pub async fn set_sync_mode(&self, mode: SyncMode) {
+        let mut current = self.sync_mode.lock().await;
+        if *current != mode {
+            info!("🔄 Sync mode changed to {:?}", mode);
+            *current = mode;
+        }
+    }
+
+    /// Get the current sync mode
+    #[allow(dead_code)]
+    pub async fn get_sync_mode(&self) -> SyncMode {
+        *self.sync_mode.lock().await
+    }
+
+    /// Determine whether a given block slot should use full or header-only
+    /// validation based on distance from the chain tip.
+    pub async fn should_full_validate(&self, block_slot: u64) -> bool {
+        let mode = *self.sync_mode.lock().await;
+        match mode {
+            SyncMode::Full => true,
+            SyncMode::HeaderOnly | SyncMode::Warp => {
+                let highest = *self.highest_seen_slot.lock().await;
+                // Full-execute the last HEADER_SYNC_FULL_EXECUTION_WINDOW blocks
+                block_slot + HEADER_SYNC_FULL_EXECUTION_WINDOW >= highest
+            }
+        }
     }
 
     /// Get sync progress relative to highest seen slot
@@ -567,11 +677,11 @@ mod tests {
     #[test]
     fn test_p2p_block_range_limit_chunking() {
         // The limit must match the P2P MAX_BLOCK_RANGE in p2p/src/network.rs
-        assert_eq!(P2P_BLOCK_RANGE_LIMIT, 100);
+        assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
 
-        // Simulate chunking a 250-block range into sub-batches of 100
+        // Simulate chunking a 1250-block range into sub-batches of 500
         let start: u64 = 50;
-        let end: u64 = 299;
+        let end: u64 = 1299;
         let mut chunks = Vec::new();
         let mut chunk_start = start;
         while chunk_start <= end {
@@ -579,11 +689,11 @@ mod tests {
             chunks.push((chunk_start, chunk_end));
             chunk_start = chunk_end + 1;
         }
-        // Should produce 3 chunks: [50-149], [150-249], [250-299]
+        // Should produce 3 chunks: [50-549], [550-1049], [1050-1299]
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0], (50, 149));
-        assert_eq!(chunks[1], (150, 249));
-        assert_eq!(chunks[2], (250, 299));
+        assert_eq!(chunks[0], (50, 549));
+        assert_eq!(chunks[1], (550, 1049));
+        assert_eq!(chunks[2], (1050, 1299));
         // All chunks must be ≤ P2P_BLOCK_RANGE_LIMIT in size
         for (s, e) in &chunks {
             assert!(e - s < P2P_BLOCK_RANGE_LIMIT);
@@ -594,7 +704,7 @@ mod tests {
     #[test]
     fn test_p2p_chunking_single_batch() {
         let start: u64 = 10;
-        let end: u64 = 50;
+        let end: u64 = 300;
         let mut chunks = Vec::new();
         let mut chunk_start = start;
         while chunk_start <= end {
@@ -603,14 +713,14 @@ mod tests {
             chunk_start = chunk_end + 1;
         }
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], (10, 50));
+        assert_eq!(chunks[0], (10, 300));
     }
 
-    /// Exact boundary (exactly 100 blocks)
+    /// Exact boundary (exactly 500 blocks)
     #[test]
     fn test_p2p_chunking_exact_limit() {
         let start: u64 = 0;
-        let end: u64 = 99; // exactly 100 blocks
+        let end: u64 = 499; // exactly 500 blocks
         let mut chunks = Vec::new();
         let mut chunk_start = start;
         while chunk_start <= end {
@@ -619,7 +729,7 @@ mod tests {
             chunk_start = chunk_end + 1;
         }
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], (0, 99));
+        assert_eq!(chunks[0], (0, 499));
     }
 
     /// Helper: create a minimal test block for the given slot
@@ -700,5 +810,194 @@ mod tests {
         // Different hash → no child
         let other_hash = Hash([99u8; 32]);
         assert!(!sm.has_pending_child(&other_hash).await);
+    }
+
+    // ----------------------------------------------------------------
+    // Sync Performance Plan tests
+    // ----------------------------------------------------------------
+
+    /// P0-1: Checkpoint interval set to 1000 blocks
+    #[test]
+    fn test_checkpoint_interval_constant() {
+        assert_eq!(CHECKPOINT_INTERVAL, 1000);
+        assert!(SyncManager::should_checkpoint(1000));
+        assert!(SyncManager::should_checkpoint(2000));
+        assert!(!SyncManager::should_checkpoint(500));
+        assert!(!SyncManager::should_checkpoint(0));
+    }
+
+    /// P0-2: Exponential backoff on consecutive failures
+    #[tokio::test]
+    async fn test_exponential_backoff() {
+        let sm = SyncManager::new();
+        // Initially 0 failures → base cooldown
+        assert_eq!(*sm.consecutive_failures.lock().await, 0);
+
+        sm.record_sync_failure().await;
+        assert_eq!(*sm.consecutive_failures.lock().await, 1);
+
+        sm.record_sync_failure().await;
+        assert_eq!(*sm.consecutive_failures.lock().await, 2);
+
+        // Success resets
+        sm.record_sync_success().await;
+        assert_eq!(*sm.consecutive_failures.lock().await, 0);
+    }
+
+    /// P0-2: Verify cooldown calculation with backoff
+    #[test]
+    fn test_cooldown_calculation() {
+        // 0 failures → base (2s)
+        let cooldown_0 = SYNC_COOLDOWN_BASE_SECS;
+        assert_eq!(cooldown_0, 2);
+
+        // 1 failure → 2 << 1 = 4s
+        let cooldown_1 = (SYNC_COOLDOWN_BASE_SECS << 1u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
+        assert_eq!(cooldown_1, 4);
+
+        // 2 failures → 2 << 2 = 8s
+        let cooldown_2 = (SYNC_COOLDOWN_BASE_SECS << 2u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
+        assert_eq!(cooldown_2, 8);
+
+        // 3 failures → 2 << 3 = 16s
+        let cooldown_3 = (SYNC_COOLDOWN_BASE_SECS << 3u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
+        assert_eq!(cooldown_3, 16);
+
+        // 4 failures → 2 << 4 = 32 → capped to 30s
+        let cooldown_4 = (SYNC_COOLDOWN_BASE_SECS << 4u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
+        assert_eq!(cooldown_4, 30);
+
+        // 10 failures → still capped via .min(4) → same as 4 failures
+        let cooldown_10 = (SYNC_COOLDOWN_BASE_SECS << 10u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
+        assert_eq!(cooldown_10, 30);
+    }
+
+    /// P0-3: Batch sizes match expectations
+    #[test]
+    fn test_batch_size_constants() {
+        assert_eq!(SYNC_BATCH_SIZE, 2000);
+        assert_eq!(P2P_BLOCK_RANGE_LIMIT, 500);
+        // 2000 / 500 = 4 chunks per batch
+        assert_eq!(SYNC_BATCH_SIZE / P2P_BLOCK_RANGE_LIMIT, 4);
+    }
+
+    /// P1-1: SyncMode enum and header-only validation
+    #[tokio::test]
+    async fn test_sync_mode_header_only() {
+        let sm = SyncManager::new();
+        // Default is Full
+        assert_eq!(sm.get_sync_mode().await, SyncMode::Full);
+
+        sm.set_sync_mode(SyncMode::HeaderOnly).await;
+        assert_eq!(sm.get_sync_mode().await, SyncMode::HeaderOnly);
+
+        sm.set_sync_mode(SyncMode::Full).await;
+        assert_eq!(sm.get_sync_mode().await, SyncMode::Full);
+    }
+
+    /// P1-1: should_full_validate respects sync mode and execution window
+    #[tokio::test]
+    async fn test_should_full_validate() {
+        let sm = SyncManager::new();
+
+        // Full mode → always validate
+        sm.set_sync_mode(SyncMode::Full).await;
+        sm.note_seen(1000).await;
+        assert!(sm.should_full_validate(0).await);
+        assert!(sm.should_full_validate(500).await);
+        assert!(sm.should_full_validate(999).await);
+
+        // HeaderOnly mode → only validate within HEADER_SYNC_FULL_EXECUTION_WINDOW of tip
+        sm.set_sync_mode(SyncMode::HeaderOnly).await;
+        // Block 0, highest 1000 → 0 + 100 < 1000 → skip
+        assert!(!sm.should_full_validate(0).await);
+        // Block 899 → 899 + 100 < 1000 → skip
+        assert!(!sm.should_full_validate(899).await);
+        // Block 900 → 900 + 100 >= 1000 → validate
+        assert!(sm.should_full_validate(900).await);
+        // Block 999 → 999 + 100 >= 1000 → validate
+        assert!(sm.should_full_validate(999).await);
+    }
+
+    /// P2-5: Pipeline depth and pending blocks buffer sized correctly
+    #[test]
+    fn test_pipeline_constants() {
+        assert_eq!(SYNC_PIPELINE_DEPTH, 3);
+        assert_eq!(
+            MAX_PENDING_BLOCKS,
+            (SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH) as usize
+        );
+        // With 2000 batch * 3 depth, buffer holds 6000 blocks
+        assert_eq!(MAX_PENDING_BLOCKS, 6000);
+    }
+
+    /// P2-5: should_sync returns larger batch when far behind
+    #[tokio::test]
+    async fn test_pipeline_prefetch_batch() {
+        let sm = SyncManager::new();
+        // 10000 blocks behind → gap > SYNC_BATCH_SIZE → pipeline depth applies
+        sm.note_seen(10000).await;
+        let batch = sm.should_sync(0).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 0);
+        // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH (6000) blocks
+        let batch_size = end - start + 1;
+        assert_eq!(batch_size, SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH);
+    }
+
+    /// P2-5: should_sync returns normal batch when close to tip
+    #[tokio::test]
+    async fn test_normal_batch_when_close() {
+        let sm = SyncManager::new();
+        // 500 blocks behind (< SYNC_BATCH_SIZE) → normal batch, no pipeline
+        sm.note_seen(510).await;
+        let batch = sm.should_sync(10).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 10);
+        // Gap is 500, which is < SYNC_BATCH_SIZE(2000), so effective_batch = 2000
+        // but we're capped at highest (510)
+        assert_eq!(end, 510);
+    }
+
+    /// P3-1: Warp sync mode threshold constant
+    #[test]
+    fn test_warp_sync_threshold() {
+        assert_eq!(WARP_SYNC_THRESHOLD, 10_000);
+        // Warp threshold must be greater than header-only full-execution window
+        assert!(WARP_SYNC_THRESHOLD > HEADER_SYNC_FULL_EXECUTION_WINDOW * 2);
+    }
+
+    /// P3-1: SyncMode::Warp exists and round-trips
+    #[tokio::test]
+    async fn test_warp_sync_mode() {
+        let sm = SyncManager::new();
+        sm.set_sync_mode(SyncMode::Warp).await;
+        assert_eq!(sm.get_sync_mode().await, SyncMode::Warp);
+    }
+
+    /// P3-1: Warp mode skips full validation like HeaderOnly
+    #[tokio::test]
+    async fn test_warp_mode_skips_full_validate() {
+        let sm = SyncManager::new();
+        sm.set_sync_mode(SyncMode::Warp).await;
+        sm.note_seen(20000).await;
+        // Block 0, highest 20000 → 0 + 100 < 20000 → skip
+        assert!(!sm.should_full_validate(0).await);
+        // Block near tip → should validate
+        assert!(sm.should_full_validate(19950).await);
+    }
+
+    /// P3-1: Mode auto-detection boundaries
+    #[test]
+    fn test_warp_sync_mode_detection_boundaries() {
+        // gap <= 200 → Full
+        let gap_full = HEADER_SYNC_FULL_EXECUTION_WINDOW * 2;
+        assert!(gap_full <= WARP_SYNC_THRESHOLD);
+
+        // gap > 200 and <= 10000 → HeaderOnly
+        // gap > 10000 → Warp
+        assert!(WARP_SYNC_THRESHOLD > HEADER_SYNC_FULL_EXECUTION_WINDOW * 2);
     }
 }

@@ -40,7 +40,7 @@ pub mod ws;
 
 use alloy_primitives::{Address, Bytes, U256};
 use axum::body::Bytes as AxumBytes;
-use axum::http::{HeaderValue, Method};
+use axum::http::{HeaderMap, HeaderValue, Method};
 use axum::{
     extract::ConnectInfo,
     extract::State,
@@ -103,6 +103,7 @@ use moltchain_core::consensus::{
     decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
 };
 use serde::{Deserialize, Serialize};
+use dashmap::DashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -113,6 +114,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 
@@ -156,6 +158,40 @@ struct RpcResponse {
 struct RpcError {
     code: i32,
     message: String,
+}
+
+/// P2-4: Content-type negotiation for binary RPC responses.
+///
+/// Inspects the `Accept` header and serializes the RPC response accordingly:
+///   - `application/msgpack`        → MessagePack (rmp-serde)
+///   - `application/octet-stream`   → bincode
+///   - anything else / absent       → JSON (default)
+fn encode_rpc_response(headers: &HeaderMap, response: RpcResponse) -> Response {
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json");
+
+    if accept.contains("application/msgpack") {
+        if let Ok(bytes) = rmp_serde::to_vec_named(&response) {
+            return Response::builder()
+                .status(200)
+                .header("content-type", "application/msgpack")
+                .body(axum::body::Body::from(bytes))
+                .unwrap();
+        }
+    } else if accept.contains("application/octet-stream") {
+        if let Ok(bytes) = bincode::serialize(&response) {
+            return Response::builder()
+                .status(200)
+                .header("content-type", "application/octet-stream")
+                .body(axum::body::Body::from(bytes))
+                .unwrap();
+        }
+    }
+
+    // Default: JSON
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 fn sanitize_rpc_error_message(message: &str) -> String {
@@ -621,25 +657,22 @@ fn classify_solana_method_tier(method: &str) -> MethodTier {
     }
 }
 
-/// T2.6: Per-IP rate limiter with stale entry pruning
-/// AUDIT-FIX 2.17: std::sync::Mutex is intentional here — the critical section
-/// is a fast HashMap lookup/insert with no `.await` points, consistent with
-/// tokio's recommendation to use std::sync::Mutex for short non-async sections.
+/// T2.6: Per-IP rate limiter using DashMap for lock-free concurrent access.
+/// P1-5: Upgraded from Mutex<HashMap> to DashMap to eliminate contention
+/// under high request rates (10K+ req/s). DashMap uses shard-level locking
+/// (16+ shards), so concurrent reads/writes don't serialize.
 struct RateLimiter {
-    requests: std::sync::Mutex<HashMap<IpAddr, (u64, Instant)>>,
+    requests: DashMap<IpAddr, (u64, Instant)>,
     max_per_second: u64,
     /// RPC-L02: Optional cross-process shared global limiter state file.
-    /// When set via `RPC_RATE_LIMIT_SHARED_FILE`, all processes pointing to the
-    /// same file coordinate the per-IP global 1s counter.
     shared_counter_file: Option<PathBuf>,
     last_prune: std::sync::Mutex<Instant>,
     /// P9-RPC-03: Per-tier per-IP counters.
-    /// Key = (IpAddr, MethodTier), Value = (count, window_start).
-    tier_requests: std::sync::Mutex<HashMap<(IpAddr, MethodTier), (u64, Instant)>>,
+    tier_requests: DashMap<(IpAddr, MethodTier), (u64, Instant)>,
     /// Per-second limits for each tier.
     tier_limits: [u64; 3], // [Cheap, Moderate, Expensive]
     /// Dedicated per-IP counters for REST /api/v1 tiered rate limiting.
-    rest_tier_requests: std::sync::Mutex<HashMap<(IpAddr, MethodTier), (u64, Instant)>>,
+    rest_tier_requests: DashMap<(IpAddr, MethodTier), (u64, Instant)>,
     /// REST per-second limits for each tier.
     rest_tier_limits: [u64; 3], // [Cheap, Moderate, Expensive]
 }
@@ -652,11 +685,11 @@ impl RateLimiter {
             .filter(|path| !path.as_os_str().is_empty());
 
         Self {
-            requests: std::sync::Mutex::new(HashMap::new()),
+            requests: DashMap::new(),
             max_per_second,
             shared_counter_file,
             last_prune: std::sync::Mutex::new(Instant::now()),
-            tier_requests: std::sync::Mutex::new(HashMap::new()),
+            tier_requests: DashMap::new(),
             // P9-RPC-03: Default tier limits.
             // Cheap: 100% of global cap, Moderate: 40%, Expensive: 10%
             tier_limits: [
@@ -664,7 +697,7 @@ impl RateLimiter {
                 max_per_second * 2 / 5,                 // Moderate (40%)
                 std::cmp::max(max_per_second / 10, 50), // Expensive (10%, min 50)
             ],
-            rest_tier_requests: std::sync::Mutex::new(HashMap::new()),
+            rest_tier_requests: DashMap::new(),
             rest_tier_limits: [200, 100, 50],
         }
     }
@@ -786,37 +819,30 @@ impl RateLimiter {
     }
     /// Returns `true` if allowed, `false` if rate-limited.
     fn check(&self, ip: IpAddr) -> bool {
-        let mut map = self.requests.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
         // Prune stale entries every 30 seconds to prevent memory exhaustion
         {
             let mut last = self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
             if now.duration_since(*last).as_secs() >= 30 {
-                map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
-                // Also prune tier counters
-                if let Ok(mut tier_map) = self.tier_requests.lock() {
-                    tier_map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
-                }
-                if let Ok(mut rest_tier_map) = self.rest_tier_requests.lock() {
-                    rest_tier_map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
-                }
+                self.requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                self.tier_requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                self.rest_tier_requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
                 *last = now;
             }
         }
 
-        let entry = map.entry(ip).or_insert((0, now));
-        let allowed_local = if now.duration_since(entry.1).as_secs() >= 1 {
-            // Window expired, reset counter
-            entry.0 = 1;
-            entry.1 = now;
-            true
-        } else {
-            entry.0 += 1;
-            entry.0 <= self.max_per_second
+        let allowed_local = {
+            let mut entry = self.requests.entry(ip).or_insert((0, now));
+            if now.duration_since(entry.1).as_secs() >= 1 {
+                entry.0 = 1;
+                entry.1 = now;
+                true
+            } else {
+                entry.0 += 1;
+                entry.0 <= self.max_per_second
+            }
         };
-
-        drop(map);
 
         if !allowed_local {
             return false;
@@ -833,9 +859,8 @@ impl RateLimiter {
     /// the tier-specific rate limit.  Should be called AFTER `check()` passes.
     fn check_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
         let limit = self.tier_limits[tier as usize];
-        let mut map = self.tier_requests.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let entry = map.entry((ip, tier)).or_insert((0, now));
+        let mut entry = self.tier_requests.entry((ip, tier)).or_insert((0, now));
         if now.duration_since(entry.1).as_secs() >= 1 {
             entry.0 = 1;
             entry.1 = now;
@@ -848,12 +873,8 @@ impl RateLimiter {
 
     fn check_rest_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
         let limit = self.rest_tier_limits[tier as usize];
-        let mut map = self
-            .rest_tier_requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let entry = map.entry((ip, tier)).or_insert((0, now));
+        let mut entry = self.rest_tier_requests.entry((ip, tier)).or_insert((0, now));
         if now.duration_since(entry.1).as_secs() >= 1 {
             entry.0 = 1;
             entry.1 = now;
@@ -1873,6 +1894,10 @@ pub fn build_rpc_router(
         // Shielded Pool REST API — /api/v1/shielded/*
         .nest("/api/v1/shielded", shielded::build_shielded_router())
         .layer(cors)
+        // P1-4: HTTP response compression (gzip + brotli)
+        // Compresses JSON responses 5-10× for bandwidth savings.
+        // Negligible CPU overhead; HTTP/2 negotiated automatically by Axum.
+        .layer(CompressionLayer::new())
         // DDoS protection: limit request bodies to 2MB
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
         .route_layer(middleware::from_fn_with_state(
@@ -1890,6 +1915,7 @@ pub fn build_rpc_router(
 async fn handle_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     body: AxumBytes,
 ) -> Response {
     let probe = match parse_rpc_tier_probe(body.as_ref()) {
@@ -1957,7 +1983,7 @@ async fn handle_rpc(
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
-        "health" => {
+        "health" | "getHealth" => {
             // GX-07: Check block staleness — return 503-equivalent if stalled
             let slot = state.state.get_last_slot().unwrap_or(0);
             let stale = if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
@@ -2171,13 +2197,14 @@ async fn handle_rpc(
         },
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    encode_rpc_response(&headers, response)
 }
 
 /// Handle Solana-compatible RPC request
 async fn handle_solana_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     body: AxumBytes,
 ) -> Response {
     let probe = match parse_rpc_tier_probe(body.as_ref()) {
@@ -2248,13 +2275,14 @@ async fn handle_solana_rpc(
         },
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    encode_rpc_response(&headers, response)
 }
 
 /// Handle Ethereum-compatible RPC request
 async fn handle_evm_rpc(
     State(state): State<Arc<RpcState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     body: AxumBytes,
 ) -> Response {
     let probe = match parse_rpc_tier_probe(body.as_ref()) {
@@ -2334,7 +2362,7 @@ async fn handle_evm_rpc(
         },
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    encode_rpc_response(&headers, response)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -12603,12 +12631,14 @@ async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_method, classify_solana_method_tier, filter_signatures_for_address,
-        parse_get_block_slot_param, parse_rpc_request, parse_rpc_tier_probe,
-        validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, AirdropCooldowns, MethodTier,
-        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        classify_method, classify_solana_method_tier, encode_rpc_response,
+        filter_signatures_for_address, parse_get_block_slot_param, parse_rpc_request,
+        parse_rpc_tier_probe, validate_incoming_transaction_limits,
+        validate_solana_encoding, validate_solana_transaction_details, AirdropCooldowns,
+        MethodTier, RpcError, RpcResponse, AIRDROP_COOLDOWN_MAX_ENTRIES,
+        AIRDROP_COOLDOWN_SECS,
     };
+    use axum::http::HeaderMap;
     use moltchain_core::Hash;
     use std::time::{Duration, Instant};
 
@@ -12847,5 +12877,105 @@ mod tests {
             "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
             "REGRESSION A11-02: Keccak-256 of ERC-20 Transfer event must match standard EVM topic hash"
         );
+    }
+
+    // ── P2-4: Binary RPC format tests ──
+
+    #[test]
+    fn test_encode_rpc_response_default_json() {
+        let resp = RpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            result: Some(serde_json::json!({"slot": 42})),
+            error: None,
+        };
+        let headers = HeaderMap::new();
+        let response = encode_rpc_response(&headers, resp);
+        // Default should be JSON content type
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("json"), "default should be JSON, got: {}", ct);
+    }
+
+    #[test]
+    fn test_encode_rpc_response_msgpack() {
+        let resp = RpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            result: Some(serde_json::json!({"balance": 1000})),
+            error: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "application/msgpack".parse().unwrap());
+        let response = encode_rpc_response(&headers, resp);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ct, "application/msgpack");
+    }
+
+    #[test]
+    fn test_encode_rpc_response_bincode() {
+        let resp = RpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            result: Some(serde_json::json!("hello")),
+            error: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "application/octet-stream".parse().unwrap());
+        let response = encode_rpc_response(&headers, resp);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ct, "application/octet-stream");
+    }
+
+    #[test]
+    fn test_encode_rpc_response_msgpack_roundtrip() {
+        let resp = RpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            result: Some(serde_json::json!({"slot": 42, "hash": "abc"})),
+            error: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&resp).unwrap();
+        // Deserialize back to a map to verify the key fields round-trip.
+        // rmp-serde omits None fields (skip_serializing_if) so we check
+        // the fields we know are present.
+        let decoded: std::collections::HashMap<String, serde_json::Value> =
+            rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded["jsonrpc"], "2.0");
+        assert_eq!(decoded["result"]["slot"], 42);
+        assert_eq!(decoded["result"]["hash"], "abc");
+    }
+
+    #[test]
+    fn test_encode_rpc_response_error_msgpack() {
+        let resp = RpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            result: None,
+            error: Some(RpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+            }),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "application/msgpack".parse().unwrap());
+        let response = encode_rpc_response(&headers, resp);
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ct, "application/msgpack");
     }
 }

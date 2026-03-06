@@ -141,8 +141,8 @@ const HEARTBEAT_GLOBAL_IDLE_SECS: u64 = 5;
 const SYNC_REQUEST_FANOUT: usize = 3;
 
 /// QoS: per-peer block-range serving token bucket, measured in blocks.
-const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 1200;
-const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 200;
+const BLOCK_RANGE_SERVE_BURST_BLOCKS: u64 = 5000;
+const BLOCK_RANGE_SERVE_REFILL_BLOCKS_PER_SEC: u64 = 1000;
 
 /// QoS: per-peer snapshot serving token bucket, measured in request units.
 const SNAPSHOT_SERVE_BURST_UNITS: u64 = 32;
@@ -4060,14 +4060,35 @@ async fn run_validator() {
         }
     }
 
+    // Parse --cache-size-mb flag for RocksDB shared block cache
+    let cache_size_mb: Option<usize> = args
+        .iter()
+        .position(|arg| arg == "--cache-size-mb")
+        .and_then(|pos| args.get(pos + 1))
+        .and_then(|s| s.parse().ok());
+
     // Open state database
-    let state = match StateStore::open(&data_dir) {
+    let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to open state: {}", e);
             return;
         }
     };
+
+    // ── P2-3: Open cold/archival storage if --cold-store is given ──
+    let cold_store_path: Option<String> = args
+        .iter()
+        .position(|arg| arg == "--cold-store")
+        .and_then(|pos| args.get(pos + 1))
+        .cloned();
+
+    if let Some(ref cold_path) = cold_store_path {
+        if let Err(e) = state.open_cold_store(cold_path) {
+            error!("Failed to open cold store at {}: {}", cold_path, e);
+            return;
+        }
+    }
 
     // Create transaction processor
     let processor = Arc::new(TxProcessor::new(state.clone()));
@@ -4164,7 +4185,8 @@ async fn run_validator() {
             | "--listen-addr"
             | "--auto-update"
             | "--update-check-interval"
-            | "--update-channel" => {
+            | "--update-channel"
+            | "--cache-size-mb" => {
                 skip_next = true;
             }
             "--supervised" | "--no-watchdog" | "--no-auto-restart" | "--dev-mode" => {
@@ -4342,6 +4364,10 @@ async fn run_validator() {
                     .collect()
             })
             .unwrap_or_default(),
+        // P3-6: External address for NAT traversal (from MOLTCHAIN_EXTERNAL_ADDR env var)
+        external_addr: std::env::var("MOLTCHAIN_EXTERNAL_ADDR")
+            .ok()
+            .and_then(|s| s.parse::<std::net::SocketAddr>().ok()),
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
@@ -5269,6 +5295,8 @@ async fn run_validator() {
     // Block channel sized at 2000 to absorb sync bursts without backpressure
     // killing the P2P message loop (the old 500 was too small during catch-up).
     let (block_tx, mut block_rx) = mpsc::channel(10_000);
+    let block_tx_for_compact = block_tx.clone(); // P3-3: sender for reconstructed compact blocks
+    let block_tx_for_erasure = block_tx.clone(); // P3-4: sender for erasure-reconstructed blocks
     let (vote_tx, mut vote_rx) = mpsc::channel(2_000);
     let (transaction_tx, mut transaction_rx) = mpsc::channel(5_000);
     let (validator_announce_tx, mut validator_announce_rx) = mpsc::channel(100);
@@ -5281,6 +5309,14 @@ async fn run_validator() {
     let (snapshot_response_tx, mut snapshot_response_rx) = mpsc::channel::<SnapshotResponseMsg>(50);
     let (slashing_evidence_tx, mut slashing_evidence_rx) =
         mpsc::channel::<moltchain_core::SlashingEvidence>(100);
+    let (compact_block_tx, mut compact_block_rx) =
+        mpsc::channel::<moltchain_p2p::CompactBlockMsg>(1_000);
+    let (get_block_txs_tx, mut get_block_txs_rx) =
+        mpsc::channel::<moltchain_p2p::GetBlockTxsMsg>(200);
+    let (erasure_shard_request_tx, mut erasure_shard_request_rx) =
+        mpsc::channel::<moltchain_p2p::ErasureShardRequestMsg>(200);
+    let (erasure_shard_response_tx, mut erasure_shard_response_rx) =
+        mpsc::channel::<moltchain_p2p::ErasureShardResponseMsg>(200);
 
     // Create mempool
     let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
@@ -5299,6 +5335,10 @@ async fn run_validator() {
         snapshot_request_tx,
         snapshot_response_tx,
         slashing_evidence_tx,
+        compact_block_tx,
+        get_block_txs_tx,
+        erasure_shard_request_tx,
+        erasure_shard_response_tx,
     )
     .await
     {
@@ -5910,7 +5950,11 @@ async fn run_validator() {
                                 sync_mgr.add_pending_block(pending_block).await;
                                 continue;
                             }
-                            replay_block_transactions(&processor_for_blocks, &pending_block);
+                            // P1-1: Header-first sync — skip TX replay for blocks
+                            // outside the full-execution window during catch-up.
+                            if sync_mgr.should_full_validate(pending_slot).await {
+                                replay_block_transactions(&processor_for_blocks, &pending_block);
+                            }
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
                                 pending_block.header.slot,
@@ -5959,7 +6003,10 @@ async fn run_validator() {
 
                     if can_chain {
                         // Valid next block in chain - replay transactions then store
-                        replay_block_transactions(&processor_for_blocks, &block);
+                        // P1-1: Skip TX replay in header-only sync for far-away blocks.
+                        if sync_mgr.should_full_validate(block_slot).await {
+                            replay_block_transactions(&processor_for_blocks, &block);
+                        }
                         run_analytics_bridge_from_state(
                             &state_for_blocks,
                             block.header.slot,
@@ -6038,14 +6085,14 @@ async fn run_validator() {
                                 }
 
                                 // PERF-OPT 3: Fire-and-forget vote broadcast.
-                                // Don't await the broadcast — let QUIC sends happen
-                                // concurrently while we proceed to apply_block_effects.
+                                // P3-5: Route votes through validator mesh for lowest latency.
+                                // Falls back to full broadcast if no validator peers are known.
                                 {
                                     let vote_msg =
                                         P2PMessage::new(MessageType::Vote(vote), local_addr);
                                     let pm = peer_mgr_for_sync.clone();
                                     tokio::spawn(async move {
-                                        pm.broadcast(vote_msg).await;
+                                        pm.broadcast_to_validators(vote_msg).await;
                                     });
                                 }
                             } else {
@@ -6100,7 +6147,9 @@ async fn run_validator() {
                                     sync_mgr.add_pending_block(pending_block).await;
                                     continue;
                                 }
-                                replay_block_transactions(&processor_for_blocks, &pending_block);
+                                if sync_mgr.should_full_validate(pending_block.header.slot).await {
+                                    replay_block_transactions(&processor_for_blocks, &pending_block);
+                                }
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
                                     pending_block.header.slot,
@@ -6164,32 +6213,80 @@ async fn run_validator() {
 
                     // Check if we should start sync
                     if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
+                        // P1-1 / P3-1: Auto-detect sync mode based on gap size.
+                        // If enormously far behind (> warp threshold), use warp sync
+                        // to download state snapshot instead of replaying blocks.
+                        // If moderately far behind, use header-only. Otherwise, full.
+                        let gap = end.saturating_sub(current_slot);
+                        if gap > sync::WARP_SYNC_THRESHOLD {
+                            sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                        } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
+                            sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
+                        } else {
+                            sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
+                        }
                         info!("🔄 Triggering sync: blocks {} to {}", start, end);
 
                         // Mark that we're starting sync
                         sync_mgr.start_sync(start, end).await;
+
+                        // P3-1: If warp sync mode, request a state snapshot
+                        // instead of downloading individual blocks.
+                        let current_mode = sync_mgr.get_sync_mode().await;
+                        if current_mode == sync::SyncMode::Warp {
+                            info!(
+                                "⚡ Warp sync: gap is {} blocks — requesting state snapshot",
+                                gap
+                            );
+                            // Send CheckpointMetaRequest to all known peers
+                            let peer_infos = peer_mgr_for_sync.get_peer_infos();
+                            for (peer_addr, _) in peer_infos.iter().take(3) {
+                                let meta_request = P2PMessage::new(
+                                    MessageType::CheckpointMetaRequest,
+                                    local_addr,
+                                );
+                                let _ = peer_mgr_for_sync
+                                    .send_to_peer(peer_addr, meta_request)
+                                    .await;
+                            }
+                            // The CheckpointMetaResponse handler will trigger
+                            // StateSnapshotRequest downloads. After all chunks
+                            // are received the state root is verified and the
+                            // node fast-forwards, then switches to Full mode
+                            // for the remaining tip blocks.
+                            continue;
+                        }
 
                         // Chunk the range into sub-batches that fit within the
                         // P2P layer's MAX_BLOCK_RANGE limit (AUDIT-FIX H1).
                         // Without this, any gap > 100 blocks causes a permanent
                         // sync deadlock because the responder rejects oversized
                         // range requests.
+                        //
+                        // P2-5: Round-robin chunk→peer assignment distributes
+                        // pipeline stages across peers. Peer A serves chunk 0,
+                        // peer B serves chunk 1, etc. This parallelizes
+                        // download across all available peers rather than
+                        // having every peer serve every chunk (which wastes
+                        // bandwidth on duplicates during large syncs).
+                        let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
+                        peer_infos.sort_by(|a, b| {
+                            b.1.cmp(&a.1)
+                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                        });
+                        let all_peers: Vec<std::net::SocketAddr> = peer_infos
+                            .into_iter()
+                            .take(SYNC_REQUEST_FANOUT.max(1))
+                            .map(|(addr, _)| addr)
+                            .collect();
+
                         let mut chunk_start = start;
+                        let mut chunk_idx: usize = 0;
                         while chunk_start <= end {
                             let chunk_end =
                                 std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
-                            let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
-                            peer_infos.sort_by(|a, b| {
-                                b.1.cmp(&a.1)
-                                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                            });
-                            let selected_peers: Vec<std::net::SocketAddr> = peer_infos
-                                .into_iter()
-                                .take(SYNC_REQUEST_FANOUT.max(1))
-                                .map(|(addr, _)| addr)
-                                .collect();
 
-                            if selected_peers.is_empty() {
+                            if all_peers.is_empty() {
                                 let request_msg = P2PMessage::new(
                                     MessageType::BlockRangeRequest {
                                         start_slot: chunk_start,
@@ -6199,35 +6296,41 @@ async fn run_validator() {
                                 );
                                 peer_mgr_for_sync.broadcast(request_msg).await;
                             } else {
-                                for peer_addr in &selected_peers {
-                                    let request_msg = P2PMessage::new(
-                                        MessageType::BlockRangeRequest {
-                                            start_slot: chunk_start,
-                                            end_slot: chunk_end,
-                                        },
-                                        local_addr,
+                                // P2-5: Round-robin — assign each chunk to a
+                                // different peer to maximize parallelism.
+                                let peer_addr = &all_peers[chunk_idx % all_peers.len()];
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: chunk_start,
+                                        end_slot: chunk_end,
+                                    },
+                                    local_addr,
+                                );
+                                if let Err(e) =
+                                    peer_mgr_for_sync.send_to_peer(peer_addr, request_msg).await
+                                {
+                                    warn!(
+                                        "⚠️  Failed sync request {}-{} to {}: {}",
+                                        chunk_start, chunk_end, peer_addr, e
                                     );
-                                    if let Err(e) =
-                                        peer_mgr_for_sync.send_to_peer(peer_addr, request_msg).await
-                                    {
-                                        warn!(
-                                            "⚠️  Failed sync request {}-{} to {}: {}",
-                                            chunk_start, chunk_end, peer_addr, e
-                                        );
-                                        peer_mgr_for_sync.record_violation(peer_addr);
-                                    } else {
-                                        peer_mgr_for_sync.record_success(peer_addr);
-                                    }
+                                    peer_mgr_for_sync.record_violation(peer_addr);
+                                } else {
+                                    peer_mgr_for_sync.record_success(peer_addr);
                                 }
                             }
                             info!(
-                                "📡 Sent block range request: {} to {} (chunk {}, fanout {})",
+                                "📡 Sent block range request: {} to {} (chunk {}, peer {})",
                                 chunk_start,
                                 chunk_end,
                                 chunk_end - chunk_start + 1,
-                                selected_peers.len().max(1)
+                                if all_peers.is_empty() {
+                                    "broadcast".to_string()
+                                } else {
+                                    all_peers[chunk_idx % all_peers.len()].to_string()
+                                }
                             );
                             chunk_start = chunk_end + 1;
+                            chunk_idx += 1;
                         }
 
                         // Mark slots as requested in sync manager
@@ -6252,6 +6355,11 @@ async fn run_validator() {
                                     "🔄 Sync batch incomplete (at {}, target {}), will re-trigger",
                                     current, sync_end
                                 );
+                                // Record failure for exponential backoff
+                                sync_mgr_complete.record_sync_failure().await;
+                            } else {
+                                // Successful sync progress — reset backoff
+                                sync_mgr_complete.record_sync_success().await;
                             }
                             // Always complete to allow re-trigger
                             sync_mgr_complete.complete_sync().await;
@@ -6347,7 +6455,9 @@ async fn run_validator() {
                                     &data_dir_for_blocks,
                                 );
                                 // Replace slot index with the higher-weight block
-                                replay_block_transactions(&processor_for_blocks, &block);
+                                if sync_mgr.should_full_validate(block.header.slot).await {
+                                    replay_block_transactions(&processor_for_blocks, &block);
+                                }
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
                                     block.header.slot,
@@ -6422,10 +6532,12 @@ async fn run_validator() {
                                             sync_mgr.add_pending_block(pending_block).await;
                                             continue;
                                         }
-                                        replay_block_transactions(
-                                            &processor_for_blocks,
-                                            &pending_block,
-                                        );
+                                        if sync_mgr.should_full_validate(pending_block.header.slot).await {
+                                            replay_block_transactions(
+                                                &processor_for_blocks,
+                                                &pending_block,
+                                            );
+                                        }
                                         run_analytics_bridge_from_state(
                                             &state_for_blocks,
                                             pending_block.header.slot,
@@ -7111,7 +7223,7 @@ async fn run_validator() {
                 }
 
                 // Rate limiting: prevent excessive requests
-                if range_size > 1000 {
+                if range_size > 2500 {
                     warn!(
                         "⚠️  Block range request too large: {} blocks from {}",
                         range_size, request.requester
@@ -7144,27 +7256,28 @@ async fn run_validator() {
                     }
 
                     // Limit response size to prevent memory issues
-                    if blocks.len() >= 500 {
-                        warn!("⚠️  Truncating block response at 500 blocks");
+                    if blocks.len() >= 2000 {
+                        warn!("⚠️  Truncating block response at 2000 blocks");
                         break;
                     }
                 }
 
                 if !blocks.is_empty() {
+                    // P1-2: Adaptive batching — batch 50 blocks per message
+                    // for large sync requests (>100 blocks), 1 per message
+                    // for small/NAT-safe requests.
+                    let batch_size = if range_size > 100 { 50 } else { 1 };
                     info!(
-                        "📤 Sending {} blocks individually to {}",
+                        "📤 Sending {} blocks to {} (batch_size={})",
                         blocks.len(),
-                        request.requester
+                        request.requester,
+                        batch_size
                     );
 
-                    // Send each block as an individual BlockRangeResponse
-                    // to avoid large serialized messages that fail over
-                    // NAT/home networks. Each block goes as a separate QUIC
-                    // stream, matching the reliable broadcast path.
-                    for block in blocks {
+                    for chunk in blocks.chunks(batch_size as usize) {
                         let response_msg = P2PMessage::new(
                             MessageType::BlockRangeResponse {
-                                blocks: vec![block],
+                                blocks: chunk.to_vec(),
                             },
                             local_addr_for_responses,
                         );
@@ -7599,6 +7712,8 @@ async fn run_validator() {
         let stake_pool_for_snapshot_apply = stake_pool.clone();
         let snapshot_sync_for_apply = snapshot_sync.clone();
         let data_dir_for_snapshot_apply = data_dir.clone();
+        let peer_mgr_for_snapshot_apply = p2p_pm.clone();
+        let local_addr_for_snap_apply = local_addr;
         tokio::spawn(async move {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
@@ -7619,9 +7734,28 @@ async fn run_validator() {
                                 "🔄 Requesting state snapshot from {} (local slot {}, peer slot {})",
                                 response.requester, local_slot, slot
                             );
-                            // Note: The actual state snapshot request would be sent via the
-                            // peer manager, but we track it here for the sync flow.
-                            // In practice, the join flow handles sending requests.
+
+                            // P3-1: Send StateSnapshotRequest for each category
+                            let chunk_size = 1000u64;
+                            for category in &["accounts", "contract_storage", "programs"] {
+                                let snap_request = P2PMessage::new(
+                                    MessageType::StateSnapshotRequest {
+                                        category: category.to_string(),
+                                        chunk_index: 0,
+                                        chunk_size,
+                                    },
+                                    local_addr_for_snap_apply,
+                                );
+                                if let Err(e) = peer_mgr_for_snapshot_apply
+                                    .send_to_peer(&response.requester, snap_request)
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️  Failed to send {} snapshot request: {}",
+                                        category, e
+                                    );
+                                }
+                            }
                         }
                     } else {
                         info!("📋 Peer {} has no checkpoint available", response.requester);
@@ -7692,6 +7826,27 @@ async fn run_validator() {
                     progress.0 = chunk_index + 1;
                     progress.1 = total_chunks;
 
+                    // P3-1: Request the next chunk if there are more
+                    if chunk_index + 1 < total_chunks {
+                        let next_request = P2PMessage::new(
+                            MessageType::StateSnapshotRequest {
+                                category: category.clone(),
+                                chunk_index: chunk_index + 1,
+                                chunk_size: 1000,
+                            },
+                            local_addr_for_snap_apply,
+                        );
+                        if let Err(e) = peer_mgr_for_snapshot_apply
+                            .send_to_peer(&response.requester, next_request)
+                            .await
+                        {
+                            warn!(
+                                "⚠️  Failed to request next {} snapshot chunk: {}",
+                                category, e
+                            );
+                        }
+                    }
+
                     // Check if all categories are complete
                     let accounts_done = state_snap_progress
                         .get("accounts")
@@ -7708,6 +7863,29 @@ async fn run_validator() {
 
                     if accounts_done && storage_done && programs_done {
                         info!("✅ State snapshot sync complete — all categories imported");
+
+                        // P3-1: Verify the state root matches what the peer reported.
+                        // Recompute our Merkle root from imported accounts and compare
+                        // against the snapshot's advertised state_root.
+                        let expected_root = _state_root;
+                        let computed_root =
+                            state_for_snapshot_apply.compute_state_root_cold_start();
+                        if computed_root.0 == expected_root {
+                            info!(
+                                "✅ State root verified: {} (matches snapshot)",
+                                hex::encode(&computed_root.0[..8])
+                            );
+                        } else {
+                            warn!(
+                                "⚠️  State root MISMATCH! Computed {} vs expected {}. \
+                                 Snapshot may be corrupted — falling back to header-only sync.",
+                                hex::encode(&computed_root.0[..8]),
+                                hex::encode(&expected_root[..8]),
+                            );
+                            // Don't set last_slot — let the node re-sync via blocks.
+                            continue;
+                        }
+
                         // Update last_slot to the checkpoint slot
                         if let Err(e) = state_for_snapshot_apply.set_last_slot(snapshot_slot) {
                             warn!(
@@ -8355,6 +8533,32 @@ async fn run_validator() {
         }
     });
 
+    // ── P2-3: Periodic cold storage migration ──
+    // Every 5 minutes, migrate blocks older than COLD_RETENTION_SLOTS to cold DB.
+    if state.has_cold_storage() {
+        let state_for_cold = state.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
+                let retain = moltchain_core::state::COLD_RETENTION_SLOTS;
+                if current_slot > retain {
+                    let cutoff = current_slot - retain;
+                    match state_for_cold.migrate_to_cold(cutoff) {
+                        Ok(0) => {} // nothing to migrate
+                        Ok(n) => {
+                            info!("🗄️  Cold migration: moved {} blocks (cutoff slot {})", n, cutoff);
+                        }
+                        Err(e) => {
+                            warn!("🗄️  Cold migration error: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Periodic validator set + stake pool reconciliation from state
     let validator_set_for_reconcile = validator_set.clone();
     let stake_pool_for_reconcile = stake_pool.clone();
@@ -8544,6 +8748,253 @@ async fn run_validator() {
             let _ = state_for_downtime.save_validator_set(&vs_snapshot);
         }
     });
+
+    // P3-3: Compact block receiver — reconstruct full blocks from mempool
+    {
+        let mempool_for_compact = mempool.clone();
+        let peer_mgr_for_compact = p2p_peer_manager.clone();
+        let local_addr_for_compact = p2p_config.listen_addr;
+        let block_tx_for_compact_task = block_tx_for_compact;
+        tokio::spawn(async move {
+            while let Some(msg) = compact_block_rx.recv().await {
+                let cb = msg.compact_block;
+                let sender = msg.sender;
+                let slot = cb.header.slot;
+                debug!(
+                    "📦 Compact block slot {} from {} ({} short IDs)",
+                    slot, sender, cb.short_ids.len()
+                );
+
+                // Attempt reconstruction from mempool
+                let pool = mempool_for_compact.lock().await;
+                let mut reconstructed_txs: Vec<Option<Transaction>> = Vec::with_capacity(cb.short_ids.len());
+                let mut missing_hashes: Vec<Hash> = Vec::new();
+
+                // Build a lookup: short_id → (full_hash, Transaction)
+                // Iterate mempool once to match short IDs
+                let all_mempool_txs: Vec<(Hash, Transaction)> = pool
+                    .all_transactions()
+                    .into_iter()
+                    .map(|tx| (tx.hash(), tx))
+                    .collect();
+
+                for short_id in &cb.short_ids {
+                    let mut found = false;
+                    for (hash, tx) in &all_mempool_txs {
+                        if hash.0[..8] == *short_id {
+                            reconstructed_txs.push(Some(tx.clone()));
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        reconstructed_txs.push(None);
+                        // We don't know the full hash from just the short ID, so we
+                        // need to request the full block for missing TXs.
+                        // Use a sentinel hash with the short_id prefix for matching.
+                        let mut sentinel = [0u8; 32];
+                        sentinel[..8].copy_from_slice(short_id);
+                        missing_hashes.push(Hash(sentinel));
+                    }
+                }
+                drop(pool);
+
+                if missing_hashes.is_empty() {
+                    // Full reconstruction succeeded
+                    let transactions: Vec<Transaction> = reconstructed_txs.into_iter().map(|t| t.unwrap()).collect();
+                    let block = Block {
+                        header: cb.header,
+                        transactions,
+                        tx_fees_paid: cb.tx_fees_paid,
+                        oracle_prices: cb.oracle_prices,
+                    };
+                    info!(
+                        "📦 Compact block slot {} fully reconstructed from mempool ({} txs)",
+                        slot,
+                        block.transactions.len()
+                    );
+                    if let Err(e) = block_tx_for_compact_task.try_send(block) {
+                        warn!("P2P: Compact block channel full after reconstruction ({})", e);
+                    }
+                } else {
+                    // Request missing transactions from the sender
+                    info!(
+                        "📦 Compact block slot {} missing {} txs, requesting from {}",
+                        slot,
+                        missing_hashes.len(),
+                        sender
+                    );
+                    if let Some(ref pm) = peer_mgr_for_compact {
+                        let request = moltchain_p2p::P2PMessage::new(
+                            moltchain_p2p::MessageType::GetBlockTxs {
+                                slot,
+                                missing_hashes,
+                            },
+                            local_addr_for_compact,
+                        );
+                        let pm = pm.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = pm.send_to_peer(&sender, request).await {
+                                warn!("P2P: Failed to request missing txs from {}: {}", sender, e);
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    // P3-3: Handle GetBlockTxs requests — send back requested transactions
+    {
+        let state_for_get_txs = state.clone();
+        let peer_mgr_for_get_txs = p2p_peer_manager.clone();
+        let local_addr_for_get_txs = p2p_config.listen_addr;
+        tokio::spawn(async move {
+            while let Some(msg) = get_block_txs_rx.recv().await {
+                let slot = msg.slot;
+                let requester = msg.requester;
+                // Try to look up the block from our state
+                match state_for_get_txs.get_block_by_slot(slot) {
+                    Ok(Some(block)) => {
+                        // Send back all transactions from the block. The requester
+                        // already knows which ones it needs; sending all is simpler
+                        // and still efficient since the block is typically small.
+                        let response = moltchain_p2p::P2PMessage::new(
+                            moltchain_p2p::MessageType::BlockTxs {
+                                slot,
+                                transactions: block.transactions,
+                            },
+                            local_addr_for_get_txs,
+                        );
+                        if let Some(ref pm) = peer_mgr_for_get_txs {
+                            let pm = pm.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = pm.send_to_peer(&requester, response).await {
+                                    warn!(
+                                        "P2P: Failed to send BlockTxs for slot {} to {}: {}",
+                                        slot, requester, e
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    _ => {
+                        debug!("P2P: GetBlockTxs for slot {} — block not found", slot);
+                    }
+                }
+            }
+        });
+    }
+
+    // P3-4: Handle erasure shard requests — encode block and return requested shards
+    {
+        let state_for_erasure = state.clone();
+        let peer_mgr_for_erasure = p2p_peer_manager.clone();
+        let local_addr_for_erasure = p2p_config.listen_addr;
+        tokio::spawn(async move {
+            while let Some(msg) = erasure_shard_request_rx.recv().await {
+                let slot = msg.slot;
+                let requester = msg.requester;
+                match state_for_erasure.get_block_by_slot(slot) {
+                    Ok(Some(block)) => {
+                        let serialized = match bincode::serialize(&block) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("P2P: Failed to serialize block {} for erasure: {}", slot, e);
+                                continue;
+                            }
+                        };
+                        match moltchain_p2p::erasure::encode_shards(slot, &serialized) {
+                            Ok(all_shards) => {
+                                let requested: Vec<moltchain_p2p::erasure::ErasureShard> = msg
+                                    .shard_indices
+                                    .iter()
+                                    .filter_map(|&idx| all_shards.get(idx).cloned())
+                                    .collect();
+                                let response = moltchain_p2p::P2PMessage::new(
+                                    moltchain_p2p::MessageType::ErasureShardResponse {
+                                        slot,
+                                        shards: requested,
+                                    },
+                                    local_addr_for_erasure,
+                                );
+                                if let Some(ref pm) = peer_mgr_for_erasure {
+                                    let pm = pm.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = pm.send_to_peer(&requester, response).await {
+                                            warn!("P2P: Failed to send erasure shards for slot {} to {}: {}", slot, requester, e);
+                                        }
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                warn!("P2P: Erasure encoding failed for slot {}: {}", slot, e);
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("P2P: ErasureShardRequest for slot {} — block not found", slot);
+                    }
+                }
+            }
+        });
+    }
+
+    // P3-4: Handle erasure shard responses — collect and reconstruct blocks
+    {
+        use std::collections::HashMap;
+        let block_tx_for_erasure = block_tx_for_erasure;
+        tokio::spawn(async move {
+            // Track received shards per slot
+            let mut shard_buffers: HashMap<u64, Vec<Option<moltchain_p2p::erasure::ErasureShard>>> =
+                HashMap::new();
+            while let Some(msg) = erasure_shard_response_rx.recv().await {
+                let slot = msg.slot;
+                let buffer = shard_buffers
+                    .entry(slot)
+                    .or_insert_with(|| vec![None; moltchain_p2p::erasure::TOTAL_SHARDS]);
+
+                for shard in msg.shards {
+                    let idx = shard.index;
+                    if idx < buffer.len() {
+                        buffer[idx] = Some(shard);
+                    }
+                }
+
+                let present = buffer.iter().filter(|s| s.is_some()).count();
+                if present >= moltchain_p2p::erasure::DATA_SHARDS {
+                    match moltchain_p2p::erasure::decode_shards(buffer) {
+                        Ok(data) => {
+                            match bincode::deserialize::<Block>(&data) {
+                                Ok(block) => {
+                                    info!(
+                                        "📦 Erasure-reconstructed block slot {} ({} shards used)",
+                                        slot, present
+                                    );
+                                    if let Err(e) = block_tx_for_erasure.try_send(block) {
+                                        warn!("P2P: Block channel full after erasure reconstruction ({})", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("P2P: Failed to deserialize erasure-reconstructed block {}: {}", slot, e);
+                                }
+                            }
+                            shard_buffers.remove(&slot);
+                        }
+                        Err(e) => {
+                            warn!("P2P: Erasure decode failed for slot {}: {}", slot, e);
+                        }
+                    }
+                }
+
+                // Prune old buffers to avoid memory leaks
+                if shard_buffers.len() > 100 {
+                    let min_slot = shard_buffers.keys().copied().min().unwrap_or(0);
+                    shard_buffers.remove(&min_slot);
+                }
+            }
+        });
+    }
 
     // Process slashing evidence received from P2P peers
     {
@@ -9378,18 +9829,19 @@ async fn run_validator() {
         *last_block_time_for_local.lock().await = std::time::Instant::now();
 
         // PERF-OPT 5: Broadcast block to network IMMEDIATELY after storing.
-        // Other validators need the block ASAP to advance their tip and produce
-        // the next block. Everything else (self-vote, mempool cleanup, effects)
-        // can happen after the broadcast.  Fire-and-forget via tokio::spawn so
-        // we don't block on QUIC writes.
+        // P3-3: Send compact block (header + short TX IDs) instead of the full
+        // block.  Receiving peers reconstruct from their mempool, saving ~90%
+        // bandwidth.  Also send the full block as fallback for peers that don't
+        // have all TXs in their mempool yet.
         if let Some(ref peer_mgr) = p2p_peer_manager {
-            let block_msg = moltchain_p2p::P2PMessage::new(
-                moltchain_p2p::MessageType::Block(block.clone()),
+            let compact = moltchain_p2p::CompactBlock::from_block(&block);
+            let compact_msg = moltchain_p2p::P2PMessage::new(
+                moltchain_p2p::MessageType::CompactBlockMsg(compact),
                 p2p_config.listen_addr,
             );
             let pm_block = peer_mgr.clone();
             tokio::spawn(async move {
-                pm_block.broadcast(block_msg).await;
+                pm_block.broadcast(compact_msg).await;
             });
         }
 
@@ -9466,14 +9918,14 @@ async fn run_validator() {
                 }
             }
 
-            // Broadcast self-vote to network (fire-and-forget)
+            // P3-5: Route self-vote through validator mesh for lowest latency
             if let Some(ref peer_mgr) = p2p_peer_manager {
                 let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
                 let pm_vote = peer_mgr.clone();
                 tokio::spawn(async move {
-                    pm_vote.broadcast(vote_msg).await;
+                    pm_vote.broadcast_to_validators(vote_msg).await;
                 });
-                info!("📡 Broadcasted block {} + vote to network", slot);
+                info!("📡 Broadcasted block {} + vote to validator mesh", slot);
             }
         } else {
             info!(

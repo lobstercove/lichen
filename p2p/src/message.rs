@@ -1,10 +1,54 @@
 // P2P Message Types
 
 use moltchain_core::{
-    Block, Hash, Pubkey, SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, Hash, Pubkey, SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+
+/// P3-3: Short TX ID — first 8 bytes of the full transaction hash.
+/// Probability of collision within a single block is negligible
+/// (birthday bound: ~2^32 for 8-byte IDs, blocks have at most 10K TXs).
+pub type ShortTxId = [u8; 8];
+
+/// P3-3: Compute the short TX ID from a full transaction hash.
+pub fn short_tx_id(hash: &Hash) -> ShortTxId {
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&hash.0[..8]);
+    id
+}
+
+/// P3-3: Compact block — header + short TX IDs instead of full transactions.
+/// Receiving peers reconstruct the block from their mempool. Only missing TXs
+/// are requested individually, saving ~90% bandwidth for live block propagation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactBlock {
+    /// Full block header (needed for validation)
+    pub header: BlockHeader,
+    /// Short TX IDs (first 8 bytes of each tx hash)
+    pub short_ids: Vec<ShortTxId>,
+    /// Execution fees (needed for deterministic state; same order as short_ids)
+    pub tx_fees_paid: Vec<u64>,
+    /// Oracle price data from the block producer
+    pub oracle_prices: Vec<(String, u64)>,
+}
+
+impl CompactBlock {
+    /// Build a compact block from a full block.
+    pub fn from_block(block: &Block) -> Self {
+        let short_ids = block
+            .transactions
+            .iter()
+            .map(|tx| short_tx_id(&tx.hash()))
+            .collect();
+        CompactBlock {
+            header: block.header.clone(),
+            short_ids,
+            tx_fees_paid: block.tx_fees_paid.clone(),
+            oracle_prices: block.oracle_prices.clone(),
+        }
+    }
+}
 
 /// Serde helper for [u8; 64] signature arrays (serde only supports up to [u8; 32] natively)
 mod signature_serde {
@@ -188,6 +232,70 @@ pub enum MessageType {
 
     /// Slashing evidence broadcast
     SlashingEvidence(SlashingEvidence),
+
+    /// P3-2: Kademlia FIND_NODE request — ask peer for the closest nodes
+    /// it knows to `target_id`.
+    FindNode {
+        /// The target node ID to find closest peers for
+        target_id: [u8; 32],
+    },
+
+    /// P3-2: Kademlia FIND_NODE response — returns the closest known peers.
+    FindNodeResponse {
+        /// The target that was queried
+        target_id: [u8; 32],
+        /// Closest known nodes: (node_id, socket_addr_bytes)
+        /// Socket address serialized as string for serde compat.
+        closest: Vec<([u8; 32], String)>,
+    },
+
+    /// P3-3: Compact block announcement — header + short TX IDs.
+    /// Receiver reconstructs from mempool and requests only missing TXs.
+    CompactBlockMsg(CompactBlock),
+
+    /// P3-3: Request missing transactions for a compact block.
+    /// Contains the slot and the full hashes of TXs the receiver couldn't
+    /// find in its mempool.
+    GetBlockTxs {
+        slot: u64,
+        missing_hashes: Vec<Hash>,
+    },
+
+    /// P3-3: Response with the requested transactions.
+    BlockTxs {
+        slot: u64,
+        transactions: Vec<Transaction>,
+    },
+
+    /// P3-4: Request erasure-coded shard(s) for a block.
+    /// The requester specifies which shard indices it still needs.
+    ErasureShardRequest {
+        slot: u64,
+        shard_indices: Vec<usize>,
+    },
+
+    /// P3-4: Response with erasure-coded shard(s).
+    ErasureShardResponse {
+        slot: u64,
+        shards: Vec<crate::erasure::ErasureShard>,
+    },
+
+    /// P3-6: Relay-assisted hole punch — a peer behind NAT asks a relay to
+    /// forward a HolePunchRequest to the target, which then sends a QUIC
+    /// packet to the requester's observed address to punch through the NAT.
+    HolePunchRequest {
+        /// The address the requester wants to reach
+        target_addr: SocketAddr,
+        /// The requester's externally-observed address (from QUIC connection)
+        requester_observed_addr: SocketAddr,
+    },
+
+    /// P3-6: Hole punch notification — relay forwards this to the target peer,
+    /// telling it to send a QUIC packet to the requester's observed address.
+    HolePunchNotify {
+        /// The observed external address of the peer that wants to connect
+        peer_observed_addr: SocketAddr,
+    },
 }
 
 /// Peer information message
@@ -198,6 +306,10 @@ pub struct PeerInfoMsg {
     pub reputation: u64,
     pub validator_pubkey: Option<Pubkey>, // NEW: Link peer to validator
 }
+
+/// Minimum payload size to trigger LZ4 compression (1 KB).
+/// Messages smaller than this are sent uncompressed to avoid overhead.
+const COMPRESSION_THRESHOLD: usize = 1024;
 
 impl P2PMessage {
     /// Create new message
@@ -213,23 +325,100 @@ impl P2PMessage {
         }
     }
 
-    /// Serialize message for network transmission.
+    /// Serialize message for network transmission with optional LZ4 compression.
+    ///
+    /// Wire format (envelope):
+    ///   `[0x00][bincode payload]`  — uncompressed
+    ///   `[0xFF][4-byte LE uncompressed len][LZ4 compressed payload]`
+    ///
+    /// Magic bytes 0x00 and 0xFF are chosen to avoid collision with raw bincode:
+    /// the first byte of a legacy message is the low byte of `P2P_PROTOCOL_VERSION`
+    /// (currently 1), so 0x00 and 0xFF can never be the start of a valid legacy
+    /// message unless the version reaches 0 or 255 (both implausible).
+    ///
     /// Limit is 16 MB to accommodate state snapshot chunks.
     pub fn serialize(&self) -> Result<Vec<u8>, String> {
         use bincode::Options;
-        bincode::options()
+        let raw = bincode::options()
             .with_limit(16 * 1024 * 1024)
             .serialize(self)
-            .map_err(|e| format!("Serialization error: {}", e))
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        if raw.len() >= COMPRESSION_THRESHOLD {
+            let compressed = lz4_flex::compress_prepend_size(&raw);
+            // Only use compression if it actually saves space
+            if compressed.len() < raw.len() {
+                let mut out = Vec::with_capacity(1 + 4 + compressed.len());
+                out.push(0xFF); // compressed flag
+                out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+                out.extend_from_slice(&compressed);
+                return Ok(out);
+            }
+        }
+
+        let mut out = Vec::with_capacity(1 + raw.len());
+        out.push(0x00); // uncompressed flag
+        out.extend_from_slice(&raw);
+        Ok(out)
     }
 
     /// Deserialize message from bytes (bounded to 16 MB to prevent OOM).
+    /// Handles compressed (0xFF prefix), uncompressed (0x00 prefix), and
+    /// legacy (raw bincode, any other first byte) formats.
     /// AUDIT-FIX L2: Rejects messages with incompatible protocol version.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, String> {
         use bincode::Options;
+
+        if bytes.is_empty() {
+            return Err("Empty message".to_string());
+        }
+
+        let payload = match bytes[0] {
+            0x00 => {
+                // Uncompressed envelope
+                &bytes[1..]
+            }
+            0xFF => {
+                // LZ4 compressed: [0xFF][4-byte LE uncompressed len][compressed]
+                if bytes.len() < 6 {
+                    return Err("Compressed message too short".to_string());
+                }
+                let expected_len =
+                    u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+                if expected_len > 16 * 1024 * 1024 {
+                    return Err(format!(
+                        "Decompressed size {} exceeds 16 MB limit",
+                        expected_len
+                    ));
+                }
+                // Use a leaked local binding so the borrow checker is happy
+                // (the decompressed Vec lives long enough for deserialization).
+                // We return early from this function, so no actual leak.
+                let decompressed = lz4_flex::decompress_size_prepended(&bytes[5..])
+                    .map_err(|e| format!("LZ4 decompression error: {}", e))?;
+                // Can't return a reference to a local, so deserialize inline
+                let msg: Self = bincode::options()
+                    .with_limit(16 * 1024 * 1024)
+                    .deserialize(&decompressed)
+                    .map_err(|e| format!("Deserialization error: {}", e))?;
+                if msg.version != P2P_PROTOCOL_VERSION {
+                    return Err(format!(
+                        "Protocol version mismatch: got {}, expected {}",
+                        msg.version, P2P_PROTOCOL_VERSION
+                    ));
+                }
+                return Ok(msg);
+            }
+            _other => {
+                // Legacy compatibility: no prefix byte, try raw bincode
+                // (for peers that haven't upgraded yet)
+                bytes
+            }
+        };
+
         let msg: Self = bincode::options()
             .with_limit(16 * 1024 * 1024)
-            .deserialize(bytes)
+            .deserialize(payload)
             .map_err(|e| format!("Deserialization error: {}", e))?;
         if msg.version != P2P_PROTOCOL_VERSION {
             return Err(format!(
@@ -279,5 +468,172 @@ mod tests {
         let msg = P2PMessage::new(MessageType::Pong, addr);
         let bytes = msg.serialize().unwrap();
         assert!(bytes.len() < 16 * 1024 * 1024);
+    }
+
+    // ----------------------------------------------------------------
+    // P2-2: LZ4 compression tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_small_message_uncompressed() {
+        // Messages below COMPRESSION_THRESHOLD should use 0x00 prefix
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(MessageType::Ping, addr);
+        let bytes = msg.serialize().unwrap();
+        assert_eq!(bytes[0], 0x00, "Small message should be uncompressed");
+        // Should roundtrip
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn test_large_message_compressed() {
+        // Create a message with enough data to exceed COMPRESSION_THRESHOLD.
+        // Use BlockRangeResponse with multiple blocks to push over 1KB.
+        use moltchain_core::{Block, Hash};
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let blocks: Vec<Block> = (0..20)
+            .map(|i| Block::new(i, Hash::default(), Hash::default(), [0u8; 32], vec![]))
+            .collect();
+        let msg = P2PMessage::new(
+            MessageType::BlockRangeResponse { blocks },
+            addr,
+        );
+        let bytes = msg.serialize().unwrap();
+        // If compression was beneficial, first byte should be 0xFF
+        if bytes[0] == 0xFF {
+            // Verify the envelope structure: [0x01][4-byte LE len][compressed]
+            assert!(bytes.len() >= 6);
+            let raw_len = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+            assert!(raw_len >= COMPRESSION_THRESHOLD);
+        }
+        // Must roundtrip regardless
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn test_legacy_message_backwards_compat() {
+        // Simulate a message from an old peer without the 0x00/0x01 prefix.
+        // The deserializer should handle raw bincode as legacy format.
+        use bincode::Options;
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let msg = P2PMessage::new(MessageType::Ping, addr);
+        // Serialize with raw bincode (no envelope prefix)
+        let raw = bincode::options()
+            .with_limit(16 * 1024 * 1024)
+            .serialize(&msg)
+            .unwrap();
+        // Deserialize — should fall through to legacy path
+        let decoded = P2PMessage::deserialize(&raw).unwrap();
+        assert_eq!(decoded.version, msg.version);
+    }
+
+    #[test]
+    fn test_empty_message_rejected() {
+        let result = P2PMessage::deserialize(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Empty message"));
+    }
+
+    #[test]
+    fn test_truncated_compressed_message_rejected() {
+        // 0xFF prefix but not enough bytes for the header
+        let result = P2PMessage::deserialize(&[0xFF, 0x00, 0x00]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too short"));
+    }
+
+    #[test]
+    fn test_oversized_decompressed_rejected() {
+        // 0xFF prefix with claimed decompressed size > 16MB
+        let mut data = vec![0xFF];
+        let huge_size: u32 = 20 * 1024 * 1024; // 20MB
+        data.extend_from_slice(&huge_size.to_le_bytes());
+        data.extend_from_slice(&[0u8; 10]); // junk payload
+        let result = P2PMessage::deserialize(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeds 16 MB"));
+    }
+
+    // ----------------------------------------------------------------
+    // P3-3: Compact block tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_short_tx_id() {
+        let h = Hash([
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        let sid = short_tx_id(&h);
+        assert_eq!(sid, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
+    }
+
+    #[test]
+    fn test_compact_block_from_block() {
+        use moltchain_core::Block;
+        let block = Block::new(42, Hash::default(), Hash::default(), [1u8; 32], vec![]);
+        let compact = CompactBlock::from_block(&block);
+        assert_eq!(compact.header.slot, 42);
+        assert!(compact.short_ids.is_empty());
+        assert!(compact.tx_fees_paid.is_empty());
+    }
+
+    #[test]
+    fn test_compact_block_roundtrip() {
+        use moltchain_core::Block;
+        let block = Block::new(99, Hash::default(), Hash::default(), [2u8; 32], vec![]);
+        let compact = CompactBlock::from_block(&block);
+        let addr = "127.0.0.1:9000".parse().unwrap();
+        let msg = P2PMessage::new(MessageType::CompactBlockMsg(compact), addr);
+        let bytes = msg.serialize().unwrap();
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+        match decoded.msg_type {
+            MessageType::CompactBlockMsg(cb) => {
+                assert_eq!(cb.header.slot, 99);
+            }
+            _ => panic!("Expected CompactBlockMsg"),
+        }
+    }
+
+    #[test]
+    fn test_get_block_txs_roundtrip() {
+        let addr = "127.0.0.1:9000".parse().unwrap();
+        let hashes = vec![Hash([1u8; 32]), Hash([2u8; 32])];
+        let msg = P2PMessage::new(
+            MessageType::GetBlockTxs { slot: 10, missing_hashes: hashes.clone() },
+            addr,
+        );
+        let bytes = msg.serialize().unwrap();
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+        match decoded.msg_type {
+            MessageType::GetBlockTxs { slot, missing_hashes } => {
+                assert_eq!(slot, 10);
+                assert_eq!(missing_hashes.len(), 2);
+                assert_eq!(missing_hashes[0], Hash([1u8; 32]));
+            }
+            _ => panic!("Expected GetBlockTxs"),
+        }
+    }
+
+    #[test]
+    fn test_block_txs_roundtrip() {
+        let addr = "127.0.0.1:9000".parse().unwrap();
+        let msg = P2PMessage::new(
+            MessageType::BlockTxs { slot: 5, transactions: vec![] },
+            addr,
+        );
+        let bytes = msg.serialize().unwrap();
+        let decoded = P2PMessage::deserialize(&bytes).unwrap();
+        match decoded.msg_type {
+            MessageType::BlockTxs { slot, transactions } => {
+                assert_eq!(slot, 5);
+                assert!(transactions.is_empty());
+            }
+            _ => panic!("Expected BlockTxs"),
+        }
     }
 }

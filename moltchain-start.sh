@@ -134,6 +134,23 @@ VALIDATOR_HOME="${DB_PATH}/home"
 REAL_HOME="$HOME"
 
 mkdir -p "$LOG_DIR"
+
+# ── Detect first boot vs joining ──
+# !! Must happen BEFORE mkdir "$VALIDATOR_HOME" — creating the home subdir would
+#    make the DB_PATH non-empty and falsely trigger RESUME mode.
+IS_GENESIS=false
+HAS_CHAIN_STATE=false
+if [ -d "$DB_PATH" ] && [ -f "$DB_PATH/CURRENT" ]; then
+    HAS_CHAIN_STATE=true
+fi
+
+if [ -n "$BOOTSTRAP_PEERS" ]; then
+    : # joining mode — detected below in banner
+elif ! $HAS_CHAIN_STATE; then
+    IS_GENESIS=true
+fi
+
+# Now safe to create the home directory inside DB_PATH
 mkdir -p "$VALIDATOR_HOME"
 
 # Keep node identity/fingerprint state isolated per validator data directory.
@@ -160,12 +177,9 @@ echo -e "  ${BOLD}DB:${NC}         $DB_PATH"
 echo -e "  ${BOLD}Logs:${NC}       $LOG_DIR"
 echo -e ""
 
-# ── Detect first boot vs joining ──
-IS_GENESIS=false
 if [ -n "$BOOTSTRAP_PEERS" ]; then
     echo -e "  ${BOLD}Mode:${NC}       ${CYAN}JOINING${NC} — bootstrapping from $BOOTSTRAP_PEERS"
-elif [ ! -d "$DB_PATH" ] || [ -z "$(ls -A "$DB_PATH" 2>/dev/null)" ]; then
-    IS_GENESIS=true
+elif $IS_GENESIS; then
     echo -e "  ${BOLD}Mode:${NC}       ${GREEN}GENESIS${NC} — first validator, creating new chain"
 else
     echo -e "  ${BOLD}Mode:${NC}       ${GREEN}RESUME${NC} — existing chain state found"
@@ -210,10 +224,10 @@ VALIDATOR_CMD=("$BIN_PATH"
 
 if [ -n "$BOOTSTRAP_PEERS" ]; then
     VALIDATOR_CMD+=(--bootstrap-peers "$BOOTSTRAP_PEERS")
-    # External bootstrap requires binding on all interfaces so QUIC can
-    # reach remote peers (127.0.0.1 loopback can't route to public IPs).
-    VALIDATOR_CMD+=(--listen-addr 0.0.0.0)
 fi
+
+# Always bind on all interfaces so external peers can connect via QUIC.
+VALIDATOR_CMD+=(--listen-addr 0.0.0.0)
 
 # ── Start validator ──
 if $IS_GENESIS; then
@@ -293,8 +307,9 @@ if $IS_GENESIS && ! $NO_DEPLOY; then
     echo -e "  Waiting for validator to reach healthy state..."
 
     # Run first-boot-deploy in background, it has its own retry/wait logic
+    # Restore real HOME so Python/pip can find user-installed packages
     export CUSTODY_MOLT_RPC_URL="http://127.0.0.1:${RPC_PORT}"
-    "${REPO_ROOT}/scripts/first-boot-deploy.sh" \
+    HOME="$REAL_HOME" "${REPO_ROOT}/scripts/first-boot-deploy.sh" \
         --rpc "http://127.0.0.1:${RPC_PORT}" \
         >"${LOG_DIR}/first-boot-deploy.log" 2>&1 &
     DEPLOY_PID=$!
