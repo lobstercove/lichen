@@ -46,6 +46,9 @@ pub struct SyncManager {
 
     /// Last checkpoint slot (for fast bootstrapping)
     last_checkpoint: Arc<Mutex<u64>>,
+
+    /// Cooldown: when the last sync was triggered (prevents request storms)
+    last_sync_triggered_at: Arc<Mutex<Instant>>,
 }
 
 impl SyncManager {
@@ -58,6 +61,7 @@ impl SyncManager {
             highest_seen_updated_at: Arc::new(Mutex::new(Instant::now())),
             current_sync_batch: Arc::new(Mutex::new(None)),
             last_checkpoint: Arc::new(Mutex::new(0)),
+            last_sync_triggered_at: Arc::new(Mutex::new(Instant::now() - std::time::Duration::from_secs(60))),
         }
     }
 
@@ -180,6 +184,14 @@ impl SyncManager {
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = self.current_sync_batch.lock().await;
 
+        // Cooldown: don't re-trigger sync within 10 seconds of last trigger.
+        // Without this, every incoming pending block fires another batch of
+        // range requests, flooding the responder and saturating QUIC.
+        let last_triggered = *self.last_sync_triggered_at.lock().await;
+        if last_triggered.elapsed() < std::time::Duration::from_secs(10) {
+            return None;
+        }
+
         // If already syncing a batch, allow re-trigger only when very far behind
         // (> SYNC_BATCH_SIZE / 2 slots) — otherwise wait for current batch.
         if is_syncing && current_batch.is_some() {
@@ -236,6 +248,10 @@ impl SyncManager {
 
         let mut batch = self.current_sync_batch.lock().await;
         *batch = Some((start, end));
+
+        // Record trigger time for cooldown
+        let mut last_triggered = self.last_sync_triggered_at.lock().await;
+        *last_triggered = Instant::now();
 
         let batch_size = end - start + 1;
         info!(

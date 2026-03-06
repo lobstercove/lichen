@@ -362,18 +362,16 @@ impl P2PNetwork {
                     "P2P: Received vote for slot {} from {}",
                     vote.slot, peer_addr
                 );
-                self.vote_tx
-                    .send(vote)
-                    .await
-                    .map_err(|_| "Failed to send vote to validator".to_string())?;
+                if let Err(e) = self.vote_tx.try_send(vote) {
+                    warn!("P2P: Vote channel full, dropping vote from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::Transaction(tx) => {
                 debug!("P2P: Received transaction from {}", peer_addr);
-                self.transaction_tx
-                    .send(tx)
-                    .await
-                    .map_err(|_| "Failed to send transaction to validator".to_string())?;
+                if let Err(e) = self.transaction_tx.try_send(tx) {
+                    warn!("P2P: Transaction channel full, dropping tx from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::PeerInfo(peer_infos) => {
@@ -382,7 +380,10 @@ impl P2PNetwork {
                     peer_addr,
                     peer_infos.len()
                 );
-                self.gossip_manager.handle_peer_info(peer_infos).await;
+                let gm = self.gossip_manager.clone();
+                tokio::spawn(async move {
+                    gm.handle_peer_info(peer_infos).await;
+                });
             }
 
             MessageType::PeerRequest => {
@@ -404,13 +405,23 @@ impl P2PNetwork {
                     .collect();
 
                 let response = P2PMessage::new(MessageType::PeerInfo(peer_infos), self.local_addr);
-                self.peer_manager.send_to_peer(&peer_addr, response).await?;
+                let pm = self.peer_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = pm.send_to_peer(&peer_addr, response).await {
+                        warn!("P2P: Failed to send peer info to {}: {}", peer_addr, e);
+                    }
+                });
             }
 
             MessageType::Ping => {
                 debug!("P2P: Received ping from {}", peer_addr);
                 let pong = P2PMessage::new(MessageType::Pong, self.local_addr);
-                self.peer_manager.send_to_peer(&peer_addr, pong).await?;
+                let pm = self.peer_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = pm.send_to_peer(&peer_addr, pong).await {
+                        warn!("P2P: Failed to send pong to {}: {}", peer_addr, e);
+                    }
+                });
             }
 
             MessageType::Pong => {
@@ -429,10 +440,9 @@ impl P2PNetwork {
                     end_slot: slot,
                     requester: peer_addr,
                 };
-                self.block_range_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to forward block request".to_string())?;
+                if let Err(e) = self.block_range_request_tx.try_send(request) {
+                    warn!("P2P: Block range request channel full, dropping request from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::BlockRangeRequest {
@@ -467,10 +477,9 @@ impl P2PNetwork {
                     end_slot,
                     requester: peer_addr,
                 };
-                self.block_range_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to send block range request".to_string())?;
+                if let Err(e) = self.block_range_request_tx.try_send(request) {
+                    warn!("P2P: Block range request channel full, dropping request from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::BlockResponse(block) => {
@@ -487,7 +496,7 @@ impl P2PNetwork {
             }
 
             MessageType::BlockRangeResponse { blocks } => {
-                debug!("P2P: Received {} blocks from {}", blocks.len(), peer_addr);
+                debug!("P2P: Received {} blocks in range response from {}", blocks.len(), peer_addr);
                 for block in blocks {
                     if let Err(e) = self.block_tx.try_send(block) {
                         warn!(
@@ -504,10 +513,9 @@ impl P2PNetwork {
                 let request = StatusRequestMsg {
                     requester: peer_addr,
                 };
-                self.status_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to forward status request".to_string())?;
+                if let Err(e) = self.status_request_tx.try_send(request) {
+                    warn!("P2P: Status request channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::StatusResponse {
@@ -523,10 +531,9 @@ impl P2PNetwork {
                     current_slot,
                     total_blocks,
                 };
-                self.status_response_tx
-                    .send(response)
-                    .await
-                    .map_err(|_| "Failed to forward status response".to_string())?;
+                if let Err(e) = self.status_response_tx.try_send(response) {
+                    warn!("P2P: Status response channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::ConsistencyReport {
@@ -538,10 +545,9 @@ impl P2PNetwork {
                     validator_set_hash,
                     stake_pool_hash,
                 };
-                self.consistency_report_tx
-                    .send(report)
-                    .await
-                    .map_err(|_| "Failed to forward consistency report".to_string())?;
+                if let Err(e) = self.consistency_report_tx.try_send(report) {
+                    warn!("P2P: Consistency report channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::SnapshotRequest { kind } => {
@@ -551,10 +557,9 @@ impl P2PNetwork {
                     state_snapshot_params: None,
                     is_meta_request: false,
                 };
-                self.snapshot_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to forward snapshot request".to_string())?;
+                if let Err(e) = self.snapshot_request_tx.try_send(request) {
+                    warn!("P2P: Snapshot request channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::SnapshotResponse {
@@ -570,10 +575,9 @@ impl P2PNetwork {
                     state_snapshot_data: None,
                     checkpoint_meta: None,
                 };
-                self.snapshot_response_tx
-                    .send(response)
-                    .await
-                    .map_err(|_| "Failed to forward snapshot response".to_string())?;
+                if let Err(e) = self.snapshot_response_tx.try_send(response) {
+                    warn!("P2P: Snapshot response channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::StateSnapshotRequest {
@@ -587,10 +591,9 @@ impl P2PNetwork {
                     state_snapshot_params: Some((category, chunk_index, chunk_size)),
                     is_meta_request: false,
                 };
-                self.snapshot_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to forward state snapshot request".to_string())?;
+                if let Err(e) = self.snapshot_request_tx.try_send(request) {
+                    warn!("P2P: State snapshot request channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::StateSnapshotResponse {
@@ -616,10 +619,9 @@ impl P2PNetwork {
                     )),
                     checkpoint_meta: None,
                 };
-                self.snapshot_response_tx
-                    .send(response)
-                    .await
-                    .map_err(|_| "Failed to forward state snapshot response".to_string())?;
+                if let Err(e) = self.snapshot_response_tx.try_send(response) {
+                    warn!("P2P: State snapshot response channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::CheckpointMetaRequest => {
@@ -629,10 +631,9 @@ impl P2PNetwork {
                     state_snapshot_params: None,
                     is_meta_request: true,
                 };
-                self.snapshot_request_tx
-                    .send(request)
-                    .await
-                    .map_err(|_| "Failed to forward checkpoint meta request".to_string())?;
+                if let Err(e) = self.snapshot_request_tx.try_send(request) {
+                    warn!("P2P: Checkpoint meta request channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::CheckpointMetaResponse {
@@ -648,10 +649,9 @@ impl P2PNetwork {
                     state_snapshot_data: None,
                     checkpoint_meta: Some((slot, state_root, total_accounts)),
                 };
-                self.snapshot_response_tx
-                    .send(response)
-                    .await
-                    .map_err(|_| "Failed to forward checkpoint meta response".to_string())?;
+                if let Err(e) = self.snapshot_response_tx.try_send(response) {
+                    warn!("P2P: Checkpoint meta response channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::ValidatorAnnounce {
@@ -694,10 +694,9 @@ impl P2PNetwork {
                     signature,
                     machine_fingerprint,
                 };
-                self.validator_announce_tx
-                    .send(announcement)
-                    .await
-                    .map_err(|_| "Failed to send validator announcement".to_string())?;
+                if let Err(e) = self.validator_announce_tx.try_send(announcement) {
+                    warn!("P2P: Validator announce channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
 
             MessageType::SlashingEvidence(evidence) => {
@@ -706,10 +705,9 @@ impl P2PNetwork {
                     evidence.validator.to_base58(),
                     peer_addr
                 );
-                self.slashing_evidence_tx
-                    .send(evidence)
-                    .await
-                    .map_err(|_| "Failed to forward slashing evidence".to_string())?;
+                if let Err(e) = self.slashing_evidence_tx.try_send(evidence) {
+                    warn!("P2P: Slashing evidence channel full, dropping from {} ({})", peer_addr, e);
+                }
             }
         }
 

@@ -6249,6 +6249,16 @@ async fn run_validator() {
                         });
                     }
                 } else if block_slot <= current_slot {
+                    // BUG #5 FIX: Never replace a block at a PAST slot.
+                    // Blocks at slots < current_slot already have descendants
+                    // (blocks slot+1..current_slot) that reference the existing
+                    // block's hash as their parent_hash. Replacing the block
+                    // would permanently break the parent-hash chain, making
+                    // syncing validators unable to apply blocks past that slot.
+                    // Fork choice is only safe at the CURRENT TIP.
+                    if block_slot < current_slot {
+                        continue;
+                    }
                     if let Ok(Some(existing)) = state_for_blocks.get_block_by_slot(block_slot) {
                         if existing.hash() != block.hash() {
                             // A5-02: Fork choice — use cumulative stake weight from
@@ -7133,22 +7143,28 @@ async fn run_validator() {
 
                 if !blocks.is_empty() {
                     info!(
-                        "📤 Sending {} blocks to {}",
+                        "📤 Sending {} blocks individually to {}",
                         blocks.len(),
                         request.requester
                     );
 
-                    // Send BlockRangeResponse
-                    let response_msg = P2PMessage::new(
-                        MessageType::BlockRangeResponse { blocks },
-                        local_addr_for_responses,
-                    );
-
-                    // Send to requester specifically
-                    peer_mgr_for_responses
-                        .send_to_peer(&request.requester, response_msg)
-                        .await
-                        .unwrap_or_else(|e| warn!("Failed to send block response: {}", e));
+                    // Send each block as an individual BlockRangeResponse
+                    // to avoid large serialized messages that fail over
+                    // NAT/home networks. Each block goes as a separate QUIC
+                    // stream, matching the reliable broadcast path.
+                    for block in blocks {
+                        let response_msg = P2PMessage::new(
+                            MessageType::BlockRangeResponse { blocks: vec![block] },
+                            local_addr_for_responses,
+                        );
+                        if let Err(e) = peer_mgr_for_responses
+                            .send_to_peer(&request.requester, response_msg)
+                            .await
+                        {
+                            warn!("Failed to send block response: {}", e);
+                            break;
+                        }
+                    }
                     peer_mgr_for_responses.record_success(&request.requester);
                 } else {
                     info!(
@@ -7806,6 +7822,11 @@ async fn run_validator() {
                                     snapshot_sync_for_apply.lock().await.validator_set = true;
                                 }
                                 drop(vs);
+                            } else {
+                                // Hashes match — local set is already correct (from block replay).
+                                // Still mark snapshot as ready so the producer loop can proceed.
+                                snapshot_sync_for_apply.lock().await.validator_set = true;
+                                drop(vs);
                             }
                         }
                     }
@@ -7928,6 +7949,10 @@ async fn run_validator() {
                                     );
                                     snapshot_sync_for_apply.lock().await.stake_pool = true;
                                 }
+                            } else {
+                                // Hashes match — local pool is already correct (from block replay).
+                                drop(pool);
+                                snapshot_sync_for_apply.lock().await.stake_pool = true;
                             }
                         }
                     }
