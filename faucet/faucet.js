@@ -9,7 +9,7 @@ const EXPLORER_BASE =
     (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG?.explorer) ||
     (typeof window !== 'undefined' && window.MOLT_CONFIG?.explorer) ||
     '../explorer';
-let MOLT_PER_REQUEST = 100; // default; overwritten by /faucet/config
+let MOLT_PER_REQUEST = 10; // default; overwritten by /faucet/config
 
 function formatCooldown(seconds) {
     const value = Number(seconds || 0);

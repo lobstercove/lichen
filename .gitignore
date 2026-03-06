@@ -175,3 +175,5 @@ release-signing-keypair.json
 
 # ── Docs: track organized subdirs, ignore archive/internal ──────
 docs/archive/
+nohup.out
+typescript
