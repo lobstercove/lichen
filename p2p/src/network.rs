@@ -363,14 +363,20 @@ impl P2PNetwork {
                     vote.slot, peer_addr
                 );
                 if let Err(e) = self.vote_tx.try_send(vote) {
-                    warn!("P2P: Vote channel full, dropping vote from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Vote channel full, dropping vote from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
             MessageType::Transaction(tx) => {
                 debug!("P2P: Received transaction from {}", peer_addr);
                 if let Err(e) = self.transaction_tx.try_send(tx) {
-                    warn!("P2P: Transaction channel full, dropping tx from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Transaction channel full, dropping tx from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -441,7 +447,10 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 if let Err(e) = self.block_range_request_tx.try_send(request) {
-                    warn!("P2P: Block range request channel full, dropping request from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Block range request channel full, dropping request from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -478,7 +487,10 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 if let Err(e) = self.block_range_request_tx.try_send(request) {
-                    warn!("P2P: Block range request channel full, dropping request from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Block range request channel full, dropping request from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -496,7 +508,11 @@ impl P2PNetwork {
             }
 
             MessageType::BlockRangeResponse { blocks } => {
-                debug!("P2P: Received {} blocks in range response from {}", blocks.len(), peer_addr);
+                debug!(
+                    "P2P: Received {} blocks in range response from {}",
+                    blocks.len(),
+                    peer_addr
+                );
                 for block in blocks {
                     if let Err(e) = self.block_tx.try_send(block) {
                         warn!(
@@ -514,7 +530,10 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 if let Err(e) = self.status_request_tx.try_send(request) {
-                    warn!("P2P: Status request channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Status request channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -532,7 +551,10 @@ impl P2PNetwork {
                     total_blocks,
                 };
                 if let Err(e) = self.status_response_tx.try_send(response) {
-                    warn!("P2P: Status response channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Status response channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -546,7 +568,10 @@ impl P2PNetwork {
                     stake_pool_hash,
                 };
                 if let Err(e) = self.consistency_report_tx.try_send(report) {
-                    warn!("P2P: Consistency report channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Consistency report channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -558,7 +583,10 @@ impl P2PNetwork {
                     is_meta_request: false,
                 };
                 if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!("P2P: Snapshot request channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Snapshot request channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -576,7 +604,10 @@ impl P2PNetwork {
                     checkpoint_meta: None,
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
-                    warn!("P2P: Snapshot response channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Snapshot response channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -592,7 +623,10 @@ impl P2PNetwork {
                     is_meta_request: false,
                 };
                 if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!("P2P: State snapshot request channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: State snapshot request channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -620,7 +654,10 @@ impl P2PNetwork {
                     checkpoint_meta: None,
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
-                    warn!("P2P: State snapshot response channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: State snapshot response channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -632,7 +669,10 @@ impl P2PNetwork {
                     is_meta_request: true,
                 };
                 if let Err(e) = self.snapshot_request_tx.try_send(request) {
-                    warn!("P2P: Checkpoint meta request channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Checkpoint meta request channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -650,7 +690,10 @@ impl P2PNetwork {
                     checkpoint_meta: Some((slot, state_root, total_accounts)),
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
-                    warn!("P2P: Checkpoint meta response channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Checkpoint meta response channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -695,7 +738,10 @@ impl P2PNetwork {
                     machine_fingerprint,
                 };
                 if let Err(e) = self.validator_announce_tx.try_send(announcement) {
-                    warn!("P2P: Validator announce channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Validator announce channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
@@ -706,7 +752,10 @@ impl P2PNetwork {
                     peer_addr
                 );
                 if let Err(e) = self.slashing_evidence_tx.try_send(evidence) {
-                    warn!("P2P: Slashing evidence channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Slashing evidence channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
         }

@@ -278,8 +278,8 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
 /// first-caller-wins admin vulnerability (G22-02).
 #[test]
 fn b1_02_all_contracts_initialized_at_genesis() {
-    let source = std::fs::read_to_string("../validator/src/main.rs")
-        .expect("Cannot read validator/src/main.rs");
+    let source = std::fs::read_to_string("../genesis/src/lib.rs")
+        .expect("Cannot read genesis/src/lib.rs");
 
     // All 27 contracts from GENESIS_CONTRACT_CATALOG
     let all_contracts = [
@@ -287,6 +287,7 @@ fn b1_02_all_contracts_initialized_at_genesis() {
         "musd_token",
         "wsol_token",
         "weth_token",
+        "wbnb_token",
         "dex_core",
         "dex_amm",
         "dex_router",
@@ -310,6 +311,7 @@ fn b1_02_all_contracts_initialized_at_genesis() {
         "compute_market",
         "reef_storage",
         "prediction_market",
+        "shielded_pool",
     ];
 
     // Extract the genesis_initialize_contracts function body

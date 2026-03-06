@@ -90,17 +90,19 @@ else
 fi
 
 # ── 3c. Run ZK trusted setup (idempotent — skips if keys exist) ──
-ZK_DIR="/home/$USER/.moltchain/zk"
+# HOME is overridden to /var/lib/moltchain in the systemd service (ProtectHome=true),
+# so ZK keys must live at /var/lib/moltchain/.moltchain/zk/ to be found at runtime.
+ZK_DIR="$DATA_DIR/.moltchain/zk"
 sudo -u "$USER" mkdir -p "$ZK_DIR"
 if [ -x "$INSTALL_DIR/zk-setup" ]; then
     echo "   Running ZK trusted setup (idempotent)..."
-    sudo -u "$USER" HOME="/home/$USER" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
+    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
     echo "✅ ZK verification keys ready"
 elif [ -f "target/release/zk-setup" ]; then
     cp "target/release/zk-setup" "$INSTALL_DIR/zk-setup"
     chmod +x "$INSTALL_DIR/zk-setup"
     echo "   Running ZK trusted setup (idempotent)..."
-    sudo -u "$USER" HOME="/home/$USER" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
+    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
     echo "✅ ZK verification keys ready"
 else
     echo "   ⚠  zk-setup binary not found — shielded transactions unavailable until keys are generated"

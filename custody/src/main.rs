@@ -878,7 +878,9 @@ async fn main() {
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(9105);
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("valid bind addr");
+    let addr: SocketAddr = format!("0.0.0.0:{}", port)
+        .parse()
+        .expect("valid bind addr");
     info!("custody service listening on {}", addr);
 
     axum::serve(
@@ -2837,11 +2839,12 @@ async fn check_credit_confirmation(
     let Some(rpc_url) = state.config.molt_rpc_url.as_ref() else {
         return Ok(None);
     };
-    let result = match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await {
-        Ok(v) => v,
-        Err(e) if e.contains("not found") || e.contains("not exist") => return Ok(None),
-        Err(e) => return Err(e),
-    };
+    let result =
+        match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await {
+            Ok(v) => v,
+            Err(e) if e.contains("not found") || e.contains("not exist") => return Ok(None),
+            Err(e) => return Err(e),
+        };
     if result.is_null() {
         return Ok(None);
     }
@@ -3130,10 +3133,7 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
-                tracing::warn!(
-                    "credit mint failed for deposit={}: {}",
-                    job.deposit_id, err
-                );
+                tracing::warn!("credit mint failed for deposit={}: {}", job.deposit_id, err);
                 mark_credit_failed(&mut job, err);
                 store_credit_job(&state.db, &job)?;
             }
@@ -3145,7 +3145,11 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
         let confirmation = match check_credit_confirmation(state, job).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("credit confirmation check failed for job={}: {}", job.job_id, e);
+                tracing::warn!(
+                    "credit confirmation check failed for job={}: {}",
+                    job.job_id,
+                    e
+                );
                 continue;
             }
         };
@@ -9199,29 +9203,20 @@ mod tests {
         let dec = source_chain_decimals("ethereum", "eth");
         let shells = (raw_eth / 10u128.pow(dec - 9)) as u64;
         assert_eq!(shells, 1_000_000_000);
-        assert_eq!(
-            shells_to_chain_amount(shells, "ethereum", "eth"),
-            raw_eth
-        );
+        assert_eq!(shells_to_chain_amount(shells, "ethereum", "eth"), raw_eth);
 
         // 100 USDT on ETH: 100_000_000 (6 dec) → 100_000_000_000 shells → 100_000_000 (6 dec)
         let raw_usdt: u128 = 100_000_000;
         let dec = source_chain_decimals("ethereum", "usdt");
         let shells = (raw_usdt * 10u128.pow(9 - dec)) as u64;
         assert_eq!(shells, 100_000_000_000);
-        assert_eq!(
-            shells_to_chain_amount(shells, "ethereum", "usdt"),
-            raw_usdt
-        );
+        assert_eq!(shells_to_chain_amount(shells, "ethereum", "usdt"), raw_usdt);
 
         // 1 SOL: 1_000_000_000 lamports → 1_000_000_000 shells → 1_000_000_000 lamports
         let raw_sol: u128 = 1_000_000_000;
         let dec = source_chain_decimals("solana", "sol");
         assert_eq!(dec, 9);
         let shells = raw_sol as u64;
-        assert_eq!(
-            shells_to_chain_amount(shells, "solana", "sol"),
-            raw_sol
-        );
+        assert_eq!(shells_to_chain_amount(shells, "solana", "sol"), raw_sol);
     }
 }

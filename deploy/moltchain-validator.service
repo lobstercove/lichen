@@ -35,8 +35,10 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 
-# Environment
+# Environment — HOME override ensures ~/.moltchain (P2P identity, ZK keys,
+# validator keypairs) resolves under /var/lib/moltchain despite ProtectHome=true
 Environment=RUST_LOG=info
+Environment=HOME=/var/lib/moltchain
 EnvironmentFile=/etc/moltchain/env
 
 # Logging

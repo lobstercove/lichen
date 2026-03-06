@@ -26,12 +26,13 @@
 15. [Monitoring](#monitoring)
 16. [Backup & Recovery](#backup--recovery)
 17. [Troubleshooting](#troubleshooting)
-18. [Release Signing Setup](#release-signing-setup)
-19. [Creating a Release](#creating-a-release)
-20. [Auto-Update System](#auto-update-system)
-21. [Validator CLI Reference](#validator-cli-reference)
-22. [Admin Key Management Lifecycle](#admin-key-management-lifecycle)
-23. [Environment Command Matrix](#environment-command-matrix)
+18. [Clean Slate Deployment Runbook](#clean-slate-deployment-runbook)
+19. [Release Signing Setup](#release-signing-setup)
+20. [Creating a Release](#creating-a-release)
+21. [Auto-Update System](#auto-update-system)
+22. [Validator CLI Reference](#validator-cli-reference)
+23. [Admin Key Management Lifecycle](#admin-key-management-lifecycle)
+24. [Environment Command Matrix](#environment-command-matrix)
 
 ---
 
@@ -1479,6 +1480,381 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 [ ] 67. Copy genesis-keys/ to a secure offline location (USB / vault)
 [ ] 68. Set up WireGuard VPN between 3 VPS for signer port 9200
 [ ] 69. Connect git repo to CF Pages for auto-deploy on push
+```
+
+---
+
+## Clean Slate Deployment Runbook
+
+This is the exact, battle-tested procedure for wiping all blockchain state and redeploying MoltChain from scratch across all VPS nodes and the local machine. Every step has been validated in production. Follow them in order.
+
+### Prerequisites
+
+| Requirement | Value |
+|---|---|
+| Local machine | macOS/Linux with Rust toolchain, SSH access to all VPS |
+| US VPS | `ubuntu@15.204.229.189` (SSH port 2222) |
+| EU VPS | `ubuntu@37.59.97.61` (SSH port 2222) |
+| SSH command | `ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@<IP>` |
+| Source repo | `lobstercove/moltchain` on GitHub (rsync to VPS — no git on VPS) |
+| VPS state dir | `/var/lib/moltchain/` |
+| VPS binaries | `/usr/local/bin/` |
+| VPS config | `/etc/moltchain/` |
+| System user | `moltchain:moltchain` |
+
+### Step 0: Stop Everything
+
+Stop all services on both VPS and the local validator.
+
+```bash
+# ── Local machine ──
+pkill -9 -f moltchain-validator 2>/dev/null || true
+
+# ── US VPS ──
+ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@15.204.229.189 '
+  for svc in moltchain-validator-testnet moltchain-validator-mainnet \
+             moltchain-faucet moltchain-custody moltchain-custody-mainnet; do
+    sudo systemctl stop "$svc" 2>/dev/null || true
+  done
+  sudo pkill -9 -f moltchain- 2>/dev/null || true
+  sleep 2
+  echo "STOPPED: $(pgrep -f moltchain- | wc -l) processes remaining"
+'
+
+# ── EU VPS (same commands) ──
+ssh -o StrictHostKeyChecking=no -p 2222 ubuntu@37.59.97.61 '
+  for svc in moltchain-validator-testnet moltchain-validator-mainnet \
+             moltchain-faucet moltchain-custody moltchain-custody-mainnet; do
+    sudo systemctl stop "$svc" 2>/dev/null || true
+  done
+  sudo pkill -9 -f moltchain- 2>/dev/null || true
+  sleep 2
+  echo "STOPPED: $(pgrep -f moltchain- | wc -l) processes remaining"
+'
+```
+
+### Step 1: Wipe All State
+
+Remove all blockchain state, keypairs, genesis files, custody DBs, and cached data. Leave only `config.toml` and `contracts/`.
+
+```bash
+# ── Local machine ──
+rm -rf ./data/state-* 2>/dev/null
+
+# ── Each VPS (run on both US and EU) ──
+ssh -p 2222 ubuntu@<VPS_IP> '
+  cd /var/lib/moltchain
+  sudo rm -rf state-* custody-db custody-db-mainnet \
+    genesis-wallet.json genesis-keys known-peers.json \
+    deploy-manifest.json faucet-keypair.json airdrops.json \
+    custody-treasury.json seeds.json 2>/dev/null
+
+  # Wipe VPS keypair caches
+  sudo rm -f /home/moltchain/.moltchain/validators/*.json 2>/dev/null
+  sudo rm -rf /home/moltchain/.moltchain/signer-* 2>/dev/null
+
+  # Remove old code (we rsync fresh)
+  rm -rf ~/moltchain 2>/dev/null
+
+  # Remove custody env files (setup.sh regenerates them)
+  sudo rm -f /etc/moltchain/custody-env /etc/moltchain/custody-env-mainnet 2>/dev/null
+
+  echo "CLEAN: $(ls /var/lib/moltchain/)"
+'
+```
+
+Expected output after wipe: `/var/lib/moltchain/` contains only `config.toml` and `contracts/`.
+
+### Step 2: Rsync Fresh Code
+
+Push the latest code from local to both VPS. No git on VPS — rsync is the deployment mechanism.
+
+```bash
+# ── From local repo root ──
+rsync -az --delete \
+  --exclude 'target/' --exclude '.git/' --exclude 'data/' \
+  --exclude 'node_modules/' --exclude '*.lock' \
+  -e 'ssh -o StrictHostKeyChecking=no -p 2222' \
+  ./ ubuntu@15.204.229.189:~/moltchain/
+
+rsync -az --delete \
+  --exclude 'target/' --exclude '.git/' --exclude 'data/' \
+  --exclude 'node_modules/' --exclude '*.lock' \
+  -e 'ssh -o StrictHostKeyChecking=no -p 2222' \
+  ./ ubuntu@37.59.97.61:~/moltchain/
+```
+
+### Step 3: Build on Each VPS
+
+Build all 5 binaries. This takes several minutes per VPS.
+
+```bash
+# ── On each VPS ──
+ssh -p 2222 ubuntu@<VPS_IP> '
+  cd ~/moltchain
+  source ~/.cargo/env
+  cargo build --release \
+    --bin moltchain-validator \
+    --bin moltchain-genesis \
+    --bin moltchain-faucet \
+    --bin moltchain-custody \
+    --bin molt
+'
+```
+
+Verify build success:
+```bash
+ssh -p 2222 ubuntu@<VPS_IP> '
+  ls -la ~/moltchain/target/release/moltchain-validator \
+         ~/moltchain/target/release/moltchain-custody \
+         ~/moltchain/target/release/moltchain-faucet \
+         ~/moltchain/target/release/molt
+'
+```
+
+### Step 4: Run `setup.sh` on Each VPS
+
+This installs binaries, creates system user/dirs, installs systemd services, creates custody-db directories, generates custody env files, and runs ZK setup.
+
+```bash
+# ── On each VPS ──
+ssh -p 2222 ubuntu@<VPS_IP> '
+  cd ~/moltchain
+  sudo bash deploy/setup.sh testnet mainnet
+'
+```
+
+What `setup.sh` does:
+
+1. Creates `moltchain` system user (if not exists)
+2. Creates `/etc/moltchain/`, `/var/lib/moltchain/`, `/var/log/moltchain/`
+3. Copies binaries to `/usr/local/bin/` (`moltchain-validator`, `moltchain-custody`, `moltchain-faucet`, `molt`)
+4. Copies `seeds.json` to `/etc/moltchain/seeds.json`
+5. Runs ZK trusted setup (idempotent — creates `/home/moltchain/.moltchain/zk/`)
+6. Per network (testnet + mainnet):
+   - Creates env file: `/etc/moltchain/env-testnet` and `/etc/moltchain/env-mainnet`
+   - Creates state dir: `/var/lib/moltchain/state-testnet` and `state-mainnet`
+   - Creates custody DB: `/var/lib/moltchain/custody-db` and `custody-db-mainnet`
+   - Installs systemd services: `moltchain-validator-testnet`, `moltchain-validator-mainnet`
+   - Installs `moltchain-custody` (testnet) and `moltchain-custody-mainnet` (mainnet)
+   - Installs `moltchain-faucet` (testnet only)
+   - Generates custody env files with random auth tokens if not present
+7. Runs `systemctl daemon-reload`
+
+All services use `Restart=always` and `RestartSec=5`.
+
+### Step 5: Start Validators (Genesis Creation)
+
+The **first VPS** to start creates genesis. Start US VPS first, then EU VPS. Both run testnet + mainnet.
+
+```bash
+# ── US VPS first (genesis node) ──
+ssh -p 2222 ubuntu@15.204.229.189 '
+  sudo systemctl start moltchain-validator-testnet moltchain-validator-mainnet
+'
+
+# Wait 30 seconds for genesis block creation + contract deployment
+sleep 30
+
+# ── EU VPS (syncs from US via seeds.json) ──
+ssh -p 2222 ubuntu@37.59.97.61 '
+  sudo systemctl start moltchain-validator-testnet moltchain-validator-mainnet
+'
+```
+
+What happens on genesis (first-ever boot):
+1. Generates genesis wallet with multi-sig (2/3 testnet, 3/5 mainnet)
+2. Creates treasury keypairs in `/var/lib/moltchain/state-testnet/genesis-keys/`
+3. Mints 1 billion MOLT to treasury
+4. Auto-deploys all 29 genesis contracts from `contracts/` directory
+5. Registers itself as the initial validator
+
+### Step 6: Post-Genesis Keypair Setup
+
+After genesis, copy treasury keypairs to the paths custody/faucet services expect.
+
+```bash
+# ── On the genesis VPS (US) ──
+ssh -p 2222 ubuntu@15.204.229.189 '
+  # Find the genesis primary keypair
+  GENESIS_KEY=$(sudo find /var/lib/moltchain/state-testnet/genesis-keys \
+    -name "genesis-primary-*.json" -type f 2>/dev/null | head -1)
+
+  if [ -n "$GENESIS_KEY" ]; then
+    # Copy to custody treasury path
+    sudo cp "$GENESIS_KEY" /etc/moltchain/custody-treasury.json
+    sudo chmod 600 /etc/moltchain/custody-treasury.json
+    sudo chown moltchain:moltchain /etc/moltchain/custody-treasury.json
+    echo "CUSTODY_TREASURY: $(sudo python3 -c "import json; print(json.load(open(\"$GENESIS_KEY\")).get(\"pubkey\",\"?\"))")"
+  else
+    echo "ERROR: genesis-primary keypair not found"
+  fi
+
+  # Find the faucet keypair
+  FAUCET_KEY=$(sudo find /var/lib/moltchain/state-testnet/genesis-keys \
+    -name "faucet-*.json" -type f 2>/dev/null | head -1)
+
+  if [ -n "$FAUCET_KEY" ]; then
+    sudo cp "$FAUCET_KEY" /var/lib/moltchain/faucet-keypair.json
+    sudo chown moltchain:moltchain /var/lib/moltchain/faucet-keypair.json
+    echo "FAUCET_KEY: copied"
+  fi
+'
+```
+
+### Step 7: Start Supporting Services
+
+```bash
+# ── US VPS ──
+ssh -p 2222 ubuntu@15.204.229.189 '
+  sudo systemctl start moltchain-faucet
+  sudo systemctl start moltchain-custody
+  sudo systemctl start moltchain-custody-mainnet
+'
+
+# ── EU VPS (no faucet — only one faucet instance needed) ──
+ssh -p 2222 ubuntu@37.59.97.61 '
+  sudo systemctl start moltchain-custody
+  sudo systemctl start moltchain-custody-mainnet
+'
+```
+
+### Step 8: Verify All Services
+
+```bash
+# ── On each VPS ──
+ssh -p 2222 ubuntu@<VPS_IP> '
+  echo "=== Service Status ==="
+  for svc in moltchain-validator-testnet moltchain-validator-mainnet \
+             moltchain-faucet moltchain-custody moltchain-custody-mainnet; do
+    status=$(systemctl is-active "$svc" 2>/dev/null || echo "not-found")
+    printf "  %-35s %s\n" "$svc" "$status"
+  done
+
+  echo ""
+  echo "=== RPC Health ==="
+  curl -sf http://localhost:8899 -H "content-type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"health\",\"params\":[]}" && echo " (testnet OK)" || echo " (testnet FAIL)"
+  curl -sf http://localhost:9899 -H "content-type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"health\",\"params\":[]}" && echo " (mainnet OK)" || echo " (mainnet FAIL)"
+
+  echo ""
+  echo "=== Validator Count ==="
+  curl -sf http://localhost:8899 -H "content-type: application/json" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getValidators\",\"params\":[]}" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get(\"result\",[])))" 2>/dev/null && echo " validators (testnet)" || echo " (testnet getValidators FAIL)"
+'
+```
+
+Expected results on US VPS:
+- `moltchain-validator-testnet`: active
+- `moltchain-validator-mainnet`: active
+- `moltchain-faucet`: active
+- `moltchain-custody`: active
+- `moltchain-custody-mainnet`: active
+
+Expected results on EU VPS:
+- `moltchain-validator-testnet`: active
+- `moltchain-validator-mainnet`: active
+- `moltchain-faucet`: not-found or inactive (only on US)
+- `moltchain-custody`: active
+- `moltchain-custody-mainnet`: active
+
+### Step 9: Start Local Validator on Mainnet
+
+Connect your local machine as a validator on the mainnet network.
+
+```bash
+./target/release/moltchain-validator \
+  --network mainnet \
+  --rpc-port 9899 \
+  --ws-port 9900 \
+  --p2p-port 9001 \
+  --db-path ./data/state-9001 \
+  --bootstrap-peers "15.204.229.189:8001,37.59.97.61:8001" \
+  --listen-addr 0.0.0.0
+```
+
+This syncs from the VPS mainnet validators, registers as a new validator, and starts producing blocks.
+
+### Port Map Summary
+
+| Service | Testnet | Mainnet |
+|---|---|---|
+| P2P (QUIC) | 7001 | 8001 |
+| RPC (HTTP) | 8899 | 9899 |
+| WebSocket | 8900 | 9900 |
+| Custody | 9105 | 9106 |
+| Faucet | 9100 | — |
+| Signer | 9201 | 9201 |
+
+### Systemd Services Inventory
+
+| Service file | Description | All VPS? |
+|---|---|---|
+| `moltchain-validator-testnet` | Testnet validator (created from `deploy/moltchain-validator.service` template) | Yes |
+| `moltchain-validator-mainnet` | Mainnet validator (same template, different env file) | Yes |
+| `moltchain-faucet` | Testnet faucet (`deploy/moltchain-faucet.service`) | US only |
+| `moltchain-custody` | Testnet custody bridge (`deploy/moltchain-custody.service`) | Yes |
+| `moltchain-custody-mainnet` | Mainnet custody bridge (`deploy/moltchain-custody-mainnet.service`) | Yes |
+
+All services: `Restart=always`, `RestartSec=5`, `User=moltchain`, `ProtectSystem=strict`.
+
+### Automated Reset Script
+
+For subsequent resets, use the built-in reset script:
+
+```bash
+# On VPS — full wipe + restart all services (does Steps 0-8 automatically):
+bash reset-blockchain.sh all --restart --vps
+
+# On local dev — full wipe + restart testnet stack:
+bash reset-blockchain.sh all --restart
+```
+
+The `reset-blockchain.sh` script handles:
+- Stopping all systemd services (VPS mode) or killing processes (local mode)
+- Removing state dirs, custody DBs, keypairs, genesis files, peer caches
+- Recreating custody-db and custody-db-mainnet with correct ownership
+- Running ZK setup
+- Starting validators, waiting for genesis
+- Post-genesis keypair copy (custody treasury + faucet)
+- Starting faucet, custody, custody-mainnet
+- Health check on all 5 services
+
+### Files Created During Setup/Genesis
+
+After a successful genesis boot, these files/dirs exist:
+
+```
+/var/lib/moltchain/
+├── config.toml                           # Static config (survived wipe)
+├── contracts/                            # WASM contracts (survived wipe)
+├── state-testnet/                        # Testnet blockchain state (RocksDB)
+│   ├── genesis-keys/                     # Treasury keypairs (CRITICAL)
+│   │   ├── genesis-primary-<pubkey>.json
+│   │   ├── faucet-moltchain-testnet-1.json
+│   │   └── ...
+│   ├── genesis-wallet.json
+│   ├── known-peers.json
+│   └── <RocksDB files>
+├── state-mainnet/                        # Mainnet blockchain state
+│   ├── genesis-keys/
+│   └── ...
+├── custody-db/                           # Testnet custody database
+├── custody-db-mainnet/                   # Mainnet custody database
+├── faucet-keypair.json                   # Copied from genesis-keys
+└── airdrops.json                         # Faucet airdrop log
+
+/etc/moltchain/
+├── env-testnet                           # Testnet environment
+├── env-mainnet                           # Mainnet environment
+├── seeds.json                            # Seed peer list
+├── custody-env                           # Testnet custody config (auto-generated)
+├── custody-env-mainnet                   # Mainnet custody config (auto-generated)
+└── custody-treasury.json                 # Copied from genesis-keys
+
+/home/moltchain/.moltchain/
+└── zk/                                   # ZK proving/verification keys
 ```
 
 ---

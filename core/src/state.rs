@@ -3872,8 +3872,8 @@ impl StateBatch {
             self.batch.delete_cf(&cf, &key);
             self.batch.delete_cf(&rev_cf, &rev_key);
         } else {
-            self.batch.put_cf(&cf, &key, &balance.to_le_bytes());
-            self.batch.put_cf(&rev_cf, &rev_key, &balance.to_le_bytes());
+            self.batch.put_cf(&cf, &key, balance.to_le_bytes());
+            self.batch.put_cf(&rev_cf, &rev_key, balance.to_le_bytes());
         }
         Ok(())
     }

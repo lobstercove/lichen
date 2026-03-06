@@ -61,7 +61,9 @@ impl SyncManager {
             highest_seen_updated_at: Arc::new(Mutex::new(Instant::now())),
             current_sync_batch: Arc::new(Mutex::new(None)),
             last_checkpoint: Arc::new(Mutex::new(0)),
-            last_sync_triggered_at: Arc::new(Mutex::new(Instant::now() - std::time::Duration::from_secs(60))),
+            last_sync_triggered_at: Arc::new(Mutex::new(
+                Instant::now() - std::time::Duration::from_secs(60),
+            )),
         }
     }
 

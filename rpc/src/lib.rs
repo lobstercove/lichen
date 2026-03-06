@@ -1108,14 +1108,19 @@ fn extract_token_info(
     }
     let contract_addr = ix.accounts.get(1)?;
     let entry = state.get_symbol_registry_by_program(contract_addr).ok()??;
-    let template = entry.template.as_deref()
-        .or_else(|| entry.metadata.as_ref()
+    let template = entry.template.as_deref().or_else(|| {
+        entry
+            .metadata
+            .as_ref()
             .and_then(|m| m.get("template"))
-            .and_then(|v| v.as_str()))?;
+            .and_then(|v| v.as_str())
+    })?;
     if template != "wrapped" && template != "token" {
         return None;
     }
-    let decimals = entry.metadata.as_ref()
+    let decimals = entry
+        .metadata
+        .as_ref()
         .and_then(|m| m.get("decimals"))
         .and_then(|v| v.as_u64())
         .unwrap_or(9);
@@ -3179,16 +3184,27 @@ async fn handle_get_transaction(
                 // Enrich contract-call transactions with token metadata
                 if obj.get("type").and_then(|v| v.as_str()) == Some("Contract") {
                     if let Some(ix) = tx.message.instructions.first() {
-                        if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                        if let Some((symbol, token_amt, decimals, token_to)) =
+                            extract_token_info(&state.state, ix)
+                        {
                             obj.insert("token_symbol".to_string(), serde_json::json!(symbol));
-                            obj.insert("token_amount".to_string(), serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)));
-                            obj.insert("token_amount_shells".to_string(), serde_json::json!(token_amt));
+                            obj.insert(
+                                "token_amount".to_string(),
+                                serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)),
+                            );
+                            obj.insert(
+                                "token_amount_shells".to_string(),
+                                serde_json::json!(token_amt),
+                            );
                             obj.insert("token_decimals".to_string(), serde_json::json!(decimals));
                             if let Some(ref to_addr) = token_to {
                                 obj.insert("token_to".to_string(), serde_json::json!(to_addr));
                             }
                             if let Some(func) = parse_contract_function(ix) {
-                                obj.insert("contract_function".to_string(), serde_json::json!(func));
+                                obj.insert(
+                                    "contract_function".to_string(),
+                                    serde_json::json!(func),
+                                );
                             }
                         }
                     }
@@ -3352,9 +3368,12 @@ async fn handle_get_transactions_by_address(
                 if let Some(func) = parse_contract_function(ix) {
                     entry["contract_function"] = serde_json::json!(func);
                 }
-                if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                if let Some((symbol, token_amt, decimals, token_to)) =
+                    extract_token_info(&state.state, ix)
+                {
                     entry["token_symbol"] = serde_json::json!(symbol);
-                    entry["token_amount"] = serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
+                    entry["token_amount"] =
+                        serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
                     entry["token_amount_shells"] = serde_json::json!(token_amt);
                     entry["token_decimals"] = serde_json::json!(decimals);
                     if let Some(ref to_addr) = token_to {
@@ -3485,9 +3504,12 @@ async fn handle_get_recent_transactions(
                 if let Some(func) = parse_contract_function(ix) {
                     entry["contract_function"] = serde_json::json!(func);
                 }
-                if let Some((symbol, token_amt, decimals, token_to)) = extract_token_info(&state.state, ix) {
+                if let Some((symbol, token_amt, decimals, token_to)) =
+                    extract_token_info(&state.state, ix)
+                {
                     entry["token_symbol"] = serde_json::json!(symbol);
-                    entry["token_amount"] = serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
+                    entry["token_amount"] =
+                        serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
                     entry["token_amount_shells"] = serde_json::json!(token_amt);
                     entry["token_decimals"] = serde_json::json!(decimals);
                     if let Some(ref to_addr) = token_to {
@@ -6303,15 +6325,18 @@ async fn handle_get_contract_info(
             let mut tmeta = serde_json::Map::new();
 
             // Look up registry entry for this contract to get the prefix
-            let reg_entry = state.state.get_symbol_registry_by_program(&contract_id).ok().flatten();
+            let reg_entry = state
+                .state
+                .get_symbol_registry_by_program(&contract_id)
+                .ok()
+                .flatten();
             if let Some(ref entry) = reg_entry {
                 let prefix = entry.symbol.to_lowercase();
                 let supply_key = format!("{}_supply", prefix);
                 if let Some(v) = ca.storage.get(supply_key.as_bytes()) {
                     if v.len() == 8 {
-                        let supply = u64::from_le_bytes([
-                            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-                        ]);
+                        let supply =
+                            u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
                         tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                     }
                 }
