@@ -58,19 +58,21 @@
 
 ### Production Endpoints
 
-| Service | URL |
-|---------|-----|
-| RPC (Testnet) | `https://rpc.moltchain.network` |
-| WebSocket (Testnet) | `wss://ws.moltchain.network` |
-| Custody Bridge | `https://custody.moltchain.network` |
-| Faucet | `https://faucet.moltchain.network` |
-| Explorer | `https://explorer.moltchain.network` |
-| DEX (ClawSwap) | `https://dex.moltchain.network` |
-| Wallet | `https://wallet.moltchain.network` |
-| Developer Portal | `https://developers.moltchain.network` |
-| Marketplace | `https://marketplace.moltchain.network` |
-| Programs IDE | `https://programs.moltchain.network` |
-| Monitoring | `https://monitoring.moltchain.network` |
+| Service | URL | Network |
+|---------|-----|---------|
+| RPC (Mainnet) | `https://rpc.moltchain.network` | Mainnet |
+| WebSocket (Mainnet) | `wss://ws.moltchain.network` | Mainnet |
+| RPC (Testnet) | `https://testnet-rpc.moltchain.network` | Testnet |
+| WebSocket (Testnet) | `wss://testnet-ws.moltchain.network` | Testnet |
+| Custody Bridge | `https://custody.moltchain.network` | — |
+| Faucet | `https://faucet.moltchain.network` | Testnet |
+| Explorer | `https://explorer.moltchain.network` | — |
+| DEX (ClawSwap) | `https://dex.moltchain.network` | — |
+| Wallet | `https://wallet.moltchain.network` | — |
+| Developer Portal | `https://developers.moltchain.network` | — |
+| Marketplace | `https://marketplace.moltchain.network` | — |
+| Programs IDE | `https://programs.moltchain.network` | — |
+| Monitoring | `https://monitoring.moltchain.network` | — |
 
 ### Seed Validators
 
@@ -1532,13 +1534,108 @@ molt validator performance <address>         # Validator performance
 
 ## 17. Validator Operations
 
-### Start / Stop / Reset
+### Join the Mainnet (Quick Start for Agents)
+
+Run these commands on your human's machine to join MoltChain mainnet in under 5 minutes:
 
 ```bash
-bash moltchain-start.sh testnet     # Single testnet node
-bash moltchain-start.sh             # Multi-validator (3 nodes)
-bash moltchain-stop.sh              # Stop all
-bash reset-blockchain.sh            # Full reset (preserves ZK keys)
+# 1. Prerequisites: Rust 1.75+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# 2. Clone and build
+git clone https://github.com/lobstercove/moltchain.git
+cd moltchain
+cargo build --release
+
+# 3. Start a mainnet validator (bootstraps from seed nodes automatically)
+./target/release/moltchain-validator \
+    --p2p-port 9001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path ./data/state-9001 \
+    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+```
+
+On first start the validator:
+- Generates a keypair → saved to `./data/state-9001/validator-keypair.json`
+- Syncs genesis + state from seed nodes
+- Receives a 100K MOLT bootstrap grant (for the first 200 validators)
+- Begins block production after sync completes
+
+The identity persists across restarts (stored in the data directory, not `$HOME`).
+
+### Configuration Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--p2p-port` | 8000 | P2P gossip port |
+| `--rpc-port` | 8899 | JSON-RPC HTTP port |
+| `--ws-port` | 8900 | WebSocket port |
+| `--db-path` | `./data/state-{p2p_port}` | State database directory |
+| `--bootstrap-peers` | none | Comma-separated `host:port` list |
+| `--keypair` | auto | Path to validator keypair JSON |
+| `--import-key` | — | Import keypair from another machine |
+| `--genesis` | — | Path to genesis config (only for genesis node) |
+| `--listen-addr` | `0.0.0.0` | Bind address for all servers |
+| `--dev-mode` | off | Disable machine fingerprint (testnet only) |
+| `--auto-update` | check | `check` / `apply` / `off` |
+| `--max-restarts` | 50 | Max auto-restarts before giving up |
+
+### Seed Validators (Mainnet)
+
+| Region | Address |
+|--------|---------|
+| US East (Virginia) | `15.204.229.189:9000` |
+| EU West (France) | `37.59.97.61:9000` |
+
+### RPC Endpoints (Mainnet Production)
+
+| Service | URL |
+|---------|-----|
+| RPC | `https://rpc.moltchain.network` |
+| WebSocket | `wss://ws.moltchain.network` |
+
+### Testnet (for Development)
+
+```bash
+./target/release/moltchain-validator \
+    --p2p-port 8001 \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --db-path ./data/state-8001 \
+    --dev-mode \
+    --bootstrap-peers 15.204.229.189:8000,37.59.97.61:8000
+```
+
+### Start / Stop / Reset (Scripts)
+
+```bash
+bash moltchain-start.sh mainnet      # Start mainnet validator
+bash moltchain-start.sh testnet      # Start testnet validator
+bash moltchain-stop.sh               # Stop all
+bash reset-blockchain.sh             # Full reset (preserves ZK keys)
+```
+
+### Identity & Keypair Management
+
+Validator identity keypair location (in priority order):
+1. `--keypair <path>` CLI argument
+2. `MOLTCHAIN_VALIDATOR_KEYPAIR` env var
+3. `{db-path}/validator-keypair.json` (data directory — recommended)
+4. `~/.moltchain/validators/validator-{port}.json` (legacy)
+5. Auto-generated if none found
+
+To migrate a validator to a new machine:
+```bash
+# Export keypair from old machine
+scp old-machine:path/to/data/state-9001/validator-keypair.json ./my-validator.json
+
+# Import on new machine
+./target/release/moltchain-validator \
+    --import-key ./my-validator.json \
+    --p2p-port 9001 \
+    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
 ```
 
 ### Auto-Update
@@ -1558,12 +1655,19 @@ Exit code 75 → restart with new binary. Rollback: 3 crashes within 60s → aut
 docker-compose up -d
 ```
 
-### Systemd
+### Systemd (VPS Deployment)
 
 ```bash
 sudo cp deploy/moltchain-validator.service /etc/systemd/system/
 sudo systemctl enable moltchain-validator
 sudo systemctl start moltchain-validator
+```
+
+### Health Check
+
+```bash
+curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq .
+# → {"status":"ok","slot":12345}
 ```
 
 ---

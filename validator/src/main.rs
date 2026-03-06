@@ -4868,7 +4868,7 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.as_str());
 
-    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port) {
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port, Some(&data_dir_path)) {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("Failed to load or generate validator keypair: {}", err);
@@ -5031,6 +5031,31 @@ async fn run_validator() {
     // ============================================================================
     // VALIDATOR ACCOUNT CREATION / BOOTSTRAP GRANT
     // ============================================================================
+
+    // IDENTITY-FIX: Check if this machine fingerprint is already registered
+    // to a DIFFERENT pubkey. This catches the case where HOME changed and a new
+    // keypair was generated, but the machine already has a validator identity.
+    if machine_fingerprint != [0u8; 32] {
+        let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+        if let Some(existing_pubkey) = persisted_pool.fingerprint_owner(&machine_fingerprint) {
+            if existing_pubkey != &validator_pubkey {
+                warn!(
+                    "⚠️  IDENTITY CONFLICT: This machine already has validator identity {}",
+                    existing_pubkey.to_base58()
+                );
+                warn!(
+                    "   Current keypair produces {}, but fingerprint maps to {}",
+                    validator_pubkey.to_base58(),
+                    existing_pubkey.to_base58()
+                );
+                warn!("   This likely means HOME changed and a new keypair was generated.");
+                warn!("   To fix: use --import-key to restore the old keypair, or");
+                warn!("   copy the old validator-*.json keypair to {}/validator-keypair.json", data_dir);
+                error!("❌ Refusing to start with duplicate identity — each machine gets ONE validator grant.");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Check if this validator has an account, if not create with bootstrap grant
     let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
@@ -8532,6 +8557,61 @@ async fn run_validator() {
             agg.prune_old_votes(current_slot, 100);
         }
     });
+
+    // ── Stale validator cleanup ──
+    // Every 60 seconds, remove validators that haven't been active for 50+ epochs.
+    // This cleans up ghost validators from identity changes, crashed nodes, etc.
+    {
+        let vs_for_cleanup = validator_set.clone();
+        let state_for_vs_cleanup = state.clone();
+        let own_pubkey = validator_pubkey;
+        tokio::spawn(async move {
+            // Stale threshold: 50 epochs of inactivity (50 * SLOTS_PER_EPOCH slots)
+            const STALE_EPOCH_THRESHOLD: u64 = 50;
+            let stale_slot_threshold = STALE_EPOCH_THRESHOLD * SLOTS_PER_EPOCH;
+
+            let mut interval = time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let current_slot = state_for_vs_cleanup.get_last_slot().unwrap_or(0);
+
+                // Don't prune during early bootstrap (first 500 slots)
+                if current_slot < 500 {
+                    continue;
+                }
+
+                let mut vs = vs_for_cleanup.write().await;
+                let stale_cutoff = current_slot.saturating_sub(stale_slot_threshold);
+
+                // Find stale validators (never remove ourselves)
+                let stale: Vec<Pubkey> = vs
+                    .validators()
+                    .iter()
+                    .filter(|v| {
+                        v.pubkey != own_pubkey
+                            && v.last_active_slot < stale_cutoff
+                            && v.blocks_proposed == 0  // never proposed a block
+                    })
+                    .map(|v| v.pubkey)
+                    .collect();
+
+                for pubkey in &stale {
+                    vs.remove_validator(pubkey);
+                    info!(
+                        "🧹 Removed stale validator {} (inactive since slot < {})",
+                        pubkey.to_base58(),
+                        stale_cutoff
+                    );
+                }
+
+                if !stale.is_empty() {
+                    if let Err(e) = state_for_vs_cleanup.save_validator_set(&vs) {
+                        warn!("⚠️  Failed to save validator set after cleanup: {}", e);
+                    }
+                }
+            }
+        });
+    }
 
     // ── P2-3: Periodic cold storage migration ──
     // Every 5 minutes, migrate blocks older than COLD_RETENTION_SLOTS to cold DB.
