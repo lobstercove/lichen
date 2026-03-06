@@ -20,41 +20,94 @@ struct KeypairFile {
     public_key_base58: String,
 }
 
-/// Load validator keypair from file or generate new one
-pub fn load_or_generate_keypair(config_path: Option<&str>, p2p_port: u16) -> Result<Keypair> {
-    // Determine keypair file path
-    let keypair_path = if let Some(path) = config_path {
-        PathBuf::from(path)
-    } else {
-        default_validator_keypair_path(p2p_port)
-    };
+/// Load validator keypair from file or generate new one.
+///
+/// Search order:
+/// 1. Explicit `config_path` (--keypair CLI argument)
+/// 2. Data-directory-local path: `{data_dir}/validator-keypair.json`
+/// 3. Legacy HOME-based path: `~/.moltchain/validators/validator-{port}.json`
+/// 4. Generate new keypair and save to data-dir path
+///
+/// If the keypair is found at the legacy path but not in data_dir, it is
+/// migrated (copied) into the data directory so future restarts are
+/// HOME-independent.
+pub fn load_or_generate_keypair(
+    config_path: Option<&str>,
+    p2p_port: u16,
+    data_dir: Option<&Path>,
+) -> Result<Keypair> {
+    // 1. Explicit CLI path
+    if let Some(path) = config_path {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            info!("📁 Loading validator keypair from CLI path: {}", p.display());
+            return load_keypair(&p);
+        }
+        warn!("⚠️  Specified keypair path does not exist: {}", p.display());
+    }
 
-    // Try to load existing keypair
-    if keypair_path.exists() {
+    // 2. Data-directory-local path (HOME-independent, survives HOME changes)
+    if let Some(dir) = data_dir {
+        let data_dir_path = dir.join("validator-keypair.json");
+        if data_dir_path.exists() {
+            info!(
+                "📁 Loading validator keypair from data dir: {}",
+                data_dir_path.display()
+            );
+            return load_keypair(&data_dir_path);
+        }
+    }
+
+    // 3. Legacy HOME-based path
+    let legacy_path = default_validator_keypair_path(p2p_port);
+    if legacy_path.exists() {
         info!(
-            "📁 Loading validator keypair from: {}",
-            keypair_path.display()
+            "📁 Loading validator keypair from legacy path: {}",
+            legacy_path.display()
         );
-        load_keypair(&keypair_path)
-    } else {
-        warn!("⚠️  No keypair found at: {}", keypair_path.display());
-        info!("🔑 Generating new validator keypair...");
+        let keypair = load_keypair(&legacy_path)?;
 
-        // Generate new keypair
-        let keypair = Keypair::new();
-
-        // Save for future use
-        if let Err(e) = save_keypair(&keypair, &keypair_path) {
-            warn!("Failed to save keypair: {}. Will use in-memory only.", e);
-        } else {
-            info!("💾 Saved validator keypair to: {}", keypair_path.display());
+        // Migrate to data directory for future restarts
+        if let Some(dir) = data_dir {
+            let data_dir_path = dir.join("validator-keypair.json");
+            match save_keypair(&keypair, &data_dir_path) {
+                Ok(()) => info!(
+                    "📋 Migrated keypair to data dir: {}",
+                    data_dir_path.display()
+                ),
+                Err(e) => warn!(
+                    "⚠️  Failed to migrate keypair to data dir: {} (using legacy path)",
+                    e
+                ),
+            }
         }
 
-        Ok(keypair)
+        return Ok(keypair);
     }
+
+    // 4. Generate new keypair
+    warn!(
+        "⚠️  No keypair found at data dir or legacy path: {}",
+        legacy_path.display()
+    );
+    info!("🔑 Generating new validator keypair...");
+    let keypair = Keypair::new();
+
+    // Save to data directory (preferred) or legacy path
+    let save_path = data_dir
+        .map(|d| d.join("validator-keypair.json"))
+        .unwrap_or(legacy_path);
+    if let Err(e) = save_keypair(&keypair, &save_path) {
+        warn!("Failed to save keypair: {}. Will use in-memory only.", e);
+    } else {
+        info!("💾 Saved validator keypair to: {}", save_path.display());
+    }
+
+    Ok(keypair)
 }
 
-/// Get default validator keypair path
+/// Get legacy HOME-based validator keypair path.
+/// Prefer data-directory-local path via `load_or_generate_keypair`.
 pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -156,7 +209,7 @@ mod tests {
         save_keypair(&original_keypair, &keypair_path).expect("save original keypair");
 
         let loaded_original =
-            load_or_generate_keypair(Some(&keypair_path_string), 0).expect("load original");
+            load_or_generate_keypair(Some(&keypair_path_string), 0, None).expect("load original");
         assert_eq!(loaded_original.pubkey(), original_keypair.pubkey());
 
         let mut rotated_keypair = Keypair::new();
@@ -166,7 +219,7 @@ mod tests {
         save_keypair(&rotated_keypair, &keypair_path).expect("save rotated keypair");
 
         let loaded_rotated =
-            load_or_generate_keypair(Some(&keypair_path_string), 0).expect("load rotated");
+            load_or_generate_keypair(Some(&keypair_path_string), 0, None).expect("load rotated");
         assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
         assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
     }

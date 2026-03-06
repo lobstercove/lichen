@@ -76,15 +76,18 @@ cargo build --release
 ### Run a local validator
 
 ```bash
-# Generate a genesis block & keypair, then start
-./scripts/generate-genesis.sh
-cargo run --release -p moltchain-validator -- \
-    --genesis genesis.json \
-    --keypair keypairs/validator-0.json \
-    --rpc-port 8899 --ws-port 8900 --p2p-port 9000
+# Join mainnet with one command (syncs from seed nodes, generates keypair)
+./target/release/moltchain-validator \
+    --p2p-port 9001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path ./data/state-9001 \
+    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
 ```
 
-The validator starts an RPC server at `http://localhost:8899` and a WebSocket endpoint at `ws://localhost:8900`.
+The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
+
+**Mainnet RPC:** `https://rpc.moltchain.network` · **WebSocket:** `wss://ws.moltchain.network`
 
 ### Use the CLI
 
@@ -150,24 +153,58 @@ molt balance Mo1t...YourAddress
 
 ---
 
-## Run a Validator
+## Run a Mainnet Validator
 
 MoltChain uses **Proof of Contribution (PoC)** consensus. Validators earn MOLT by producing blocks, voting, and maintaining uptime.
 
-**Minimum requirements:** 2 GB RAM · 50 GB disk · stable internet
+**Minimum requirements:** 2 CPU cores · 2 GB RAM · 50 GB SSD · stable internet
+
+### 1. Build
 
 ```bash
-# Automated setup (generates keypair, fetches genesis, starts node)
-cd scripts/
-./setup-validator.sh --network testnet
+git clone https://github.com/lobstercove/moltchain.git
+cd moltchain
+cargo build --release
 ```
+
+### 2. Start
+
+```bash
+./target/release/moltchain-validator \
+    --p2p-port 9001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path ./data/state-9001 \
+    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+```
+
+That's it. The validator will:
+- Generate a keypair (saved to `./data/state-9001/validator-keypair.json`)
+- Sync the chain from seed nodes
+- Receive a 100K MOLT bootstrap stake grant (first 200 validators only)
+- Begin producing & voting on blocks
+
+### 3. Verify
+
+```bash
+curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq .
+# → {"status":"ok","slot":12345}
+```
+
+### Seed Nodes (Mainnet)
+
+| Region | Endpoint |
+|--------|----------|
+| US East | `15.204.229.189:9000` |
+| EU West | `37.59.97.61:9000` |
 
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 
-**Guides:**
+**Detailed guides:**
 - [Validator Setup](docs/consensus/VALIDATOR_SETUP.md)
 - [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
 - [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
+- [SKILL.md](SKILL.md) — Full agent reference (contracts, RPC, identity, staking)
 
 ---
 
