@@ -976,11 +976,15 @@ impl PeerFingerprintStore {
                 warn!(
                     "TOFU: Peer {} certificate fingerprint changed (known: {}..., got: {}...). \
                      Accepting updated identity (may be legitimate reinstall/state wipe).",
-                    addr, &known[..16], &hex_fp[..16]
+                    addr,
+                    &known[..16],
+                    &hex_fp[..16]
                 );
                 drop(store);
                 // Update stored fingerprint to accept the new identity
-                self.fingerprints.lock().unwrap_or_else(|e| e.into_inner())
+                self.fingerprints
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(addr_str, hex_fp);
                 self.save();
                 Ok(true) // updated peer

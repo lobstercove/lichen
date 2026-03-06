@@ -4,14 +4,13 @@
 //!   moltchain-genesis --network testnet --db-path /var/lib/moltchain/state-testnet
 //!   moltchain-genesis --network mainnet --db-path /var/lib/moltchain/state-mainnet
 
-use moltchain_core::{
-    Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair,
-    Message, Pubkey, StateStore, Transaction,
-    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, NFT_MINT_FEE, NFT_COLLECTION_FEE,
-    SYSTEM_PROGRAM_ID,
-};
 use moltchain_core::consensus::{FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS};
 use moltchain_core::multisig::GovernedWalletConfig;
+use moltchain_core::{
+    Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair, Message,
+    Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
+};
 use moltchain_genesis::{
     genesis_auto_deploy, genesis_create_trading_pairs, genesis_initialize_contracts,
     genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
@@ -51,7 +50,10 @@ fn main() {
     let network_str = match network {
         Some(n @ ("mainnet" | "testnet")) => n,
         Some(other) => {
-            error!("Unknown network '{}'. Use --network mainnet or --network testnet", other);
+            error!(
+                "Unknown network '{}'. Use --network mainnet or --network testnet",
+                other
+            );
             std::process::exit(1);
         }
         None => {
@@ -87,7 +89,10 @@ fn main() {
 
     // Check if genesis already exists — refuse to overwrite
     if state.get_block_by_slot(0).unwrap_or(None).is_some() {
-        error!("Genesis block already exists in {}. Refusing to overwrite.", db_dir);
+        error!(
+            "Genesis block already exists in {}. Refusing to overwrite.",
+            db_dir
+        );
         error!("To create a new genesis, delete or move the existing database first.");
         std::process::exit(1);
     }
@@ -95,7 +100,7 @@ fn main() {
     // Load genesis configuration
     let genesis_config = match network_str {
         "mainnet" => GenesisConfig::default_mainnet(),
-        "testnet" | _ => GenesisConfig::default_testnet(),
+        _ => GenesisConfig::default_testnet(),
     };
     info!("Chain ID: {}", genesis_config.chain_id);
     info!("Total supply: {} MOLT", genesis_config.total_supply_molt());
@@ -137,11 +142,18 @@ fn main() {
     };
 
     let genesis_pubkey = wallet.pubkey;
-    info!("  ✓ Generated genesis pubkey: {}", genesis_pubkey.to_base58());
+    info!(
+        "  ✓ Generated genesis pubkey: {}",
+        genesis_pubkey.to_base58()
+    );
 
     if let Some(ref multisig) = wallet.multisig {
         info!("  ✓ Multi-sig configuration:");
-        info!("    - Threshold: {}/{} signatures", multisig.threshold, multisig.signers.len());
+        info!(
+            "    - Threshold: {}/{} signatures",
+            multisig.threshold,
+            multisig.signers.len()
+        );
         info!("    - Genesis treasury: {}", multisig.is_genesis);
         info!("    - Signers:");
         for (i, signer) in multisig.signers.iter().enumerate() {
@@ -151,9 +163,18 @@ fn main() {
 
     // Log whitepaper distribution
     if let Some(ref dist) = wallet.distribution_wallets {
-        info!("  📊 Whitepaper genesis distribution ({} wallets):", dist.len());
+        info!(
+            "  📊 Whitepaper genesis distribution ({} wallets):",
+            dist.len()
+        );
         for dw in dist {
-            info!("    - {} ({}%): {} MOLT → {}", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+            info!(
+                "    - {} ({}%): {} MOLT → {}",
+                dw.role,
+                dw.percentage,
+                dw.amount_molt,
+                dw.pubkey.to_base58()
+            );
         }
     }
 
@@ -215,7 +236,10 @@ fn main() {
     for path in &keypair_paths {
         info!("    - {}", path);
     }
-    info!("  ✓ Saved {} distribution keypair(s):", dist_keypair_paths.len());
+    info!(
+        "  ✓ Saved {} distribution keypair(s):",
+        dist_keypair_paths.len()
+    );
     for path in &dist_keypair_paths {
         info!("    - {}", path);
     }
@@ -280,7 +304,11 @@ fn main() {
     if let Some(ref multisig) = wallet.multisig {
         genesis_account.owner = genesis_pubkey;
         info!("  ✓ Flagged as genesis treasury with multi-sig");
-        info!("    Threshold: {}/{} signatures", multisig.threshold, multisig.signers.len());
+        info!(
+            "    Threshold: {}/{} signatures",
+            multisig.threshold,
+            multisig.signers.len()
+        );
     }
 
     if let Err(e) = state.put_account(&genesis_pubkey, &genesis_account) {
@@ -334,11 +362,29 @@ fn main() {
                 if let Err(e) = state.set_treasury_pubkey(&dw.pubkey) {
                     error!("Failed to set treasury pubkey: {e}");
                 }
-                info!("  ✓ {} ({}%): {} MOLT → {} [TREASURY]", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+                info!(
+                    "  ✓ {} ({}%): {} MOLT → {} [TREASURY]",
+                    dw.role,
+                    dw.percentage,
+                    dw.amount_molt,
+                    dw.pubkey.to_base58()
+                );
             } else if dw.role == "founding_moltys" {
-                info!("  ✓ {} ({}%): {} MOLT → {} [LOCKED — 6mo cliff + 18mo vest]", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+                info!(
+                    "  ✓ {} ({}%): {} MOLT → {} [LOCKED — 6mo cliff + 18mo vest]",
+                    dw.role,
+                    dw.percentage,
+                    dw.amount_molt,
+                    dw.pubkey.to_base58()
+                );
             } else {
-                info!("  ✓ {} ({}%): {} MOLT → {}", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+                info!(
+                    "  ✓ {} ({}%): {} MOLT → {}",
+                    dw.role,
+                    dw.percentage,
+                    dw.amount_molt,
+                    dw.pubkey.to_base58()
+                );
             }
         }
 
@@ -354,7 +400,10 @@ fn main() {
         if let Err(e) = state.set_genesis_accounts(&ga_entries) {
             error!("Failed to store genesis accounts in DB: {e}");
         } else {
-            info!("  ✓ Stored {} genesis accounts in state DB", ga_entries.len());
+            info!(
+                "  ✓ Stored {} genesis accounts in state DB",
+                ga_entries.len()
+            );
         }
 
         info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
@@ -372,11 +421,16 @@ fn main() {
 
             for dw in dist_wallets.iter() {
                 if dw.role == "ecosystem_partnerships" {
-                    let config = GovernedWalletConfig::new(2, all_signers.clone(), "ecosystem_partnerships");
+                    let config =
+                        GovernedWalletConfig::new(2, all_signers.clone(), "ecosystem_partnerships");
                     if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
                         error!("Failed to store ecosystem_partnerships governed config: {e}");
                     } else {
-                        info!("  ✓ ecosystem_partnerships governed wallet: threshold={}, {} signers", config.threshold, config.signers.len());
+                        info!(
+                            "  ✓ ecosystem_partnerships governed wallet: threshold={}, {} signers",
+                            config.threshold,
+                            config.signers.len()
+                        );
                     }
                 } else if dw.role == "reserve_pool" {
                     let config = GovernedWalletConfig::new(3, all_signers.clone(), "reserve_pool");
@@ -392,7 +446,10 @@ fn main() {
         // Auto-fund genesis/deployer with 10K MOLT from treasury
         let ops_fund_molt: u64 = 10_000;
         let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
-        if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
+        if let Some(treasury_dw) = dist_wallets
+            .iter()
+            .find(|dw| dw.role == "validator_rewards")
+        {
             let mut treasury_acct = state
                 .get_account(&treasury_dw.pubkey)
                 .ok()
@@ -414,7 +471,10 @@ fn main() {
                     error!("Failed to credit deployer for auto-fund: {e}");
                 }
 
-                info!("  ✓ Auto-funded genesis/deployer with {} MOLT from treasury", ops_fund_molt);
+                info!(
+                    "  ✓ Auto-funded genesis/deployer with {} MOLT from treasury",
+                    ops_fund_molt
+                );
             } else {
                 warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
             }
@@ -425,7 +485,8 @@ fn main() {
         let faucet_fund_shells = Account::molt_to_shells(faucet_fund_molt);
         let faucet_kp = Keypair::generate();
         let faucet_pubkey = faucet_kp.pubkey();
-        let faucet_keypair_path = genesis_keypairs_dir.join(format!("faucet-{}.json", genesis_config.chain_id));
+        let faucet_keypair_path =
+            genesis_keypairs_dir.join(format!("faucet-{}.json", genesis_config.chain_id));
         let faucet_seed = faucet_kp.to_seed();
         let faucet_seed_json = serde_json::json!({
             "seed": hex::encode(faucet_seed),
@@ -438,7 +499,10 @@ fn main() {
         ) {
             error!("Failed to save faucet keypair: {e}");
         }
-        if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
+        if let Some(treasury_dw) = dist_wallets
+            .iter()
+            .find(|dw| dw.role == "validator_rewards")
+        {
             let mut treasury_acct = state
                 .get_account(&treasury_dw.pubkey)
                 .ok()
@@ -454,7 +518,12 @@ fn main() {
                 if let Err(e) = state.put_account(&faucet_pubkey, &faucet_acct) {
                     error!("Failed to credit faucet account: {e}");
                 }
-                info!("  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})", faucet_fund_molt, faucet_pubkey.to_base58(), faucet_keypair_path.display());
+                info!(
+                    "  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})",
+                    faucet_fund_molt,
+                    faucet_pubkey.to_base58(),
+                    faucet_keypair_path.display()
+                );
             } else {
                 warn!("  ⚠️  Treasury has insufficient funds for faucet auto-fund");
             }
@@ -489,7 +558,10 @@ fn main() {
         if let Err(e) = state.set_treasury_pubkey(&treasury_pubkey) {
             error!("Failed to set treasury pubkey: {e}");
         }
-        info!("  ✓ Treasury account created: {}", treasury_pubkey.to_base58());
+        info!(
+            "  ✓ Treasury account created: {}",
+            treasury_pubkey.to_base58()
+        );
         info!("  ✓ Reward pool pending: {} MOLT", reward_pool_molt);
 
         let reward_shells = Account::molt_to_shells(reward_pool_molt);
@@ -543,7 +615,10 @@ fn main() {
         let pubkey = match Pubkey::from_base58(&account_info.address) {
             Ok(pk) => pk,
             Err(e) => {
-                warn!("Skipping initial account with invalid address {}: {e}", account_info.address);
+                warn!(
+                    "Skipping initial account with invalid address {}: {e}",
+                    account_info.address
+                );
                 continue;
             }
         };
@@ -551,7 +626,11 @@ fn main() {
         if let Err(e) = state.put_account(&pubkey, &account) {
             error!("Failed to store initial account: {e}");
         }
-        info!("  ✓ Account {}: {} MOLT", &account_info.address[..20.min(account_info.address.len())], account_info.balance_molt);
+        info!(
+            "  ✓ Account {}: {} MOLT",
+            &account_info.address[..20.min(account_info.address.len())],
+            account_info.balance_molt
+        );
     }
 
     // Mint transaction
@@ -605,8 +684,12 @@ fn main() {
         if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_shells) {
             error!("Failed to store founding vesting params: {e}");
         } else {
-            info!("  ✓ Founding moltys vesting: cliff={}, vest_end={}, total={}M MOLT",
-                cliff_end, vest_end, fm_dw.amount_molt / 1_000_000);
+            info!(
+                "  ✓ Founding moltys vesting: cliff={}, vest_end={}, total={}M MOLT",
+                cliff_end,
+                vest_end,
+                fm_dw.amount_molt / 1_000_000
+            );
         }
     }
 
@@ -634,6 +717,9 @@ fn main() {
     info!("  Genesis hash: {}", genesis_block.hash());
     info!("═══════════════════════════════════════════════════════");
     info!("  Next: start the validator pointing at this DB:");
-    info!("    moltchain-validator --network {} --db-path {}", network_str, db_dir);
+    info!(
+        "    moltchain-validator --network {} --db-path {}",
+        network_str, db_dir
+    );
     info!("═══════════════════════════════════════════════════════");
 }

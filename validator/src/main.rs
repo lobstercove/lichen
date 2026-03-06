@@ -21,14 +21,18 @@ pub mod updater;
 use futures_util::{SinkExt, StreamExt};
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
-    evm_tx_hash, Account, Block, ContractInstruction,
-    FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash,
-    Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity,
-    NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
-    StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
+    evm_tx_hash, Account, Block, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice,
+    GenesisConfig, GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool,
+    NftActivity, NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense,
+    StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
     CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
     SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+};
+use moltchain_genesis::{
+    derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
+    genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices,
+    genesis_seed_oracle,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -53,7 +57,6 @@ use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use moltchain_genesis::{derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs, genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const LEGACY_CONTRACT_DEPLOY_FEE_SHELLS: u64 = 2_500_000_000;
@@ -4252,7 +4255,11 @@ async fn run_validator() {
     let cached_peers = if explicit_seed_peers.is_empty() && !local_only {
         let seed_file_peers = load_seed_peers(&genesis_config.chain_id, &seeds_path);
         if !seed_file_peers.is_empty() {
-            info!("📖 Loaded {} seed peers from {}", seed_file_peers.len(), seeds_path.display());
+            info!(
+                "📖 Loaded {} seed peers from {}",
+                seed_file_peers.len(),
+                seeds_path.display()
+            );
         }
         seed_peers.extend(resolve_peer_list(&seed_file_peers));
         let cached = moltchain_p2p::PeerStore::load_from_path(&peer_store_path);
@@ -4353,9 +4360,8 @@ async fn run_validator() {
     // is present (which it always will be after the first validator
     // publishes its address), every subsequent node joins.
     // ────────────────────────────────────────────────────────────────
-    let has_any_seed_peers = !explicit_seed_peers.is_empty()
-        || !cached_peers.is_empty()
-        || !seed_peers.is_empty();
+    let has_any_seed_peers =
+        !explicit_seed_peers.is_empty() || !cached_peers.is_empty() || !seed_peers.is_empty();
 
     let mut is_joining_network = if has_genesis_block {
         // Already have genesis — not joining, just resuming
@@ -4363,7 +4369,8 @@ async fn run_validator() {
     } else if has_any_seed_peers {
         // Seeds exist → this node MUST join the network, never create genesis
         info!("🔄 Seed peers found — will sync genesis from the existing network");
-        info!("   Sources: {} explicit, {} from seeds.json, {} cached",
+        info!(
+            "   Sources: {} explicit, {} from seeds.json, {} cached",
             explicit_seed_peers.len(),
             seed_peers.len().saturating_sub(explicit_seed_peers.len()),
             cached_peers.len(),
@@ -7156,7 +7163,9 @@ async fn run_validator() {
                     // stream, matching the reliable broadcast path.
                     for block in blocks {
                         let response_msg = P2PMessage::new(
-                            MessageType::BlockRangeResponse { blocks: vec![block] },
+                            MessageType::BlockRangeResponse {
+                                blocks: vec![block],
+                            },
                             local_addr_for_responses,
                         );
                         if let Err(e) = peer_mgr_for_responses

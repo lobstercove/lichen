@@ -3391,7 +3391,10 @@ impl TxProcessor {
         // → return 2) to be recorded as "Success" with 0 storage changes.
         if result.success {
             if let Some(rc) = result.return_code {
-                if rc != 0 && result.storage_changes.is_empty() && result.cross_call_changes.is_empty() {
+                if rc != 0
+                    && result.storage_changes.is_empty()
+                    && result.cross_call_changes.is_empty()
+                {
                     return Err(format!(
                         "Contract '{}' returned error code {} with no state changes. Logs: {:?}",
                         function, rc, result.logs

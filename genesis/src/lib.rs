@@ -6,9 +6,8 @@
 //!   - `moltchain-validator` (replays genesis contract deployment on sync)
 
 use moltchain_core::{
-    Account, ContractAccount, ContractContext, ContractRuntime,
-    Hash, ProgramCallActivity, Pubkey,
-    SymbolRegistryEntry, StateStore,
+    Account, ContractAccount, ContractContext, ContractRuntime, Hash, ProgramCallActivity, Pubkey,
+    StateStore, SymbolRegistryEntry,
 };
 
 use sha2::{Digest, Sha256};
@@ -16,8 +15,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
-
-
 
 pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     // Core token
@@ -269,7 +266,8 @@ pub fn derive_contract_address(deployer_pubkey: &Pubkey, dir_name: &str) -> Opti
 /// Returns true on success.
 /// Monotonic sequence counter for genesis activity indexing.
 /// Each genesis call gets a unique sequence to avoid CF key collisions.
-pub static GENESIS_ACTIVITY_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static GENESIS_ACTIVITY_SEQ: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 pub fn genesis_exec_contract(
     state: &StateStore,
