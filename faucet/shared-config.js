@@ -21,13 +21,13 @@ const MOLT_CONFIG = (() => {
         mainnet: {
             label: 'Mainnet',
             rpc:   'https://rpc.moltchain.network',
-            ws:    'wss://ws.moltchain.network',
+            ws:    'wss://rpc.moltchain.network/ws',
             local: false,
         },
         testnet: {
             label: 'Testnet',
             rpc:   'https://testnet-rpc.moltchain.network',
-            ws:    'wss://ws-testnet.moltchain.network',
+            ws:    'wss://testnet-rpc.moltchain.network/ws',
             local: false,
         },
         'local-testnet': {

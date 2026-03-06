@@ -298,6 +298,9 @@ async fn main() {
                     "https://faucet.moltchain.network"
                         .parse::<HeaderValue>()
                         .unwrap(),
+                    "https://wallet.moltchain.network"
+                        .parse::<HeaderValue>()
+                        .unwrap(),
                     "https://moltchain.network".parse::<HeaderValue>().unwrap(),
                     "https://faucet.moltchain.io"
                         .parse::<HeaderValue>()

@@ -2147,6 +2147,10 @@ async fn handle_rpc(
         "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
         "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
 
+        // ── Wallet price-feed methods ───────────────────────────────
+        "getDexPairs" => handle_get_dex_pairs(&state).await,
+        "getOraclePrices" => handle_get_oracle_prices(&state).await,
+
         // ── Shielded Pool (ZK Privacy) ──────────────────────────────
         "getShieldedPoolState" => {
             shielded::handle_get_shielded_pool_state(&state, req.params).await
@@ -12626,6 +12630,85 @@ async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Val
         "attestations": cf_stats_u64(state, "ORACLE", b"stats_attestations"),
         "paused": cf_stats_bool(state, "ORACLE", b"oracle_paused"),
     }))
+}
+
+/// getDexPairs — Returns trading pairs with last price for wallet price display.
+/// Reads dex_core pair storage and enriches with oracle prices.
+async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let pair_count = state.state.get_program_storage_u64("DEX", b"dex_pair_count");
+    let limit = pair_count.min(100);
+    let mut pairs = Vec::new();
+
+    // Build symbol map from known token contracts
+    let known_tokens: &[(&str, &str)] = &[
+        ("MOLT", "MOLT"), ("MUSD", "mUSD"), ("WSOL", "wSOL"),
+        ("WETH", "wETH"), ("WBNB", "wBNB"),
+    ];
+    let mut symbol_for_addr: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for &(sym, display) in known_tokens {
+        if let Ok(Some(entry)) = state.state.get_symbol_registry(sym) {
+            symbol_for_addr.insert(entry.program.to_string(), display.to_string());
+        }
+    }
+
+    for i in 1..=limit {
+        let key = format!("dex_pair_{}", i);
+        if let Some(data) = state.state.get_program_storage("DEX", key.as_bytes()) {
+            if data.len() >= 72 {
+                let pair_id = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                let mut base_bytes = [0u8; 32];
+                let mut quote_bytes = [0u8; 32];
+                base_bytes.copy_from_slice(&data[8..40]);
+                quote_bytes.copy_from_slice(&data[40..72]);
+                let base_pk = moltchain_core::Pubkey(base_bytes);
+                let quote_pk = moltchain_core::Pubkey(quote_bytes);
+                let base_str = base_pk.to_string();
+                let quote_str = quote_pk.to_string();
+                let base = symbol_for_addr.get(&base_str).cloned().unwrap_or_else(|| base_str[..8].to_string());
+                let quote = symbol_for_addr.get(&quote_str).cloned().unwrap_or_else(|| quote_str[..8].to_string());
+
+                // Read last price from analytics
+                let lp_key = format!("ana_lp_{}", pair_id);
+                let lp_raw = state.state.get_program_storage_u64("ANALYTICS", lp_key.as_bytes());
+                let price = if lp_raw > 0 {
+                    lp_raw as f64 / 1_000_000_000.0
+                } else {
+                    // Fallback: oracle price for base token
+                    let oracle_key = format!("price_{}", base);
+                    state.state.get_program_storage("ORACLE", oracle_key.as_bytes())
+                        .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64 / 100_000_000.0) } else { None })
+                        .unwrap_or(0.0)
+                };
+
+                pairs.push(serde_json::json!({
+                    "pair_id": pair_id,
+                    "base": base,
+                    "quote": quote,
+                    "price": price,
+                }));
+            }
+        }
+    }
+
+    Ok(serde_json::json!(pairs))
+}
+
+/// getOraclePrices — Returns current oracle prices for all known assets.
+async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let assets = ["MOLT", "wSOL", "wETH", "wBNB", "mUSD"];
+    let mut prices = serde_json::Map::new();
+    for asset in &assets {
+        let key = format!("price_{}", asset);
+        let price = state.state.get_program_storage("ORACLE", key.as_bytes())
+            .and_then(|f| if f.len() >= 8 {
+                Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64 / 100_000_000.0)
+            } else {
+                None
+            })
+            .unwrap_or(0.0);
+        prices.insert(asset.to_string(), serde_json::json!(price));
+    }
+    Ok(serde_json::Value::Object(prices))
 }
 
 #[cfg(test)]

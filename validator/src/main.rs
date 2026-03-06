@@ -3293,15 +3293,15 @@ async fn maybe_create_checkpoint(
 /// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
 const MICRO_SCALE: f64 = 1_000_000.0;
 
-/// Default Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB.
-/// Override via MOLTCHAIN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
+/// Default Binance US WebSocket aggTrade stream URL for SOL, ETH, and BNB.
+/// Override via MOLTCHAIN_ORACLE_WS_URL.
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
+    "wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 
-/// Default Binance REST fallback URL.
-/// Override via MOLTCHAIN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
+/// Default Binance US REST fallback URL.
+/// Override via MOLTCHAIN_ORACLE_REST_URL.
 const DEFAULT_BINANCE_REST_URL: &str =
-    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
+    "https://api.binance.us/api/v3/ticker/price?symbols=%5B%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22%5D";
 
 /// REST ticker response
 #[derive(Deserialize)]
@@ -3488,6 +3488,32 @@ fn spawn_oracle_price_feeder(state: StateStore, shared_prices: SharedOraclePrice
                 if last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60 {
                     continue;
                 }
+
+                // Update last price (ana_lp_) so REST /pairs shows live oracle price
+                let lp_key = format!("ana_lp_{}", pair_id);
+                let _ = state.put_contract_storage(
+                    &analytics_pk,
+                    lp_key.as_bytes(),
+                    &price_scaled.to_le_bytes(),
+                );
+
+                // Update 24h stats (ana_24h_) — keep volume/trades, update OHLC
+                let stats_key = format!("ana_24h_{}", pair_id);
+                let mut stats = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                    Ok(Some(d)) if d.len() >= 48 => d,
+                    _ => vec![0u8; 48],
+                };
+                let cur_high = u64::from_le_bytes(stats[8..16].try_into().unwrap_or([0; 8]));
+                let cur_low = u64::from_le_bytes(stats[16..24].try_into().unwrap_or([0; 8]));
+                if price_scaled > cur_high {
+                    stats[8..16].copy_from_slice(&price_scaled.to_le_bytes());
+                }
+                if cur_low == 0 || price_scaled < cur_low {
+                    stats[16..24].copy_from_slice(&price_scaled.to_le_bytes());
+                }
+                // Update close price
+                stats[32..40].copy_from_slice(&price_scaled.to_le_bytes());
+                let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
                 for &ci in &candle_intervals {
                     oracle_update_candle(
