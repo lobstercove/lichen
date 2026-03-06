@@ -25,7 +25,8 @@ use tracing::{error, info, warn};
 #[derive(Debug, Deserialize)]
 struct FaucetRequest {
     address: String,
-    amount: u64, // in MOLT
+    #[serde(default)]
+    amount: Option<u64>, // in MOLT; defaults to max_per_request when omitted
 }
 
 #[derive(Debug, Serialize)]
@@ -419,7 +420,12 @@ async fn faucet_request_handler(
     headers: axum::http::HeaderMap,
     Json(req): Json<FaucetRequest>,
 ) -> Response {
-    info!("💧 Faucet request: {} MOLT to {}", req.amount, req.address);
+    // Resolve amount: use configured max when client omits or sends 0
+    let amount = match req.amount {
+        Some(a) if a >= 1 && a <= state.config.max_per_request => a,
+        _ => state.config.max_per_request,
+    };
+    info!("💧 Faucet request: {} MOLT to {}", amount, req.address);
 
     // Use ConnectInfo as canonical fallback when trusted proxy headers are absent.
     let client_ip = extract_client_ip(&headers, peer_addr, &state.config.trusted_proxies);
@@ -444,25 +450,6 @@ async fn faucet_request_handler(
                 .into_response();
         }
     };
-
-    // Validate amount
-    if req.amount == 0 || req.amount > state.config.max_per_request {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(FaucetResponse {
-                success: false,
-                signature: None,
-                amount: None,
-                recipient: None,
-                message: None,
-                error: Some(format!(
-                    "Amount must be between 1 and {} MOLT",
-                    state.config.max_per_request
-                )),
-            }),
-        )
-            .into_response();
-    }
 
     // Pre-flight faucet balance check before consuming rate-limit slot.
     match get_faucet_balance_shells(&state).await {
@@ -506,7 +493,7 @@ async fn faucet_request_handler(
         if let Err(err) = limiter.check_and_record(
             &client_ip,
             &req.address,
-            req.amount,
+            amount,
             state.config.cooldown_seconds,
             state.config.daily_limit_per_ip,
         ) {
@@ -526,9 +513,9 @@ async fn faucet_request_handler(
     }
 
     // Send a signed transfer transaction from the faucet wallet
-    match send_faucet_transfer(&state, &req.address, req.amount).await {
+    match send_faucet_transfer(&state, &req.address, amount).await {
         Ok(sig_hex) => {
-            info!("✅ Airdropped {} MOLT to {}", req.amount, req.address);
+            info!("✅ Airdropped {} MOLT to {}", amount, req.address);
 
             let timestamp_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -540,7 +527,7 @@ async fn faucet_request_handler(
                 let record = AirdropRecord {
                     signature: sig_hex.clone(),
                     recipient: req.address.clone(),
-                    amount_molt: req.amount,
+                    amount_molt: amount,
                     timestamp_ms,
                 };
                 let mut airdrops = state.airdrops.write().await;
@@ -561,11 +548,11 @@ async fn faucet_request_handler(
                 Json(FaucetResponse {
                     success: true,
                     signature: Some(sig_hex),
-                    amount: Some(req.amount),
+                    amount: Some(amount),
                     recipient: Some(req.address.clone()),
                     message: Some(format!(
                         "{} MOLT transferred to {}",
-                        req.amount, req.address
+                        amount, req.address
                     )),
                     error: None,
                 }),
