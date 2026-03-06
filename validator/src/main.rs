@@ -5867,6 +5867,8 @@ async fn run_validator() {
                             genesis_initialize_contracts(&state_for_blocks, &gpk, "📡 [sync]");
                             genesis_create_trading_pairs(&state_for_blocks, &gpk, "📡 [sync]");
                             genesis_seed_oracle(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_seed_margin_prices(&state_for_blocks, &gpk);
+                            genesis_seed_analytics_prices(&state_for_blocks, &gpk);
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
@@ -9556,6 +9558,7 @@ async fn run_validator() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use moltchain_core::{Instruction, Message};
 
     // ── Helper builders ─────────────────────────────────────────────
 

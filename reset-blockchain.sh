@@ -107,6 +107,7 @@ if [ "$NETWORK" = "all" ]; then
 	if [ "$VPS_MODE" = true ]; then
 		sudo rm -rf "$VPS_STATE_DIR"/state-* 2>/dev/null && echo "  removed $VPS_STATE_DIR/state-*" || true
 		sudo rm -rf "$VPS_STATE_DIR"/custody-db 2>/dev/null && echo "  removed $VPS_STATE_DIR/custody-db" || true
+		sudo rm -rf "$VPS_STATE_DIR"/custody-db-mainnet 2>/dev/null && echo "  removed $VPS_STATE_DIR/custody-db-mainnet" || true
 		sudo rm -rf "$VPS_STATE_DIR"/genesis-wallet.json 2>/dev/null || true
 		sudo rm -rf "$VPS_STATE_DIR"/genesis-keys 2>/dev/null || true
 		sudo rm -f "$VPS_STATE_DIR"/known-peers.json 2>/dev/null || true
@@ -115,10 +116,10 @@ if [ "$NETWORK" = "all" ]; then
 		if [[ "${EXTRA_FLAGS:-}" == *"--zk-reset"* ]]; then
 			sudo rm -rf "$VPS_STATE_DIR"/zk 2>/dev/null && echo "  removed $VPS_STATE_DIR/zk (--zk-reset)"
 		fi
-		# Recreate custody-db directory with correct ownership
-		sudo mkdir -p "$VPS_STATE_DIR/custody-db"
-		sudo chown -R moltchain:moltchain "$VPS_STATE_DIR/custody-db" 2>/dev/null || true
-		echo "  recreated $VPS_STATE_DIR/custody-db"
+		# Recreate custody-db directories with correct ownership
+		sudo mkdir -p "$VPS_STATE_DIR/custody-db" "$VPS_STATE_DIR/custody-db-mainnet"
+		sudo chown -R moltchain:moltchain "$VPS_STATE_DIR/custody-db" "$VPS_STATE_DIR/custody-db-mainnet" 2>/dev/null || true
+		echo "  recreated $VPS_STATE_DIR/custody-db and custody-db-mainnet"
 	fi
 else
 	rm -rf data/state-${NETWORK}-* 2>/dev/null && echo "  removed data/state-${NETWORK}-*" || true
@@ -309,6 +310,11 @@ if [ "$RESTART" = true ]; then
 			sudo systemctl start moltchain-custody 2>/dev/null && echo "   ✓ custody started" || echo "   ⚠  custody start failed"
 		fi
 
+		if [ "$NETWORK" = "all" ] || [ "$NETWORK" = "mainnet" ]; then
+			echo "   Starting mainnet custody service..."
+			sudo systemctl start moltchain-custody-mainnet 2>/dev/null && echo "   ✓ custody-mainnet started" || echo "   ⚠  custody-mainnet start failed"
+		fi
+
 		echo ""
 		echo -e "${GREEN}=================================================${NC}"
 		echo -e "${GREEN}  VPS restart complete. All services started.${NC}"
@@ -318,7 +324,7 @@ if [ "$RESTART" = true ]; then
 		sleep 5
 		echo ""
 		echo "   Health check:"
-		for SVC in moltchain-validator-testnet moltchain-validator-mainnet moltchain-faucet moltchain-custody; do
+		for SVC in moltchain-validator-testnet moltchain-validator-mainnet moltchain-faucet moltchain-custody moltchain-custody-mainnet; do
 			STATUS=$(systemctl is-active "$SVC" 2>/dev/null || echo "not-found")
 			if [ "$STATUS" = "active" ]; then
 				echo -e "   ${GREEN}✓${NC} $SVC: $STATUS"
@@ -429,6 +435,7 @@ else
 		echo "   bash $REPO_ROOT/scripts/vps-post-genesis.sh"
 		echo "   sudo systemctl start moltchain-faucet"
 		echo "   sudo systemctl start moltchain-custody"
+		echo "   sudo systemctl start moltchain-custody-mainnet"
 	else
 		echo "Next steps:"
 		echo "   cd $REPO_ROOT"

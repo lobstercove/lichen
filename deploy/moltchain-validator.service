@@ -21,7 +21,7 @@ ExecStart=/usr/local/bin/moltchain-validator \
     --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK} \
     ${MOLTCHAIN_EXTRA_ARGS:-}
 
-Restart=on-failure
+Restart=always
 RestartSec=10
 LimitNOFILE=65536
 

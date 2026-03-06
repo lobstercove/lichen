@@ -14,7 +14,7 @@ use moltchain_core::consensus::{FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECO
 use moltchain_core::multisig::GovernedWalletConfig;
 use moltchain_genesis::{
     genesis_auto_deploy, genesis_create_trading_pairs, genesis_initialize_contracts,
-    genesis_seed_margin_prices, genesis_seed_oracle,
+    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
 };
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -618,6 +618,14 @@ fn main() {
     genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:");
     genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:");
     genesis_seed_margin_prices(&state, &genesis_pubkey);
+    genesis_seed_analytics_prices(&state, &genesis_pubkey);
+
+    // Flush metrics counters to disk — contract deploy (index_program) and
+    // any accounts created after the genesis block was stored need their
+    // counters persisted so the validator reads correct values on startup.
+    if let Err(e) = state.flush_metrics() {
+        error!("Failed to flush metrics after contract deployment: {}", e);
+    }
 
     info!("═══════════════════════════════════════════════════════");
     info!("  ✅ Genesis creation complete!");

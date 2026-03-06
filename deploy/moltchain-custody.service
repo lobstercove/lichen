@@ -1,0 +1,34 @@
+[Unit]
+Description=MoltChain Custody Bridge
+After=network-online.target moltchain-validator-testnet.service
+Wants=network-online.target
+Requires=moltchain-validator-testnet.service
+
+[Service]
+Type=simple
+User=moltchain
+Group=moltchain
+ExecStart=/usr/local/bin/moltchain-custody
+EnvironmentFile=/etc/moltchain/custody-env
+WorkingDirectory=/var/lib/moltchain
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/moltchain/custody-db
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moltchain-custody
+
+[Install]
+WantedBy=multi-user.target
