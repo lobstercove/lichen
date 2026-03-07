@@ -3293,15 +3293,15 @@ async fn maybe_create_checkpoint(
 /// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
 const MICRO_SCALE: f64 = 1_000_000.0;
 
-/// Default Binance US WebSocket aggTrade stream URL for SOL, ETH, and BNB.
-/// Override via MOLTCHAIN_ORACLE_WS_URL.
+/// Default Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB.
+/// Override via MOLTCHAIN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
 const DEFAULT_BINANCE_WS_URL: &str =
-    "wss://stream.binance.us:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 
-/// Default Binance US REST fallback URL.
-/// Override via MOLTCHAIN_ORACLE_REST_URL.
+/// Default Binance REST fallback URL.
+/// Override via MOLTCHAIN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
 const DEFAULT_BINANCE_REST_URL: &str =
-    "https://api.binance.us/api/v3/ticker/price?symbols=%5B%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22%5D";
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
 
 /// REST ticker response
 #[derive(Deserialize)]

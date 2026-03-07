@@ -16,6 +16,63 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 
+/// Fetch live prices from Binance REST API at genesis time.
+/// Returns (sol_usd, eth_usd, bnb_usd). Falls back to env vars, then hardcoded defaults.
+pub fn fetch_live_prices() -> (f64, f64, f64) {
+    // Try Binance REST first (binance.com, then binance.us)
+    let endpoints = [
+        "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
+        "https://api.binance.us/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
+    ];
+
+    for url in &endpoints {
+        match ureq::get(url).timeout(std::time::Duration::from_secs(5)).call() {
+            Ok(resp) => {
+                if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
+                    let mut sol = 0.0_f64;
+                    let mut eth = 0.0_f64;
+                    let mut bnb = 0.0_f64;
+                    for t in &tickers {
+                        let p: f64 = t.price.parse().unwrap_or(0.0);
+                        match t.symbol.as_str() {
+                            "SOLUSDT" => sol = p,
+                            "ETHUSDT" => eth = p,
+                            "BNBUSDT" => bnb = p,
+                            _ => {}
+                        }
+                    }
+                    if sol > 0.0 && eth > 0.0 && bnb > 0.0 {
+                        info!(
+                            "  📡 Live prices from Binance: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+                            sol, eth, bnb
+                        );
+                        return (sol, eth, bnb);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("  ⚠️  Binance REST fetch failed ({}): {}", url, e);
+            }
+        }
+    }
+
+    // Fallback to env vars
+    let sol = std::env::var("GENESIS_SOL_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
+    let eth = std::env::var("GENESIS_ETH_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
+    let bnb = std::env::var("GENESIS_BNB_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+    warn!(
+        "  ⚠️  Using fallback prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        sol, eth, bnb
+    );
+    (sol, eth, bnb)
+}
+
+#[derive(serde::Deserialize)]
+struct BinanceTicker {
+    symbol: String,
+    price: String,
+}
+
 pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     // Core token
     ("moltcoin", "MOLT", "MoltCoin", "token"),
@@ -1609,25 +1666,12 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
     //
-    // Prices are read from env vars at genesis time for accuracy.
-    // Set GENESIS_SOL_USD, GENESIS_ETH_USD, GENESIS_BNB_USD, GENESIS_MOLT_USD
-    // before first boot. Falls back to reasonable defaults if not set.
+    // Prices fetched live from Binance at genesis time for accuracy.
     let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.10);
-    let sol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(145.0);
-    let eth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2600.0);
-    let bnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(620.0);
+    let (sol_usd, eth_usd, bnb_usd) = fetch_live_prices();
 
     info!(
         "  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
@@ -1766,20 +1810,9 @@ pub fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: 
 
     // ── Step 3: Seed external asset price feeds (wSOL, wETH, wBNB) ──
     // These provide reference prices for oracle-priced DEX pairs.
-    // Prices read from env vars; the background WebSocket price feeder
-    // will update them to live prices immediately after genesis.
-    let sol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(145.0);
-    let eth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2600.0);
-    let bnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(620.0);
+    // Prices fetched live from Binance; the background WebSocket price feeder
+    // will keep them updated after genesis.
+    let (sol_usd, eth_usd, bnb_usd) = fetch_live_prices();
     let price_8dec = |usd: f64| -> u64 { (usd * 100_000_000.0) as u64 };
 
     let external_feeds: [(&[u8], u64, String); 3] = [
@@ -1870,18 +1903,7 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.10);
-    let wsol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(145.0);
-    let weth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2600.0);
-    let wbnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(620.0);
+    let (wsol_usd, weth_usd, wbnb_usd) = fetch_live_prices();
 
     let pair_prices: [(u64, f64); 7] = [
         (1, molt_usd),
@@ -1968,7 +1990,7 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
 //  GENESIS PHASE 4c — Seed dex_margin mark/index prices & enable pairs
 //  Writes mrg_mark_{pair_id}, mrg_idx_{pair_id}, mrg_ena_{pair_id} directly
 //  to dex_margin contract storage so margin trading works from genesis.
-//  Prices match the oracle seeds (MOLT=$0.10, wSOL=$82, wETH=$1,979, wBNB=$300).
+//  Prices fetched live from Binance REST API at genesis time.
 // ========================================================================
 
 pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
@@ -1985,18 +2007,7 @@ pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) 
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.10);
-    let wsol_usd: f64 = std::env::var("GENESIS_SOL_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(145.0);
-    let weth_usd: f64 = std::env::var("GENESIS_ETH_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2600.0);
-    let wbnb_usd: f64 = std::env::var("GENESIS_BNB_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(620.0);
+    let (wsol_usd, weth_usd, wbnb_usd) = fetch_live_prices();
 
     // Pair IDs match genesis_create_trading_pairs order:
     //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,

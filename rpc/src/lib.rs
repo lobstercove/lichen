@@ -12654,12 +12654,13 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
     for i in 1..=limit {
         let key = format!("dex_pair_{}", i);
         if let Some(data) = state.state.get_program_storage("DEX", key.as_bytes()) {
-            if data.len() >= 72 {
-                let pair_id = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+            // 112-byte pair blob: base[0..32] | quote[32..64] | pair_id[64..72] | ...
+            if data.len() >= 112 {
                 let mut base_bytes = [0u8; 32];
                 let mut quote_bytes = [0u8; 32];
-                base_bytes.copy_from_slice(&data[8..40]);
-                quote_bytes.copy_from_slice(&data[40..72]);
+                base_bytes.copy_from_slice(&data[0..32]);
+                quote_bytes.copy_from_slice(&data[32..64]);
+                let pair_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
                 let base_pk = moltchain_core::Pubkey(base_bytes);
                 let quote_pk = moltchain_core::Pubkey(quote_bytes);
                 let base_str = base_pk.to_string();
