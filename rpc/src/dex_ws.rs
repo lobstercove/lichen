@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 
 /// DEX-specific events broadcast to WebSocket subscribers
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DexEvent {
     /// Order book snapshot for a pair
     OrderBookUpdate {
@@ -799,5 +799,25 @@ mod tests {
         assert_eq!(json["channel"], "trades:2");
         assert!(json["data"].is_object());
         assert_eq!(json["data"]["type"], "tradeExecution");
+    }
+
+    #[test]
+    fn ticker_field_names_check() {
+        let event = DexEvent::TickerUpdate {
+            pair_id: 7,
+            last_price: 6274.0,
+            bid: 6273.0,
+            ask: 6275.0,
+            volume_24h: 500,
+            change_24h: 1.5,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        // Fields must be camelCase to match the JS client expectations
+        assert!(json.get("lastPrice").is_some(), "lastPrice field must be camelCase");
+        assert!(json.get("pairId").is_some(), "pairId field must be camelCase");
+        assert!(json.get("volume24h").is_some(), "volume24h field must be camelCase");
+        assert!(json.get("change24h").is_some(), "change24h field must be camelCase");
+        // Variant tag must also be camelCase
+        assert_eq!(json["type"], "tickerUpdate");
     }
 }
