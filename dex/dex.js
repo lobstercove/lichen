@@ -1612,8 +1612,6 @@ document.addEventListener('DOMContentLoaded', () => {
         await Promise.all([loadOrderBook(), loadRecentTrades()]);
         subscribePair(pair.pairId);
         if (tvWidget?.activeChart) { try { tvWidget.activeChart().setSymbol(pair.id, () => {}); } catch { drawChart(); } } else drawChart();
-        // Update oracle reference line for new pair
-        updateOracleReferenceLine();
         // Update margin mode availability for new pair
         if (state.tradeMode === 'margin' && !isMarginEnabledForActivePair()) {
             setTradeMode('spot', { notifyOnBlocked: true });
@@ -1823,6 +1821,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     currentBarLow = bars[bars.length - 1].low;
                 }
                 ok(bars, { noData: !bars.length });
+                // Immediately seed the current-period streaming bar so the chart
+                // shows a live candle right away without waiting for the next oracle poll
+                if (state.lastPrice > 0) setTimeout(() => streamBarUpdate(state.lastPrice, 0), 100);
             },
             subscribeBars: (si, res, cb, uid) => {
                 realtimeCallback = cb; activeResolution = res;
@@ -3427,7 +3428,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 applyOracleRealTimeOverlay();
-                updateOracleReferenceLine();
             } catch { /* network error — skip */ }
         }, 2000);
     }
@@ -3476,14 +3476,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Phase D — Oracle Price Reference Line on Chart
-    // Fetches oracle prices from /api/v1/oracle/prices every 5s and draws
-    // a horizontal dashed line on the TradingView chart showing the
-    // internal oracle reference price for the active pair. This gives
-    // traders a visual comparison between on-chain trade price and the
-    // oracle index price.
+    // Oracle Price Polling — fetches /api/v1/oracle/prices every 5s,
+    // updates dropdown prices and chart streaming bars.
     // ═══════════════════════════════════════════════════════════════════════
-    let oracleLineId = null;
     let oracleRefPrices = {};
 
     async function fetchOracleRefPrices() {
@@ -3500,73 +3495,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             applyOracleRealTimeOverlay();
-            updateOracleReferenceLine();
         } catch { /* network error — skip */ }
     }
 
-    function getOracleRefForPair() {
-        if (!state.activePair) return 0;
-        const base = (state.activePair.base || '').toUpperCase();
-        const quote = (state.activePair.quote || '').toUpperCase();
-        let refPrice = 0;
-        if ((base === 'WSOL' || base === 'SOL') && oracleRefPrices['wSOL']) {
-            refPrice = oracleRefPrices['wSOL'];
-        } else if ((base === 'WETH' || base === 'ETH') && oracleRefPrices['wETH']) {
-            refPrice = oracleRefPrices['wETH'];
-        } else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB']) {
-            refPrice = oracleRefPrices['wBNB'];
-        } else if (base === 'MOLT' && oracleRefPrices['MOLT']) {
-            refPrice = oracleRefPrices['MOLT'];
-        }
-        if (refPrice <= 0) return 0;
-        // For MOLT-quoted pairs (display: MOLT/wETH), price = MOLT_USD / asset_USD
-        if (quote === 'MOLT') {
-            const moltUsd = oracleRefPrices['MOLT'] || MOLT_GENESIS_PRICE;
-            if (moltUsd > 0 && refPrice > 0) refPrice = moltUsd / refPrice;
-            else return 0;
-        }
-        return refPrice;
-    }
-
-    function updateOracleReferenceLine() {
-        if (!tvWidget?.activeChart) return;
-        try {
-            const chart = tvWidget.activeChart();
-            const refPrice = getOracleRefForPair();
-            // Remove old line
-            if (oracleLineId) {
-                try { chart.removeEntity(oracleLineId); } catch { /* already removed */ }
-                oracleLineId = null;
-            }
-            if (refPrice <= 0) return;
-            // Draw horizontal dashed line at oracle reference price
-            oracleLineId = chart.createShape(
-                { time: 0, price: refPrice },
-                {
-                    shape: 'horizontal_line',
-                    lock: true,
-                    disableSelection: true,
-                    disableSave: true,
-                    disableUndo: true,
-                    overrides: {
-                        linecolor: '#FFD700',
-                        linewidth: 1,
-                        linestyle: 2, // dashed
-                        showLabel: true,
-                        text: `Oracle: $${refPrice < 1 ? refPrice.toFixed(4) : refPrice.toFixed(2)}`,
-                        textcolor: '#FFD700',
-                        fontsize: 10,
-                        horzLabelsAlign: 'right',
-                        showPrice: false,
-                    },
-                }
-            );
-        } catch { /* TradingView API not ready yet */ }
-    }
-
-    // Poll oracle prices every 5 seconds for the reference line
+    // Poll oracle prices every 5 seconds for live dropdown + chart updates
     setInterval(fetchOracleRefPrices, 5000);
-    // Initial fetch after short delay to allow TradingView to initialize
+    // Initial fetch after short delay
     setTimeout(fetchOracleRefPrices, 2000);
 
     // ═══════════════════════════════════════════════════════════════════════

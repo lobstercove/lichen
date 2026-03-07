@@ -2172,49 +2172,7 @@ assert(
     'PD.2: Fetches oracle prices from API endpoint'
 );
 
-// PD.3: Oracle reference line drawn on TradingView chart
-assert(
-    dexJsFrontend.includes('updateOracleReferenceLine'),
-    'PD.3: updateOracleReferenceLine function exists'
-);
-
-// PD.4: Uses TradingView createShape for horizontal line
-assert(
-    dexJsFrontend.includes("shape: 'horizontal_line'"),
-    'PD.4: Draws horizontal_line shape on chart'
-);
-
-// PD.5: Oracle line styling — gold color, dashed
-assert(
-    dexJsFrontend.includes("linecolor: '#FFD700'") &&
-    dexJsFrontend.includes('linestyle: 2'),
-    'PD.5: Oracle line is gold (#FFD700) and dashed'
-);
-
-// PD.6: Oracle line label shows price
-assert(
-    dexJsFrontend.includes('Oracle: $'),
-    'PD.6: Oracle line label displays price'
-);
-
-// PD.7: Oracle reference updates when pair switches
-assert(
-    dexJsFrontend.includes('// Update oracle reference line for new pair'),
-    'PD.7: Oracle line updates on pair switch'
-);
-
-// PD.8: getOracleRefForPair handles MOLT-quoted pairs
-assert(
-    dexJsFrontend.includes("quote === 'MOLT'") &&
-    dexJsFrontend.includes('moltUsd / refPrice'),
-    'PD.8: Oracle ref converts for MOLT-quoted pairs'
-);
-
-// PD.9: Old oracle line removed before drawing new one
-assert(
-    dexJsFrontend.includes('chart.removeEntity(oracleLineId)'),
-    'PD.9: Old oracle line entity removed before redraw'
-);
+// PD.3-PD.9: Oracle reference line removed (redundant with live price candles)
 
 // PD.10: Oracle prices polled every 5 seconds
 assert(
