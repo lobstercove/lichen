@@ -1585,7 +1585,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', () => { if (pairDropdown) pairDropdown.classList.remove('open'); });
 
     function renderPairList(filter = '') {
-        if (!pairList) return; const f = filter.toLowerCase();
+        if (!pairList) return;
+        // Always apply oracle overlay before rendering to prevent stale/raw prices
+        applyOracleRealTimeOverlay(true);
+        const f = filter.toLowerCase();
         const filtered = pairs.filter(p => !f || p.id.toLowerCase().includes(f));
         if (!filtered.length) {
             pairList.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-search" style="margin-right:6px;"></i>No trading pairs available</div>';
@@ -3428,7 +3431,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 2000);
     }
 
-    function applyOracleRealTimeOverlay() {
+    function applyOracleRealTimeOverlay(skipRender) {
         // Update ALL oracle-priced pairs in the dropdown + active pair ticker
         const moltPairRef = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
         const moltUsd = moltPairRef?.price || MOLT_GENESIS_PRICE;
@@ -3441,6 +3444,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if ((base === 'WSOL' || base === 'SOL') && oracleRefPrices['wSOL'] > 0) extPrice = oracleRefPrices['wSOL'];
             else if ((base === 'WETH' || base === 'ETH') && oracleRefPrices['wETH'] > 0) extPrice = oracleRefPrices['wETH'];
             else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB'] > 0) extPrice = oracleRefPrices['wBNB'];
+
+            // Safety guard: display-inverted pairs should NEVER show price > 1
+            // (MOLT/wSOL ≈ 0.001, MOLT/wETH ≈ 0.00005, MOLT/wBNB ≈ 0.00016)
+            // If price > 1 it means the raw on-chain MOLT-denominated price leaked through
+            if (extPrice <= 0 && isDisplayInvertedPair(p) && p.price > 1) {
+                p.price = invertPrice(p.price);
+                dropdownChanged = true;
+                if (p.pairId === state.activePairId) { state.lastPrice = p.price; updateTickerDisplay(); }
+                continue;
+            }
             if (extPrice <= 0) continue;
 
             // For MOLT-quoted pairs (on-chain: wSOL/MOLT, display: MOLT/wSOL),
@@ -3458,7 +3471,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 streamBarUpdate(extPrice, 0);
             }
         }
-        if (dropdownChanged) renderPairList();
+        if (dropdownChanged && !skipRender) renderPairList();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
