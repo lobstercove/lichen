@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 /// Prediction market events pushed over WebSocket
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum PredictionEvent {
     MarketCreated {
         market_id: u64,
