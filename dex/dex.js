@@ -1829,8 +1829,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 realtimeCallback = cb; activeResolution = res;
                 currentSubscriberUID = uid;
                 localStorage.setItem('dexChartInterval', res);
+                // Subscribe to candle WS channel for real-time OHLCV streaming
+                subscribeCandleWs(state.activePairId, res);
             },
-            unsubscribeBars: (uid) => { if (uid === currentSubscriberUID) { realtimeCallback = null; currentSubscriberUID = null; } },
+            unsubscribeBars: (uid) => { if (uid === currentSubscriberUID) { realtimeCallback = null; currentSubscriberUID = null; unsubscribeCandleWs(); } },
         };
     }
 
@@ -1855,6 +1857,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function resolutionToMs(r) { return { '1': 60000, '5': 300000, '15': 900000, '60': 3600000, '240': 14400000, '1D': 86400000, '3D': 259200000, '1W': 604800000 }[r] || 900000; }
     function resolutionToSec(r) { return { '1': 60, '5': 300, '15': 900, '60': 3600, '240': 14400, '1D': 86400, '3D': 259200, '1W': 604800 }[r] || 900; }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Candle WS subscription — real-time OHLCV streaming from validator
+    // ═══════════════════════════════════════════════════════════════════════
+    let _candleWsSub = null;
+    function subscribeCandleWs(pairId, resolution) {
+        unsubscribeCandleWs();
+        if (!dexWs || !pairId) return;
+        const interval = resolutionToSec(resolution);
+        dexWs.subscribe(`candles:${pairId}:${interval}`, (d) => {
+            if (!realtimeCallback || !d.close || d.close <= 0) return;
+            const inv = isDisplayInvertedPair(state.activePair);
+            const o = inv ? invertPrice(d.open) : d.open;
+            const h_raw = inv ? invertPrice(d.low) : d.high;
+            const l_raw = inv ? invertPrice(d.high) : d.low;
+            const c = inv ? invertPrice(d.close) : d.close;
+            const h = Math.max(h_raw, l_raw);
+            const l = Math.min(h_raw, l_raw);
+            const ms = resolutionToMs(resolution);
+            const bt = d.slot ? Math.floor(Date.now() / ms) * ms : lastBarTime;
+            if (bt > lastBarTime) {
+                lastBarTime = bt; currentBarOpen = o; currentBarHigh = h; currentBarLow = l;
+            } else {
+                currentBarHigh = Math.max(currentBarHigh, h);
+                currentBarLow = Math.min(currentBarLow, l);
+            }
+            realtimeCallback({ time: lastBarTime || bt, open: currentBarOpen || o, high: currentBarHigh, low: currentBarLow, close: c, volume: d.volume || 0 });
+        }).then(id => { _candleWsSub = id; }).catch(() => {});
+    }
+    function unsubscribeCandleWs() {
+        if (_candleWsSub && dexWs) { dexWs.unsubscribe(_candleWsSub); _candleWsSub = null; }
+    }
 
     let tvRetryCount = 0;
     function initTradingView() {
@@ -3414,7 +3448,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startOracleFastPoll() {
         if (oracleFastPollTimer) return; // already running
-        console.info('[DEX] Oracle fast-poll overlay enabled (2s interval)');
+        console.info('[DEX] Oracle fast-poll overlay enabled (10s fallback interval)');
         oracleFastPollTimer = setInterval(async () => {
             try {
                 const resp = await fetch(`${API_BASE}/oracle/prices`);
@@ -3429,7 +3463,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 applyOracleRealTimeOverlay();
             } catch { /* network error — skip */ }
-        }, 2000);
+        }, 10000);
     }
 
     function applyOracleRealTimeOverlay(skipRender) {
@@ -3498,8 +3532,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* network error — skip */ }
     }
 
-    // Poll oracle prices every 5 seconds for live dropdown + chart updates
-    setInterval(fetchOracleRefPrices, 5000);
+    // Poll oracle prices every 30s as WS fallback (primary updates via WS ticker)
+    setInterval(fetchOracleRefPrices, 30000);
     // Initial fetch after short delay
     setTimeout(fetchOracleRefPrices, 2000);
 
@@ -6698,8 +6732,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Polling fallback (when WS unavailable)
-    // F17.2: Split into fast (5s) for trade/pool/margin/predict and slow (30s) for governance/rewards
+    // Polling fallback — WS handles real-time data; REST polls catch up
+    // F17.2: Fast (15s) for trade/pool/margin/predict, slow (30s) for governance/rewards
     // ═══════════════════════════════════════════════════════════════════════
     let pollFastRunning = false, pollSlowRunning = false, pollPredictRunning = false;
     setInterval(async () => {
@@ -6730,7 +6764,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try { await loadMarginStats(); await loadMarginPositions(); } catch { /* API unavailable */ }
         }
         } finally { pollFastRunning = false; }
-    }, 5000);
+    }, 15000);
 
     // F17.2: Slow polling for low-frequency data (governance + rewards + launchpad) — 30s
     setInterval(async () => {
@@ -6766,7 +6800,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch { /* API unavailable */ }
         }
         } finally { pollPredictRunning = false; }
-    }, 5000);
+    }, 15000);
 
     // Pair dropdown prices are kept live via subscribeAllTickers() over WS.
     // No REST polling needed — all ticker updates flow through the WebSocket.

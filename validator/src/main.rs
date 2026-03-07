@@ -946,6 +946,7 @@ fn emit_dex_events(
     }
 
     // Emit orderbook + ticker updates for affected pairs
+    let order_count = state.get_program_storage_u64("DEX", b"dex_order_count");
     for pair_id in &affected_pairs {
         // P9-VAL-06: Read per-pair last price (ana_lp_{pair_id}) instead of global last trade
         let lp_key = format!("ana_lp_{}", pair_id);
@@ -980,6 +981,68 @@ fn emit_dex_events(
                 dex_broadcaster.emit_ticker(
                     *pair_id, last_price, last_price, last_price, volume_24h, change_24h,
                 );
+            }
+        }
+
+        // ── WS broadcast: orderbook snapshot for affected pair ──
+        let mut bids: std::collections::HashMap<u64, (u64, u32)> = std::collections::HashMap::new();
+        let mut asks: std::collections::HashMap<u64, (u64, u32)> = std::collections::HashMap::new();
+        for oid in 1..=order_count {
+            let okey = format!("dex_order_{}", oid);
+            if let Some(od) = state.get_program_storage("DEX", okey.as_bytes()) {
+                if od.len() >= 128 {
+                    let opid = u64::from_le_bytes(od[32..40].try_into().unwrap_or([0; 8]));
+                    if opid != *pair_id { continue; }
+                    let ostatus = od[66];
+                    if ostatus != 0 && ostatus != 1 { continue; } // only open/partial
+                    let oqty = u64::from_le_bytes(od[50..58].try_into().unwrap_or([0; 8]));
+                    let ofilled = u64::from_le_bytes(od[58..66].try_into().unwrap_or([0; 8]));
+                    let remaining = oqty.saturating_sub(ofilled);
+                    if remaining == 0 { continue; }
+                    let oprice = u64::from_le_bytes(od[42..50].try_into().unwrap_or([0; 8]));
+                    let side_byte = od[40];
+                    let entry = if side_byte == 0 { bids.entry(oprice).or_insert((0, 0)) }
+                                else { asks.entry(oprice).or_insert((0, 0)) };
+                    entry.0 += remaining;
+                    entry.1 += 1;
+                }
+            }
+        }
+        let bid_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
+            let mut v: Vec<_> = bids.into_iter().map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                price: p as f64 / PRICE_SCALE, quantity: q, orders: c,
+            }).collect();
+            v.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+            v.truncate(20);
+            v
+        };
+        let ask_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
+            let mut v: Vec<_> = asks.into_iter().map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                price: p as f64 / PRICE_SCALE, quantity: q, orders: c,
+            }).collect();
+            v.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+            v.truncate(20);
+            v
+        };
+        dex_broadcaster.emit_orderbook(*pair_id, bid_levels, ask_levels, slot);
+    }
+
+    // ── WS broadcast: order status updates for affected orders ──
+    for trade_id in (from_trade + 1)..=to_trade {
+        let key = format!("dex_trade_{}", trade_id);
+        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
+            if data.len() >= 80 {
+                let maker_order_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
+                let maker_key = format!("dex_order_{}", maker_order_id);
+                if let Some(od) = state.get_program_storage("DEX", maker_key.as_bytes()) {
+                    if od.len() >= 128 {
+                        let trader = hex::encode(&od[0..32]);
+                        let qty = u64::from_le_bytes(od[50..58].try_into().unwrap_or([0; 8]));
+                        let filled = u64::from_le_bytes(od[58..66].try_into().unwrap_or([0; 8]));
+                        let status = match od[66] { 0 => "open", 1 => "partial", 2 => "filled", 3 => "cancelled", _ => "expired" };
+                        dex_broadcaster.emit_order_update(maker_order_id, &trader, status, filled, qty.saturating_sub(filled), slot);
+                    }
+                }
             }
         }
     }
@@ -3310,7 +3373,11 @@ struct BinanceTicker {
     price: String,
 }
 
-fn spawn_oracle_price_feeder(state: StateStore, shared_prices: SharedOraclePrices) {
+fn spawn_oracle_price_feeder(
+    state: StateStore,
+    shared_prices: SharedOraclePrices,
+    dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
+) {
     tokio::spawn(async move {
         // Resolve analytics contract pubkey for candle writes (display-only)
         let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
@@ -3515,6 +3582,15 @@ fn spawn_oracle_price_feeder(state: StateStore, shared_prices: SharedOraclePrice
                 stats[32..40].copy_from_slice(&price_scaled.to_le_bytes());
                 let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
+                // ── WS broadcast: ticker update for this pair ──
+                let volume_24h = u64::from_le_bytes(stats[0..8].try_into().unwrap_or([0; 8]));
+                let open_raw = u64::from_le_bytes(stats[24..32].try_into().unwrap_or([0; 8]));
+                let open_f = open_raw as f64 / PRICE_SCALE_F;
+                let change_24h = if open_f > 0.0 { ((*price_f64 - open_f) / open_f) * 100.0 } else { 0.0 };
+                dex_broadcaster.emit_ticker(
+                    *pair_id, *price_f64, *price_f64, *price_f64, volume_24h, change_24h,
+                );
+
                 for &ci in &candle_intervals {
                     oracle_update_candle(
                         &state,
@@ -3525,6 +3601,28 @@ fn spawn_oracle_price_feeder(state: StateStore, shared_prices: SharedOraclePrice
                         current_slot,
                         now_ts,
                     );
+
+                    // ── WS broadcast: candle update for this pair+interval ──
+                    // Read back the candle we just wrote to emit its OHLCV
+                    let count_key_c = format!("ana_cc_{}_{}", pair_id, ci);
+                    let candle_count_c: u64 = match state.get_contract_storage(&analytics_pk, count_key_c.as_bytes()) {
+                        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                        _ => 0,
+                    };
+                    if candle_count_c > 0 {
+                        let idx_c = candle_count_c - 1;
+                        let ck = format!("ana_c_{}_{}_{}", pair_id, ci, idx_c);
+                        if let Ok(Some(cd)) = state.get_contract_storage(&analytics_pk, ck.as_bytes()) {
+                            if cd.len() >= 48 {
+                                let o = u64::from_le_bytes(cd[0..8].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
+                                let h = u64::from_le_bytes(cd[8..16].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
+                                let l = u64::from_le_bytes(cd[16..24].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
+                                let c = u64::from_le_bytes(cd[24..32].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
+                                let v = u64::from_le_bytes(cd[32..40].try_into().unwrap_or([0; 8]));
+                                dex_broadcaster.emit_candle(*pair_id, ci, o, h, l, c, v, current_slot);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -8421,7 +8519,7 @@ async fn run_validator() {
         info!("🔮 Oracle price feeder disabled via MOLTCHAIN_DISABLE_ORACLE");
     } else {
         let state_for_oracle = state.clone();
-        spawn_oracle_price_feeder(state_for_oracle, shared_oracle_prices.clone());
+        spawn_oracle_price_feeder(state_for_oracle, shared_oracle_prices.clone(), ws_dex_broadcaster.clone());
     }
 
     info!("⚡ Starting consensus-based block production");
