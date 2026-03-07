@@ -3418,9 +3418,10 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const resp = await fetch(`${API_BASE}/oracle/prices`);
                 if (!resp.ok) return;
-                const data = await resp.json();
-                if (!data.feeds) return;
-                for (const feed of data.feeds) {
+                const json = await resp.json();
+                const feeds = json.data?.feeds || json.feeds;
+                if (!feeds) return;
+                for (const feed of feeds) {
                     if (feed.price > 0 && !feed.stale) {
                         oracleRefPrices[feed.asset] = feed.price;
                     }
@@ -3489,9 +3490,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const resp = await fetch(`${API_BASE}/oracle/prices`);
             if (!resp.ok) return;
-            const data = await resp.json();
-            if (data.feeds) {
-                for (const feed of data.feeds) {
+            const json = await resp.json();
+            const feeds = json.data?.feeds || json.feeds;
+            if (feeds) {
+                for (const feed of feeds) {
                     if (feed.price > 0 && !feed.stale) {
                         oracleRefPrices[feed.asset] = feed.price;
                     }
