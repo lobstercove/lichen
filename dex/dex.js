@@ -1467,19 +1467,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
-        dexWs.subscribe(`ticker:${pairId}`, (d) => {
-            if (d.lastPrice) {
-                // Invert on-chain price for display-inverted pairs
-                const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.lastPrice) : d.lastPrice;
-                state.lastPrice = displayPrice;
-                const pair = pairs.find(p => p.pairId === pairId);
-                if (pair) { pair.price = displayPrice; pair.change = d.change24h ?? pair.change; }
-                updateTickerDisplay();
-                streamBarUpdate(displayPrice, 0);
-                renderPairList(); // F1 fix: refresh dropdown prices on every ticker update
-            }
-        }).then(id => state._wsSubs.push(id)).catch(() => {});
-
         if (wallet.address) {
             dexWs.subscribe(`orders:${wallet.address}`, (d) => {
                 if (d.orderId) {
@@ -1501,6 +1488,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderOpenOrders();
                 }
             }).then(id => state._wsSubs.push(id)).catch(() => {});
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Global ticker subscriptions — all pairs over WS (replaces 10s REST poll)
+    // ═══════════════════════════════════════════════════════════════════════
+    let _tickerSubs = [];
+    const throttledRenderPairList = rafThrottle(() => renderPairList());
+
+    function subscribeAllTickers() {
+        if (!dexWs) return;
+        // Clean up previous global ticker subs
+        _tickerSubs.forEach(id => dexWs.unsubscribe(id));
+        _tickerSubs = [];
+
+        for (const p of pairs) {
+            dexWs.subscribe(`ticker:${p.pairId}`, (d) => {
+                if (!d.lastPrice) return;
+                const displayPrice = isDisplayInvertedPair(p) ? invertPrice(d.lastPrice) : d.lastPrice;
+                p.price = displayPrice;
+                p.change = d.change24h ?? p.change;
+                // Update active pair's ticker display + chart
+                if (p.pairId === state.activePairId) {
+                    state.lastPrice = displayPrice;
+                    updateTickerDisplay();
+                    streamBarUpdate(displayPrice, 0);
+                }
+                throttledRenderPairList();
+            }).then(id => _tickerSubs.push(id)).catch(() => {});
         }
     }
 
@@ -6735,7 +6751,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Polling fallback (when WS unavailable)
     // F17.2: Split into fast (5s) for trade/pool/margin/predict and slow (30s) for governance/rewards
     // ═══════════════════════════════════════════════════════════════════════
-    let pollFastRunning = false, pollSlowRunning = false, pollPredictRunning = false, pollPairsRunning = false;
+    let pollFastRunning = false, pollSlowRunning = false, pollPredictRunning = false;
     setInterval(async () => {
         if (pollFastRunning) return;
         pollFastRunning = true;
@@ -6802,25 +6818,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally { pollPredictRunning = false; }
     }, 5000);
 
-    // F1 fix: Refresh ALL pair prices every 10s so dropdown stays current
-    // Each pair gets its own ticker fetch to update price + change
-    setInterval(async () => {
-        if (pollPairsRunning) return;
-        pollPairsRunning = true;
-        try {
-        for (const p of pairs) {
-            try {
-                const t = await loadTicker(p.pairId);
-                if (t?.lastPrice) {
-                    // Invert on-chain price for display-inverted pairs (wBNB/MOLT → MOLT/wBNB)
-                    p.price = isDisplayInvertedPair(p) ? invertPrice(t.lastPrice) : t.lastPrice;
-                    p.change = t.change24h ?? p.change;
-                }
-            } catch { /* API unavailable for this pair */ }
-        }
-        renderPairList();
-        } finally { pollPairsRunning = false; }
-    }, 10000);
+    // Pair dropdown prices are kept live via subscribeAllTickers() over WS.
+    // No REST polling needed — all ticker updates flow through the WebSocket.
 
     // ═══════════════════════════════════════════════════════════════════════
     // Initialize
@@ -6841,7 +6840,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (priceInput) priceInput.value = formatPrice(state.lastPrice);
             await Promise.all([loadOrderBook(), loadRecentTrades()]);
             setTimeout(initTradingView, 200);
-            connectWebSocket(); subscribePair(state.activePairId);
+            connectWebSocket(); subscribePair(state.activePairId); subscribeAllTickers();
         } else {
             // No pairs on-chain — show empty state
             if (pairActive) pairActive.querySelector('.pair-name').textContent = 'No pairs';
@@ -6850,7 +6849,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const tc = document.querySelector('.trades-list');
             if (tc) tc.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>No trading pairs available. Bootstrap pairs via dex_core contract.</div>';
             setTimeout(initTradingView, 200);
-            connectWebSocket();
+            connectWebSocket(); subscribeAllTickers();
         }
         // F10E.7 / DEX-M01 / FE-06: oracle fast-poll overlay (opt-in, default off).
         // Replaces former Binance WS — all prices now flow through internal oracle.
