@@ -2174,10 +2174,10 @@ assert(
 
 // PD.3-PD.9: Oracle reference line removed (redundant with live price candles)
 
-// PD.10: Oracle prices polled every 5 seconds
+// PD.10: Oracle prices polled as WS fallback (30s)
 assert(
-    dexJsFrontend.includes('setInterval(fetchOracleRefPrices, 5000)'),
-    'PD.10: Oracle prices polled at 5s interval'
+    dexJsFrontend.includes('setInterval(fetchOracleRefPrices, 30000)'),
+    'PD.10: Oracle prices polled at 30s WS fallback interval'
 );
 
 // ── Cross-Phase Integration Tests ──
@@ -3123,13 +3123,13 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 // Phase 17: Real-Time Updates & Polling
 // ═══════════════════════════════════════════════════════════════════════════
 
-// P17.1: Polling fallback uses 5s interval for trade/pool/margin/predict
+// P17.1: Polling fallback uses 15s interval (WS handles real-time, REST is fallback)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     assert(fastPollIdx !== -1, 'P17.1a: Fast poll comment exists');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
-    assert(fastPollBlock.includes('}, 5000);'), 'P17.1b: Fast poll interval is 5000ms');
+    assert(fastPollBlock.includes('}, 15000);'), 'P17.1b: Fast poll interval is 15000ms (WS fallback)');
     assert(fastPollBlock.includes("state.currentView === 'trade'"), 'P17.1c: Fast poll includes trade view');
     assert(fastPollBlock.includes("state.currentView === 'pool'"), 'P17.1d: Fast poll includes pool view');
     assert(fastPollBlock.includes("state.currentView === 'margin'"), 'P17.1e: Fast poll includes margin view');
@@ -3168,7 +3168,7 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 // P17.4: Polling guards by state.currentView — only fires for active view
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     // Each branch is guarded by state.currentView check
     const viewChecks = (fastPollBlock.match(/state\.currentView ===/g) || []).length;
@@ -3178,35 +3178,35 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 // P17.5: Real-time price updates via ticker display within trade polling
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     assert(fastPollBlock.includes('loadTicker'), 'P17.5a: Fast poll calls loadTicker');
     assert(fastPollBlock.includes('updateTickerDisplay'), 'P17.5b: Fast poll calls updateTickerDisplay');
     assert(fastPollBlock.includes('streamBarUpdate'), 'P17.5c: Fast poll calls streamBarUpdate for chart');
 }
 
-// P17.6: Pool stats auto-refresh in 5s polling when on pool view
+// P17.6: Pool stats auto-refresh in fast polling when on pool view
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     assert(fastPollBlock.includes("state.currentView === 'pool'"), 'P17.6a: Pool view guard in fast poll');
     assert(fastPollBlock.includes('loadPoolStats'), 'P17.6b: loadPoolStats called in fast poll');
 }
 
-// P17.7: Prediction markets refresh in both fast (5s) and slow (15s) polling
+// P17.7: Prediction markets refresh in both fast and slower polling
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     assert(fastPollBlock.includes("state.currentView === 'predict'"), 'P17.7a: Predict view in fast poll');
     assert(fastPollBlock.includes('loadPredictionStats'), 'P17.7b: loadPredictionStats in fast poll');
-    // Also has dedicated 15s prediction market list refresh
+    // Also has dedicated prediction market list refresh
     const predPollIdx = dexJs.indexOf('Prediction market refresh');
     assert(predPollIdx !== -1, 'P17.7c: Separate prediction poll exists');
     const predPollBlock = dexJs.substring(predPollIdx, predPollIdx + 1200);
     assert(predPollBlock.includes('loadPredictionMarkets'), 'P17.7d: loadPredictionMarkets in slower poll');
-    assert(predPollBlock.includes('5000'), 'P17.7e: Prediction market list refresh at 5s');
+    assert(predPollBlock.includes('15000'), 'P17.7e: Prediction market list refresh at 15s (WS fallback)');
 }
 
 // P17.8: After trade execution, balances + orderbook refresh immediately
@@ -3227,7 +3227,7 @@ console.log('\n── Phase 16: Data Format Consistency ──');
     const slowPollBlock = dexJs.substring(slowPollIdx, slowPollIdx + 800);
     assert(slowPollBlock.includes('loadRewardsStats'), 'P17.9a: loadRewardsStats in slow poll');
     // Verify NOT in the fast poll
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     assert(!fastPollBlock.includes('loadRewardsStats'), 'P17.9b: loadRewardsStats NOT in fast poll');
 }
@@ -3239,9 +3239,137 @@ console.log('\n── Phase 16: Data Format Consistency ──');
     const slowPollBlock = dexJs.substring(slowPollIdx, slowPollIdx + 800);
     assert(slowPollBlock.includes('loadGovernanceStats'), 'P17.10a: loadGovernanceStats in slow poll');
     // Verify NOT in the fast poll
-    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Fast');
     const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1800);
     assert(!fastPollBlock.includes('loadGovernanceStats'), 'P17.10b: loadGovernanceStats NOT in fast poll');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 17W: WebSocket Real-Time Streaming (WS-first architecture)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P17W.1: Candle WS subscription functions exist
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function subscribeCandleWs('), 'P17W.1a: subscribeCandleWs function defined');
+    assert(dexJs.includes('function unsubscribeCandleWs('), 'P17W.1b: unsubscribeCandleWs function defined');
+    assert(dexJs.includes('_candleWsSub'), 'P17W.1c: Candle WS subscription ID tracked');
+}
+
+// P17W.2: TradingView subscribeBars wires to candle WS
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const subBarsIdx = dexJs.indexOf('subscribeBars:');
+    assert(subBarsIdx !== -1, 'P17W.2a: subscribeBars defined in datafeed');
+    const subBarsBlock = dexJs.substring(subBarsIdx, subBarsIdx + 500);
+    assert(subBarsBlock.includes('subscribeCandleWs('), 'P17W.2b: subscribeBars calls subscribeCandleWs');
+}
+
+// P17W.3: TradingView unsubscribeBars cleans up candle WS
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const unsubBarsIdx = dexJs.indexOf('unsubscribeBars:');
+    assert(unsubBarsIdx !== -1, 'P17W.3a: unsubscribeBars defined in datafeed');
+    const unsubBarsBlock = dexJs.substring(unsubBarsIdx, unsubBarsIdx + 300);
+    assert(unsubBarsBlock.includes('unsubscribeCandleWs()'), 'P17W.3b: unsubscribeBars calls unsubscribeCandleWs');
+}
+
+// P17W.4: Candle WS subscription uses correct channel format candles:{pairId}:{interval}
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const candleWsIdx = dexJs.indexOf('function subscribeCandleWs(');
+    assert(candleWsIdx !== -1, 'P17W.4a: subscribeCandleWs exists');
+    const candleWsBlock = dexJs.substring(candleWsIdx, candleWsIdx + 800);
+    assert(candleWsBlock.includes('`candles:${pairId}:${interval}`'), 'P17W.4b: Uses candles:{pairId}:{interval} channel format');
+    assert(candleWsBlock.includes('resolutionToSec('), 'P17W.4c: Converts resolution to seconds for channel');
+}
+
+// P17W.5: Candle WS handles display-inverted pairs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const candleWsIdx = dexJs.indexOf('function subscribeCandleWs(');
+    const candleWsBlock = dexJs.substring(candleWsIdx, candleWsIdx + 800);
+    assert(candleWsBlock.includes('isDisplayInvertedPair'), 'P17W.5a: Candle WS checks display inversion');
+    assert(candleWsBlock.includes('invertPrice'), 'P17W.5b: Candle WS inverts prices for display');
+}
+
+// P17W.6: Oracle poll reduced to 30s (WS ticker is primary)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('setInterval(fetchOracleRefPrices, 30000)'), 'P17W.6a: Oracle REST poll at 30s fallback');
+    assert(dexJs.includes('WS fallback'), 'P17W.6b: Comment indicates WS fallback role');
+}
+
+// P17W.7: Oracle fast-poll reduced to 10s
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollFn = dexJs.indexOf('function startOracleFastPoll()');
+    assert(fastPollFn !== -1, 'P17W.7a: startOracleFastPoll function exists');
+    const fpBlock = dexJs.substring(fastPollFn, fastPollFn + 900);
+    assert(fpBlock.includes('10000'), 'P17W.7b: Oracle fast-poll interval is 10s');
+}
+
+// P17W.8: Backend oracle feeder broadcasts ticker (validator)
+{
+    assert(validatorSrcAll.includes('dex_broadcaster.emit_ticker('), 'P17W.8a: Oracle feeder calls emit_ticker');
+    // Verify it's inside spawn_oracle_price_feeder, not just emit_dex_events
+    const feederIdx = validatorSrcAll.indexOf('fn spawn_oracle_price_feeder');
+    const feederEnd = validatorSrcAll.indexOf('fn binance_ws_loop');
+    const feederBlock = validatorSrcAll.substring(feederIdx, feederEnd);
+    assert(feederBlock.includes('emit_ticker('), 'P17W.8b: emit_ticker called inside oracle feeder');
+}
+
+// P17W.9: Backend oracle feeder broadcasts candles (validator)
+{
+    const feederIdx = validatorSrcAll.indexOf('fn spawn_oracle_price_feeder');
+    const feederEnd = validatorSrcAll.indexOf('fn binance_ws_loop');
+    const feederBlock = validatorSrcAll.substring(feederIdx, feederEnd);
+    assert(feederBlock.includes('emit_candle('), 'P17W.9a: emit_candle called inside oracle feeder');
+    assert(feederBlock.includes('dex_broadcaster.emit_candle('), 'P17W.9b: Oracle feeder broadcasts candle OHLCV via WS');
+}
+
+// P17W.10: Backend emit_dex_events broadcasts orderbook on trade
+{
+    const emitIdx = validatorSrcAll.indexOf('fn emit_dex_events(');
+    const emitEnd = validatorSrcAll.indexOf('// ================', emitIdx + 100);
+    const emitBlock = validatorSrcAll.substring(emitIdx, emitEnd);
+    assert(emitBlock.includes('emit_orderbook('), 'P17W.10a: emit_dex_events calls emit_orderbook');
+    assert(emitBlock.includes('bid_levels'), 'P17W.10b: Orderbook builds bid levels');
+    assert(emitBlock.includes('ask_levels'), 'P17W.10c: Orderbook builds ask levels');
+}
+
+// P17W.11: Backend emit_dex_events broadcasts order status updates
+{
+    const emitIdx = validatorSrcAll.indexOf('fn emit_dex_events(');
+    const emitEnd = validatorSrcAll.indexOf('// ================', emitIdx + 100);
+    const emitBlock = validatorSrcAll.substring(emitIdx, emitEnd);
+    assert(emitBlock.includes('emit_order_update('), 'P17W.11a: emit_dex_events calls emit_order_update');
+}
+
+// P17W.12: Backend oracle feeder accepts DexEventBroadcaster parameter
+{
+    assert(validatorSrcAll.includes('dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>'), 'P17W.12a: Oracle feeder takes DexEventBroadcaster param');
+}
+
+// P17W.13: WS orderbook subscription handler processes bids/asks from WS data
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const subPairIdx = dexJs.indexOf('function subscribePair(');
+    const subPairBlock = dexJs.substring(subPairIdx, subPairIdx + 2000);
+    assert(subPairBlock.includes('`orderbook:${pairId}`'), 'P17W.13a: Subscribes to orderbook WS channel');
+    assert(subPairBlock.includes('d.bids && d.asks'), 'P17W.13b: Handles bids/asks from WS data');
+    assert(subPairBlock.includes('throttledRenderOrderBook'), 'P17W.13c: RAF-throttled orderbook render');
+}
+
+// P17W.14: Global ticker subscriptions cover ALL pairs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const subAllIdx = dexJs.indexOf('function subscribeAllTickers()');
+    assert(subAllIdx !== -1, 'P17W.14a: subscribeAllTickers function exists');
+    const subAllBlock = dexJs.substring(subAllIdx, subAllIdx + 800);
+    assert(subAllBlock.includes('for (const p of pairs)'), 'P17W.14b: Iterates all pairs');
+    assert(subAllBlock.includes('`ticker:${p.pairId}`'), 'P17W.14c: Subscribes ticker for each pair');
+    assert(subAllBlock.includes('streamBarUpdate'), 'P17W.14d: Ticker updates feed chart streaming');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
