@@ -3484,6 +3484,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
+            applyOracleRealTimeOverlay();
             updateOracleReferenceLine();
         } catch { /* network error — skip */ }
     }
