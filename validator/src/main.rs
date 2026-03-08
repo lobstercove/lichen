@@ -431,12 +431,19 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
 fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
     let contents = match fs::read_to_string(seeds_path) {
         Ok(data) => data,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            // seeds.json not found — fall back to compile-time embedded seeds
+            info!("📖 seeds.json not found, using embedded bootstrap peers");
+            return load_embedded_seed_peers(chain_id);
+        }
     };
 
     let seeds: SeedsFile = match serde_json::from_str(&contents) {
         Ok(value) => value,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            warn!("⚠️  Failed to parse {}: {} — using embedded bootstrap peers", seeds_path.display(), e);
+            return load_embedded_seed_peers(chain_id);
+        }
     };
 
     let network = if chain_id.contains("mainnet") {
@@ -455,7 +462,26 @@ fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
         peers.extend(network.seeds.into_iter().map(|seed| seed.address));
     }
 
+    // If seeds.json exists but the network section was empty, fall back to embedded
+    if peers.is_empty() {
+        return load_embedded_seed_peers(chain_id);
+    }
+
     peers
+}
+
+/// Compile-time fallback bootstrap peers from core/src/network.rs
+fn load_embedded_seed_peers(chain_id: &str) -> Vec<String> {
+    use moltchain_core::network::{NetworkType, SeedsConfig};
+    let config = SeedsConfig::default_embedded();
+    let network_type = if chain_id.contains("mainnet") {
+        NetworkType::Mainnet
+    } else if chain_id.contains("testnet") {
+        NetworkType::Testnet
+    } else {
+        NetworkType::Devnet
+    };
+    config.get_all_peers(network_type)
 }
 
 #[derive(Serialize)]
