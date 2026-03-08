@@ -35,9 +35,11 @@ use moltchain_genesis::{
     genesis_seed_oracle,
 };
 use moltchain_p2p::{
-    ConsistencyReportMsg, MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
-    SnapshotRequestMsg, SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
+    validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole,
+    P2PConfig, P2PMessage, P2PNetwork, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
+    StatusRequestMsg, StatusResponseMsg,
 };
+use semver::Version;
 use moltchain_rpc::start_rpc_server;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -152,6 +154,7 @@ const MAX_SNAPSHOT_CHUNK_SIZE: u64 = 2000;
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
+const MIN_SUPPORTED_VALIDATOR_VERSION: &str = updater::VERSION;
 
 /// Collect a machine fingerprint for anti-Sybil protection.
 ///
@@ -249,6 +252,66 @@ fn collect_machine_fingerprint() -> [u8; 32] {
     let mut fingerprint = [0u8; 32];
     fingerprint.copy_from_slice(&result);
     fingerprint
+}
+
+fn parse_validator_version(version: &str) -> Result<Version, String> {
+    let trimmed = version.trim();
+    if trimmed.is_empty() {
+        return Err("missing validator version".to_string());
+    }
+
+    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    Version::parse(normalized)
+        .map_err(|error| format!("invalid validator version '{}': {}", version, error))
+}
+
+fn validate_new_validator_version(version: &str) -> Result<Version, String> {
+    let announced = parse_validator_version(version)?;
+    let minimum = Version::parse(MIN_SUPPORTED_VALIDATOR_VERSION)
+        .expect("MIN_SUPPORTED_VALIDATOR_VERSION must be valid semver");
+
+    if announced < minimum {
+        return Err(format!(
+            "validator version {} is below minimum supported {}",
+            version, MIN_SUPPORTED_VALIDATOR_VERSION
+        ));
+    }
+
+    Ok(announced)
+}
+
+fn verify_validator_announcement_signature(
+    pubkey: &Pubkey,
+    stake: u64,
+    current_slot: u64,
+    version: &str,
+    signature: &[u8; 64],
+    machine_fingerprint: &[u8; 32],
+    require_version_binding: bool,
+) -> bool {
+    let version_bound_valid = validator_announcement_signing_message(
+        pubkey,
+        stake,
+        current_slot,
+        machine_fingerprint,
+        Some(version),
+    )
+    .ok()
+    .map(|message| Keypair::verify(pubkey, &message, signature))
+    .unwrap_or(false);
+
+    if version_bound_valid {
+        return true;
+    }
+
+    if require_version_binding {
+        return false;
+    }
+
+    validator_announcement_signing_message(pubkey, stake, current_slot, machine_fingerprint, None)
+        .ok()
+        .map(|message| Keypair::verify(pubkey, &message, signature))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -6976,12 +7039,25 @@ async fn run_validator() {
                 );
 
                 let mut vs = validator_set_for_announce.write().await;
+                let is_existing_validator = vs.get_validator(&announcement.pubkey).is_some();
+
+                if !is_existing_validator {
+                    if let Err(error) = validate_new_validator_version(&announcement.version) {
+                        warn!(
+                            "⚠️  Rejecting validator announcement from {} — {}",
+                            announcement.pubkey.to_base58(),
+                            error
+                        );
+                        drop(vs);
+                        continue;
+                    }
+                }
 
                 // Cap validator set size
                 const MAX_VALIDATORS: usize = 1000;
 
                 // Check if validator already exists
-                if vs.get_validator(&announcement.pubkey).is_some() {
+                if is_existing_validator {
                     // Update existing validator's activity
                     if let Some(val) = vs.get_validator_mut(&announcement.pubkey) {
                         val.last_active_slot = announcement.current_slot;
@@ -7047,25 +7123,22 @@ async fn run_validator() {
                     }
 
                     // 1.5a: Defense-in-depth — re-verify announcement signature
-                    //        Signature covers: pubkey + stake + slot + machine_fingerprint
-                    {
-                        let mut msg = Vec::with_capacity(80);
-                        msg.extend_from_slice(&announcement.pubkey.0);
-                        msg.extend_from_slice(&announcement.stake.to_le_bytes());
-                        msg.extend_from_slice(&announcement.current_slot.to_le_bytes());
-                        msg.extend_from_slice(&announcement.machine_fingerprint);
-                        if !moltchain_core::account::Keypair::verify(
-                            &announcement.pubkey,
-                            &msg,
-                            &announcement.signature,
-                        ) {
-                            warn!(
-                                "⚠️  Rejecting announcement from {} — invalid signature at handler",
-                                announcement.pubkey.to_base58()
-                            );
-                            drop(vs);
-                            continue;
-                        }
+                    //        New validator admissions require a version-bound signature.
+                    if !verify_validator_announcement_signature(
+                        &announcement.pubkey,
+                        announcement.stake,
+                        announcement.current_slot,
+                        &announcement.version,
+                        &announcement.signature,
+                        &announcement.machine_fingerprint,
+                        true,
+                    ) {
+                        warn!(
+                            "⚠️  Rejecting announcement from {} — invalid version-bound signature",
+                            announcement.pubkey.to_base58()
+                        );
+                        drop(vs);
+                        continue;
                     }
 
                     // 1.5b: Check on-chain staked balance before granting bootstrap
@@ -8609,11 +8682,14 @@ async fn run_validator() {
 
                 // T2.3 fix: Sign announcement with validator keypair
                 let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
-                let mut sign_message = Vec::with_capacity(80);
-                sign_message.extend_from_slice(&validator_pubkey_for_announce.0);
-                sign_message.extend_from_slice(&validator_stake.to_le_bytes());
-                sign_message.extend_from_slice(&current_slot.to_le_bytes());
-                sign_message.extend_from_slice(&machine_fingerprint_for_announce);
+                let sign_message = validator_announcement_signing_message(
+                    &validator_pubkey_for_announce,
+                    validator_stake,
+                    current_slot,
+                    &machine_fingerprint_for_announce,
+                    Some(updater::VERSION),
+                )
+                .expect("validator version should always produce a valid announcement payload");
                 let signature = announce_keypair.sign(&sign_message);
 
                 let announce_msg = P2PMessage::new(
@@ -10409,6 +10485,18 @@ mod tests {
         let transfer = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
         let block = make_block_with_txs(vec![reward, transfer]);
         assert!(block_has_user_transactions(&block));
+    }
+
+    #[test]
+    fn parse_validator_version_accepts_optional_v_prefix() {
+        let parsed = parse_validator_version("v0.1.0").unwrap();
+        assert_eq!(parsed, Version::parse("0.1.0").unwrap());
+    }
+
+    #[test]
+    fn validate_new_validator_version_rejects_older_versions() {
+        let error = validate_new_validator_version("0.0.9").unwrap_err();
+        assert!(error.contains("below minimum supported"));
     }
 
     // ── parse_marketplace_args ──────────────────────────────────────
