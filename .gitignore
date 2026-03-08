@@ -2,14 +2,13 @@
 # MoltChain — Public Open-Source Repository
 # ============================================================
 # This .gitignore is tuned for a PUBLIC repo.
-# Anything security-sensitive or machine-local MUST be listed.
+# Only core blockchain code is tracked. Everything else
+# (frontends, internal docs, infra, fuzz, etc.) stays local.
 # ============================================================
 
 # ── Rust build artifacts ────────────────────────────────────
 /target/
 **/target/
-# P9-INF-04: Cargo.lock is tracked for reproducible builds (binary project)
-# Cargo.lock
 **/*.rs.bk
 *.pdb
 **/incremental/
@@ -28,7 +27,6 @@ state-*/
 **/*.db-wal
 
 # ── Security-sensitive runtime files ────────────────────────
-# Keypairs, genesis secrets, network topology, airdrop lists
 keypairs/
 genesis.json
 genesis-wallet.json
@@ -39,7 +37,12 @@ known-peers.json
 seeds.json
 config.toml
 airdrops.json
-~/.moltchain/
+release-signing-keypair.json
+faucet-keypair.json
+
+# ── Wallets / artifacts (never commit private keys) ────────
+sdk/python/wallets/
+sdk/rust/artifacts/
 
 # ── Environment / secrets ──────────────────────────────────
 .env
@@ -47,6 +50,8 @@ airdrops.json
 *.secret
 *.key
 *.pem
+*.credentials
+*.creds
 
 # ── Node / JS ──────────────────────────────────────────────
 node_modules/
@@ -101,6 +106,7 @@ logs/
 .temp/
 temp/
 tmp/
+nohup.out
 
 # ── Backups ────────────────────────────────────────────────
 *.bak
@@ -118,7 +124,7 @@ coverage/
 contracts/*/target/debug/
 contracts/*/target/rls/
 
-# ── Internal-only dev docs (not for public) ────────────────
+# ── Internal-only dev docs ─────────────────────────────────
 internal-docs/
 FIX_PLAN.md
 FIX_PLAN_V2.md
@@ -127,28 +133,15 @@ PRODUCTION_AUDIT_COMPLETE.md
 DEBUGGING_GUIDE.md
 validator_genesis_section.txt
 Cargo.toml.integration
+DEPLOYMENT_STATUS.md
+VPS_CREDENTIALS.md
 
-# ── Temp test artefacts ───────────────────────────────────
-test1
-test2
-test3
-playground/test-*
-deploy-manifest.json
-
-# ── Archives ───────────────────────────────────────────────
-archive/
-
-# ── Browser automation data ────────────────────────────────
-browser/
-moltchain/
-faucet-keypair.json
-
-# ── Local-only frontend workspace (keep on disk, ignore in git) ──
-developers/
+# ── Frontends / proprietary UI (local only) ────────────────
 dex/
+faucet/
+developers/
 explorer/
 marketplace/
-programs/
 wallet/
 website/
 shared/
@@ -156,24 +149,35 @@ shared-base-styles.css
 shared-config.js
 shared-theme.css
 
-# ── Local-only operator skills (keep on disk, ignore in git) ──
-skills/
-
-# ── Local-only dev/runtime surfaces (not open source) ───────────
+# ── Internal infrastructure / ops (local only) ─────────────
+infra/
+deploy/
+tools/
 monitoring/
-keypairs/
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# ── Internal docs (audits, strategy, deployment, etc.) ─────
+docs/
+
+# ── Fuzz testing (internal security tooling) ───────────────
+fuzz/
+
+# ── Internal misc (local only) ────────────────────────────
+package.json
+start-validator.sh
+programs/
 moltchain/
-
-# ── Operator credential files (never commit) ───────────────────
-VPS_CREDENTIALS.md
-DEPLOYMENT_STATUS.md
-*.credentials
-*.creds
-
-# ── Release signing keypair ────────────────────────────────────
-release-signing-keypair.json
-
-# ── Docs: track organized subdirs, ignore archive/internal ──────
-docs/archive/
-nohup.out
+skills/
 typescript
+EU/
+browser/
+archive/
+
+# ── Temp test artefacts ───────────────────────────────────
+test1
+test2
+test3
+playground/test-*
+deploy-manifest.json
