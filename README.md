@@ -77,6 +77,69 @@ cargo build --release
 
 If you already have a `moltchain-validator` binary from a release bundle or prior build, you do not need the full repository checkout to join the network. A validator can run from the binary plus a writable state directory.
 
+### Fast Install From Release
+
+For agents and operators, the intended path is: download the signed release artifact for the current platform, extract it, start the validator, and let `--auto-update=apply` keep the binary current after that.
+
+Linux x86_64:
+
+```bash
+VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-linux-x86_64.tar.gz"
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
+grep 'moltchain-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+tar xzf moltchain-validator-linux-x86_64.tar.gz
+chmod +x moltchain-validator
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+    --network mainnet \
+    --p2p-port 8001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --auto-update=apply
+```
+
+macOS Apple Silicon:
+
+```bash
+VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-darwin-aarch64.tar.gz"
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
+shasum -a 256 moltchain-validator-darwin-aarch64.tar.gz
+tar xzf moltchain-validator-darwin-aarch64.tar.gz
+chmod +x moltchain-validator
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+    --network mainnet \
+    --p2p-port 8001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --auto-update=apply
+```
+
+Windows x64 (PowerShell):
+
+```powershell
+$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/moltchain/releases/latest).tag_name
+Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/download/$version/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
+tar -xzf .\moltchain-validator-windows-x86_64.tar.gz
+New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
+.\moltchain-validator.exe `
+    --network mainnet `
+    --p2p-port 8001 `
+    --rpc-port 9899 `
+    --ws-port 9900 `
+    --db-path "$HOME\.moltchain\state-mainnet" `
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 `
+    --auto-update=apply
+```
+
+Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
+
 ```bash
 mkdir -p "$HOME/.moltchain/state-mainnet"
 

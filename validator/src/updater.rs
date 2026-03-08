@@ -523,7 +523,11 @@ fn extract_binary_from_archive(archive_data: &[u8], output_path: &Path) -> Resul
     let decoder = flate2::read::GzDecoder::new(archive_data);
     let mut archive = tar::Archive::new(decoder);
 
-    let binary_name = "moltchain-validator";
+    let binary_name = if cfg!(target_os = "windows") {
+        "moltchain-validator.exe"
+    } else {
+        "moltchain-validator"
+    };
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
@@ -565,6 +569,8 @@ fn platform_asset_name() -> String {
         "linux"
     } else if cfg!(target_os = "macos") {
         "darwin"
+    } else if cfg!(target_os = "windows") {
+        "windows"
     } else {
         "unknown"
     };
@@ -696,7 +702,8 @@ mod tests {
     #[test]
     fn test_find_hash_in_sums() {
         let sums = "abc123  moltchain-validator-linux-x86_64.tar.gz\n\
-                     def456  moltchain-validator-darwin-aarch64.tar.gz\n";
+                     def456  moltchain-validator-darwin-aarch64.tar.gz\n\
+                     ghi789  moltchain-validator-windows-x86_64.tar.gz\n";
         assert_eq!(
             find_hash_in_sums(sums, "moltchain-validator-linux-x86_64.tar.gz"),
             Some("abc123".to_string())
@@ -704,6 +711,10 @@ mod tests {
         assert_eq!(
             find_hash_in_sums(sums, "moltchain-validator-darwin-aarch64.tar.gz"),
             Some("def456".to_string())
+        );
+        assert_eq!(
+            find_hash_in_sums(sums, "moltchain-validator-windows-x86_64.tar.gz"),
+            Some("ghi789".to_string())
         );
         assert_eq!(find_hash_in_sums(sums, "nonexistent.tar.gz"), None);
     }
