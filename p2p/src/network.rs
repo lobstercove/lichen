@@ -1,7 +1,9 @@
 // P2P Network Manager
 
 use crate::gossip::GossipManager;
-use crate::message::{MessageType, P2PMessage, SnapshotKind};
+use crate::message::{
+    validator_announcement_signing_message, MessageType, P2PMessage, SnapshotKind,
+};
 use crate::peer::PeerManager;
 use crate::peer_store::PeerStore;
 use moltchain_core::{Block, Pubkey, StakePool, Transaction, ValidatorSet, Vote};
@@ -793,19 +795,37 @@ impl P2PNetwork {
                 signature,
                 machine_fingerprint,
             } => {
-                // T2.3 fix: Verify Ed25519 signature before forwarding
-                // Message = pubkey(32) + stake(8) + slot(8) + fingerprint(32) = 80 bytes
-                let mut message = Vec::with_capacity(80);
-                message.extend_from_slice(&pubkey.0);
-                message.extend_from_slice(&stake.to_le_bytes());
-                message.extend_from_slice(&current_slot.to_le_bytes());
-                message.extend_from_slice(&machine_fingerprint);
+                let signature_valid = validator_announcement_signing_message(
+                    &pubkey,
+                    stake,
+                    current_slot,
+                    &machine_fingerprint,
+                    Some(version.as_str()),
+                )
+                .ok()
+                .map(|message| {
+                    moltchain_core::account::Keypair::verify(&pubkey, &message, &signature)
+                })
+                .unwrap_or(false)
+                    || validator_announcement_signing_message(
+                        &pubkey,
+                        stake,
+                        current_slot,
+                        &machine_fingerprint,
+                        None,
+                    )
+                    .ok()
+                    .map(|message| {
+                        moltchain_core::account::Keypair::verify(&pubkey, &message, &signature)
+                    })
+                    .unwrap_or(false);
 
-                if !moltchain_core::account::Keypair::verify(&pubkey, &message, &signature) {
+                if !signature_valid {
                     warn!(
                         "⚠️  P2P: Rejecting validator announcement from {} — invalid signature",
                         pubkey.to_base58()
                     );
+                    self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
 

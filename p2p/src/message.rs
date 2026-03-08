@@ -11,6 +11,40 @@ use std::net::SocketAddr;
 /// (birthday bound: ~2^32 for 8-byte IDs, blocks have at most 10K TXs).
 pub type ShortTxId = [u8; 8];
 
+/// Build the signed payload for validator announcements.
+///
+/// Legacy announcements signed only the fixed-width fields.
+/// New announcements append a length-prefixed version string so peers can
+/// enforce minimum validator versions for new admissions.
+pub fn validator_announcement_signing_message(
+    pubkey: &Pubkey,
+    stake: u64,
+    current_slot: u64,
+    machine_fingerprint: &[u8; 32],
+    version: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let version_len = version.map_or(0, |value| value.len());
+    if version_len > u16::MAX as usize {
+        return Err(format!(
+            "Validator announcement version too long: {} bytes",
+            version_len
+        ));
+    }
+
+    let mut message = Vec::with_capacity(80 + if version.is_some() { 2 + version_len } else { 0 });
+    message.extend_from_slice(&pubkey.0);
+    message.extend_from_slice(&stake.to_le_bytes());
+    message.extend_from_slice(&current_slot.to_le_bytes());
+    message.extend_from_slice(machine_fingerprint);
+
+    if let Some(version) = version {
+        message.extend_from_slice(&(version_len as u16).to_le_bytes());
+        message.extend_from_slice(version.as_bytes());
+    }
+
+    Ok(message)
+}
+
 /// P3-3: Compute the short TX ID from a full transaction hash.
 pub fn short_tx_id(hash: &Hash) -> ShortTxId {
     let mut id = [0u8; 8];
@@ -433,6 +467,7 @@ impl P2PMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use moltchain_core::Keypair;
 
     #[test]
     fn test_message_serialization() {
@@ -456,6 +491,53 @@ mod tests {
         let result = P2PMessage::deserialize(&bytes);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Protocol version mismatch"));
+    }
+
+    #[test]
+    fn test_validator_announcement_signing_message_binds_version() {
+        let keypair = Keypair::new();
+        let pubkey = keypair.pubkey();
+        let fingerprint = [7u8; 32];
+
+        let payload = validator_announcement_signing_message(
+            &pubkey,
+            123,
+            456,
+            &fingerprint,
+            Some("0.1.0"),
+        )
+        .unwrap();
+        let signature = keypair.sign(&payload);
+
+        let tampered = validator_announcement_signing_message(
+            &pubkey,
+            123,
+            456,
+            &fingerprint,
+            Some("0.1.1"),
+        )
+        .unwrap();
+
+        assert!(Keypair::verify(&pubkey, &payload, &signature));
+        assert!(!Keypair::verify(&pubkey, &tampered, &signature));
+    }
+
+    #[test]
+    fn test_validator_announcement_signing_message_legacy_differs() {
+        let pubkey = Pubkey([9u8; 32]);
+        let fingerprint = [3u8; 32];
+        let legacy =
+            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, None).unwrap();
+        let versioned = validator_announcement_signing_message(
+            &pubkey,
+            1,
+            2,
+            &fingerprint,
+            Some("0.1.0"),
+        )
+        .unwrap();
+
+        assert_ne!(legacy, versioned);
     }
 
     #[test]

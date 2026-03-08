@@ -28,6 +28,9 @@ fi
 SUMS_FILE="$1"
 KEYPAIR_FILE="$2"
 
+SUMS_FILE="$(cd "$(dirname "$SUMS_FILE")" && pwd)/$(basename "$SUMS_FILE")"
+KEYPAIR_FILE="$(cd "$(dirname "$KEYPAIR_FILE")" && pwd)/$(basename "$KEYPAIR_FILE")"
+
 if [ ! -f "$SUMS_FILE" ]; then
     echo "❌ SHA256SUMS file not found: $SUMS_FILE"
     exit 1
@@ -47,6 +50,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
+mkdir -p "$TEMP_DIR/src"
+
 cat > "$TEMP_DIR/src/main.rs" << 'RUST_SCRIPT'
 use ed25519_dalek::SigningKey;
 use std::env;
@@ -63,7 +68,10 @@ fn main() {
     let keypair_json = fs::read_to_string(&args[2]).expect("Failed to read keypair file");
 
     let kp: serde_json::Value = serde_json::from_str(&keypair_json).expect("Invalid JSON");
-    let secret_hex = kp["secret_key"].as_str().expect("Missing secret_key");
+    let secret_hex = kp["secret_key"]
+        .as_str()
+        .or_else(|| kp["privateKeySeed"].as_str())
+        .expect("Missing secret_key/privateKeySeed");
     let secret_bytes = hex::decode(secret_hex).expect("Invalid hex in secret_key");
 
     if secret_bytes.len() != 32 {
@@ -83,8 +91,6 @@ fn main() {
     println!("{}", sig_hex);
 }
 RUST_SCRIPT
-
-mkdir -p "$TEMP_DIR/src"
 
 cat > "$TEMP_DIR/Cargo.toml" << 'TOML'
 [package]
@@ -122,7 +128,7 @@ echo "Upload SHA256SUMS.sig to the GitHub Release alongside SHA256SUMS."
 # Verify the signature (sanity check)
 echo ""
 echo "🔍 Verifying signature..."
-PUBKEY_HEX=$(cat "$KEYPAIR_FILE" | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key'])" 2>/dev/null || echo "")
+PUBKEY_HEX=$(cat "$KEYPAIR_FILE" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('public_key') or data.get('publicKey') or '')" 2>/dev/null || echo "")
 if [ -n "$PUBKEY_HEX" ]; then
     echo "   Public key: ${PUBKEY_HEX:0:16}...${PUBKEY_HEX: -16}"
     echo "   ✅ Signature created successfully"
