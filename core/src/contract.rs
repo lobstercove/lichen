@@ -1307,9 +1307,17 @@ fn host_storage_write(
     // Update live storage and track the change
     let ctx = env.data_mut();
     deduct_compute(ctx, COMPUTE_STORAGE_WRITE);
-    // AUDIT-FIX 2.2: Enforce storage entry limit per contract
-    const MAX_STORAGE_ENTRIES: usize = 10_000;
+    // AUDIT-FIX 2.2 + H18: Enforce storage entry limit per contract.
+    // Increased from 10K to 100K to support contracts with many entries
+    // (e.g., DAO governance proposals, NFT collections).
+    const MAX_STORAGE_ENTRIES: usize = 100_000;
     if !ctx.storage.contains_key(&key) && ctx.storage.len() >= MAX_STORAGE_ENTRIES {
+        tracing::warn!(
+            "Contract {} hit storage limit ({} entries) — rejecting write for key {:?}",
+            ctx.contract.to_base58(),
+            MAX_STORAGE_ENTRIES,
+            &key[..key.len().min(16)]
+        );
         return 0; // reject — storage full
     }
     ctx.storage.insert(key.clone(), val.clone());

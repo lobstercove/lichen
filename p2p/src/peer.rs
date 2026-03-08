@@ -39,6 +39,9 @@ pub struct PeerInfo {
     pub bytes_sent: u64,
     /// Bandwidth metering: timestamp when tracking started (connection time).
     pub tracking_since: u64,
+    /// AUDIT-FIX C6: Per-peer request rate limiting for expensive operations.
+    /// Tracks (window_start_epoch, request_count) per 60-second window.
+    pub expensive_request_window: (u64, u32),
 }
 
 impl PeerInfo {
@@ -60,6 +63,7 @@ impl PeerInfo {
             bytes_received: 0,
             bytes_sent: 0,
             tracking_since: now,
+            expensive_request_window: (now, 0),
         }
     }
 
@@ -215,6 +219,11 @@ fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
 }
 
 impl PeerManager {
+    /// Get the local listening address
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
     /// Create new peer manager
     pub async fn new(
         local_addr: SocketAddr,
@@ -861,6 +870,33 @@ impl PeerManager {
         }
     }
 
+    /// AUDIT-FIX C6: Check if a peer has exceeded the expensive-request rate limit.
+    /// Returns true if the request should be allowed, false if rate-limited.
+    /// Allows up to `max_per_window` expensive requests per 60-second window.
+    pub fn check_expensive_rate_limit(&self, peer_addr: &SocketAddr, max_per_window: u32) -> bool {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let (window_start, count) = peer.expensive_request_window;
+            if now.saturating_sub(window_start) >= 60 {
+                // New window
+                peer.expensive_request_window = (now, 1);
+                true
+            } else if count < max_per_window {
+                peer.expensive_request_window = (window_start, count + 1);
+                true
+            } else {
+                // Rate limited
+                false
+            }
+        } else {
+            // Unknown peer — deny
+            false
+        }
+    }
+
     /// Record a peer success (valid request/response)
     pub fn record_success(&self, peer_addr: &SocketAddr) {
         if let Some(mut peer) = self.peers.get_mut(peer_addr) {
@@ -1044,8 +1080,13 @@ impl PeerManager {
         let mut to_remove = Vec::new();
 
         for entry in self.peers.iter() {
-            // Never evict reserved peers
+            // AUDIT-FIX H14: Reserved peers can now be evicted if they've been
+            // unreachable for a long time (3x normal timeout) AND have negative score.
             if self.reserved_peers.contains(entry.key()) {
+                let age = now.saturating_sub(entry.value().last_seen);
+                if age > timeout_secs * 3 && entry.value().score < -5 {
+                    to_remove.push((*entry.key(), "reserved-stale"));
+                }
                 continue;
             }
             let age = now.saturating_sub(entry.value().last_seen);
@@ -1077,7 +1118,11 @@ async fn handle_connection(
     seen_messages: Arc<Mutex<SeenMessageCache>>,
 ) -> Result<(), String> {
     let mut deser_failures: u32 = 0;
+    let mut deser_total: u32 = 0;
     const MAX_DESER_FAILURES: u32 = 10;
+    // AUDIT-FIX H9: Track failure RATIO instead of consecutive-only.
+    // Disconnect if >50% of messages in a window are failures.
+    const DESER_WINDOW: u32 = 20;
 
     loop {
         let mut stream = connection
@@ -1099,7 +1144,10 @@ async fn handle_connection(
         // Deserialize message
         match P2PMessage::deserialize(&bytes) {
             Ok(message) => {
-                deser_failures = 0; // reset on success
+                // AUDIT-FIX H9: Decay failure count gradually instead of
+                // resetting to 0 — prevents [9 bad, 1 good] evasion pattern.
+                deser_failures = deser_failures.saturating_sub(1);
+                deser_total = deser_total.saturating_add(1);
 
                 // C2-01: Dedup — hash the raw message bytes and skip if already seen.
                 // Only dedup gossip message types (Block, Vote, Transaction,
@@ -1137,12 +1185,16 @@ async fn handle_connection(
             }
             Err(e) => {
                 deser_failures += 1;
+                deser_total = deser_total.saturating_add(1);
                 warn!(
                     "P2P: Failed to deserialize message from {} ({}/{}): {}",
                     peer_addr, deser_failures, MAX_DESER_FAILURES, e
                 );
                 // H18 fix: disconnect after too many consecutive failures
-                if deser_failures >= MAX_DESER_FAILURES {
+                // AUDIT-FIX H9: Also disconnect if failure ratio >50% over window
+                let ratio_exceeded = deser_total >= DESER_WINDOW
+                    && deser_failures > deser_total / 2;
+                if deser_failures >= MAX_DESER_FAILURES || ratio_exceeded {
                     warn!(
                         "P2P: Disconnecting {} — too many deserialization failures",
                         peer_addr
@@ -1321,6 +1373,19 @@ impl PeerFingerprintStore {
                 let _ = file.sync_all();
             }
         }
+    }
+
+    /// AUDIT-FIX M15: Allow resetting a peer's stored fingerprint.
+    /// Used when a peer legitimately rotates its TLS certificate (e.g., after a security incident).
+    pub fn reset_fingerprint(&self, addr: &std::net::SocketAddr) -> bool {
+        let addr_str = addr.to_string();
+        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = store.remove(&addr_str).is_some();
+        if removed {
+            drop(store);
+            self.save();
+        }
+        removed
     }
 }
 

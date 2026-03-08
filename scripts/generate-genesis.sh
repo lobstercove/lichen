@@ -260,10 +260,10 @@ cat > "$OUTPUT" <<EOF
   ],
   "initial_validators": $(echo -e "$VALIDATORS_JSON"),
   "network": {
-    "p2p_port": 8000,
-    "rpc_port": 9000,
+    "p2p_port": 7001,
+    "rpc_port": 8899,
     "seed_nodes": [
-      "127.0.0.1:8000"
+      "127.0.0.1:7001"
     ]
   },
   "features": {

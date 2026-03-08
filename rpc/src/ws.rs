@@ -768,8 +768,24 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         }
     });
 
+    // AUDIT-FIX H15: Per-connection message rate limiter
+    let mut msg_count: u32 = 0;
+    let mut msg_window_start = std::time::Instant::now();
+    const MAX_MSGS_PER_SEC: u32 = 100;
+
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
+        // AUDIT-FIX H15: Rate-limit incoming messages per connection
+        msg_count += 1;
+        if msg_window_start.elapsed().as_secs() >= 1 {
+            msg_count = 1;
+            msg_window_start = std::time::Instant::now();
+        }
+        if msg_count > MAX_MSGS_PER_SEC {
+            warn!("WS: Rate-limiting client — {} msgs/sec exceeded", MAX_MSGS_PER_SEC);
+            break; // Disconnect abusive client
+        }
+
         if let Message::Text(text) = msg {
             // Handle client-side keepalive pings (explorer sends {"method":"ping"})
             if text.contains("\"ping\"") {

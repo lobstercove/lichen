@@ -51,7 +51,7 @@ Four binaries ship from this repo:
 
 | Binary | Default port | Purpose |
 |---|---|---|
-| `moltchain-validator` | 8899 (RPC), 8900 (WS), 9000 (P2P) | Full node with built-in supervisor & watchdog |
+| `moltchain-validator` | 8899 (RPC), 8900 (WS), 7001 (P2P) | Full node with built-in supervisor & watchdog |
 | `moltchain-custody` | 9105 | Threshold-signing custody with deposit tracking |
 | `moltchain-faucet` | 8901 | Testnet MOLT dispenser |
 | `molt` | — | CLI wallet, queries, contract deploys |
@@ -78,11 +78,12 @@ cargo build --release
 ```bash
 # Join mainnet with one command (syncs from seed nodes, generates keypair)
 ./target/release/moltchain-validator \
-    --p2p-port 9001 \
+    --network mainnet \
+    --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path ./data/state-9001 \
-    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+    --db-path ./data/state-mainnet \
+    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
 ```
 
 The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
@@ -171,15 +172,16 @@ cargo build --release
 
 ```bash
 ./target/release/moltchain-validator \
-    --p2p-port 9001 \
+    --network mainnet \
+    --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path ./data/state-9001 \
-    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+    --db-path ./data/state-mainnet \
+    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
 ```
 
 That's it. The validator will:
-- Generate a keypair (saved to `./data/state-9001/validator-keypair.json`)
+- Generate a keypair (saved to `~/.moltchain/validators/validator-mainnet.json`)
 - Sync the chain from seed nodes
 - Receive a 100K MOLT bootstrap stake grant (first 200 validators only)
 - Begin producing & voting on blocks
@@ -195,8 +197,8 @@ curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
 | Region | Endpoint |
 |--------|----------|
-| US East | `15.204.229.189:9000` |
-| EU West | `37.59.97.61:9000` |
+| US East | `15.204.229.189:8001` |
+| EU West | `37.59.97.61:8001` |
 
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 

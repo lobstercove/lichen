@@ -364,7 +364,10 @@ async fn get_buy_quote(
     let after_fee = molt_shells * 99 / 100;
 
     // Binary search for tokens received (matching contract logic)
-    let tokens_out = compute_buy_tokens(supply, after_fee);
+    let tokens_out = match compute_buy_tokens(supply, after_fee) {
+        Ok(t) => t,
+        Err(e) => return api_err(e),
+    };
     let tokens_f = tokens_out as f64 / SHELLS_PER_MOLT;
     let price_after = spot_price(supply + tokens_out);
     let price_impact = if spot_price(supply) > 0.0 {
@@ -406,14 +409,8 @@ struct QuoteQuery {
 ///
 /// AUDIT-FIX F-8: Use u128 fixed-point arithmetic instead of f64 to avoid
 /// precision loss above ~9M MOLT.
-fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> u64 {
-    // Quadratic: SLOPE/(2*SLOPE_SCALE) * a^2 + (BASE_PRICE + SLOPE*s/SLOPE_SCALE) * a - after_fee_shells = 0
-    // Multiply everything by 2*SLOPE_SCALE to clear fractions:
-    //   SLOPE * a^2 + 2*SLOPE_SCALE*(BASE_PRICE + SLOPE*s/SLOPE_SCALE) * a - 2*SLOPE_SCALE*after_fee_shells = 0
-    //   SLOPE * a^2 + (2*SLOPE_SCALE*BASE_PRICE + 2*SLOPE*s) * a - 2*SLOPE_SCALE*after_fee_shells = 0
-    //
-    // Using quadratic formula: a = (-B + sqrt(B^2 + 4*A*C)) / (2*A)
-    // where A = SLOPE, B = 2*SLOPE_SCALE*BASE_PRICE + 2*SLOPE*s, C = 2*SLOPE_SCALE*after_fee_shells
+/// AUDIT-FIX C8: Return Result instead of silently capping on overflow.
+fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> Result<u64, &'static str> {
     let s = supply as u128;
     let a_coeff = SLOPE as u128;
     let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128 + 2u128 * SLOPE as u128 * s;
@@ -427,24 +424,22 @@ fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> u64 {
 
     let discriminant = match discriminant {
         Some(d) => d,
-        None => return 0, // overflow — amount too large
+        None => return Err("Amount too large for bonding curve calculation"),
     };
 
     let sqrt_d = isqrt_u128(discriminant);
 
-    // a = (-B + sqrt(discriminant)) / (2*A)
-    // Since B > 0, we need sqrt(discriminant) > B for positive result
     if sqrt_d <= b_coeff {
-        return 0;
+        return Ok(0);
     }
     let numerator = sqrt_d - b_coeff;
     let denominator = 2u128 * a_coeff;
     let tokens = numerator / denominator;
 
     if tokens > u64::MAX as u128 {
-        u64::MAX
+        Err("Token amount exceeds maximum representable value")
     } else {
-        tokens as u64
+        Ok(tokens as u64)
     }
 }
 
@@ -628,28 +623,28 @@ mod tests {
 
     #[test]
     fn buy_tokens_zero_input_returns_zero() {
-        assert_eq!(compute_buy_tokens(0, 0), 0);
+        assert_eq!(compute_buy_tokens(0, 0).unwrap(), 0);
     }
 
     #[test]
     fn buy_tokens_positive_input() {
         // With some shells, we should get tokens
-        let tokens = compute_buy_tokens(0, 1_000_000_000); // 1 MOLT worth
+        let tokens = compute_buy_tokens(0, 1_000_000_000).unwrap(); // 1 MOLT worth
         assert!(tokens > 0, "Should receive >0 tokens for 1 MOLT");
     }
 
     #[test]
     fn buy_tokens_more_input_more_output() {
-        let t1 = compute_buy_tokens(0, 1_000_000_000);
-        let t2 = compute_buy_tokens(0, 10_000_000_000);
+        let t1 = compute_buy_tokens(0, 1_000_000_000).unwrap();
+        let t2 = compute_buy_tokens(0, 10_000_000_000).unwrap();
         assert!(t2 > t1, "More MOLT in should yield more tokens");
     }
 
     #[test]
     fn buy_tokens_higher_supply_fewer_tokens() {
         // At higher supply, same input yields fewer tokens (bonding curve)
-        let t_low = compute_buy_tokens(0, 1_000_000_000);
-        let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000);
+        let t_low = compute_buy_tokens(0, 1_000_000_000).unwrap();
+        let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000).unwrap();
         assert!(
             t_low > t_high,
             "Higher supply should yield fewer tokens per MOLT"

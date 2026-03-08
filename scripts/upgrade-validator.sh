@@ -108,7 +108,7 @@ print_info "Verifying upgrade..."
 sleep 5
 
 # Check if RPC is responding
-RPC_PORT=9000
+RPC_PORT=8899
 if curl -sf "http://localhost:$RPC_PORT" > /dev/null 2>&1; then
     print_success "RPC server responding"
 else

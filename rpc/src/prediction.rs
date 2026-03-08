@@ -696,7 +696,10 @@ async fn get_markets(
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
 
-    let mut markets = Vec::new();
+    // AUDIT-FIX C7: Apply offset/limit during iteration to avoid O(n) full scan.
+    // Track how many matched so far to skip `offset` items and stop after `limit`.
+    let mut markets = Vec::with_capacity(limit);
+    let mut matched: usize = 0;
     for id in 1..=total_markets {
         if let Some(mkt) = decode_market(&state, id, slot) {
             // category filter
@@ -717,12 +720,26 @@ async fn get_markets(
                     continue;
                 }
             }
-            markets.push(mkt);
+            if matched >= offset && markets.len() < limit {
+                markets.push(mkt);
+            }
+            matched += 1;
+            // Early exit: Once we've collected a full page AND scanned
+            // enough to know the remaining count for unfiltered queries,
+            // break. For filtered queries we must scan all to get total.
+            if markets.len() >= limit
+                && params.category.is_none()
+                && params.status.is_none()
+                && params.creator.is_none()
+            {
+                // Unfiltered: total = total_markets
+                matched = total_markets as usize;
+                break;
+            }
         }
     }
 
-    let total = markets.len();
-    let page: Vec<_> = markets.into_iter().skip(offset).take(limit).collect();
+    let total = matched;
 
     #[derive(Serialize)]
     struct MarketsPage {
@@ -735,7 +752,7 @@ async fn get_markets(
 
     ApiResponse::ok(
         MarketsPage {
-            markets: page,
+            markets,
             total,
             offset,
             limit,

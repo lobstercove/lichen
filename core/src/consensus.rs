@@ -104,10 +104,13 @@ pub fn founding_vesting_unlocked(
 pub fn decayed_reward(base_reward: u64, current_slot: u64) -> u64 {
     let years = current_slot / SLOTS_PER_YEAR;
     let mut reward = base_reward;
-    // 20% decay per year → multiply by 80/100 each year
-    // Cap at 50 iterations (reward is effectively 0 by then)
-    for _ in 0..years.min(50) {
+    // AUDIT-FIX L2: 20% decay per year → multiply by 80/100 each year
+    // Extended from 50 to 200 cap (reward reaches 0 by ~80 years anyway)
+    for _ in 0..years.min(200) {
         reward = reward * 80 / 100;
+        if reward == 0 {
+            break;
+        }
     }
     reward
 }
@@ -5359,15 +5362,11 @@ mod tests {
     #[test]
     fn test_decayed_reward_overflow_safe() {
         // Extremely large slot values should not panic or overflow
-        // Past year 50, decay is capped — no infinite loop
-        assert_eq!(
-            decayed_reward(100_000_000, SLOTS_PER_YEAR * 100),
-            decayed_reward(100_000_000, SLOTS_PER_YEAR * 50)
-        );
-        assert_eq!(
-            decayed_reward(100_000_000, u64::MAX),
-            decayed_reward(100_000_000, SLOTS_PER_YEAR * 50)
-        );
+        // AUDIT-FIX L2: reward decays to 0 past ~80 years, no cap needed
+        let r100 = decayed_reward(100_000_000, SLOTS_PER_YEAR * 100);
+        assert_eq!(r100, 0, "Year 100 reward should decay to 0");
+        let r_max = decayed_reward(100_000_000, u64::MAX);
+        assert_eq!(r_max, 0, "u64::MAX slot reward should decay to 0");
         // Zero base reward stays zero
         assert_eq!(decayed_reward(0, SLOTS_PER_YEAR * 10), 0);
         // u64::MAX base reward with year 0 — no decay applied, no overflow

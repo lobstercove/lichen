@@ -50,7 +50,7 @@ function Stop-Cluster {
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
     }
 
-    foreach ($port in 8899,8901,8903,8000,8001,8002) {
+    foreach ($port in 8899,8901,8903,7001,7002,7003) {
         $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
         foreach ($l in $listeners) {
             try { Stop-Process -Id $l.OwningProcess -Force -ErrorAction SilentlyContinue } catch {}
@@ -75,7 +75,7 @@ function Start-Validator {
         [string]$LogPath
     )
 
-    $p2p = 8000 + ($Number - 1)
+    $p2p = 7001 + ($Number - 1)
     $rpc = 8899 + (2 * ($Number - 1))
     $ws = 8900 + (2 * ($Number - 1))
     $db = Join-Path $Root ("data/state-{0}" -f $p2p)
@@ -90,7 +90,7 @@ function Start-Validator {
         '--db-path',$db
     )
     if ($Number -gt 1) {
-        $args += @('--bootstrap-peers','127.0.0.1:8000')
+        $args += @('--bootstrap-peers','127.0.0.1:7001')
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -126,7 +126,7 @@ function Show-Status {
         if (Test-RpcPort -Port $port) { $up++ }
     }
     if ($up -eq 3) {
-        Write-Host '[local-3validators] status=up rpc=8899,8901,8903 p2p=8000,8001,8002 data=data/state-{8000,8001,8002}'
+        Write-Host '[local-3validators] status=up rpc=8899,8901,8903 p2p=7001,7002,7003 data=data/state-{7001,7002,7003}'
         return $true
     }
     Write-Host ("[local-3validators] status=down reachable_rpc={0}/3" -f $up)

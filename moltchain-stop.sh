@@ -52,8 +52,8 @@ stop_network() {
         # Fallback: kill by port
         local p2p_port
         case $net in
-            testnet) p2p_port=8000 ;;
-            mainnet) p2p_port=9000 ;;
+            testnet) p2p_port=7001 ;;
+            mainnet) p2p_port=8001 ;;
         esac
         pkill -f "moltchain-validator.*--p2p-port ${p2p_port}" 2>/dev/null || true
         pkill -f "moltchain-custody.*${net}" 2>/dev/null || true

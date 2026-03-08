@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
+use zeroize::Zeroize;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -1851,15 +1852,14 @@ fn load_config() -> CustodyConfig {
             if env_token.is_some() {
                 env_token
             } else if !signer_endpoints.is_empty() {
-                // Generate cryptographically random 32-byte auth token
-                use rand::Rng;
-                let random_bytes: [u8; 32] = rand::thread_rng().gen();
-                let generated = hex::encode(random_bytes);
-                tracing::warn!(
-                    "⚠️  CUSTODY_SIGNER_AUTH_TOKEN not set — generated random token. \
-                     For production, set CUSTODY_SIGNER_AUTH_TOKEN explicitly."
+                // AUDIT-FIX M7: Refuse to start with signers but no auth token.
+                // Previously generated a random token that was never exposed,
+                // making all signer authentication fail silently.
+                panic!(
+                    "FATAL: {} signer endpoint(s) configured but CUSTODY_SIGNER_AUTH_TOKEN \
+                     is not set. Set it explicitly to enable signer authentication.",
+                    signer_endpoints.len()
                 );
-                Some(generated)
             } else {
                 None // no signers configured, token not needed
             }
@@ -4689,8 +4689,9 @@ fn derive_solana_address(path: &str, master_seed: &str) -> Result<String, String
         Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
-    let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
+    let mut seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = SigningKey::from_bytes(&seed_bytes);
+    seed_bytes.zeroize(); // AUDIT-FIX H5: zeroize intermediate key material
     let verifying_key = signing_key.verifying_key();
     Ok(bs58::encode(verifying_key.to_bytes()).into_string())
 }
@@ -4708,8 +4709,9 @@ fn derive_solana_signer(
         Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
-    let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
+    let mut seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = SigningKey::from_bytes(&seed_bytes);
+    seed_bytes.zeroize(); // AUDIT-FIX H5: zeroize intermediate key material
     let verifying_key = signing_key.verifying_key();
     Ok((signing_key, verifying_key.to_bytes()))
 }
@@ -4736,8 +4738,9 @@ fn derive_solana_keypair(path: &str, master_seed: &str) -> Result<SimpleSolanaKe
         .map_err(|_| "HMAC key error".to_string())?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
-    let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
+    let mut seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_bytes);
+    seed_bytes.zeroize(); // AUDIT-FIX H5: zeroize intermediate key material
     let pubkey = signing_key.verifying_key().to_bytes();
     Ok(SimpleSolanaKeypair {
         signing_key,
@@ -4816,8 +4819,10 @@ fn derive_evm_signing_key(
     let mut mac =
         Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
-    let seed = mac.finalize().into_bytes();
-    k256::ecdsa::SigningKey::from_bytes(&seed).map_err(|_| "invalid seed".to_string())
+    let mut seed = mac.finalize().into_bytes();
+    let result = k256::ecdsa::SigningKey::from_bytes(&seed).map_err(|_| "invalid seed".to_string());
+    seed.as_mut_slice().zeroize(); // AUDIT-FIX H5: zeroize intermediate key material
+    result
 }
 
 async fn solana_get_latest_blockhash(
@@ -5482,6 +5487,25 @@ async fn submit_burn_signature(
         return Err(Json(ErrorResponse::invalid(
             "burn_tx_signature already set",
         )));
+    }
+
+    // AUDIT-FIX H6: Check that this burn_tx_signature hasn't been used by another job.
+    // Prevents burn transaction replay across multiple withdrawal jobs.
+    {
+        let burn_sig_key = format!("burn_sig:{}", payload.burn_tx_signature);
+        if let Some(idx_cf) = state.db.cf_handle(CF_INDEXES) {
+            if let Ok(Some(existing)) = state.db.get_cf(idx_cf, burn_sig_key.as_bytes()) {
+                let existing_job_id = String::from_utf8_lossy(&existing);
+                return Err(Json(ErrorResponse::invalid(&format!(
+                    "burn_tx_signature already used by withdrawal {}",
+                    existing_job_id
+                ))));
+            }
+            // Reserve the signature atomically
+            let _ = state
+                .db
+                .put_cf(idx_cf, burn_sig_key.as_bytes(), job_id.as_bytes());
+        }
     }
 
     job.burn_tx_signature = Some(payload.burn_tx_signature.clone());
@@ -6806,15 +6830,27 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                         expected,
                                         tx_contract
                                     );
+                                    job.status = "permanently_failed".to_string();
+                                    job.last_error = Some(format!(
+                                        "Burn contract mismatch: expected {} got {:?}",
+                                        expected, tx_contract
+                                    ));
+                                    let _ = store_withdrawal_job(&state.db, &job);
                                     continue;
                                 }
                             } else {
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: no contract configured \
-                                     for asset {}. Cannot verify burn.",
+                                     for asset {}. Cannot verify burn. Marking permanently_failed.",
                                     job.job_id,
                                     job.asset
                                 );
+                                job.status = "permanently_failed".to_string();
+                                job.last_error = Some(format!(
+                                    "No contract address configured for asset '{}'",
+                                    job.asset
+                                ));
+                                let _ = store_withdrawal_job(&state.db, &job);
                                 continue;
                             }
 
@@ -6826,6 +6862,12 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     job.job_id,
                                     tx_method
                                 );
+                                job.status = "permanently_failed".to_string();
+                                job.last_error = Some(format!(
+                                    "Burn method mismatch: expected 'burn' got {:?}",
+                                    tx_method
+                                ));
+                                let _ = store_withdrawal_job(&state.db, &job);
                                 continue;
                             }
 
@@ -6838,6 +6880,12 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     job.amount,
                                     tx_amount
                                 );
+                                job.status = "permanently_failed".to_string();
+                                job.last_error = Some(format!(
+                                    "Burn amount mismatch: expected {} got {}",
+                                    job.amount, tx_amount
+                                ));
+                                let _ = store_withdrawal_job(&state.db, &job);
                                 continue;
                             }
 
@@ -6850,6 +6898,12 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     job.user_id,
                                     tx_caller
                                 );
+                                job.status = "permanently_failed".to_string();
+                                job.last_error = Some(format!(
+                                    "Burn caller mismatch: expected {} got {:?}",
+                                    job.user_id, tx_caller
+                                ));
+                                let _ = store_withdrawal_job(&state.db, &job);
                                 continue;
                             }
 

@@ -263,6 +263,10 @@ pub struct P2PNetwork {
 
     /// P3-4: Outgoing erasure shard response channel
     erasure_shard_response_tx: mpsc::Sender<ErasureShardResponseMsg>,
+
+    /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
+    /// to reject stale/replayed validator announcements.
+    last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
 }
 
 impl P2PNetwork {
@@ -353,6 +357,7 @@ impl P2PNetwork {
             get_block_txs_tx,
             erasure_shard_request_tx,
             erasure_shard_response_tx,
+            last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -564,6 +569,15 @@ impl P2PNetwork {
             }
 
             MessageType::BlockRangeResponse { blocks } => {
+                // AUDIT-FIX M12: Cap response size to match request limit
+                if blocks.len() > 500 {
+                    warn!(
+                        "P2P: Rejecting oversized BlockRangeResponse from {} ({} blocks > 500)",
+                        peer_addr, blocks.len()
+                    );
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 debug!(
                     "P2P: Received {} blocks in range response from {}",
                     blocks.len(),
@@ -581,6 +595,12 @@ impl P2PNetwork {
             }
 
             MessageType::StatusRequest => {
+                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
+                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
+                    warn!("P2P: Rate-limiting status request from {}", peer_addr);
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 debug!("P2P: Received status request from {}", peer_addr);
                 let request = StatusRequestMsg {
                     requester: peer_addr,
@@ -632,6 +652,12 @@ impl P2PNetwork {
             }
 
             MessageType::SnapshotRequest { kind } => {
+                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
+                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
+                    warn!("P2P: Rate-limiting snapshot request from {}", peer_addr);
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind,
@@ -672,6 +698,12 @@ impl P2PNetwork {
                 chunk_index,
                 chunk_size,
             } => {
+                // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
+                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
+                    warn!("P2P: Rate-limiting state snapshot request from {}", peer_addr);
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind: SnapshotKind::StateCheckpoint,
@@ -777,6 +809,21 @@ impl P2PNetwork {
                     return Ok(());
                 }
 
+                // AUDIT-FIX H11: Reject stale/replayed announcements.
+                // Only accept if current_slot >= the last announcement slot from this validator.
+                {
+                    let mut slots = self.last_announce_slot.lock().unwrap_or_else(|e| e.into_inner());
+                    let last = slots.entry(pubkey.0).or_insert(0);
+                    if current_slot < *last {
+                        warn!(
+                            "⚠️  P2P: Rejecting stale validator announcement from {} — slot {} < last {}",
+                            pubkey.to_base58(), current_slot, *last
+                        );
+                        return Ok(());
+                    }
+                    *last = current_slot;
+                }
+
                 info!(
                     "🦞 P2P: Verified validator announcement from {}: {} (stake: {}, slot: {}, version: {})",
                     peer_addr,
@@ -818,6 +865,12 @@ impl P2PNetwork {
             }
 
             MessageType::FindNode { target_id } => {
+                // AUDIT-FIX H12: Rate-limit FindNode (max 30/min)
+                if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
+                    warn!("P2P: Rate-limiting FindNode request from {}", peer_addr);
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 debug!("P2P: Received FindNode from {} for target {:?}", peer_addr, &target_id[..4]);
                 let closest = self.peer_manager.kademlia_closest(&target_id, 20);
                 let response = P2PMessage::new(
@@ -836,6 +889,16 @@ impl P2PNetwork {
                 debug!("P2P: Received FindNodeResponse from {} ({} entries)", peer_addr, closest.len());
                 for (node_id, addr_str) in closest {
                     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+                        // AUDIT-FIX H13: Reject invalid/reserved IP addresses
+                        let ip = addr.ip();
+                        if ip.is_loopback()
+                            || ip.is_unspecified()
+                            || ip.is_multicast()
+                            || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast())
+                        {
+                            warn!("P2P: Rejecting invalid address {} from FindNodeResponse by {}", addr, peer_addr);
+                            continue;
+                        }
                         self.peer_manager.update_kademlia(node_id, addr);
                     }
                 }
@@ -879,6 +942,16 @@ impl P2PNetwork {
             }
 
             MessageType::ErasureShardRequest { slot, shard_indices } => {
+                // AUDIT-FIX M13: Cap shard indices to prevent amplification
+                const MAX_SHARD_INDICES: usize = 10;
+                if shard_indices.len() > MAX_SHARD_INDICES {
+                    warn!(
+                        "P2P: Rejecting ErasureShardRequest from {} — {} indices exceeds max {}",
+                        peer_addr, shard_indices.len(), MAX_SHARD_INDICES
+                    );
+                    self.peer_manager.record_violation(&peer_addr);
+                    return Ok(());
+                }
                 debug!(
                     "P2P: Received ErasureShardRequest for slot {} from {} ({} indices)",
                     slot, peer_addr, shard_indices.len()

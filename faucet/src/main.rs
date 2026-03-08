@@ -74,6 +74,8 @@ struct AirdropRecord {
 struct FaucetState {
     config: FaucetConfig,
     rate_limiter: Arc<RwLock<RateLimiter>>,
+    /// AUDIT-FIX L7: Per-IP rate limiter for status endpoint (IP -> (window_start, count))
+    status_rate: Arc<RwLock<HashMap<String, (u64, u32)>>>,
     airdrops: Arc<RwLock<Vec<AirdropRecord>>>,
     keypair: Arc<Keypair>,
 }
@@ -268,6 +270,7 @@ async fn main() {
     let state = FaucetState {
         config,
         rate_limiter: Arc::new(RwLock::new(RateLimiter::new())),
+        status_rate: Arc::new(RwLock::new(HashMap::new())),
         airdrops: Arc::new(RwLock::new(airdrops)),
         keypair: Arc::new(keypair),
     };
@@ -293,24 +296,23 @@ async fn main() {
         )
         .layer(
             CorsLayer::new()
-                // I-5: Restrict CORS to known origins instead of wildcard
-                .allow_origin([
-                    "https://faucet.moltchain.network"
-                        .parse::<HeaderValue>()
-                        .unwrap(),
-                    "https://wallet.moltchain.network"
-                        .parse::<HeaderValue>()
-                        .unwrap(),
-                    "https://moltchain.network".parse::<HeaderValue>().unwrap(),
-                    "https://faucet.moltchain.io"
-                        .parse::<HeaderValue>()
-                        .unwrap(),
-                    "https://moltchain.io".parse::<HeaderValue>().unwrap(),
-                    "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-                    "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-                    "http://localhost:9100".parse::<HeaderValue>().unwrap(),
-                    "http://localhost:9101".parse::<HeaderValue>().unwrap(),
-                ])
+                // AUDIT-FIX L6: Load CORS origins from env or use defaults
+                .allow_origin({
+                    let origins_str = std::env::var("FAUCET_CORS_ORIGINS").unwrap_or_else(|_| {
+                        [
+                            "https://faucet.moltchain.network",
+                            "https://wallet.moltchain.network",
+                            "https://moltchain.network",
+                            "https://faucet.moltchain.io",
+                            "https://moltchain.io",
+                        ].join(",")
+                    });
+                    let origins: Vec<HeaderValue> = origins_str
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<HeaderValue>().ok())
+                        .collect();
+                    origins
+                })
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         )
@@ -362,7 +364,33 @@ async fn faucet_config_handler(State(state): State<FaucetState>) -> Response {
     (StatusCode::OK, Json(config)).into_response()
 }
 
-async fn faucet_status_handler(State(state): State<FaucetState>) -> Response {
+async fn faucet_status_handler(
+    State(state): State<FaucetState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // AUDIT-FIX L7: Basic rate limiting on status endpoint (30 req/min per IP)
+    let client_ip = extract_client_ip(&headers, peer_addr, &state.config.trusted_proxies);
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut map = state.status_rate.write().await;
+        let entry = map.entry(client_ip).or_insert((now, 0));
+        if now - entry.0 > 60 {
+            entry.0 = now;
+            entry.1 = 0;
+        }
+        entry.1 += 1;
+        if entry.1 > 30 {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({ "error": "Rate limit exceeded. Try again later." })),
+            )
+                .into_response();
+        }
+    }
     match get_faucet_balance_shells(&state).await {
         Ok(balance_shells) => {
             let status = FaucetStatusResponse {
@@ -541,8 +569,12 @@ async fn faucet_request_handler(
                     airdrops.drain(..drain_count);
                 }
                 // Persist to file (best effort)
+                // AUDIT-FIX M9: Use tokio::fs::write instead of blocking std::fs::write
                 if let Ok(data) = serde_json::to_string(&*airdrops) {
-                    let _ = std::fs::write(&state.config.airdrops_file, data);
+                    let path = state.config.airdrops_file.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::fs::write(&path, data).await;
+                    });
                 }
             }
 

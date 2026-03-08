@@ -629,26 +629,27 @@ mod tests {
     fn test_rpc_port_derivation_consistency() {
         // The formula used by the RPC server (validator main.rs ~ L6410)
         // and now also used by genesis accounts fetch (~ L3359):
-        //   base_p2p = if p2p >= 9000 { 9000 } else { 8000 }
-        //   base_rpc = if p2p >= 9000 { 9899 } else { 8899 }
+        //   base_p2p = if p2p >= 8000 { 8001 } else { 7001 }
+        //   base_rpc = if p2p >= 8000 { 9899 } else { 8899 }
         //   offset = p2p - base_p2p
         //   rpc = base_rpc + offset * 2
         let derive_rpc_port = |p2p_port: u16| -> u16 {
-            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
-            let base_rpc = if p2p_port >= 9000 { 9899u16 } else { 8899u16 };
+            let base_p2p = if p2p_port >= 8000 { 8001u16 } else { 7001u16 };
+            let base_rpc = if p2p_port >= 8000 { 9899u16 } else { 8899u16 };
             let offset = p2p_port.saturating_sub(base_p2p);
             base_rpc.saturating_add(offset.saturating_mul(2))
         };
 
-        // V1: p2p 8000 → rpc 8899
-        assert_eq!(derive_rpc_port(8000), 8899);
-        // V2: p2p 8001 → rpc 8901
-        assert_eq!(derive_rpc_port(8001), 8901);
-        // V3: p2p 8002 → rpc 8903
-        assert_eq!(derive_rpc_port(8002), 8903);
-        // High port range
-        assert_eq!(derive_rpc_port(9000), 9899);
-        assert_eq!(derive_rpc_port(9001), 9901);
+        // Testnet V1: p2p 7001 → rpc 8899
+        assert_eq!(derive_rpc_port(7001), 8899);
+        // Testnet V2: p2p 7002 → rpc 8901
+        assert_eq!(derive_rpc_port(7002), 8901);
+        // Testnet V3: p2p 7003 → rpc 8903
+        assert_eq!(derive_rpc_port(7003), 8903);
+        // Mainnet V1: p2p 8001 → rpc 9899
+        assert_eq!(derive_rpc_port(8001), 9899);
+        // Mainnet V2: p2p 8002 → rpc 9901
+        assert_eq!(derive_rpc_port(8002), 9901);
     }
 
     /// C5 fix: note_seen_bounded should cap the jump to prevent malicious

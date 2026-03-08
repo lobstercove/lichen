@@ -4078,7 +4078,7 @@ async fn run_validator() {
                 .position(|arg| arg == "--p2p-port")
                 .and_then(|pos| pre_args.get(pos + 1))
                 .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(8000);
+                .unwrap_or(7001);
             format!("./data/state-{}", port)
         });
     let log_dir = PathBuf::from(&pre_data_dir).join("logs");
@@ -4127,7 +4127,7 @@ async fn run_validator() {
         .position(|arg| arg == "--p2p-port")
         .and_then(|pos| args.get(pos + 1))
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8000);
+        .unwrap_or(7001);
 
     // Parse --db-path / --db / --data-dir flag or use default based on port
     let data_dir = args
@@ -4618,9 +4618,9 @@ async fn run_validator() {
                     // AUDIT-FIX V5.1: Use the same port derivation formula
                     // as the RPC server binding (L6410). The previous formula
                     // used `peer_p2p % 1000` which produced wrong ports for
-                    // V2/V3 validators (e.g. p2p=8001 → 8903, actual RPC=8901).
-                    let base_p2p = if peer_p2p >= 9000 { 9000u16 } else { 8000u16 };
-                    let base_rpc = if peer_p2p >= 9000 { 9899u16 } else { 8899u16 };
+                    // V2/V3 validators (e.g. p2p=7002 → rpc=8901).
+                    let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
+                    let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
                     let offset = peer_p2p.saturating_sub(base_p2p);
                     let peer_rpc = base_rpc.saturating_add(offset.saturating_mul(2));
                     let url = format!("http://{}:{}/", host, peer_rpc);
@@ -4980,7 +4980,7 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.as_str());
 
-    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port, Some(&data_dir_path)) {
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port, Some(&data_dir_path), network_arg.as_deref()) {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("Failed to load or generate validator keypair: {}", err);
@@ -7573,7 +7573,24 @@ async fn run_validator() {
                 (std::net::SocketAddr, String, u64),
                 (u64, Option<Vec<u8>>, u64),
             > = std::collections::HashMap::new();
+            // AUDIT-FIX M1: Track cursor last-access time for TTL eviction
+            let mut cursor_last_access: std::collections::HashMap<
+                (std::net::SocketAddr, String, u64),
+                std::time::Instant,
+            > = std::collections::HashMap::new();
             while let Some(request) = snapshot_request_rx.recv().await {
+                // AUDIT-FIX M1: Evict cursors idle for >30 minutes
+                {
+                    let now = std::time::Instant::now();
+                    cursor_last_access.retain(|k, last| {
+                        if now.duration_since(*last).as_secs() > 1800 {
+                            snapshot_export_cursors.remove(k);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
                 if !peer_mgr_for_snapshot
                     .get_peers()
                     .contains(&request.requester)
@@ -7683,6 +7700,8 @@ async fn run_validator() {
                             None,
                             total_chunks,
                         ));
+                        // AUDIT-FIX M1: Track cursor access time
+                        cursor_last_access.insert(cache_key.clone(), std::time::Instant::now());
                         entry.2 = total_chunks;
 
                         if chunk_index != entry.0 {
@@ -8299,20 +8318,20 @@ async fn run_validator() {
     info!("🦞 Starting RPC server...");
 
     // Parse --rpc-port and --ws-port from CLI, or derive from P2P port
-    // Use safe arithmetic: offset = p2p_port % 1000 to avoid underflow/overflow
     // Port auto-derivation matches run-validator.sh exactly:
-    //   V1 (p2p 8000): rpc=8899, ws=8900
-    //   V2 (p2p 8001): rpc=8901, ws=8902
-    //   V3 (p2p 8002): rpc=8903, ws=8904
-    // Formula: offset = p2p_port - base_p2p, rpc = 8899 + 2*offset, ws = 8900 + 2*offset
+    //   Testnet V1 (p2p 7001): rpc=8899, ws=8900
+    //   Testnet V2 (p2p 7002): rpc=8901, ws=8902
+    //   Mainnet V1 (p2p 8001): rpc=9899, ws=9900
+    //   Mainnet V2 (p2p 8002): rpc=9901, ws=9902
+    // Formula: offset = p2p_port - base_p2p, rpc = base_rpc + 2*offset
     let rpc_port = args
         .iter()
         .position(|arg| arg == "--rpc-port")
         .and_then(|pos| args.get(pos + 1))
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
-            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
-            let base_rpc = if p2p_port >= 9000 { 9899u16 } else { 8899u16 };
+            let base_p2p = if p2p_port >= 8000 { 8001u16 } else { 7001u16 };
+            let base_rpc = if p2p_port >= 8000 { 9899u16 } else { 8899u16 };
             let offset = p2p_port.saturating_sub(base_p2p);
             base_rpc.saturating_add(offset.saturating_mul(2))
         });
@@ -8323,8 +8342,8 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
-            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
-            let base_ws = if p2p_port >= 9000 { 9900u16 } else { 8900u16 };
+            let base_p2p = if p2p_port >= 8000 { 8001u16 } else { 7001u16 };
+            let base_ws = if p2p_port >= 8000 { 9900u16 } else { 8900u16 };
             let offset = p2p_port.saturating_sub(base_p2p);
             base_ws.saturating_add(offset.saturating_mul(2))
         });
@@ -8703,6 +8722,10 @@ async fn run_validator() {
                         v.pubkey != own_pubkey
                             && v.last_active_slot < stale_cutoff
                             && v.blocks_proposed == 0  // never proposed a block
+                            // AUDIT-FIX M2: Don't prune validators that joined recently.
+                            // A validator that joined but hasn't been selected as leader
+                            // shouldn't be removed just because blocks_proposed == 0.
+                            && v.joined_slot < stale_cutoff
                     })
                     .map(|v| v.pubkey)
                     .collect();
@@ -8994,19 +9017,53 @@ async fn run_validator() {
                 if missing_hashes.is_empty() {
                     // Full reconstruction succeeded
                     let transactions: Vec<Transaction> = reconstructed_txs.into_iter().map(|t| t.unwrap()).collect();
-                    let block = Block {
-                        header: cb.header,
-                        transactions,
-                        tx_fees_paid: cb.tx_fees_paid,
-                        oracle_prices: cb.oracle_prices,
+
+                    // AUDIT-FIX H1: Verify tx_root to guard against short-ID collision.
+                    // Recompute tx_root from reconstructed transactions and compare
+                    // against the header's tx_root to detect any collision-based mismatch.
+                    let mut tx_hash_data = Vec::with_capacity(transactions.len() * 32);
+                    for tx in &transactions {
+                        tx_hash_data.extend_from_slice(&tx.hash().0);
+                    }
+                    let reconstructed_tx_root = if transactions.is_empty() {
+                        Hash::default()
+                    } else {
+                        Hash::hash(&tx_hash_data)
                     };
-                    info!(
-                        "📦 Compact block slot {} fully reconstructed from mempool ({} txs)",
-                        slot,
-                        block.transactions.len()
-                    );
-                    if let Err(e) = block_tx_for_compact_task.try_send(block) {
-                        warn!("P2P: Compact block channel full after reconstruction ({})", e);
+                    if reconstructed_tx_root != cb.header.tx_root {
+                        warn!(
+                            "📦 Compact block slot {} tx_root mismatch after reconstruction — \
+                             short-ID collision detected, requesting full block from {}",
+                            slot, sender
+                        );
+                        // Fall through to request full block
+                        if let Some(ref pm) = peer_mgr_for_compact {
+                            let request = moltchain_p2p::P2PMessage::new(
+                                moltchain_p2p::MessageType::BlockRequest { slot },
+                                pm.local_addr(),
+                            );
+                            let pm2 = pm.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = pm2.send_to_peer(&sender, request).await {
+                                    warn!("P2P: Failed to request full block from {}: {}", sender, e);
+                                }
+                            });
+                        }
+                    } else {
+                        let block = Block {
+                            header: cb.header,
+                            transactions,
+                            tx_fees_paid: cb.tx_fees_paid,
+                            oracle_prices: cb.oracle_prices,
+                        };
+                        info!(
+                            "📦 Compact block slot {} fully reconstructed from mempool ({} txs)",
+                            slot,
+                            block.transactions.len()
+                        );
+                        if let Err(e) = block_tx_for_compact_task.try_send(block) {
+                            warn!("P2P: Compact block channel full after reconstruction ({})", e);
+                        }
                     }
                 } else {
                     // Request missing transactions from the sender
@@ -9753,8 +9810,18 @@ async fn run_validator() {
             let pubkey_jitter = (validator_pubkey.0[0] as u64 % 10) * 500;
             let deadlock_timeout_ms = view_change_interval_ms * 20 + pubkey_jitter;
             if view >= 15 && slot_start.elapsed().as_millis() as u64 > deadlock_timeout_ms {
+                // AUDIT-FIX H3: Deterministic tiebreaker — only the validator
+                // with the lowest pubkey (lexicographic) among active validators
+                // should produce as deadlock breaker to prevent fork from dual production.
+                let vs = validator_set.read().await;
+                let is_lowest = vs.validators().iter().all(|v| validator_pubkey <= v.pubkey);
+                drop(vs);
+                if !is_lowest {
+                    // Another active validator has a lower pubkey and should break the deadlock
+                    continue;
+                }
                 info!(
-                    "⚠️  Slot {} — all views exhausted with no block after {}ms, producing as deadlock breaker",
+                    "⚠️  Slot {} — all views exhausted with no block after {}ms, producing as deadlock breaker (lowest pubkey tiebreaker)",
                     slot,
                     slot_start.elapsed().as_millis()
                 );

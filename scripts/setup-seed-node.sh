@@ -20,8 +20,8 @@ SEED_HOME="$HOME/.moltchain-seed"
 NETWORK="testnet"
 DOMAIN=""
 PUBLIC_IP=""
-P2P_PORT=8000
-RPC_PORT=9000
+P2P_PORT=7001
+RPC_PORT=8899
 ENABLE_RPC_PUBLIC=false
 INSTALL_SERVICE=false
 ENABLE_MONITORING=true
@@ -55,8 +55,8 @@ OPTIONS:
     --home <PATH>                  Seed node home directory (default: ~/.moltchain-seed)
     --domain <DOMAIN>              Public domain name (e.g., seed1.moltchain.io)
     --public-ip <IP>               Public IP address (auto-detected if not provided)
-    --p2p-port <PORT>              P2P port (default: 8000)
-    --rpc-port <PORT>              RPC port (default: 9000)
+    --p2p-port <PORT>              P2P port (default: 7001)
+    --rpc-port <PORT>              RPC port (default: 8899)
     --enable-public-rpc            Enable public RPC access
     --install-service              Install systemd service
     --no-monitoring                Disable monitoring

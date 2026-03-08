@@ -16,8 +16,8 @@
 #   ./moltchain-start.sh testnet --foreground # Run validator in foreground
 #
 # Port assignments (canonical V1, matching run-validator.sh):
-#   Testnet: RPC=8899  WS=8900  P2P=8000  Signer=9201
-#   Mainnet: RPC=9899  WS=9900  P2P=9000  Signer=9201
+#   Testnet: RPC=8899  WS=8900  P2P=7001  Signer=9201
+#   Mainnet: RPC=9899  WS=9900  P2P=8001  Signer=9201
 #
 # First-boot behavior:
 #   If no existing blockchain state is found, the validator starts in genesis
@@ -107,25 +107,25 @@ if [ -z "$NETWORK" ]; then
     exit 1
 fi
 
-# ── Port assignments (matches root run-validator.sh V1) ──
+# ── Port assignments (canonical: testnet P2P=7001, mainnet P2P=8001) ──
 case $NETWORK in
     testnet)
         RPC_PORT=8899
         WS_PORT=8900
-        P2P_PORT=8000
+        P2P_PORT=7001
         SIGNER_PORT=9201
         CHAIN_ID="moltchain-testnet-1"
         ;;
     mainnet)
         RPC_PORT=9899
         WS_PORT=9900
-        P2P_PORT=9000
+        P2P_PORT=8001
         SIGNER_PORT=9201
         CHAIN_ID="moltchain-mainnet-1"
         ;;
 esac
 
-DB_PATH="./data/state-${P2P_PORT}"
+DB_PATH="./data/state-${NETWORK}"
 LOG_DIR="/tmp/moltchain-${NETWORK}"
 TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
 BIN_PATH="./target/release/moltchain-validator"

@@ -40,6 +40,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+// AUDIT-FIX M11: Cached merkle tree to avoid O(n) rebuild per request.
+// AUDIT-FIX M11: Cached merkle tree for proof generation.
+// Stores (commitment_count_when_built, merkle_root_when_built, tree).
+// Invalidated when the pool's merkle_root changes (different state store or reorg).
+static MERKLE_CACHE: std::sync::LazyLock<std::sync::Mutex<(u64, [u8; 32], MerkleTree)>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new((0, [0u8; 32], MerkleTree::new())));
+
 use crate::{RpcError, RpcState};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,26 +223,32 @@ async fn rest_get_merkle_path(
         ));
     }
 
-    // Rebuild Merkle tree from all stored commitments
-    let commitments = match state
-        .state
-        .get_all_shielded_commitments(pool.commitment_count)
-    {
-        Ok(c) => c,
-        Err(e) => return api_err(&format!("Failed to load commitments: {}", e)),
-    };
-
-    let mut tree = MerkleTree::new();
-    for comm in &commitments {
-        tree.insert(*comm);
+    // AUDIT-FIX M11: Use cached merkle tree, only append new commitments
+    let mut cache = MERKLE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if pool.merkle_root != cache.1 || pool.commitment_count < cache.0 {
+        // Different state store or reorg — rebuild from scratch
+        cache.2 = MerkleTree::new();
+        cache.0 = 0;
+        cache.1 = pool.merkle_root;
+    }
+    if pool.commitment_count > cache.0 {
+        for i in cache.0..pool.commitment_count {
+            match state.state.get_shielded_commitment(i) {
+                Ok(Some(comm)) => { cache.2.insert(comm); },
+                Ok(None) => break,
+                Err(e) => return api_err(&format!("Failed to load commitment {}: {}", i, e)),
+            }
+        }
+        cache.0 = pool.commitment_count;
+        cache.1 = pool.merkle_root;
     }
 
-    match tree.proof(index) {
+    match cache.2.proof(index) {
         Some(path) => ApiResponse::ok(MerklePathResponse {
             index,
             siblings: path.siblings.iter().map(hex::encode).collect(),
             path_bits: path.path_bits.clone(),
-            root: hex::encode(tree.root()),
+            root: hex::encode(cache.2.root()),
         }),
         None => api_not_found(&format!(
             "Could not generate Merkle proof for index {}",
@@ -275,6 +288,13 @@ async fn rest_get_commitments(
 
     let from = query.from.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).min(1000);
+
+    // AUDIT-FIX H16: Restrict sequential enumeration of ALL commitments.
+    // Only allow fetching the most recent N commitments. Clients that need
+    // to build merkle proofs should use the /merkle-path endpoint instead.
+    // Cap 'from' to at most 10,000 entries before the latest commitment.
+    let min_from = pool.commitment_count.saturating_sub(10_000);
+    let from = from.max(min_from);
 
     let end = pool.commitment_count.min(from.saturating_add(limit));
     let mut entries = Vec::with_capacity((end - from) as usize);
@@ -485,20 +505,29 @@ pub(crate) async fn handle_get_shielded_merkle_path(
         });
     }
 
-    let commitments = state
-        .state
-        .get_all_shielded_commitments(pool.commitment_count)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to load commitments: {}", e),
-        })?;
-
-    let mut tree = MerkleTree::new();
-    for comm in &commitments {
-        tree.insert(*comm);
+    // AUDIT-FIX M11: Use cached merkle tree for JSON-RPC path too
+    let mut cache = MERKLE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if pool.merkle_root != cache.1 || pool.commitment_count < cache.0 {
+        cache.2 = MerkleTree::new();
+        cache.0 = 0;
+        cache.1 = pool.merkle_root;
+    }
+    if pool.commitment_count > cache.0 {
+        for i in cache.0..pool.commitment_count {
+            match state.state.get_shielded_commitment(i) {
+                Ok(Some(comm)) => { cache.2.insert(comm); },
+                Ok(None) => break,
+                Err(e) => return Err(RpcError {
+                    code: -32000,
+                    message: format!("Failed to load commitment {}: {}", i, e),
+                }),
+            }
+        }
+        cache.0 = pool.commitment_count;
+        cache.1 = pool.merkle_root;
     }
 
-    let path = tree.proof(index).ok_or_else(|| RpcError {
+    let path = cache.2.proof(index).ok_or_else(|| RpcError {
         code: -32001,
         message: format!("Could not generate Merkle proof for index {}", index),
     })?;
@@ -507,7 +536,7 @@ pub(crate) async fn handle_get_shielded_merkle_path(
         "index": index,
         "siblings": path.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
         "pathBits": path.path_bits,
-        "root": hex::encode(tree.root()),
+        "root": hex::encode(cache.2.root()),
     }))
 }
 

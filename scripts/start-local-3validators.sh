@@ -15,11 +15,11 @@ NETWORK="${MOLT_LOCAL_NETWORK:-testnet}"
 case "$NETWORK" in
   testnet)
     RPC1=8899; RPC2=8901; RPC3=8903
-    P2P1=8000; P2P2=8001; P2P3=8002
+    P2P1=7001; P2P2=7002; P2P3=7003
     ;;
   mainnet)
     RPC1=9899; RPC2=9901; RPC3=9903
-    P2P1=9000; P2P2=9001; P2P3=9002
+    P2P1=8001; P2P2=8002; P2P3=8003
     ;;
   *)
     echo "[local-3validators] ERROR: unsupported network '$NETWORK' (expected testnet|mainnet)"

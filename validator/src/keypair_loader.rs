@@ -25,16 +25,21 @@ struct KeypairFile {
 /// Search order:
 /// 1. Explicit `config_path` (--keypair CLI argument)
 /// 2. Data-directory-local path: `{data_dir}/validator-keypair.json`
-/// 3. Legacy HOME-based path: `~/.moltchain/validators/validator-{port}.json`
-/// 4. Generate new keypair and save to data-dir path
+/// 3. Shared HOME path: `~/.moltchain/validators/validator-{network}.json`
+///    (survives state-directory flushes — the keypair is NOT inside the DB)
+/// 4. Legacy port-based HOME path: `~/.moltchain/validators/validator-{port}.json`
+/// 5. Generate new keypair and save to BOTH data-dir AND shared HOME path
 ///
-/// If the keypair is found at the legacy path but not in data_dir, it is
-/// migrated (copied) into the data directory so future restarts are
-/// HOME-independent.
+/// The shared HOME path ensures that `rm -rf state-testnet` (a common
+/// operational reset) does NOT destroy the validator identity.  Without
+/// this, every flush + restart creates a brand-new keypair, which
+/// registers as a separate validator and receives a fresh bootstrap
+/// grant — inflating the validator set and total staked supply.
 pub fn load_or_generate_keypair(
     config_path: Option<&str>,
     p2p_port: u16,
     data_dir: Option<&Path>,
+    network: Option<&str>,
 ) -> Result<Keypair> {
     // 1. Explicit CLI path
     if let Some(path) = config_path {
@@ -58,7 +63,38 @@ pub fn load_or_generate_keypair(
         }
     }
 
-    // 3. Legacy HOME-based path
+    // 3. Shared HOME path by network name (survives state flushes)
+    if let Some(net) = network {
+        let shared_path = shared_validator_keypair_path(net);
+        if shared_path.exists() {
+            info!(
+                "📁 Loading validator keypair from shared path: {}",
+                shared_path.display()
+            );
+            let keypair = load_keypair(&shared_path)?;
+
+            // Copy into data directory for fast future loads
+            if let Some(dir) = data_dir {
+                let data_dir_path = dir.join("validator-keypair.json");
+                if !data_dir_path.exists() {
+                    match save_keypair(&keypair, &data_dir_path) {
+                        Ok(()) => info!(
+                            "📋 Copied keypair into data dir: {}",
+                            data_dir_path.display()
+                        ),
+                        Err(e) => warn!(
+                            "⚠️  Failed to copy keypair to data dir: {}",
+                            e
+                        ),
+                    }
+                }
+            }
+
+            return Ok(keypair);
+        }
+    }
+
+    // 4. Legacy port-based HOME path
     let legacy_path = default_validator_keypair_path(p2p_port);
     if legacy_path.exists() {
         info!(
@@ -82,10 +118,18 @@ pub fn load_or_generate_keypair(
             }
         }
 
+        // Also save to shared path for future flush-resilience
+        if let Some(net) = network {
+            let shared_path = shared_validator_keypair_path(net);
+            if !shared_path.exists() {
+                let _ = save_keypair(&keypair, &shared_path);
+            }
+        }
+
         return Ok(keypair);
     }
 
-    // 4. Generate new keypair
+    // 5. Generate new keypair
     warn!(
         "⚠️  No keypair found at data dir or legacy path: {}",
         legacy_path.display()
@@ -96,11 +140,26 @@ pub fn load_or_generate_keypair(
     // Save to data directory (preferred) or legacy path
     let save_path = data_dir
         .map(|d| d.join("validator-keypair.json"))
-        .unwrap_or(legacy_path);
+        .unwrap_or_else(|| legacy_path.clone());
     if let Err(e) = save_keypair(&keypair, &save_path) {
         warn!("Failed to save keypair: {}. Will use in-memory only.", e);
     } else {
         info!("💾 Saved validator keypair to: {}", save_path.display());
+    }
+
+    // Also save to shared HOME path so identity survives state flushes
+    if let Some(net) = network {
+        let shared_path = shared_validator_keypair_path(net);
+        match save_keypair(&keypair, &shared_path) {
+            Ok(()) => info!(
+                "💾 Saved validator keypair (shared): {}",
+                shared_path.display()
+            ),
+            Err(e) => warn!(
+                "⚠️  Failed to save shared keypair: {} (identity may not survive state flush)",
+                e
+            ),
+        }
     }
 
     Ok(keypair)
@@ -114,6 +173,17 @@ pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
         .join(".moltchain")
         .join("validators")
         .join(format!("validator-{}.json", p2p_port))
+}
+
+/// Shared HOME-based path keyed by network name (e.g. "testnet", "mainnet").
+/// Lives OUTSIDE the state directory so it survives `rm -rf state-*` resets.
+/// Path: `~/.moltchain/validators/validator-{network}.json`
+fn shared_validator_keypair_path(network: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".moltchain")
+        .join("validators")
+        .join(format!("validator-{}.json", network))
 }
 
 /// Load keypair from file
@@ -209,7 +279,7 @@ mod tests {
         save_keypair(&original_keypair, &keypair_path).expect("save original keypair");
 
         let loaded_original =
-            load_or_generate_keypair(Some(&keypair_path_string), 0, None).expect("load original");
+            load_or_generate_keypair(Some(&keypair_path_string), 0, None, None).expect("load original");
         assert_eq!(loaded_original.pubkey(), original_keypair.pubkey());
 
         let mut rotated_keypair = Keypair::new();
@@ -219,7 +289,7 @@ mod tests {
         save_keypair(&rotated_keypair, &keypair_path).expect("save rotated keypair");
 
         let loaded_rotated =
-            load_or_generate_keypair(Some(&keypair_path_string), 0, None).expect("load rotated");
+            load_or_generate_keypair(Some(&keypair_path_string), 0, None, None).expect("load rotated");
         assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
         assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
     }

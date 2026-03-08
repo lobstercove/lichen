@@ -33,12 +33,12 @@ NETWORK_UPPER=$(echo "$NETWORK" | tr '[:lower:]' '[:upper:]')
 
 case $NETWORK in
 	testnet)
-		BASE_P2P=8000
+		BASE_P2P=7001
 		BASE_RPC=8899
 		BASE_WS=8900
 		;;
 	mainnet)
-		BASE_P2P=9000
+		BASE_P2P=8001
 		BASE_RPC=9899
 		BASE_WS=9900
 		;;

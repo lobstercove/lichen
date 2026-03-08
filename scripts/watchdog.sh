@@ -41,9 +41,9 @@ WATCHDOG_LOG="${WATCHDOG_LOG:-/tmp/moltchain-watchdog.log}"
 # or pass --config <json_file>.
 
 DEFAULT_VALIDATORS=(
-  "val1|8899|8000||/tmp/val1.log"
-  "val2|8901|8001|--bootstrap-peers 127.0.0.1:8000|/tmp/val2.log"
-  "val3|8902|8002|--bootstrap 127.0.0.1:8000 --bootstrap 127.0.0.1:8001|/tmp/val3.log"
+  "val1|8899|7001||/tmp/val1.log"
+  "val2|8901|7002|--bootstrap-peers 127.0.0.1:7001|/tmp/val2.log"
+  "val3|8902|7003|--bootstrap 127.0.0.1:7001 --bootstrap 127.0.0.1:7002|/tmp/val3.log"
 )
 
 # ── Parse arguments ──────────────────────────────────────────────────
