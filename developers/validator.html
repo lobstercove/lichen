@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Validator Guide - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <!-- SIDEBAR TOGGLE (mobile) -->
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Getting Started</div>
+                <a href="getting-started.html#prerequisites" class="sidebar-link">Prerequisites</a>
+                <a href="getting-started.html#install-cli" class="sidebar-link">Install CLI</a>
+                <a href="getting-started.html#create-wallet" class="sidebar-link">Create Wallet</a>
+                <a href="getting-started.html#get-tokens" class="sidebar-link">Get Testnet Tokens</a>
+                <a href="getting-started.html#first-transfer" class="sidebar-link">First Transfer</a>
+                <a href="getting-started.html#deploy-contract" class="sidebar-link">Deploy a Contract</a>
+                <a href="getting-started.html#next-steps" class="sidebar-link">Next Steps</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">More Guides</div>
+                <a href="architecture.html" class="sidebar-link">Architecture</a>
+                <a href="validator.html" class="sidebar-link active">Validator Setup</a>
+                <a href="moltyid.html" class="sidebar-link">MoltyID</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <!-- BREADCRUMBS -->
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">Validator Guide</span>
+            </div>
+
+            <h1>Validator Guide</h1>
+            <p>Run a MoltChain validator node to participate in consensus, produce blocks, and earn staking rewards. This guide covers hardware requirements, installation, configuration, staking, monitoring, and production deployment.</p>
+
+            <!-- ========== 1. REQUIREMENTS ========== -->
+            <h2 id="requirements">Requirements</h2>
+
+            <h3>Hardware</h3>
+
+            <div class="req-grid">
+                <div class="req-card">
+                    <div class="req-card-icon"><i class="fa-solid fa-desktop"></i></div>
+                    <div class="req-card-title">CPU</div>
+                    <div class="req-card-value">4+ cores (8+ recommended)</div>
+                </div>
+                <div class="req-card">
+                    <div class="req-card-icon"><i class="fa-solid fa-brain"></i></div>
+                    <div class="req-card-title">RAM</div>
+                    <div class="req-card-value">16 GB minimum</div>
+                </div>
+                <div class="req-card">
+                    <div class="req-card-icon"><i class="fa-solid fa-floppy-disk"></i></div>
+                    <div class="req-card-title">Storage</div>
+                    <div class="req-card-value">500 GB NVMe SSD</div>
+                </div>
+                <div class="req-card">
+                    <div class="req-card-icon"><i class="fa-solid fa-globe"></i></div>
+                    <div class="req-card-title">Network</div>
+                    <div class="req-card-value">100 Mbps symmetric</div>
+                </div>
+            </div>
+
+            <h3>Operating System</h3>
+            <ul>
+                <li><strong>Production:</strong> Linux — Ubuntu 22.04 LTS or newer (Debian, RHEL 9+ also supported)</li>
+                <li><strong>Development:</strong> macOS (Apple Silicon or Intel)</li>
+            </ul>
+
+            <h3>Network Ports</h3>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Network</th><th>P2P (QUIC)</th><th>RPC (HTTP)</th><th>WebSocket</th><th>Signer</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Testnet</td><td><code>7001</code></td><td><code>8899</code></td><td><code>8900</code></td><td><code>9201</code></td></tr>
+                    <tr><td>Mainnet</td><td><code>8001</code></td><td><code>9899</code></td><td><code>9900</code></td><td><code>9201</code></td></tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Firewall</div>
+                The P2P port (<strong>7001</strong> testnet / <strong>8001</strong> mainnet) must be reachable from the public internet. RPC and WebSocket ports should be restricted to trusted IPs or kept behind a reverse proxy in production.
+            </div>
+
+            <!-- ========== 2. INSTALLATION ========== -->
+            <h2 id="installation">Installation</h2>
+
+            <h3>Option A: Binary Quick Start (Recommended for Agents)</h3>
+
+            <p>If the machine already has a <code>moltchain-validator</code> binary from a release bundle or prior build, you can start a validator immediately without cloning the repository.</p>
+
+            <p>The intended agent workflow is: download the latest signed release artifact for the host platform, extract it, create a state directory, and run the validator with domain bootstrap peers and <code>--auto-update=apply</code>.</p>
+
+            <h4>Linux x86_64</h4>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-linux-x86_64.tar.gz"
+tar xzf moltchain-validator-linux-x86_64.tar.gz
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+    --network mainnet \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --p2p-port 8001 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --auto-update=apply</code></pre>
+            </div>
+
+            <h4>macOS Apple Silicon</h4>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-darwin-aarch64.tar.gz"
+tar xzf moltchain-validator-darwin-aarch64.tar.gz
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+    --network mainnet \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --p2p-port 8001 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --auto-update=apply</code></pre>
+            </div>
+
+            <h4>Windows x64 (PowerShell)</h4>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">PowerShell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/moltchain/releases/latest).tag_name
+Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/download/$version/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
+tar -xzf .\moltchain-validator-windows-x86_64.tar.gz
+New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
+.\moltchain-validator.exe `
+    --network mainnet `
+    --rpc-port 9899 `
+    --ws-port 9900 `
+    --p2p-port 8001 `
+    --db-path "$HOME\.moltchain\state-mainnet" `
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 `
+    --auto-update=apply</code></pre>
+            </div>
+
+            <p>If a release predates Windows packaging, use the source-build workflow for Windows until a newer release is published.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>mkdir -p "$HOME/.moltchain/state-mainnet"
+
+moltchain-validator \
+    --network mainnet \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --p2p-port 8001 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --auto-update=apply</code></pre>
+            </div>
+
+            <p>This is the fastest operational path for agents: binary, ports, state directory, bootstrap domains. If the state directory already exists, the validator resumes with the same identity and local chain state.</p>
+
+            <h4>What happens when the validator starts?</h4>
+
+            <ol>
+                <li>It creates the chosen state directory if needed.</li>
+                <li>It generates or reuses the validator identity in that directory.</li>
+                <li>It stores signer material, peer cache, and chain state under the same path.</li>
+                <li>It connects to <code>seed-01.moltchain.network</code> and <code>seed-02.moltchain.network</code>.</li>
+                <li>It syncs the network, then resumes or starts validating from the preserved local state.</li>
+                <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background and swaps to a newer signed binary automatically.</li>
+            </ol>
+
+            <p>Typical files under the state path include validator identity files, signer material, RocksDB chain state, and <code>known-peers.json</code>. Preserving that directory preserves the validator identity and local progress.</p>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Why domains instead of IPs?</div>
+                Use <code>seed-01.moltchain.network</code> and <code>seed-02.moltchain.network</code> for bootstrap peers. Domains let MoltChain rotate seed infrastructure without forcing operators or agents to change commands or wait for a new binary.
+            </div>
+
+            <h3>Option B: Repo Workflow</h3>
+
+            <p>If you are building from source or using the helper scripts, clone the repository and use the scripted workflow:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>git clone https://github.com/lobstercove/moltchain.git
+cd moltchain
+./moltchain-start.sh testnet</code></pre>
+            </div>
+
+            <p>The start script will automatically build the binary, create genesis (if this is the first validator), deploy all 27 smart contracts, seed AMM pools, and fund the insurance reserve. Everything is idempotent — run it again and it picks up where it left off.</p>
+
+            <h4>Port Assignments</h4>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Network</th><th>RPC</th><th>WebSocket</th><th>P2P</th><th>Signer</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Testnet</td><td><code>8899</code></td><td><code>8900</code></td><td><code>7001</code></td><td><code>9201</code></td></tr>
+                    <tr><td>Mainnet</td><td><code>9899</code></td><td><code>9900</code></td><td><code>8001</code></td><td><code>9201</code></td></tr>
+                </tbody>
+            </table>
+
+            <p>You can run <strong>both</strong> testnet and mainnet on the same machine — they use different ports and separate data directories.</p>
+
+            <h4>Joining an Existing Network</h4>
+
+            <p>To join a network with existing validators, pass one or more bootstrap peers. Domains are preferred over raw IPs:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>./moltchain-start.sh testnet --bootstrap seed-01.moltchain.network:7001</code></pre>
+            </div>
+
+            <h4>Stop / Restart</h4>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Stop
+./moltchain-stop.sh testnet
+
+# Full reset (wipe all state and start fresh)
+./reset-blockchain.sh testnet
+./moltchain-start.sh testnet</code></pre>
+            </div>
+
+            <h3>Option C: Build from Source (Manual)</h3>
+
+            <p>If you prefer manual control, build the binary and run it directly. Requires Rust 1.75+ stable toolchain.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>git clone https://github.com/lobstercove/moltchain.git
+cd moltchain
+cargo build --release
+
+# Start — the built-in supervisor auto-restarts on stalls/crashes
+./target/release/moltchain-validator \
+    --network testnet \
+    --rpc-port 8899 \
+    --ws-port 8900 \
+    --p2p-port 7001 \
+    --db-path ./data/state-testnet \
+    --bootstrap-peers seed-01.moltchain.network:7001,seed-02.moltchain.network:7001
+
+# Disable the supervisor (e.g. when using systemd Restart=on-failure)
+./target/release/moltchain-validator --no-watchdog \
+    --network testnet --rpc-port 8899 --p2p-port 7001 \
+    --bootstrap-peers seed-01.moltchain.network:7001,seed-02.moltchain.network:7001</code></pre>
+            </div>
+
+            <h3>Option D: Docker</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>docker-compose up validator</code></pre>
+            </div>
+
+            <p>See the <a href="#docker-deployment">Docker Deployment</a> section below for full details.</p>
+
+            <h3>Initialize Validator Identity</h3>
+
+            <p>Generate a validator keypair. This Ed25519 key is your node's on-chain identity. The start script does this automatically, but you can also do it manually:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>molt init --output ~/.moltchain/validator-keypair.json
+
+<i class="fa-solid fa-shrimp"></i> New validator keypair generated
+  Identity: Mo1tVa1idAtoR...xYz789
+  Saved to: ~/.moltchain/validator-keypair.json</code></pre>
+            </div>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Back Up Your Keypair</div>
+                Your validator keypair controls your staked funds. Back it up securely and never expose it in public repositories.
+            </div>
+
+            <!-- ========== 3. CONFIGURATION ========== -->
+            <h2 id="configuration">Configuration</h2>
+
+            <p>MoltChain validators are currently configured via <strong>CLI flags</strong> when starting the binary. The section labels below (for example <code>[network]</code> and <code>[rpc]</code>) are conceptual groupings for readability, not literal TOML sections consumed by the validator today. A real <code>config.toml</code> input format is planned for a future release.</p>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
+                These settings map to command-line flags: <code>--network</code>, <code>--p2p-port</code>, <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>, <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>, <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>, <code>--dev-mode</code>, <code>--import-key</code>. They are documentation aliases, not direct TOML keys parsed by the current binary.
+            </div>
+
+            <!-- [validator] -->
+            <h3><span class="config-section-label">[validator]</span></h3>
+            <p>Core validator identity and data paths.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>keypair_path</code></td>
+                        <td>String</td>
+                        <td><code>~/.moltchain/validator-keypair.json</code></td>
+                        <td>Path to the validator Ed25519 keypair JSON file. Generate with <code>molt init</code>.</td>
+                    </tr>
+                    <tr>
+                        <td><code>data_dir</code></td>
+                        <td>String</td>
+                        <td><code>~/.moltchain/data</code></td>
+                        <td>Directory for blockchain state, ledger, and snapshots.</td>
+                    </tr>
+                    <tr>
+                        <td><code>enable_validation</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Set to <code>false</code> to run as a full-node observer (no block production).</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [network] -->
+            <h3><span class="config-section-label">[network]</span></h3>
+            <p>Peer-to-peer networking and gossip settings.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>p2p_port</code></td>
+                        <td>Integer</td>
+                        <td><code>7001</code></td>
+                        <td>QUIC transport listening port for P2P gossip and block propagation. Testnet default: 7001, Mainnet: 8001.</td>
+                    </tr>
+                    <tr>
+                        <td><code>rpc_port</code></td>
+                        <td>Integer</td>
+                        <td><code>8899</code></td>
+                        <td>JSON-RPC HTTP server port. Testnet default: 8899, Mainnet: 9899.</td>
+                    </tr>
+                    <tr>
+                        <td><code>seed_nodes</code></td>
+                        <td>Array</td>
+                        <td><code>[]</code></td>
+                        <td>Bootstrap peers. Testnet: <code>["seed1.moltchain.io:7001", "seed2.moltchain.io:7001"]</code></td>
+                    </tr>
+                    <tr>
+                        <td><code>enable_p2p</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable P2P networking. Disable for local-only testing.</td>
+                    </tr>
+                    <tr>
+                        <td><code>gossip_interval</code></td>
+                        <td>Integer</td>
+                        <td><code>10</code></td>
+                        <td>Gossip protocol interval in seconds.</td>
+                    </tr>
+                    <tr>
+                        <td><code>cleanup_timeout</code></td>
+                        <td>Integer</td>
+                        <td><code>300</code></td>
+                        <td>Seconds before cleaning up stale peer connections.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [consensus] -->
+            <h3><span class="config-section-label">[consensus]</span></h3>
+            <p>BFT consensus and staking parameters.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>min_validator_stake</code></td>
+                        <td>Integer</td>
+                        <td><code>75000000000000</code></td>
+                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 75,000 MOLT (75K) minimum to participate in consensus. Bootstrap validators receive a 100,000 MOLT grant (25K buffer above minimum); validator 201+ must self-fund at least 75,000 MOLT.</td>
+                    </tr>
+                    <tr>
+                        <td><code>slot_duration_ms</code></td>
+                        <td>Integer</td>
+                        <td><code>400</code></td>
+                        <td>Target block slot time in milliseconds. MoltChain targets ~2,500 TPS at 400ms slots.</td>
+                    </tr>
+                    <tr>
+                        <td><code>enable_slashing</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable slashing for double-signing and other protocol violations.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [graduation] -->
+            <h3><span class="config-section-label">[graduation]</span></h3>
+            <p>Validator graduation and anti-fraud settings (CLI flags).</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>--dev-mode</code></td>
+                        <td>Boolean</td>
+                        <td><code>false</code></td>
+                        <td>Skip machine fingerprint uniqueness check. Allows multiple validators per machine (for local testing). Uses SHA-256(pubkey) as fingerprint. <strong>Blocked on mainnet.</strong></td>
+                    </tr>
+                    <tr>
+                        <td><code>--import-key &lt;path&gt;</code></td>
+                        <td>String</td>
+                        <td>—</td>
+                        <td>Import an existing keypair from another machine. Copies <code>&lt;path&gt;</code> to the validator's data directory. The validator resumes with its existing stake, debt, and progress. Fingerprint auto-updates on next announcement.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-key"></i> Machine Migration</div>
+                To move a validator to a new machine: (1) Stop the validator on the old machine. (2) Copy the keypair file to the new machine. (3) Start with <code>--import-key /path/to/keypair.json</code>. All progress (debt, earned rewards, blocks produced) is tied to the keypair, not the machine. The machine fingerprint auto-updates with a 2-day cooldown between migrations.
+            </div>
+
+            <!-- [rpc] -->
+            <h3><span class="config-section-label">[rpc]</span></h3>
+            <p>JSON-RPC server configuration.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>enable_rpc</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable the JSON-RPC server.</td>
+                    </tr>
+                    <tr>
+                        <td><code>bind_address</code></td>
+                        <td>String</td>
+                        <td><code>"0.0.0.0"</code></td>
+                        <td>Bind address. Use <code>127.0.0.1</code> for localhost-only access.</td>
+                    </tr>
+                    <tr>
+                        <td><code>enable_cors</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable Cross-Origin Resource Sharing for browser clients.</td>
+                    </tr>
+                    <tr>
+                        <td><code>max_connections</code></td>
+                        <td>Integer</td>
+                        <td><code>1000</code></td>
+                        <td>Maximum concurrent RPC connections.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [logging] -->
+            <h3><span class="config-section-label">[logging]</span></h3>
+            <p>Logging verbosity and output targets.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>level</code></td>
+                        <td>String</td>
+                        <td><code>"info"</code></td>
+                        <td>Log level. One of: <code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>.</td>
+                    </tr>
+                    <tr>
+                        <td><code>log_to_file</code></td>
+                        <td>Boolean</td>
+                        <td><code>false</code></td>
+                        <td>Write logs to a file in addition to stdout.</td>
+                    </tr>
+                    <tr>
+                        <td><code>log_file_path</code></td>
+                        <td>String</td>
+                        <td><code>~/.moltchain/validator.log</code></td>
+                        <td>Path to the log file (when <code>log_to_file = true</code>).</td>
+                    </tr>
+                    <tr>
+                        <td><code>log_format</code></td>
+                        <td>String</td>
+                        <td><code>"text"</code></td>
+                        <td>Output format. <code>"json"</code> for structured logging (recommended for production).</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [monitoring] -->
+            <h3><span class="config-section-label">[monitoring]</span></h3>
+            <p>Prometheus metrics and health checks.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>enable_metrics</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable the Prometheus-compatible metrics HTTP endpoint.</td>
+                    </tr>
+                    <tr>
+                        <td><code>metrics_port</code></td>
+                        <td>Integer</td>
+                        <td><code>9100</code></td>
+                        <td>Port for the Prometheus metrics server.</td>
+                    </tr>
+                    <tr>
+                        <td><code>enable_health_check</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable the <code>/health</code> HTTP endpoint for load balancers.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [genesis] -->
+            <h3><span class="config-section-label">[genesis]</span></h3>
+            <p>Genesis block and chain identity.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>genesis_path</code></td>
+                        <td>String</td>
+                        <td><code>"./genesis.json"</code></td>
+                        <td>Path to the genesis configuration file. Required on first startup.</td>
+                    </tr>
+                    <tr>
+                        <td><code>chain_id</code></td>
+                        <td>String</td>
+                        <td><code>"moltchain-testnet-1"</code></td>
+                        <td>Chain identifier. Must match the genesis file exactly.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [performance] -->
+            <h3><span class="config-section-label">[performance]</span></h3>
+            <p>Tuning options for throughput and resource usage.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>worker_threads</code></td>
+                        <td>Integer</td>
+                        <td><code>0</code></td>
+                        <td>Tokio worker threads. <code>0</code> = auto-detect CPU core count.</td>
+                    </tr>
+                    <tr>
+                        <td><code>optimize_block_production</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Enable block production optimizations (parallel tx execution, pipelining).</td>
+                    </tr>
+                    <tr>
+                        <td><code>tx_batch_size</code></td>
+                        <td>Integer</td>
+                        <td><code>1000</code></td>
+                        <td>Maximum transactions per block batch.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [security] -->
+            <h3><span class="config-section-label">[security]</span></h3>
+            <p>Security hardening and access control.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>check_firewall</code></td>
+                        <td>Boolean</td>
+                        <td><code>true</code></td>
+                        <td>Check that required ports are accessible on startup.</td>
+                    </tr>
+                    <tr>
+                        <td><code>require_encryption</code></td>
+                        <td>Boolean</td>
+                        <td><code>false</code></td>
+                        <td>Require TLS for all RPC connections.</td>
+                    </tr>
+                    <tr>
+                        <td><code>allowed_rpc_methods</code></td>
+                        <td>Array</td>
+                        <td><code>[]</code></td>
+                        <td>Whitelist of RPC methods. Empty = all methods enabled.</td>
+                    </tr>
+                    <tr>
+                        <td><code>rpc_rate_limit</code></td>
+                        <td>Integer</td>
+                        <td><code>100</code></td>
+                        <td>Maximum RPC requests per second per client.</td>
+                    </tr>
+                    <tr>
+                        <td><code>admin_token</code></td>
+                        <td>String</td>
+                        <td><code>""</code></td>
+                        <td>Bearer token for admin RPC endpoints. Generate with <code>openssl rand -hex 32</code>. Empty = admin endpoints disabled.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- [watchdog] -->
+            <h3><span class="config-section-label">[watchdog]</span></h3>
+            <p>Built-in self-healing supervisor. The validator automatically monitors itself for stalls (deadlocks, resource exhaustion) and restarts when needed. No external scripts or cron jobs required — just run the binary.</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Key</th><th>CLI Flag</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>watchdog_timeout</code></td>
+                        <td><code>--watchdog-timeout</code></td>
+                        <td><code>120</code></td>
+                        <td>Seconds of inactivity (no blocks produced or received) before the watchdog triggers a restart.</td>
+                    </tr>
+                    <tr>
+                        <td><code>max_restarts</code></td>
+                        <td><code>--max-restarts</code></td>
+                        <td><code>50</code></td>
+                        <td>Maximum number of automatic restarts before the supervisor gives up and exits. Set to <code>0</code> for unlimited.</td>
+                    </tr>
+                    <tr>
+                        <td><code>no_watchdog</code></td>
+                        <td><code>--no-watchdog</code></td>
+                        <td><code>false</code></td>
+                        <td>Disable the built-in supervisor entirely. Use this when running under systemd or another process manager that handles restarts.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-shield-alt"></i> How It Works</div>
+                The validator binary runs as a <strong>supervisor + worker</strong> pair. The supervisor launches the validator as a child process, monitors its health, and restarts it with exponential backoff (1s → 2s → 4s → … → 30s cap) on crashes or stall exits. Clean shutdowns (Ctrl+C, SIGTERM) stop both processes gracefully. When using systemd, pass <code>--no-watchdog</code> since systemd's <code>Restart=on-failure</code> already provides external supervision.
+            </div>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Tip — Minimal Config</div>
+                You don't need every setting. A minimal configuration for testnet only needs <code>--network testnet</code>, <code>--p2p-port</code>, and <code>--rpc-port</code> flags -- everything else uses sane defaults.
+            </div>
+
+            <!-- ========== 4. STAKING ========== -->
+            <h2 id="staking">Staking</h2>
+
+            <p>Validators must stake MOLT tokens to participate in consensus. Stake weight determines your share of block production slots and rewards.</p>
+
+            <h3>Stake via CLI</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt validator register --rpc-url https://testnet-rpc.moltchain.io
+
+<i class="fa-solid fa-shrimp"></i> Registering validator Mo1tVa1idAtoR...xYz789
+
+  Transaction: 5bN2...kQrT
+  Bootstrap:   100,000.000000000 MOLT (granted, #47 of 200)
+  Debt:        100,000.000000000 MOLT (repay via 50% of rewards, or 75% at ≥95% uptime)
+  Uptime:      98.5% (≥ 95% → 75/25 debt/liquid split)
+  Status:      Finalized (slot 1,204,817)
+
+<i class="fa-solid fa-check"></i> Validator registered! Your node will enter the active set next epoch.</code></pre>
+            </div>
+
+            <h3>Minimum Stake</h3>
+            <ul>
+                <li><strong>Bootstrap Grant (first 200 validators):</strong> 100,000 MOLT (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost from the treasury</li>
+                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 75,000 MOLT minimum — immediately fully vested, no debt</li>
+                <li><strong>Vesting (standard):</strong> 50% of earned rewards go to debt repayment, 50% liquid — this is the default split for all bootstrap validators</li>
+                <li><strong>Performance bonus (≥95% uptime):</strong> 75% of earned rewards go to debt repayment, 25% liquid — accelerates graduation by ~1.5× (via <code>PERFORMANCE_BONUS_BPS = 15000</code>)</li>
+                <li><strong>Time cap:</strong> All remaining debt is forgiven after 547 days (~18 months) regardless of repayment progress</li>
+            </ul>
+
+            <h3>Graduation System</h3>
+            <p>Bootstrap validators go through a <strong>graduation</strong> process from <code>Bootstrapping</code> to <code>FullyVested</code>:</p>
+            <table class="config-table">
+                <thead>
+                    <tr><th>Path</th><th>Reward Split</th><th>Condition</th><th>Effect</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Standard</td>
+                        <td>50% debt / 50% liquid</td>
+                        <td>Bootstrap debt reaches 0</td>
+                        <td>Status → <code>FullyVested</code>, 100% liquid rewards</td>
+                    </tr>
+                    <tr>
+                        <td>Performance Bonus</td>
+                        <td>75% debt / 25% liquid</td>
+                        <td>≥95% uptime (9,500+ basis points)</td>
+                        <td>Same graduation, reached ~1.5× sooner</td>
+                    </tr>
+                    <tr>
+                        <td>Time Cap</td>
+                        <td>N/A</td>
+                        <td>547 days since validator started (~118M slots)</td>
+                        <td>Remaining debt forgiven, immediate graduation</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Uptime Calculation</h3>
+            <p>Uptime is calculated in basis points (0–10,000 = 0%–100%) based on actual block production vs. expected share:</p>
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Formula</span>
+                </div>
+                <pre><code>expected_blocks = (current_slot - start_slot) / num_active_validators
+uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code></pre>
+            </div>
+            <ul>
+                <li><strong>Fair share:</strong> With N active validators, each one is expected to produce 1/N of total blocks. A validator that produces its full share has 100% uptime (10,000 bps).</li>
+                <li><strong>Threshold:</strong> ≥ 9,500 bps (95%) triggers the performance bonus (75/25 split).</li>
+                <li><strong>Edge cases:</strong> New validators with no slot history default to 0 bps. If fewer slots have elapsed than validators exist, validators with at least 1 block get benefit of the doubt (10,000 bps).</li>
+            </ul>
+
+            <h3>Anti-Sybil Protection</h3>
+            <p>Each validator collects a <strong>machine fingerprint</strong> (SHA-256 hash of platform UUID + MAC address) at startup. This fingerprint is:</p>
+            <ul>
+                <li>Included in &amp; signed with validator announcements</li>
+                <li>Registered in the stake pool — one fingerprint per bootstrap validator</li>
+                <li>Prevents running 50 validators on one machine to steal 50 bootstrap grants</li>
+            </ul>
+            <p><strong>Rule:</strong> One machine = one bootstrap grant. Self-funded validators (201+) are not restricted by fingerprint.</p>
+
+            <h3>ReefStake Mechanism</h3>
+            <p>MoltChain uses <strong>ReefStake</strong>, a delegated proof-of-stake variant inspired by coral reef ecosystems:</p>
+            <ul>
+                <li><strong>Validator Coral:</strong> Each validator is a "coral head." Delegators attach stake to a validator, growing the reef.</li>
+                <li><strong>Epoch Rotation:</strong> The active validator set is recalculated every epoch (~4 hours). The top validators by total stake are selected.</li>
+                <li><strong>Reward Distribution:</strong> Block rewards (heartbeat + transaction fees) are split proportionally between the validator (commission) and delegators.</li>
+                <li><strong>Slashing:</strong> Double-signing or extended downtime results in a percentage of staked MOLT being burned. With <code>enable_slashing = true</code>, evidence is gossiped via P2P and processed by the <code>SlashingTracker</code>.</li>
+            </ul>
+
+            <h3>Check Stake Status</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt stake status --rpc-url https://testnet-rpc.moltchain.io
+
+  Identity:    Mo1tVa1idAtoR...xYz789
+  Stake:       100,000.000000000 MOLT (bootstrap)
+  Delegated:   450.000000000 MOLT
+  Total:       100,450.000000000 MOLT
+  Active:      Yes (rank #7 of 21)
+  Commission:  10%
+  Last Vote:   slot 1,205,142</code></pre>
+            </div>
+
+            <!-- ========== 5. MONITORING ========== -->
+            <div id="operations"></div>
+            <h2 id="monitoring">Monitoring</h2>
+
+            <h3>Prometheus Metrics</h3>
+
+            <p>When <code>[monitoring] enable_metrics = true</code>, the validator exposes a Prometheus-compatible endpoint at <code>http://&lt;host&gt;:9100/metrics</code>.</p>
+
+            <h4>Key Metrics</h4>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Metric</th><th>Type</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>moltchain_block_height</code></td><td>Gauge</td><td>Current finalized block height</td></tr>
+                    <tr><td><code>moltchain_tps</code></td><td>Gauge</td><td>Transactions per second (rolling 10s window)</td></tr>
+                    <tr><td><code>moltchain_peer_count</code></td><td>Gauge</td><td>Number of connected P2P peers</td></tr>
+                    <tr><td><code>moltchain_mempool_size</code></td><td>Gauge</td><td>Pending transactions in the mempool</td></tr>
+                    <tr><td><code>moltchain_slot_duration_ms</code></td><td>Histogram</td><td>Actual slot processing time</td></tr>
+                    <tr><td><code>moltchain_vote_count</code></td><td>Counter</td><td>Total votes cast by this validator</td></tr>
+                    <tr><td><code>moltchain_blocks_produced</code></td><td>Counter</td><td>Blocks produced by this validator</td></tr>
+                </tbody>
+            </table>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Fetch metrics
+curl -s http://localhost:9100/metrics | grep moltchain_
+
+# Example output
+moltchain_block_height 1205247
+moltchain_tps 842
+moltchain_peer_count 18
+moltchain_mempool_size 127</code></pre>
+            </div>
+
+            <h3>Health Check</h3>
+
+            <p>The RPC server provides a health check via the <code>getHealth</code> JSON-RPC method:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>curl -s http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
+
+# Response: {"jsonrpc":"2.0","result":"ok","id":1}</code></pre>
+            </div>
+
+            <h3>Log Levels</h3>
+
+            <p>Control verbosity with the <code>RUST_LOG</code> environment variable or the <code>[logging] level</code> config key:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Per-module granularity via RUST_LOG
+RUST_LOG=info,moltchain_p2p=debug,moltchain_rpc=warn moltchain-validator
+
+# Or set in config.toml
+# [logging]
+# level = "debug"
+# log_format = "json"</code></pre>
+            </div>
+
+            <!-- ========== 6. DOCKER DEPLOYMENT ========== -->
+            <h2 id="docker-deployment">Docker Deployment</h2>
+
+            <p>The recommended production deployment uses Docker Compose. The provided <code>docker-compose.yml</code> runs the validator, faucet, and optional explorer.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">YAML — docker-compose.yml</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>version: "3.8"
+
+services:
+  validator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moltchain-validator
+    restart: unless-stopped
+    ports:
+      - "7001:7001"   # P2P (testnet)
+      - "8899:8899"   # RPC (testnet)
+      - "8900:8900"   # WebSocket (testnet)
+      - "9100:9100"   # Metrics
+    volumes:
+      - moltchain-data:/var/lib/moltchain
+    environment:
+      - RUST_LOG=info
+      - MOLTCHAIN_NETWORK=testnet
+      - MOLTCHAIN_RPC_PORT=8899
+      - MOLTCHAIN_WS_PORT=8900
+      - MOLTCHAIN_P2P_PORT=7001
+      - MOLTCHAIN_SIGNER_BIND=0.0.0.0:9201
+      - MOLTCHAIN_ADMIN_TOKEN=${MOLTCHAIN_ADMIN_TOKEN:-}
+    networks:
+      - moltchain
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  moltchain-data:
+    driver: local
+
+networks:
+  moltchain:
+    driver: bridge</code></pre>
+            </div>
+
+            <h3>Volume Mounts</h3>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Mount</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>moltchain-data:/var/lib/moltchain</code></td><td>Persistent blockchain state — survives container restarts and upgrades.</td></tr>
+                    <tr><td><code>./config.toml:/etc/moltchain/config.toml:ro</code></td><td>Optional configuration file (future). Currently all settings are passed as CLI flags / environment variables in docker-compose.</td></tr>
+                </tbody>
+            </table>
+
+            <h3>Running</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Start in foreground (see logs)
+docker-compose up validator
+
+# Start in background
+docker-compose up -d validator
+
+# View logs
+docker-compose logs -f validator
+
+# Stop
+docker-compose down</code></pre>
+            </div>
+
+            <h3>Health Check</h3>
+            <p>Docker will automatically restart the validator if the <code>getHealth</code> RPC call fails 3 consecutive times. The <code>start_period: 15s</code> gives the node time to initialize before checks begin.</p>
+
+            <!-- ========== 7. SYSTEMD DEPLOYMENT ========== -->
+            <h2 id="systemd-deployment">Systemd Deployment</h2>
+
+            <p>For bare-metal Linux servers, use the provided setup script to install a systemd service per network.</p>
+
+            <h3>Setup Script</h3>
+
+            <p>Run the setup script as root. It accepts one or both network names:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Build first
+cargo build --release
+
+# Setup for testnet only
+sudo bash deploy/setup.sh testnet
+
+# Setup for both networks on the same machine
+sudo bash deploy/setup.sh testnet mainnet</code></pre>
+            </div>
+
+            <p>The script performs:</p>
+            <ul>
+                <li>Creates a dedicated <code>moltchain</code> system user/group (no login shell)</li>
+                <li>Creates directories: <code>/etc/moltchain</code>, <code>/var/lib/moltchain</code>, <code>/var/log/moltchain</code></li>
+                <li>Copies binaries to <code>/usr/local/bin/</code></li>
+                <li>Generates <code>/etc/moltchain/env-testnet</code> and/or <code>/etc/moltchain/env-mainnet</code> with correct port assignments</li>
+                <li>Installs per-network systemd services: <code>moltchain-validator-testnet</code> and <code>moltchain-validator-mainnet</code></li>
+            </ul>
+
+            <h3>Systemd Unit File</h3>
+
+            <p>The service reads its port configuration from the environment file. Key flags match <code>moltchain-start.sh</code>:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">INI — moltchain-validator.service</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>[Unit]
+Description=MoltChain Validator Node
+Documentation=https://docs.moltchain.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=moltchain
+Group=moltchain
+# --no-watchdog: systemd handles restarts via Restart=on-failure
+ExecStart=/usr/local/bin/moltchain-validator --no-watchdog \
+    --network ${MOLTCHAIN_NETWORK} \
+    --rpc-port ${MOLTCHAIN_RPC_PORT} \
+    --ws-port ${MOLTCHAIN_WS_PORT} \
+    --p2p-port ${MOLTCHAIN_P2P_PORT} \
+    --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK}
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/moltchain /var/log/moltchain
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Environment
+Environment=RUST_LOG=info
+EnvironmentFile=/etc/moltchain/env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moltchain-validator
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+            </div>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Security Hardening</div>
+                The unit file includes Linux security features: <code>NoNewPrivileges</code>, <code>ProtectSystem=strict</code>, <code>ProtectHome</code>, <code>PrivateTmp</code>, and kernel protection directives. The process runs as the unprivileged <code>moltchain</code> user with write access only to <code>/var/lib/moltchain</code> and <code>/var/log/moltchain</code>.
+            </div>
+
+            <h3>Service Management</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Start the testnet validator
+sudo systemctl start moltchain-validator-testnet
+
+# Enable on boot
+sudo systemctl enable moltchain-validator-testnet
+
+# Check status
+sudo systemctl status moltchain-validator-testnet
+
+# Follow logs
+journalctl -u moltchain-validator-testnet -f
+
+# Restart after config change
+sudo systemctl restart moltchain-validator-testnet
+
+# Mainnet uses the same commands with -mainnet suffix
+sudo systemctl start moltchain-validator-mainnet</code></pre>
+            </div>
+
+            <!-- ========== 8. TROUBLESHOOTING ========== -->
+            <h2 id="troubleshooting">Troubleshooting</h2>
+
+            <h3>Port Conflicts</h3>
+            <p>If the validator fails to start with "address already in use":</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Find what's using the port (testnet example)
+sudo lsof -i :7001   # P2P
+sudo lsof -i :8899   # RPC
+
+# The port scheme is fixed per network — see the Installation section above</code></pre>
+            </div>
+
+            <h3>Insufficient Stake</h3>
+            <p>Your node won't produce blocks without meeting the minimum stake. Check your balance and stake:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>molt balance --rpc-url https://testnet-rpc.moltchain.io
+molt stake status --rpc-url https://testnet-rpc.moltchain.io</code></pre>
+            </div>
+
+            <h3>Sync Failures</h3>
+            <p>If your node can't sync with the network:</p>
+            <ul>
+                <li>Verify <code>seed_nodes</code> are correct and reachable</li>
+                <li>Check that the P2P port is open in your firewall (<code>sudo ufw allow 7001/tcp</code> for testnet)</li>
+                <li>Ensure <code>chain_id</code> matches the network you're connecting to</li>
+                <li>Try increasing log level: <code>RUST_LOG=debug,moltchain_p2p=trace</code></li>
+            </ul>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Test connectivity to seed nodes
+nc -zv seed1.moltchain.io 7001
+
+# Check current block height via RPC (testnet port 8899)
+curl -s http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBlockHeight"}' | jq .result</code></pre>
+            </div>
+
+            <h3>Disk Full</h3>
+            <p>The ledger grows over time. Monitor disk usage and plan for growth:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Check data directory size
+du -sh /var/lib/moltchain/
+
+# Check available disk
+df -h /var/lib/moltchain/
+
+# Set up monitoring alert (example with Prometheus Alertmanager)
+# Alert when disk usage > 80%</code></pre>
+            </div>
+
+            <h3>Debug Commands</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Full node status dump (testnet RPC port)
+curl -s http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' | jq
+
+# Peer list
+curl -s http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getClusterNodes"}' | jq
+
+# Validator set
+curl -s http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getValidators"}' | jq
+
+# Check systemd logs for crash details
+journalctl -u moltchain-validator-testnet --since "1 hour ago" --no-pager
+
+# Run validator with maximum verbosity (testnet)
+RUST_LOG=trace moltchain-validator --network testnet --rpc-port 8899 --ws-port 8900 --p2p-port 7001 --db-path /var/lib/moltchain/state-testnet 2>&1 | head -200</code></pre>
+            </div>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Need Help?</div>
+                Join the MoltChain Discord <code>#validators</code> channel or open an issue on <a href="https://github.com/lobstercove/moltchain/issues">GitHub</a> with your logs and config (redact your keypair and admin token).
+            </div>
+
+        </main>
+
+        <div class="toc"></div>
+    </div>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+    <script>
+    (function() {
+        // Wire up nav search input to open ⌘K overlay
+        const navInput = document.getElementById('searchInput');
+        if (navInput) {
+            navInput.addEventListener('focus', () => {
+                if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                navInput.blur();
+            });
+        }
+    })();
+    </script>
+</body>
+</html>

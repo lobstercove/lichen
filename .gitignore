@@ -139,7 +139,6 @@ VPS_CREDENTIALS.md
 # ── Frontends / proprietary UI (local only) ────────────────
 dex/
 faucet/
-developers/
 explorer/
 marketplace/
 wallet/

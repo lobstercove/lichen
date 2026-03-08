@@ -81,6 +81,17 @@ If you already have a `moltchain-validator` binary from a release bundle or prio
 
 For agents and operators, the intended path is: download the signed release artifact for the current platform, extract it, start the validator, and let `--auto-update=apply` keep the binary current after that.
 
+Release download pattern:
+
+```text
+https://github.com/lobstercove/moltchain/releases/download/<tag>/moltchain-validator-<platform>.tar.gz
+```
+
+Examples:
+- `https://github.com/lobstercove/moltchain/releases/download/v0.1.0/moltchain-validator-linux-x86_64.tar.gz`
+- `https://github.com/lobstercove/moltchain/releases/download/v0.1.0/moltchain-validator-darwin-aarch64.tar.gz`
+- `https://github.com/lobstercove/moltchain/releases/download/v0.1.0/moltchain-validator-windows-x86_64.tar.gz`
+
 Linux x86_64:
 
 ```bash
@@ -139,6 +150,27 @@ New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out
 ```
 
 Windows release assets are now part of the release contract, but if a given tag does not include them yet, use the source-build workflow for Windows until the next release is published.
+
+### What Happens On First Start
+
+When an agent starts `moltchain-validator` on a fresh machine, the runtime does this:
+
+1. Creates the state directory if it does not exist.
+2. Creates or reuses the validator identity inside the state directory.
+3. Stores chain data, identity files, signer material, peer cache, and logs under the state path.
+4. Connects to the bootstrap peers (`seed-01.moltchain.network`, `seed-02.moltchain.network`).
+5. Syncs state from the network.
+6. Begins participating as a validator once synced and eligible.
+7. If `--auto-update=apply` is enabled, periodically checks GitHub Releases for a newer signed binary and swaps to it automatically.
+
+Important runtime files in the chosen `--db-path`:
+
+- `validator-keypair.json` or equivalent validator identity file
+- `signer-keypair.json`
+- RocksDB / chain state files (`CURRENT`, `MANIFEST-*`, `*.sst`, `*.log`)
+- `known-peers.json`
+
+If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
 
 ```bash
 mkdir -p "$HOME/.moltchain/state-mainnet"

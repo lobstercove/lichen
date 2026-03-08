@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JavaScript SDK - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html" class="active">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Getting Started</h3>
+                <a href="#installation" class="sidebar-link active">Installation</a>
+                <a href="#quick-start" class="sidebar-link">Quick Start</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">SDK Languages</h3>
+                <a href="sdk-js.html" class="sidebar-link active">JavaScript / TypeScript</a>
+                <a href="sdk-python.html" class="sidebar-link">Python</a>
+                <a href="sdk-rust.html" class="sidebar-link">Rust</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Connection</h3>
+                <a href="#connection-constructor" class="sidebar-link">Constructor</a>
+                <a href="#connection-chain" class="sidebar-link">Chain Queries</a>
+                <a href="#connection-account" class="sidebar-link">Account Methods</a>
+                <a href="#connection-tx" class="sidebar-link">Transaction Methods</a>
+                <a href="#connection-validator" class="sidebar-link">Validator &amp; Staking</a>
+                <a href="#connection-contract" class="sidebar-link">Contract Methods</a>
+                <a href="#connection-program" class="sidebar-link">Program Methods</a>
+                <a href="#connection-nft" class="sidebar-link">NFT Methods</a>
+                <a href="#connection-ws" class="sidebar-link">WebSocket Subscriptions</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Keypair</h3>
+                <a href="#keypair-generate" class="sidebar-link">generate()</a>
+                <a href="#keypair-fromSeed" class="sidebar-link">fromSeed()</a>
+                <a href="#keypair-pubkey" class="sidebar-link">pubkey()</a>
+                <a href="#keypair-sign" class="sidebar-link">sign()</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">PublicKey</h3>
+                <a href="#publickey-constructor" class="sidebar-link">Constructor</a>
+                <a href="#publickey-methods" class="sidebar-link">Methods</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Transaction</h3>
+                <a href="#transaction-types" class="sidebar-link">Types</a>
+                <a href="#transaction-builder" class="sidebar-link">TransactionBuilder</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Patterns</h3>
+                <a href="#error-handling" class="sidebar-link">Error Handling</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Developers</a>
+                <span class="separator">›</span>
+                <a href="sdk-js.html">SDK</a>
+                <span class="separator">›</span>
+                <span>JavaScript</span>
+            </div>
+
+            <h1>JavaScript / TypeScript SDK</h1>
+            <p>The official JavaScript SDK for MoltChain. Full TypeScript types, async/await API, and integrated WebSocket subscriptions.</p>
+
+            <!-- Installation -->
+            <section id="installation">
+                <h2>Installation</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>npm install @moltchain/sdk</code></pre>
+                </div>
+                <div class="callout callout-info">
+                    <p>The SDK requires Node.js 18+ or a browser environment with <code>fetch</code> support. WebSocket features require the <code>ws</code> package in Node.js (included as a dependency).</p>
+                </div>
+            </section>
+
+            <!-- Quick Start -->
+            <section id="quick-start">
+                <h2>Quick Start</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>import { Connection, Keypair, PublicKey, TransactionBuilder } from '@moltchain/sdk';
+
+// Connect to a local validator
+const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');
+
+// Generate a keypair
+const keypair = Keypair.generate();
+console.log('Address:', keypair.pubkey().toBase58());
+
+// Check balance
+const balance = await conn.getBalance(keypair.pubkey());
+console.log(`Balance: ${balance.molt} MOLT (${balance.shells} shells)`);
+
+// Build and send a transfer
+const recipient = new PublicKey('RecipientBase58Address...');
+const blockhash = await conn.getRecentBlockhash();
+
+const tx = new TransactionBuilder()
+  .add(TransactionBuilder.transfer(keypair.pubkey(), recipient, 1_000_000_000))
+  .setRecentBlockhash(blockhash)
+  .buildAndSign(keypair);
+
+const signature = await conn.sendTransaction(tx);
+console.log('TX Signature:', signature);</code></pre>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- CONNECTION CLASS -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Connection Class</h2>
+
+            <div class="method-card" id="connection-constructor">
+                <h3 class="method-name">new Connection(rpcUrl, wsUrl?)</h3>
+                <p class="method-desc">Create a connection to a MoltChain validator node.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>rpcUrl</td><td><span class="param-type">string</span></td><td>Yes</td><td>HTTP JSON-RPC endpoint URL</td></tr>
+                            <tr><td>wsUrl</td><td><span class="param-type">string</span></td><td>No</td><td>WebSocket endpoint URL (required for subscriptions)</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const conn = new Connection('http://localhost:8899', 'ws://localhost:8900');</code></pre>
+                </div>
+            </div>
+
+            <!-- Chain Queries -->
+            <h3 id="connection-chain">Chain Queries</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getSlot(): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Get the current slot number.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const slot = await conn.getSlot();
+// 42</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getLatestBlock(): Promise&lt;Block&gt;</h3>
+                <p class="method-desc">Get the most recently produced block. Returns <code>{ slot, hash, parentHash, transactions, timestamp }</code>.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const block = await conn.getLatestBlock();
+console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getBlock(slot: number): Promise&lt;Block&gt;</h3>
+                <p class="method-desc">Get a block by slot number.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const block = await conn.getBlock(42);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getRecentBlockhash(): Promise&lt;string&gt;</h3>
+                <p class="method-desc">Get a recent blockhash for signing transactions.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getMetrics(): Promise&lt;Metrics&gt;</h3>
+                <p class="method-desc">Get chain performance metrics: <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getChainStatus(): Promise&lt;ChainStatus&gt;</h3>
+                <p class="method-desc">Get comprehensive status: <code>{ currentSlot, validatorCount, totalStake, tps, totalTransactions, totalBlocks, averageBlockTime, isHealthy }</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">health(): Promise&lt;{ status: string }&gt;</h3>
+                <p class="method-desc">Liveness probe. Returns <code>{ status: "ok" }</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getNetworkInfo(): Promise&lt;NetworkInfo&gt;</h3>
+                <p class="method-desc">Get network info: <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getPeers(): Promise&lt;any[]&gt;</h3>
+                <p class="method-desc">Get connected P2P peers.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getTotalBurned(): Promise&lt;Balance&gt;</h3>
+                <p class="method-desc">Get total burned MOLT. Returns <code>{ shells, molt }</code>.</p>
+            </div>
+
+            <!-- Account Methods -->
+            <h3 id="connection-account">Account Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getBalance(pubkey: PublicKey): Promise&lt;Balance&gt;</h3>
+                <p class="method-desc">Get account balance in shells and MOLT.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>pubkey</td><td><span class="param-type">PublicKey</span></td><td>Yes</td><td>Account public key</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const balance = await conn.getBalance(new PublicKey('7xKXtg2CW87d...'));
+console.log(balance.shells); // 5000000000
+console.log(balance.molt);   // 5.0</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getAccount(pubkey: PublicKey): Promise&lt;Account&gt;</h3>
+                <p class="method-desc">Get raw account data: <code>{ shells, owner, executable, data }</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getAccountInfo(pubkey: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get enhanced account information with additional metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getTransactionHistory(pubkey: PublicKey, limit?: number): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get paginated transaction history for an account. Default limit is 10.</p>
+            </div>
+
+            <!-- Transaction Methods -->
+            <h3 id="connection-tx">Transaction Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">sendTransaction(transaction: Transaction): Promise&lt;string&gt;</h3>
+                <p class="method-desc">Serialize and submit a signed transaction to the mempool. Returns the transaction signature.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>transaction</td><td><span class="param-type">Transaction</span></td><td>Yes</td><td>A signed Transaction object</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();
+const tx = new TransactionBuilder()
+  .add(TransactionBuilder.transfer(from.pubkey(), to, 1_000_000_000))
+  .setRecentBlockhash(blockhash)
+  .buildAndSign(from);
+
+const sig = await conn.sendTransaction(tx);
+console.log('Signature:', sig);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getTransaction(signature: string): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Look up a transaction by its hex-encoded signature.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">simulateTransaction(transaction: Transaction): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Dry-run a transaction without committing it. Useful for fee estimation and validation.</p>
+            </div>
+
+            <!-- Validator & Staking -->
+            <h3 id="connection-validator">Validator &amp; Staking</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getValidators(): Promise&lt;Validator[]&gt;</h3>
+                <p class="method-desc">Get all registered validators with stake, reputation, blocks proposed, votes cast.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getValidatorInfo(pubkey: PublicKey): Promise&lt;Validator&gt;</h3>
+                <p class="method-desc">Get detailed information for a specific validator.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getValidatorPerformance(pubkey: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get performance metrics for a validator.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">stake(from: Keypair, validator: PublicKey, amount: number): Promise&lt;string&gt;</h3>
+                <p class="method-desc">Build, sign, and send a stake transaction. Amount is in shells.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const validator = new PublicKey('ValidatorPubkey...');
+const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">unstake(from: Keypair, validator: PublicKey, amount: number): Promise&lt;string&gt;</h3>
+                <p class="method-desc">Build, sign, and send an unstake request transaction.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getStakingStatus(pubkey: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get staking status for an account.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getStakingRewards(pubkey: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get accumulated staking rewards.</p>
+            </div>
+
+            <!-- Contract Methods -->
+            <h3 id="connection-contract">Contract Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getContractInfo(contractId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get information about a deployed smart contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getContractLogs(contractId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get execution logs emitted by a contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getContractAbi(contractId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get the ABI/IDL for a contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">setContractAbi(contractId: PublicKey, abi: any): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Set or update a contract's ABI (owner only).</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getAllContracts(): Promise&lt;any&gt;</h3>
+                <p class="method-desc">List all deployed contracts.</p>
+            </div>
+
+            <!-- Program Methods -->
+            <h3 id="connection-program">Program Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getProgram(programId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get program information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getPrograms(): Promise&lt;any&gt;</h3>
+                <p class="method-desc">List all deployed programs.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getProgramStats(programId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get execution statistics for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getProgramCalls(programId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get recent call history for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getProgramStorage(programId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <!-- NFT Methods -->
+            <h3 id="connection-nft">NFT Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">getCollection(collectionId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get NFT collection metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getNFT(collectionId: PublicKey, tokenId: number): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get a specific NFT by collection and token ID.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getNFTsByOwner(owner: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get all NFTs owned by an address.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getNFTsByCollection(collectionId: PublicKey): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get all NFTs in a collection.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">getNFTActivity(collectionId: PublicKey, tokenId: number): Promise&lt;any&gt;</h3>
+                <p class="method-desc">Get activity history for a specific NFT.</p>
+            </div>
+
+            <!-- WebSocket Subscriptions -->
+            <h3 id="connection-ws">WebSocket Subscriptions</h3>
+            <p>All subscription methods require a <code>wsUrl</code> to be set in the Connection constructor. Each <code>on*</code> method returns a subscription ID for later unsubscribing with the corresponding <code>off*</code> method.</p>
+
+            <div class="method-card">
+                <h3 class="method-name">onSlot(callback: (slot: number) =&gt; void): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Subscribe to slot updates. Unsubscribe with <code>offSlot(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onBlock(callback: (block: Block) =&gt; void): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Subscribe to new blocks. Unsubscribe with <code>offBlock(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onTransaction(callback: (tx: any) =&gt; void): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Subscribe to all confirmed transactions. Unsubscribe with <code>offTransaction(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onAccountChange(pubkey: PublicKey, callback: (account: any) =&gt; void): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with <code>offAccountChange(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onLogs(callback: (log: any) =&gt; void, contractId?: PublicKey): Promise&lt;number&gt;</h3>
+                <p class="method-desc">Stream contract logs. Pass a <code>contractId</code> to filter to one contract, or omit for all. Unsubscribe with <code>offLogs(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onProgramUpdates(callback) / onProgramCalls(callback, programId?)</h3>
+                <p class="method-desc">Subscribe to program deploy/upgrade events and program invocations. Unsubscribe with <code>offProgramUpdates(subId)</code> / <code>offProgramCalls(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onNftMints(callback, collectionId?) / onNftTransfers(callback, collectionId?)</h3>
+                <p class="method-desc">Subscribe to NFT mint and transfer events. Optionally filter by collection. Unsubscribe with <code>offNftMints(subId)</code> / <code>offNftTransfers(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">onMarketListings(callback) / onMarketSales(callback)</h3>
+                <p class="method-desc">Subscribe to marketplace listing and sale events. Unsubscribe with <code>offMarketListings(subId)</code> / <code>offMarketSales(subId)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">close(): void</h3>
+                <p class="method-desc">Close the WebSocket connection and clear all subscriptions.</p>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- KEYPAIR -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Keypair Class</h2>
+            <p>Ed25519 keypair for signing transactions. Uses <code>tweetnacl</code> under the hood.</p>
+
+            <div class="method-card" id="keypair-generate">
+                <h3 class="method-name">Keypair.generate(): Keypair</h3>
+                <p class="method-desc">Generate a new random keypair.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const kp = Keypair.generate();
+console.log('Public key:', kp.pubkey().toBase58());
+console.log('Secret key length:', kp.secretKey.length); // 64 bytes</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-fromSeed">
+                <h3 class="method-name">Keypair.fromSeed(seed: Uint8Array): Keypair</h3>
+                <p class="method-desc">Derive a keypair from a 32-byte seed. Throws if seed is not exactly 32 bytes.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>const seed = new Uint8Array(32); // deterministic seed
+const kp = Keypair.fromSeed(seed);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-pubkey">
+                <h3 class="method-name">keypair.pubkey(): PublicKey</h3>
+                <p class="method-desc">Get the public key as a <code>PublicKey</code> object.</p>
+            </div>
+
+            <div class="method-card" id="keypair-sign">
+                <h3 class="method-name">keypair.sign(message: Uint8Array): Uint8Array</h3>
+                <p class="method-desc">Sign an arbitrary message. Returns the 64-byte Ed25519 detached signature.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">Properties</h3>
+                <table class="param-table">
+                    <thead><tr><th>Property</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>publicKey</td><td><span class="param-type">Uint8Array</span></td><td>32-byte public key</td></tr>
+                        <tr><td>secretKey</td><td><span class="param-type">Uint8Array</span></td><td>64-byte secret key (seed + public key)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- PUBLICKEY -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>PublicKey Class</h2>
+            <p>A 32-byte public key with base58 encoding/decoding. Uses <code>bs58</code> under the hood.</p>
+
+            <div class="method-card" id="publickey-constructor">
+                <h3 class="method-name">new PublicKey(value: string | Uint8Array | number[])</h3>
+                <p class="method-desc">Create a PublicKey from a base58 string, Uint8Array, or number array. Throws if the resulting bytes are not exactly 32 bytes.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const pk1 = new PublicKey('7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU');
+const pk2 = new PublicKey(new Uint8Array(32));
+const pk3 = new PublicKey([0, 1, 2, /* ... 32 bytes */]);</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card" id="publickey-methods">
+                <h3 class="method-name">Methods</h3>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>toBase58()</td><td><span class="param-type">string</span></td><td>Base58-encoded string representation</td></tr>
+                        <tr><td>toBytes()</td><td><span class="param-type">Uint8Array</span></td><td>Raw 32-byte array</td></tr>
+                        <tr><td>toString()</td><td><span class="param-type">string</span></td><td>Same as toBase58()</td></tr>
+                        <tr><td>equals(other: PublicKey)</td><td><span class="param-type">boolean</span></td><td>Byte-level equality check</td></tr>
+                    </tbody>
+                </table>
+                <h4 style="margin-top:1rem;">Static Methods</h4>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>PublicKey.fromBase58(str)</td><td><span class="param-type">PublicKey</span></td><td>Create from base58 string</td></tr>
+                        <tr><td>PublicKey.fromBytes(bytes)</td><td><span class="param-type">PublicKey</span></td><td>Create from Uint8Array</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- TRANSACTION -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Transaction Types &amp; Builder</h2>
+
+            <div class="method-card" id="transaction-types">
+                <h3 class="method-name">Types</h3>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
+                    <pre><code>interface Instruction {
+  programId: PublicKey;
+  accounts: PublicKey[];
+  data: Uint8Array;
+}
+
+interface Message {
+  instructions: Instruction[];
+  recentBlockhash: string;
+}
+
+interface Transaction {
+  signatures: string[];  // hex-encoded
+  message: Message;
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="method-card" id="transaction-builder">
+                <h3 class="method-name">TransactionBuilder</h3>
+                <p class="method-desc">Fluent builder for constructing and signing transactions.</p>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>add(instruction)</td><td><span class="param-type">this</span></td><td>Append an instruction</td></tr>
+                        <tr><td>setRecentBlockhash(hash)</td><td><span class="param-type">this</span></td><td>Set the recent blockhash</td></tr>
+                        <tr><td>build()</td><td><span class="param-type">Message</span></td><td>Build unsigned message</td></tr>
+                        <tr><td>buildAndSign(keypair)</td><td><span class="param-type">Transaction</span></td><td>Build, sign, and return a Transaction</td></tr>
+                    </tbody>
+                </table>
+                <h4 style="margin-top:1rem;">Static Instruction Builders</h4>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>TransactionBuilder.transfer(from, to, amount)</td><td>Create a MOLT transfer instruction (type 0)</td></tr>
+                        <tr><td>TransactionBuilder.stake(from, validator, amount)</td><td>Create a stake instruction (type 9)</td></tr>
+                        <tr><td>TransactionBuilder.unstake(from, validator, amount)</td><td>Create an unstake instruction (type 10)</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <pre><code>const blockhash = await conn.getRecentBlockhash();
+
+const tx = new TransactionBuilder()
+  .add(TransactionBuilder.transfer(
+    keypair.pubkey(),
+    new PublicKey('RecipientAddr...'),
+    5_000_000_000  // 5 MOLT
+  ))
+  .setRecentBlockhash(blockhash)
+  .buildAndSign(keypair);
+
+const sig = await conn.sendTransaction(tx);</code></pre>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- ERROR HANDLING -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2 id="error-handling">Error Handling</h2>
+            <p>All RPC methods throw standard JavaScript <code>Error</code> objects with descriptive messages from the server.</p>
+
+            <div class="code-block">
+                <div class="code-block-header"><span class="code-lang">TypeScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                <pre><code>try {
+  const balance = await conn.getBalance(pubkey);
+} catch (error) {
+  if (error.message.includes('Account not found')) {
+    console.log('Account does not exist yet');
+  } else if (error.message.includes('Rate limit')) {
+    // Back off and retry
+    await new Promise(r => setTimeout(r, 1000));
+  } else {
+    throw error;
+  }
+}</code></pre>
+            </div>
+
+            <div class="callout callout-warning">
+                <p><strong>Common error codes:</strong></p>
+                <ul>
+                    <li><code>-32601</code> — Method not found</li>
+                    <li><code>-32602</code> — Invalid params</li>
+                    <li><code>-32003</code> — Admin auth required</li>
+                    <li><code>-32005</code> — Rate limit exceeded / Subscription limit reached</li>
+                </ul>
+            </div>
+        </main>
+    </div>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+</body>
+</html>
