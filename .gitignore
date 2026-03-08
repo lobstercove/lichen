@@ -34,7 +34,7 @@ genesis-keys/
 validator-*.json
 signer-keypair.json
 known-peers.json
-seeds.json
+# NOTE: seeds.json is TRACKED — it contains only public IPs needed for bootstrap
 config.toml
 airdrops.json
 release-signing-keypair.json

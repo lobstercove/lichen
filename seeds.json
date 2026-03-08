@@ -1,0 +1,88 @@
+{
+  "testnet": {
+    "network_id": "moltchain-testnet-1",
+    "chain_id": "moltchain-testnet-1",
+    "seeds": [
+      {
+        "id": "seed-01",
+        "address": "seed-01.moltchain.network:7001",
+        "region": "us-east",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
+      },
+      {
+        "id": "seed-02",
+        "address": "seed-02.moltchain.network:7001",
+        "region": "eu-west",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
+      }
+    ],
+    "bootstrap_peers": [
+      "15.204.229.189:7001",
+      "37.59.97.61:7001"
+    ],
+    "rpc_endpoints": [
+      "https://rpc.moltchain.network",
+      "https://testnet-rpc.moltchain.network"
+    ],
+    "explorers": [
+      "https://explorer.moltchain.network"
+    ],
+    "faucets": [
+      "https://faucet.moltchain.network"
+    ]
+  },
+  "mainnet": {
+    "network_id": "moltchain-mainnet-1",
+    "chain_id": "moltchain-mainnet-1",
+    "seeds": [
+      {
+        "id": "seed-01",
+        "address": "seed-01.moltchain.network:8001",
+        "region": "us-east",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
+      },
+      {
+        "id": "seed-02",
+        "address": "seed-02.moltchain.network:8001",
+        "region": "eu-west",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
+      }
+    ],
+    "bootstrap_peers": [
+      "15.204.229.189:8001",
+      "37.59.97.61:8001"
+    ],
+    "rpc_endpoints": [
+      "https://rpc.moltchain.network"
+    ],
+    "explorers": [
+      "https://explorer.moltchain.network"
+    ],
+    "faucets": []
+  },
+  "devnet": {
+    "network_id": "moltchain-devnet-1",
+    "chain_id": "moltchain-devnet-1",
+    "seeds": [],
+    "bootstrap_peers": [
+      "127.0.0.1:8000"
+    ],
+    "rpc_endpoints": [
+      "http://localhost:8899"
+    ],
+    "explorers": [
+      "http://localhost:3007"
+    ],
+    "faucets": [
+      "http://localhost:9100"
+    ]
+  }
+}

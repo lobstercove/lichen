@@ -124,61 +124,71 @@ impl SeedsConfig {
                 chain_id: "moltchain-testnet-1".to_string(),
                 seeds: vec![
                     SeedNode {
-                        id: "seed1.testnet.moltchain.io".to_string(),
-                        address: "seed1.testnet.moltchain.io:8000".to_string(),
-                        pubkey: "7KZswRNNPPR8bXoJwGnHNvPnYZJqJvqfJqDqQjqJZ3J1".to_string(),
-                        region: "us-east-1".to_string(),
+                        id: "seed-01".to_string(),
+                        address: "seed-01.moltchain.network:7001".to_string(),
+                        pubkey: String::new(),
+                        region: "us-east".to_string(),
                         operator: "MoltChain Foundation".to_string(),
-                        rpc: "https://rpc1.testnet.moltchain.io".to_string(),
+                        rpc: "https://testnet-rpc.moltchain.network".to_string(),
                     },
                     SeedNode {
-                        id: "seed2.testnet.moltchain.io".to_string(),
-                        address: "seed2.testnet.moltchain.io:8000".to_string(),
-                        pubkey: "8NXtyWMMQQS9cYpKxHoHOvRoaZKrKwrkKrErRkrKa4K2".to_string(),
-                        region: "eu-west-1".to_string(),
+                        id: "seed-02".to_string(),
+                        address: "seed-02.moltchain.network:7001".to_string(),
+                        pubkey: String::new(),
+                        region: "eu-west".to_string(),
                         operator: "MoltChain Foundation".to_string(),
-                        rpc: "https://rpc2.testnet.moltchain.io".to_string(),
-                    },
-                    SeedNode {
-                        id: "seed3.testnet.moltchain.io".to_string(),
-                        address: "seed3.testnet.moltchain.io:8000".to_string(),
-                        pubkey: "9PYuzXNNRRT0dZqLyIpIpWQpbZLsLxtmLsEtSlsLb5L3".to_string(),
-                        region: "ap-southeast-1".to_string(),
-                        operator: "MoltChain Foundation".to_string(),
-                        rpc: "https://rpc3.testnet.moltchain.io".to_string(),
+                        rpc: "https://testnet-rpc.moltchain.network".to_string(),
                     },
                 ],
                 bootstrap_peers: vec![
-                    "147.182.195.45:8000".to_string(),
-                    "138.68.88.120:8000".to_string(),
-                    "159.89.106.78:8000".to_string(),
+                    "15.204.229.189:7001".to_string(),
+                    "37.59.97.61:7001".to_string(),
                 ],
                 rpc_endpoints: vec![
-                    "https://rpc.testnet.moltchain.io".to_string(),
-                    "https://rpc1.testnet.moltchain.io".to_string(),
-                    "https://rpc2.testnet.moltchain.io".to_string(),
-                    "https://rpc3.testnet.moltchain.io".to_string(),
+                    "https://testnet-rpc.moltchain.network".to_string(),
                 ],
-                explorers: vec!["https://explorer.testnet.moltchain.io".to_string()],
-                faucets: vec!["https://faucet.testnet.moltchain.io".to_string()],
+                explorers: vec!["https://explorer.moltchain.network".to_string()],
+                faucets: vec!["https://faucet.moltchain.network".to_string()],
             },
             mainnet: NetworkConfig {
                 network_id: "moltchain-mainnet-1".to_string(),
                 chain_id: "moltchain-mainnet-1".to_string(),
-                seeds: vec![],
-                bootstrap_peers: vec![],
-                rpc_endpoints: vec![],
-                explorers: vec![],
+                seeds: vec![
+                    SeedNode {
+                        id: "seed-01".to_string(),
+                        address: "seed-01.moltchain.network:8001".to_string(),
+                        pubkey: String::new(),
+                        region: "us-east".to_string(),
+                        operator: "MoltChain Foundation".to_string(),
+                        rpc: "https://rpc.moltchain.network".to_string(),
+                    },
+                    SeedNode {
+                        id: "seed-02".to_string(),
+                        address: "seed-02.moltchain.network:8001".to_string(),
+                        pubkey: String::new(),
+                        region: "eu-west".to_string(),
+                        operator: "MoltChain Foundation".to_string(),
+                        rpc: "https://rpc.moltchain.network".to_string(),
+                    },
+                ],
+                bootstrap_peers: vec![
+                    "15.204.229.189:8001".to_string(),
+                    "37.59.97.61:8001".to_string(),
+                ],
+                rpc_endpoints: vec![
+                    "https://rpc.moltchain.network".to_string(),
+                ],
+                explorers: vec!["https://explorer.moltchain.network".to_string()],
                 faucets: vec![],
             },
             devnet: NetworkConfig {
                 network_id: "moltchain-devnet-1".to_string(),
                 chain_id: "moltchain-devnet-1".to_string(),
                 seeds: vec![],
-                bootstrap_peers: vec!["127.0.0.1:8000".to_string()],
-                rpc_endpoints: vec!["http://localhost:9000".to_string()],
-                explorers: vec!["http://localhost:8080".to_string()],
-                faucets: vec!["http://localhost:9090".to_string()],
+                bootstrap_peers: vec!["127.0.0.1:7001".to_string()],
+                rpc_endpoints: vec!["http://localhost:8899".to_string()],
+                explorers: vec![],
+                faucets: vec![],
             },
         }
     }
@@ -285,11 +295,15 @@ mod tests {
         assert!(!config.testnet.seeds.is_empty());
         assert!(!config.testnet.bootstrap_peers.is_empty());
 
+        // Mainnet should have seeds and bootstrap peers
+        assert!(!config.mainnet.seeds.is_empty());
+        assert!(!config.mainnet.bootstrap_peers.is_empty());
+
         // Devnet should have localhost
         assert!(config
             .devnet
             .bootstrap_peers
-            .contains(&"127.0.0.1:8000".to_string()));
+            .contains(&"127.0.0.1:7001".to_string()));
     }
 
     #[test]
