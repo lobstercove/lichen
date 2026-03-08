@@ -169,8 +169,15 @@ Important runtime files in the chosen `--db-path`:
 - `signer-keypair.json`
 - RocksDB / chain state files (`CURRENT`, `MANIFEST-*`, `*.sst`, `*.log`)
 - `known-peers.json`
+- `home/.moltchain/node_cert.der` and `home/.moltchain/node_key.der`
+- `home/.moltchain/peer_fingerprints.json`
 
 If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
+
+For P2P identity and trust-state files, the validator prefers `--db-path/home`
+for new or state-scoped installs. If an existing deployment already has
+`node_cert.der` and `node_key.der` under the current process `HOME`, it keeps
+using that identity to avoid breaking established peers.
 
 For unattended updates, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper. `--auto-update=apply` downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
 
@@ -190,6 +197,9 @@ If you are building from source inside this repo, use the same runtime flags wit
 
 ```bash
 # Join mainnet with one command (syncs from seed nodes, generates keypair)
+mkdir -p ./data/state-mainnet/home
+
+env HOME="$PWD/data/state-mainnet/home" \
 ./target/release/moltchain-validator \
     --network mainnet \
     --p2p-port 8001 \

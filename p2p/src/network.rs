@@ -68,6 +68,7 @@ pub struct P2PConfig {
     pub seed_peers: Vec<SocketAddr>,
     pub gossip_interval: u64,
     pub cleanup_timeout: u64,
+    pub runtime_home: Option<PathBuf>,
     pub peer_store_path: Option<PathBuf>,
     pub max_known_peers: usize,
     /// Node role determines connection limits and relay behavior
@@ -88,6 +89,7 @@ impl Default for P2PConfig {
             seed_peers: Vec::new(),
             gossip_interval: 10,
             cleanup_timeout: 300,
+            runtime_home: None,
             peer_store_path: None,
             max_known_peers: 200,
             role: NodeRole::Validator,
@@ -318,6 +320,7 @@ impl P2PNetwork {
             PeerManager::new(
                 config.listen_addr,
                 message_tx,
+                config.runtime_home.clone(),
                 peer_store.clone(),
                 effective_max_peers,
                 reserved_addrs,

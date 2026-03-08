@@ -17,6 +17,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+fn runtime_moltchain_dir(runtime_home: Option<&Path>) -> PathBuf {
+    runtime_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+        .join(".moltchain")
+}
+
 /// Peer information
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -228,6 +235,7 @@ impl PeerManager {
     pub async fn new(
         local_addr: SocketAddr,
         message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
+        runtime_home: Option<PathBuf>,
         peer_store: Option<Arc<PeerStore>>,
         max_peers: usize,
         reserved_peers: Vec<SocketAddr>,
@@ -240,7 +248,8 @@ impl PeerManager {
         // AUDIT-FIX C1-01: Load or generate persistent node identity
         // Replaces ephemeral per-startup certificate with persistent cert+key
         // stored at ~/.moltchain/node_cert.der + ~/.moltchain/node_key.der
-        let identity = NodeIdentity::load_or_generate()?;
+        let runtime_dir = runtime_moltchain_dir(runtime_home.as_deref());
+        let identity = NodeIdentity::load_or_generate(&runtime_dir)?;
 
         // Clone cert chain + key bytes for client connections (mutual TLS)
         let node_cert_chain = vec![identity.cert_der.clone()];
@@ -292,14 +301,10 @@ impl PeerManager {
 
         info!("🦞 P2P: QUIC endpoint listening on {}", local_addr);
 
-        let ban_list_path = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".moltchain/peer-banlist.json");
+        let ban_list_path = runtime_dir.join("peer-banlist.json");
 
         // AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
-        let fp_path = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".moltchain/peer_fingerprints.json");
+        let fp_path = runtime_dir.join("peer_fingerprints.json");
         let fingerprint_store = Arc::new(PeerFingerprintStore::new(fp_path));
 
         Ok(PeerManager {
@@ -1229,11 +1234,7 @@ struct NodeIdentity {
 }
 
 impl NodeIdentity {
-    fn load_or_generate() -> Result<Self, String> {
-        let moltchain_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".moltchain");
-
+    fn load_or_generate(moltchain_dir: &Path) -> Result<Self, String> {
         let cert_path = moltchain_dir.join("node_cert.der");
         let key_path = moltchain_dir.join("node_key.der");
 
@@ -1256,7 +1257,7 @@ impl NodeIdentity {
                 fingerprint,
             })
         } else {
-            fs::create_dir_all(&moltchain_dir)
+            fs::create_dir_all(moltchain_dir)
                 .map_err(|e| format!("Failed to create {}: {}", moltchain_dir.display(), e))?;
 
             let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])

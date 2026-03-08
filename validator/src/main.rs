@@ -485,6 +485,33 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
     }
 }
 
+fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
+    let moltchain_dir = runtime_home.join(".moltchain");
+    moltchain_dir.join("node_cert.der").exists() && moltchain_dir.join("node_key.der").exists()
+}
+
+fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
+    if let Ok(explicit_home) = env::var("MOLTCHAIN_HOME") {
+        let explicit_path = PathBuf::from(explicit_home);
+        if !explicit_path.as_os_str().is_empty() {
+            return explicit_path;
+        }
+    }
+
+    let state_home = data_dir.join("home");
+    if has_persistent_p2p_identity(&state_home) {
+        return state_home;
+    }
+
+    if let Some(user_home) = dirs::home_dir() {
+        if has_persistent_p2p_identity(&user_home) {
+            return user_home;
+        }
+    }
+
+    state_home
+}
+
 /// Run the Groth16 trusted setup and write VK + PK files to `zk_dir`.
 ///
 /// Each circuit is set up independently and written to disk before the next
@@ -4450,6 +4477,18 @@ async fn run_validator() {
     let _updater_handle = updater::spawn_update_checker(update_config);
 
     let data_dir_path = Path::new(&data_dir);
+    let validator_runtime_home = resolve_validator_runtime_home(data_dir_path);
+    if let Err(err) = std::fs::create_dir_all(&validator_runtime_home) {
+        warn!(
+            "Failed to create validator runtime home {}: {}",
+            validator_runtime_home.display(),
+            err
+        );
+    }
+    info!(
+        "🏠 Validator runtime home: {}",
+        validator_runtime_home.display()
+    );
     let peer_store_path = data_dir_path.join("known-peers.json");
     let listen_addr: SocketAddr = match format!("{}:{}", listen_host, p2p_port).parse() {
         Ok(addr) => addr,
@@ -4544,6 +4583,7 @@ async fn run_validator() {
         seed_peers: seed_peers.clone(),
         gossip_interval: 10,
         cleanup_timeout: 300,
+        runtime_home: Some(validator_runtime_home),
         peer_store_path: Some(peer_store_path.clone()),
         max_known_peers: 200,
         // P2P role: read from MOLTCHAIN_P2P_ROLE env var, default to Validator
