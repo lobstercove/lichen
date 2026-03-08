@@ -1550,15 +1550,15 @@ cargo build --release
 
 # 3. Start a mainnet validator (bootstraps from seed nodes automatically)
 ./target/release/moltchain-validator \
-    --p2p-port 9001 \
+    --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
-    --db-path ./data/state-9001 \
-    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+    --db-path ./data/state-mainnet \
+    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
 ```
 
 On first start the validator:
-- Generates a keypair → saved to `./data/state-9001/validator-keypair.json`
+- Generates a keypair → saved to `./data/state-mainnet/validator-keypair.json`
 - Syncs genesis + state from seed nodes
 - Receives a 100K MOLT bootstrap grant (for the first 200 validators)
 - Begins block production after sync completes
@@ -1586,8 +1586,8 @@ The identity persists across restarts (stored in the data directory, not `$HOME`
 
 | Region | Address |
 |--------|---------|
-| US East (Virginia) | `15.204.229.189:9000` |
-| EU West (France) | `37.59.97.61:9000` |
+| US East (Virginia) | `15.204.229.189:8001` |
+| EU West (France) | `37.59.97.61:8001` |
 
 ### RPC Endpoints (Mainnet Production)
 
@@ -1600,12 +1600,23 @@ The identity persists across restarts (stored in the data directory, not `$HOME`
 
 ```bash
 ./target/release/moltchain-validator \
-    --p2p-port 8001 \
+    --p2p-port 7001 \
     --rpc-port 8899 \
     --ws-port 8900 \
-    --db-path ./data/state-8001 \
+    --db-path ./data/state-testnet \
     --dev-mode \
-    --bootstrap-peers 15.204.229.189:8000,37.59.97.61:8000
+    --bootstrap-peers 15.204.229.189:7001,37.59.97.61:7001
+```
+
+### Mainnet
+
+```bash
+./target/release/moltchain-validator \
+    --p2p-port 8001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path ./data/state-mainnet \
+    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
 ```
 
 ### Start / Stop / Reset (Scripts)
@@ -1629,13 +1640,13 @@ Validator identity keypair location (in priority order):
 To migrate a validator to a new machine:
 ```bash
 # Export keypair from old machine
-scp old-machine:path/to/data/state-9001/validator-keypair.json ./my-validator.json
+scp old-machine:path/to/data/state-mainnet/validator-keypair.json ./my-validator.json
 
 # Import on new machine
 ./target/release/moltchain-validator \
     --import-key ./my-validator.json \
-    --p2p-port 9001 \
-    --bootstrap-peers 15.204.229.189:9000,37.59.97.61:9000
+    --p2p-port 8001 \
+    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
 ```
 
 ### Auto-Update
