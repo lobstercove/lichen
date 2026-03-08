@@ -161,7 +161,7 @@ When an agent starts `moltchain-validator` on a fresh machine, the runtime does 
 4. Connects to the bootstrap peers (`seed-01.moltchain.network`, `seed-02.moltchain.network`).
 5. Syncs state from the network.
 6. Begins participating as a validator once synced and eligible.
-7. If `--auto-update=apply` is enabled, periodically checks GitHub Releases for a newer signed binary and swaps to it automatically.
+7. If `--auto-update=apply` is enabled, periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
 
 Important runtime files in the chosen `--db-path`:
 
@@ -171,6 +171,8 @@ Important runtime files in the chosen `--db-path`:
 - `known-peers.json`
 
 If the state directory already exists, the validator resumes from that same identity and local state on the next launch.
+
+For unattended updates, run the validator under a restart supervisor such as `systemd`, `launchd`, or a Windows service/task wrapper. `--auto-update=apply` downloads and stages the new binary, then exits with a restart code so the supervisor can relaunch it.
 
 ```bash
 mkdir -p "$HOME/.moltchain/state-mainnet"
