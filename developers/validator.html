@@ -239,10 +239,11 @@ moltchain-validator \
                 <li>It stores signer material, peer cache, and chain state under the same path.</li>
                 <li>It connects to <code>seed-01.moltchain.network</code> and <code>seed-02.moltchain.network</code>.</li>
                 <li>It syncs the network, then resumes or starts validating from the preserved local state.</li>
-                <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background and swaps to a newer signed binary automatically.</li>
+                <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background, stages a newer signed binary, and requests a restart to apply it.</li>
             </ol>
 
             <p>Typical files under the state path include validator identity files, signer material, RocksDB chain state, and <code>known-peers.json</code>. Preserving that directory preserves the validator identity and local progress.</p>
+            <p>For unattended updates, run the validator under a restart supervisor or service manager. Auto-update handles download and staging; the supervisor handles relaunch.</p>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Why domains instead of IPs?</div>

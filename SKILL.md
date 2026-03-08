@@ -1643,6 +1643,8 @@ Given a fresh `--db-path`, the validator:
 
 Agents should treat the state directory as persistent machine-local validator state. The repo checkout is optional; the state directory is not.
 
+For unattended updates, agents should prefer running the validator under a restart supervisor or service manager. `--auto-update=apply` stages the signed replacement binary and requests a restart; it is not a substitute for process supervision.
+
 If the machine only has source code, use the repo workflow below:
 
 ```bash

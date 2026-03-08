@@ -14,6 +14,8 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::process::Command;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -304,6 +306,26 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
         return Ok(Some(remote_version.to_string()));
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        schedule_windows_update_swap(&exe_path, &staging_path, &pending_path)?;
+
+        let update_state = UpdateState {
+            last_update_version: remote_version.to_string(),
+            update_timestamp: now_secs(),
+            crash_count: 0,
+            rolled_back: false,
+        };
+        save_update_state(&exe_path, &update_state)?;
+
+        info!(
+            "📦 Windows update staged at {} — restart requested to apply",
+            pending_path.display()
+        );
+
+        return Ok(Some(remote_version.to_string()));
+    }
+
     // 11. Apply: atomic binary swap
     let rollback_path = exe_path.with_extension("rollback");
 
@@ -329,6 +351,47 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
     );
 
     Ok(Some(remote_version.to_string()))
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_windows_update_swap(
+    exe_path: &Path,
+    staging_path: &Path,
+    pending_path: &Path,
+) -> Result<()> {
+    if pending_path.exists() {
+        let _ = fs::remove_file(pending_path);
+    }
+
+    fs::rename(staging_path, pending_path)
+        .context("Failed to move staged binary to .pending on Windows")?;
+
+    let rollback_path = exe_path.with_extension("rollback");
+    let script_path = exe_path.with_extension("apply-update.cmd");
+    let pid = std::process::id();
+
+    let script = format!(
+        "@echo off\r\nsetlocal\r\n:waitloop\r\ntasklist /FI \"PID eq {pid}\" 2>NUL | find /I \"{pid}\" >NUL\r\nif not errorlevel 1 (\r\n  timeout /t 1 /nobreak >NUL\r\n  goto waitloop\r\n)\r\nif exist \"{rollback}\" del /f /q \"{rollback}\" >NUL 2>&1\r\nif exist \"{exe}\" move /Y \"{exe}\" \"{rollback}\" >NUL 2>&1\r\nmove /Y \"{pending}\" \"{exe}\" >NUL 2>&1\r\ndel /f /q \"%~f0\" >NUL 2>&1\r\n",
+        pid = pid,
+        exe = exe_path.display(),
+        pending = pending_path.display(),
+        rollback = rollback_path.display(),
+    );
+
+    fs::write(&script_path, script).context("Failed to write Windows update helper script")?;
+
+    Command::new("cmd")
+        .args([
+            "/C",
+            "start",
+            "",
+            "/B",
+            &script_path.to_string_lossy(),
+        ])
+        .spawn()
+        .context("Failed to spawn Windows update helper")?;
+
+    Ok(())
 }
 
 // ── Rollback Guard ──────────────────────────────────────────────────────────
