@@ -1374,19 +1374,6 @@ impl PeerFingerprintStore {
             }
         }
     }
-
-    /// AUDIT-FIX M15: Allow resetting a peer's stored fingerprint.
-    /// Used when a peer legitimately rotates its TLS certificate (e.g., after a security incident).
-    pub fn reset_fingerprint(&self, addr: &std::net::SocketAddr) -> bool {
-        let addr_str = addr.to_string();
-        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
-        let removed = store.remove(&addr_str).is_some();
-        if removed {
-            drop(store);
-            self.save();
-        }
-        removed
-    }
 }
 
 /// AUDIT-FIX C1-01: Verify a certificate is properly self-signed and return its SHA-256 fingerprint.
