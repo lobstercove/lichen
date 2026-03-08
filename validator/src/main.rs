@@ -2266,9 +2266,13 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         }
     }
 
-    // ── Phase C: Write analytics indicative prices ──
-    // Only for pairs with no recent real trade (>60s since last trade).
-    // This keeps chart data alive on inactive markets.
+    // ── Phase C: Write analytics indicative prices + CANDLES ──
+    // Oracle-driven candle writes happen HERE (deterministic, consensus-replicated).
+    // Every validator processes the same block.oracle_prices and writes identical
+    // candles, ensuring all validators have the exact same charting data.
+    // Candle intervals: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
+    const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+
     for (pair_id, price_f64) in &pair_prices {
         if *price_f64 <= 0.0 {
             continue;
@@ -2285,7 +2289,7 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
 
         if trade_active {
-            continue; // Active market: trades drive displayed prices
+            continue; // Active market: trades drive displayed prices + candles
         }
 
         // Inactive market: write indicative price from oracle
@@ -2326,6 +2330,21 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
         stats.extend_from_slice(&trades.to_le_bytes());
         let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
+
+        // ── Candles: update all 9 intervals with oracle price ──
+        // This is consensus-deterministic: every validator processing this block
+        // writes the same candle data from the same oracle prices.
+        for &interval in &CANDLE_INTERVALS {
+            oracle_update_candle(
+                state,
+                &analytics_pk,
+                *pair_id,
+                interval,
+                price_scaled,
+                slot,
+                now_ts,
+            );
+        }
     }
 }
 
@@ -3430,8 +3449,9 @@ fn spawn_oracle_price_feeder(
 
         const PRICE_SCALE_F: f64 = 1_000_000_000.0; // 1e9 for DEX price scaling
 
-        // Candle writer loop: 5-second tick (display-only, not consensus-critical)
-        // Oracle feeds + DEX bands are now written deterministically in
+        // Candle writer loop: 5-second tick (WS broadcasts only — state is
+        // written by apply_oracle_from_block during consensus block processing).
+        // Oracle feeds + DEX bands + candles are now written deterministically in
         // apply_oracle_from_block() during block effects — NOT here.
         let mut write_tick = time::interval(Duration::from_secs(5));
 
@@ -3475,10 +3495,11 @@ fn spawn_oracle_price_feeder(
                 }
             }
 
-            // NOTE: Oracle feed writes and DEX price band writes are now handled
+            // NOTE: Oracle feed writes, DEX price band writes, candle writes,
+            // last-price writes, and 24h stats writes are ALL handled
             // deterministically in apply_oracle_from_block() during block effects.
             // This feeder ONLY updates SharedOraclePrices atomics (for block production)
-            // and writes display-only candle data for TradingView charts.
+            // and reads consensus-written state to broadcast WS events.
 
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
@@ -3488,22 +3509,8 @@ fn spawn_oracle_price_feeder(
                 continue;
             }
 
-            // Candle updates (display-only for TradingView charts)
+            // WS broadcasts — read consensus state and emit to WebSocket clients
             let current_slot = state.get_last_slot().unwrap_or(0);
-            let now_ts = {
-                let genesis_ts = state
-                    .get_block_by_slot(0)
-                    .ok()
-                    .flatten()
-                    .map(|b| b.header.timestamp)
-                    .unwrap_or(0);
-                state
-                    .get_block_by_slot(current_slot)
-                    .ok()
-                    .flatten()
-                    .map(|b| b.header.timestamp)
-                    .unwrap_or_else(|| genesis_ts + (current_slot * 400 / 1000))
-            };
 
             let molt_usd: f64 = 0.10;
             let pair_prices: [(u64, f64); 7] = [
@@ -3541,46 +3548,18 @@ fn spawn_oracle_price_feeder(
                 if *price_f64 <= 0.0 {
                     continue;
                 }
-                let price_scaled = (*price_f64 * PRICE_SCALE_F) as u64;
 
-                // Skip candle writes for pairs with active trading
-                let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-                let last_trade_ts: u64 =
-                    match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
-                        Ok(Some(d)) if d.len() >= 8 => {
-                            u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
-                        }
-                        _ => 0,
-                    };
-                if last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60 {
-                    continue;
-                }
+                // ── WS broadcast: read consensus-written state and emit ──
+                // Candles, last price, and 24h stats are written deterministically
+                // by apply_oracle_from_block() during block processing. This feeder
+                // only READS that data and broadcasts it via WebSocket.
 
-                // Update last price (ana_lp_) so REST /pairs shows live oracle price
-                let lp_key = format!("ana_lp_{}", pair_id);
-                let _ = state.put_contract_storage(
-                    &analytics_pk,
-                    lp_key.as_bytes(),
-                    &price_scaled.to_le_bytes(),
-                );
-
-                // Update 24h stats (ana_24h_) — keep volume/trades, update OHLC
+                // Read 24h stats written by consensus
                 let stats_key = format!("ana_24h_{}", pair_id);
-                let mut stats = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                let stats = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
                     Ok(Some(d)) if d.len() >= 48 => d,
                     _ => vec![0u8; 48],
                 };
-                let cur_high = u64::from_le_bytes(stats[8..16].try_into().unwrap_or([0; 8]));
-                let cur_low = u64::from_le_bytes(stats[16..24].try_into().unwrap_or([0; 8]));
-                if price_scaled > cur_high {
-                    stats[8..16].copy_from_slice(&price_scaled.to_le_bytes());
-                }
-                if cur_low == 0 || price_scaled < cur_low {
-                    stats[16..24].copy_from_slice(&price_scaled.to_le_bytes());
-                }
-                // Update close price
-                stats[32..40].copy_from_slice(&price_scaled.to_le_bytes());
-                let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
                 // ── WS broadcast: ticker update for this pair ──
                 let volume_24h = u64::from_le_bytes(stats[0..8].try_into().unwrap_or([0; 8]));
@@ -3591,19 +3570,9 @@ fn spawn_oracle_price_feeder(
                     *pair_id, *price_f64, *price_f64, *price_f64, volume_24h, change_24h,
                 );
 
+                // ── WS broadcast: candle updates for all intervals ──
+                // Read consensus-written candles and broadcast via WebSocket
                 for &ci in &candle_intervals {
-                    oracle_update_candle(
-                        &state,
-                        &analytics_pk,
-                        *pair_id,
-                        ci,
-                        price_scaled,
-                        current_slot,
-                        now_ts,
-                    );
-
-                    // ── WS broadcast: candle update for this pair+interval ──
-                    // Read back the candle we just wrote to emit its OHLCV
                     let count_key_c = format!("ana_cc_{}_{}", pair_id, ci);
                     let candle_count_c: u64 = match state.get_contract_storage(&analytics_pk, count_key_c.as_bytes()) {
                         Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
