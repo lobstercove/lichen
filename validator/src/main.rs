@@ -3398,15 +3398,6 @@ fn spawn_oracle_price_feeder(
     dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
 ) {
     tokio::spawn(async move {
-        // Resolve analytics contract pubkey for candle writes (display-only)
-        let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
-            Ok(Some(entry)) => entry.program,
-            _ => {
-                warn!("🔮 Oracle price feeder: ANALYTICS symbol not found, aborting");
-                return;
-            }
-        };
-
         // Configurable Binance endpoints via env vars (for geo-blocked regions)
         let oracle_ws_url: String = std::env::var("MOLTCHAIN_ORACLE_WS_URL")
             .unwrap_or_else(|_| DEFAULT_BINANCE_WS_URL.to_string());
@@ -3422,7 +3413,8 @@ fn spawn_oracle_price_feeder(
         let wbnb_micro = shared_prices.wbnb_micro.clone();
         let ws_healthy = shared_prices.ws_healthy.clone();
 
-        // Spawn WebSocket reader task
+        // Spawn WebSocket reader task FIRST so prices start flowing immediately
+        // even while we wait for ANALYTICS symbol registry (joining node sync).
         {
             let ws_wsol = wsol_micro.clone();
             let ws_weth = weth_micro.clone();
@@ -3433,6 +3425,33 @@ fn spawn_oracle_price_feeder(
                 binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag, ws_url).await;
             });
         }
+
+        // Resolve analytics contract pubkey — retry up to 60s for joining nodes
+        // that haven't synced the symbol registry yet.
+        let analytics_pk = {
+            let mut resolved = None;
+            for attempt in 0..12 {
+                match state.get_symbol_registry("ANALYTICS") {
+                    Ok(Some(entry)) => {
+                        resolved = Some(entry.program);
+                        break;
+                    }
+                    _ => {
+                        if attempt == 0 {
+                            info!("🔮 Oracle price feeder: waiting for ANALYTICS symbol registry (joining node sync)...");
+                        }
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+            match resolved {
+                Some(pk) => pk,
+                None => {
+                    warn!("🔮 Oracle price feeder: ANALYTICS symbol not found after 60s, aborting");
+                    return;
+                }
+            }
+        };
 
         // REST fallback HTTP client (used only when WebSocket is unhealthy)
         let http = reqwest::Client::builder()
