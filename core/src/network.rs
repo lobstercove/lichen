@@ -141,8 +141,8 @@ impl SeedsConfig {
                     },
                 ],
                 bootstrap_peers: vec![
-                    "15.204.229.189:7001".to_string(),
-                    "37.59.97.61:7001".to_string(),
+                    "seed-01.moltchain.network:7001".to_string(),
+                    "seed-02.moltchain.network:7001".to_string(),
                 ],
                 rpc_endpoints: vec![
                     "https://testnet-rpc.moltchain.network".to_string(),
@@ -172,8 +172,8 @@ impl SeedsConfig {
                     },
                 ],
                 bootstrap_peers: vec![
-                    "15.204.229.189:8001".to_string(),
-                    "37.59.97.61:8001".to_string(),
+                    "seed-01.moltchain.network:8001".to_string(),
+                    "seed-02.moltchain.network:8001".to_string(),
                 ],
                 rpc_endpoints: vec![
                     "https://rpc.moltchain.network".to_string(),

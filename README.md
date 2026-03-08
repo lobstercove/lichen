@@ -73,7 +73,23 @@ cd moltchain
 cargo build --release
 ```
 
-### Run a local validator
+### Run a validator
+
+If you already have a `moltchain-validator` binary from a release bundle or prior build, you do not need the full repository checkout to join the network. A validator can run from the binary plus a writable state directory.
+
+```bash
+mkdir -p "$HOME/.moltchain/state-mainnet"
+
+moltchain-validator \
+    --network mainnet \
+    --p2p-port 8001 \
+    --rpc-port 9899 \
+    --ws-port 9900 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
+```
+
+If you are building from source inside this repo, use the same runtime flags with the locally built binary:
 
 ```bash
 # Join mainnet with one command (syncs from seed nodes, generates keypair)
@@ -83,7 +99,7 @@ cargo build --release
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path ./data/state-mainnet \
-    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
 ```
 
 The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
@@ -171,13 +187,15 @@ cargo build --release
 ### 2. Start
 
 ```bash
+# If you already shipped the binary to the machine, cloning the repo is optional.
+# The validator only needs the binary, a writable db path, and bootstrap peers.
 ./target/release/moltchain-validator \
     --network mainnet \
     --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path ./data/state-mainnet \
-    --bootstrap-peers 15.204.229.189:8001,37.59.97.61:8001
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
 ```
 
 That's it. The validator will:
@@ -197,8 +215,10 @@ curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
 | Region | Endpoint |
 |--------|----------|
-| US East | `15.204.229.189:8001` |
-| EU West | `37.59.97.61:8001` |
+| US East | `seed-01.moltchain.network:8001` |
+| EU West | `seed-02.moltchain.network:8001` |
+
+Domain names are preferred over raw IPs for bootstrap because they let the foundation rotate infrastructure without forcing validators to change CLI flags or wait for a new binary release.
 
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 

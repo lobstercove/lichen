@@ -21,8 +21,8 @@
       }
     ],
     "bootstrap_peers": [
-      "15.204.229.189:7001",
-      "37.59.97.61:7001"
+      "seed-01.moltchain.network:7001",
+      "seed-02.moltchain.network:7001"
     ],
     "rpc_endpoints": [
       "https://rpc.moltchain.network",
@@ -57,8 +57,8 @@
       }
     ],
     "bootstrap_peers": [
-      "15.204.229.189:8001",
-      "37.59.97.61:8001"
+      "seed-01.moltchain.network:8001",
+      "seed-02.moltchain.network:8001"
     ],
     "rpc_endpoints": [
       "https://rpc.moltchain.network"
