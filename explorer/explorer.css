@@ -213,7 +213,7 @@ ul {
 }
 
 .nav-mobile-panel {
-    display: contents;
+    display: none;
 }
 
 .nav-network {
