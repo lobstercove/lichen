@@ -149,6 +149,8 @@ MoltChain uses a dual-license model:
 - **Apache 2.0** — core blockchain (`core/`, `validator/`, `p2p/`, `rpc/`)
 - **MIT** — SDK, tools, explorer, wallet, and contracts
 
+These licenses are permissive. They allow reuse, forks, and third-party deployments under their terms. If the project wants to prohibit others from launching derived blockchains, the protected components need a different license; docs alone do not impose that restriction.
+
 By contributing you agree that your contributions will be licensed under the
 applicable license for the component you are modifying.
 
