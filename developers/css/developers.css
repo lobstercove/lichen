@@ -15,6 +15,8 @@
     grid-template-columns: auto 1fr auto auto;
     align-items: center;
     column-gap: 1.5rem;
+    width: 100%;
+    min-width: 0;
 }
 
 .nav-logo {
@@ -25,6 +27,13 @@
     font-weight: 800;
     justify-self: start;
     white-space: nowrap;
+    min-width: 0;
+}
+
+.logo-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .logo-icon {
@@ -1514,7 +1523,15 @@
     .nav-container {
         display: flex;
         justify-content: space-between;
+        align-items: center;
         padding: 0.75rem 1rem;
+        min-width: 0;
+    }
+    .nav-logo {
+        max-width: calc(100% - 56px);
+    }
+    .logo-text {
+        font-size: 1.15rem;
     }
     .nav-menu {
         display: none;
@@ -1524,24 +1541,56 @@
         right: 0;
         background: var(--bg-dark);
         flex-direction: column;
+        align-items: stretch;
         gap: 0;
-        padding: 0.5rem 0;
+        padding: 0.5rem 1rem;
         border-bottom: 1px solid var(--border);
         z-index: 999;
     }
-    .nav-menu.open {
+    .nav-menu.open,
+    .nav-menu.active {
         display: flex;
     }
+    .nav-menu li {
+        width: 100%;
+    }
     .nav-menu a {
-        padding: 0.75rem 1.5rem;
+        display: block;
+        width: 100%;
+        padding: 0.85rem 0.5rem;
+        text-align: left;
         font-size: 0.95rem;
         border-bottom: 1px solid rgba(255,255,255,0.03);
     }
     .nav-actions {
+        display: none;
         gap: 0.5rem;
+    }
+    .nav-actions.open,
+    .nav-actions.active {
+        display: flex;
+        position: fixed;
+        top: calc(60px + var(--nav-menu-height, 0px));
+        left: 0;
+        right: 0;
+        background: var(--bg-dark);
+        flex-direction: column;
+        padding: 0 1rem 1rem;
+        border-bottom: 1px solid var(--border);
+        z-index: 998;
+    }
+    .nav-actions.active .search-container,
+    .nav-actions.open .search-container {
+        width: 100%;
     }
     .search-input {
         width: 120px;
+    }
+    .nav-actions.active .search-input,
+    .nav-actions.open .search-input,
+    .nav-actions.active .network-select,
+    .nav-actions.open .network-select {
+        width: 100%;
     }
     .nav-toggle {
         display: flex;
