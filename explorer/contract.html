@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contract Details - Reef Explorer</title>
+    <meta name="description" content="View smart contract details on MoltChain — ABI, storage, owner, token info.">
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="explorer.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" />
+    <style>
+        .contract-header { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 0.75rem; }
+        .contract-header-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; flex-shrink: 0; }
+        .contract-header-icon.token { background: rgba(76, 175, 80, 0.15); color: #4caf50; }
+        .contract-header-icon.wrapped { background: rgba(255, 152, 0, 0.15); color: #ff9800; }
+        .contract-header-icon.dex { background: rgba(33, 150, 243, 0.15); color: #2196f3; }
+        .contract-header-icon.defi { background: rgba(255, 170, 0, 0.15); color: #ffaa00; }
+        .contract-header-icon.infra { background: rgba(var(--accent-rgb, 255, 107, 0), 0.15); color: var(--accent); }
+        .contract-header-info h1 { font-size: 1.8rem; font-weight: 800; margin: 0; line-height: 1.2; }
+        .contract-header-symbol { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; font-weight: 600; }
+        .contract-address-bar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+        .contract-address-bar .mono-text { font-size: 0.85rem; color: var(--text-secondary); word-break: break-all; }
+        .copy-btn { background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 0.2rem 0.5rem; border-radius: 0.375rem; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
+        .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .detail-card { background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; }
+        .detail-card .detail-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.35rem; }
+        .detail-card .detail-value { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+        .detail-card .detail-value a { color: var(--accent); text-decoration: none; }
+        .detail-card .detail-value a:hover { text-decoration: underline; }
+        .detail-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.9rem; }
+        .detail-icon.primary { background: rgba(var(--accent-rgb, 255, 107, 0), 0.15); color: var(--accent); }
+        .detail-icon.success { background: rgba(76, 175, 80, 0.15); color: #4caf50; }
+        .detail-icon.info { background: rgba(33, 150, 243, 0.15); color: #2196f3; }
+        .detail-icon.warning { background: rgba(255, 170, 0, 0.15); color: #ffaa00; }
+
+        .token-section { background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; }
+        .token-section h3 { font-size: 1rem; font-weight: 700; margin: 0 0 1rem 0; display: flex; align-items: center; gap: 0.5rem; }
+        .token-section h3 i { color: var(--accent); }
+        .token-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem; }
+        .token-stat { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; }
+        .token-stat .label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.25rem; }
+        .token-stat .value { font-size: 1rem; font-weight: 700; color: var(--text-primary); word-break: break-word; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.5; }
+        .token-stat .value a { color: var(--accent); text-decoration: none; }
+        .token-stat .value a:hover { text-decoration: underline; }
+
+        .token-profile { display: flex; gap: 1.25rem; align-items: flex-start; padding: 1.25rem; margin-bottom: 1.5rem; background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border); border-radius: 12px; }
+        .token-profile-logo { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; flex-shrink: 0; border: 1px solid var(--border); }
+        .token-profile-logo-placeholder { width: 64px; height: 64px; border-radius: 12px; flex-shrink: 0; background: rgba(var(--accent-rgb, 255, 107, 0), 0.1); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; color: var(--accent); border: 1px solid var(--border); }
+        .token-profile-body { flex: 1; min-width: 0; }
+        .token-profile-desc { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.5; margin-bottom: 0.75rem; }
+        .token-profile-links { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .token-profile-links a { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--accent); font-size: 0.85rem; font-weight: 500; text-decoration: none; padding: 0.3rem 0.6rem; border-radius: 6px; border: 1px solid var(--border); transition: all 0.2s; }
+        .token-profile-links a:hover { border-color: var(--accent); background: rgba(var(--accent-rgb, 255, 107, 0), 0.08); }
+
+        .tab-nav { display: flex; gap: 0; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
+        .tab-nav .tab-btn { border: none; background: none; color: var(--text-muted); font-size: 0.85rem; font-weight: 600; padding: 0.6rem 1rem; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.4rem; }
+        .tab-nav .tab-btn:hover { color: var(--text-primary); }
+        .tab-nav .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        .panel-card { background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+
+        .tab-pagination { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-top: 1px solid var(--border); background: var(--card-bg, rgba(255,255,255,0.03)); }
+        .tab-pagination .pagination-info { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+        .tab-pagination .pagination-btns { display: flex; gap: 0.5rem; }
+        .tab-pagination .btn-small { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+
+        @media (max-width: 768px) {
+            .contract-header-info h1 { font-size: 1.3rem; }
+            .detail-grid { grid-template-columns: 1fr; }
+            .token-grid { grid-template-columns: 1fr; }
+            .token-profile { flex-direction: column; }
+            .tab-nav { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .tab-pagination { flex-direction: column; gap: 0.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
+                <span class="logo-text">Reef Explorer</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Dashboard</a></li>
+                <li><a href="blocks.html">Blocks</a></li>
+                <li><a href="transactions.html">Transactions</a></li>
+                <li><a href="validators.html">Validators</a></li>
+                <li><a href="agents.html">Agents</a></li>
+                <li><a href="contracts.html" class="active">Contracts</a></li>
+                <li><a href="privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search blocks, txs, accounts...">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <div class="nav-network">
+                    <select id="explorerNetworkSelect" class="network-select">
+                    </select>
+                </div>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Contract Detail -->
+    <section class="section">
+        <div class="container">
+            <!-- Breadcrumb -->
+            <div style="margin-bottom: 1rem;">
+                <a href="contracts.html" style="color: var(--accent); text-decoration: none; font-size: 0.85rem; font-weight: 500;">
+                    <i class="fas fa-arrow-left"></i> Back to Contracts
+                </a>
+            </div>
+
+            <!-- Header -->
+            <div class="contract-header">
+                <div class="contract-header-icon infra" id="contractIconBox">
+                    <i class="fas fa-file-code" id="contractIcon"></i>
+                </div>
+                <div class="contract-header-info">
+                    <h1 id="contractTitle">Loading...</h1>
+                    <div id="contractSymbol" class="contract-header-symbol"></div>
+                </div>
+            </div>
+            <div class="contract-address-bar">
+                <span id="contractAddress" class="mono-text"></span>
+                <button onclick="copyAddress()" class="copy-btn"><i class="fas fa-copy"></i> Copy</button>
+                <span id="contractBadge"></span>
+            </div>
+
+            <!-- Overview Stats -->
+            <div class="detail-grid">
+                <div class="detail-card">
+                    <div class="detail-icon primary"><i class="fas fa-user"></i></div>
+                    <div class="detail-label">Owner</div>
+                    <div class="detail-value" id="statOwner" style="font-size: 0.85rem;">--</div>
+                </div>
+                <div class="detail-card">
+                    <div class="detail-icon success"><i class="fas fa-code"></i></div>
+                    <div class="detail-label">Code Size</div>
+                    <div class="detail-value" id="statCodeSize">--</div>
+                </div>
+                <div class="detail-card">
+                    <div class="detail-icon info"><i class="fas fa-cogs"></i></div>
+                    <div class="detail-label">ABI Functions</div>
+                    <div class="detail-value" id="statAbiFunctions">--</div>
+                </div>
+                <div class="detail-card">
+                    <div class="detail-icon warning"><i class="fas fa-database"></i></div>
+                    <div class="detail-label">Storage Entries</div>
+                    <div class="detail-value" id="statStorage">--</div>
+                </div>
+            </div>
+
+            <!-- Token Profile Section (logo, description, links) -->
+            <div id="tokenProfileSection" class="token-profile" style="display: none;"></div>
+
+            <!-- Token Info Section (MT-20 tokens) -->
+            <div id="tokenInfoSection" class="token-section" style="display: none;">
+                <h3><i class="fas fa-coins"></i> Token Details (MT-20)</h3>
+                <div class="token-grid">
+                    <div class="token-stat">
+                        <div class="label">Total Supply</div>
+                        <div class="value" id="tokenSupply">--</div>
+                    </div>
+                    <div class="token-stat">
+                        <div class="label">Decimals</div>
+                        <div class="value" id="tokenDecimals">--</div>
+                    </div>
+                    <div class="token-stat">
+                        <div class="label">Holders</div>
+                        <div class="value" id="tokenHolders">--</div>
+                    </div>
+                    <div class="token-stat">
+                        <div class="label">Mintable</div>
+                        <div class="value" id="tokenMintable">--</div>
+                    </div>
+                    <div class="token-stat">
+                        <div class="label">Burnable</div>
+                        <div class="value" id="tokenBurnable">--</div>
+                    </div>
+                    <div class="token-stat">
+                        <div class="label">Template</div>
+                        <div class="value" id="tokenTemplate">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contract Metadata Section -->
+            <div id="metadataSection" class="token-section" style="display: none;">
+                <h3><i class="fas fa-info-circle"></i> Contract Metadata</h3>
+                <div class="token-grid" id="metadataGrid"></div>
+            </div>
+
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-btn active" onclick="switchTab('abi')" id="tab-abi"><i class="fas fa-sitemap"></i> ABI</button>
+                <button class="tab-btn" onclick="switchTab('storage')" id="tab-storage"><i class="fas fa-database"></i> Storage</button>
+                <button class="tab-btn" onclick="switchTab('calls')" id="tab-calls"><i class="fas fa-terminal"></i> Calls</button>
+                <button class="tab-btn" onclick="switchTab('events')" id="tab-events"><i class="fas fa-bell"></i> Events</button>
+            </div>
+
+            <!-- ABI Tab -->
+            <div id="panel-abi" class="panel-card">
+                <table class="data-table" style="width: 100%;">
+                    <thead>
+                        <tr>
+                            <th>Function</th>
+                            <th>Parameters</th>
+                            <th>Returns</th>
+                            <th>Access</th>
+                        </tr>
+                    </thead>
+                    <tbody id="abiTable">
+                        <tr><td colspan="4" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading ABI...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Storage Tab -->
+            <div id="panel-storage" class="panel-card" style="display: none;">
+                <table class="data-table" style="width: 100%;">
+                    <thead>
+                        <tr><th>Key</th><th>Value</th><th>Size</th></tr>
+                    </thead>
+                    <tbody id="storageTable">
+                        <tr><td colspan="3" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading storage...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Calls Tab -->
+            <div id="panel-calls" class="panel-card" style="display: none;">
+                <table class="data-table" style="width: 100%;">
+                    <thead>
+                        <tr><th>Time</th><th>Caller</th><th>Function</th><th>Fee</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="callsTable">
+                        <tr><td colspan="5" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading calls...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Events Tab -->
+            <div id="panel-events" class="panel-card" style="display: none;">
+                <table class="data-table" style="width: 100%;">
+                    <thead>
+                        <tr><th>Slot</th><th>Event</th><th>Data</th></tr>
+                    </thead>
+                    <tbody id="eventsTable">
+                        <tr><td colspan="3" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading events...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
+                        <span class="logo-text">Reef Explorer</span>
+                    </div>
+                    <p class="footer-desc">Real-time MoltChain blockchain explorer.</p>
+                </div>
+                <div class="footer-col">
+                    <h4>Explorer</h4>
+                    <ul class="footer-links">
+                        <li><a href="index.html">Dashboard</a></li>
+                        <li><a href="blocks.html">Blocks</a></li>
+                        <li><a href="transactions.html">Transactions</a></li>
+                        <li><a href="validators.html">Validators</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Tools</h4>
+                    <ul class="footer-links">
+                        <li><a href="#" data-molt-app="website">Website</a></li>
+                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-molt-app="faucet">Faucet</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="#" data-molt-app="developers" data-molt-path="/getting-started.html">Docs</a></li>
+                        <li><a href="#" data-molt-app="developers" data-molt-path="/rpc-reference.html">API</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 MoltChain. Dual-licensed: Apache 2.0 core, MIT for SDKs and auxiliary apps.</p>
+                <p>Reef Explorer powered by RPC <i class="fas fa-bolt"></i></p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/utils.js?v=20260211"></script>
+    <script src="js/explorer.js?v=20260211"></script>
+    <script src="js/contract.js?v=20260212b"></script>
+</body>
+</html>
