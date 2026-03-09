@@ -1,6 +1,6 @@
 [package]
 name = "moltchain-validator"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
 description = "MoltChain validator node"
