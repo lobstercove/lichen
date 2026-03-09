@@ -75,30 +75,36 @@ struct AirdropRecord {
 
 #[derive(Debug, Default)]
 struct RateLimiter {
-    by_ip: HashMap<String, Vec<u64>>,
+    by_ip: HashMap<String, Vec<(u64, u64)>>,
 }
 
 impl RateLimiter {
     fn prune(&mut self, now_ms: u64) {
         let cutoff = now_ms.saturating_sub(24 * 60 * 60 * 1000);
-        self.by_ip.retain(|_, timestamps| {
-            timestamps.retain(|ts| *ts >= cutoff);
-            !timestamps.is_empty()
+        self.by_ip.retain(|_, entries| {
+            entries.retain(|(ts, _)| *ts >= cutoff);
+            !entries.is_empty()
         });
     }
 
-    fn check(&mut self, ip: &str, now_ms: u64, daily_limit_molt: u64, cooldown_seconds: u64) -> Result<(), String> {
+    fn check(
+        &mut self,
+        ip: &str,
+        now_ms: u64,
+        daily_limit_molt: u64,
+        cooldown_seconds: u64,
+    ) -> Result<(), String> {
         self.prune(now_ms);
         let entries = self.by_ip.entry(ip.to_string()).or_default();
-        if let Some(last) = entries.last().copied() {
-            let elapsed = now_ms.saturating_sub(last) / 1000;
+        if let Some((last_ts, _)) = entries.last().copied() {
+            let elapsed = now_ms.saturating_sub(last_ts) / 1000;
             if elapsed < cooldown_seconds {
                 let remaining = cooldown_seconds - elapsed;
                 return Err(format!("Rate limit: try again in {} seconds", remaining));
             }
         }
 
-        let used_today = entries.len() as u64 * DEFAULT_MAX_PER_REQUEST;
+        let used_today: u64 = entries.iter().map(|(_, amt)| *amt).sum();
         if used_today >= daily_limit_molt {
             return Err("Daily faucet limit reached for this IP".to_string());
         }
@@ -106,8 +112,11 @@ impl RateLimiter {
         Ok(())
     }
 
-    fn record(&mut self, ip: &str, now_ms: u64) {
-        self.by_ip.entry(ip.to_string()).or_default().push(now_ms);
+    fn record(&mut self, ip: &str, now_ms: u64, amount_molt: u64) {
+        self.by_ip
+            .entry(ip.to_string())
+            .or_default()
+            .push((now_ms, amount_molt));
         self.prune(now_ms);
     }
 }
@@ -154,7 +163,8 @@ async fn main() {
         max_per_request: parse_env_u64("MAX_PER_REQUEST", DEFAULT_MAX_PER_REQUEST),
         daily_limit_per_ip: parse_env_u64("DAILY_LIMIT_PER_IP", DEFAULT_DAILY_LIMIT_PER_IP),
         cooldown_seconds: parse_env_u64("COOLDOWN_SECONDS", DEFAULT_COOLDOWN_SECONDS),
-        airdrops_file: std::env::var("AIRDROPS_FILE").unwrap_or_else(|_| "airdrops.json".to_string()),
+        airdrops_file: std::env::var("AIRDROPS_FILE")
+            .unwrap_or_else(|_| "airdrops.json".to_string()),
         trusted_proxies: parse_csv_env("TRUSTED_PROXY"),
     };
 
@@ -173,7 +183,9 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE])
         .allow_origin([
-            "https://faucet.moltchain.io".parse::<HeaderValue>().unwrap(),
+            "https://faucet.moltchain.io"
+                .parse::<HeaderValue>()
+                .unwrap(),
             "https://moltchain.io".parse::<HeaderValue>().unwrap(),
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3003".parse::<HeaderValue>().unwrap(),
@@ -192,11 +204,16 @@ async fn main() {
 
     let port = parse_env_u16("PORT", DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind faucet listener");
-    info!("moltchain-faucet listening on {}", addr);
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .expect("serve faucet");
+        .expect("bind faucet listener");
+    info!("moltchain-faucet listening on {}", addr);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("serve faucet");
 }
 
 async fn health() -> &'static str {
@@ -245,7 +262,10 @@ async fn request_airdrop(
 ) -> Response {
     let amount_molt = request.amount.unwrap_or(state.config.max_per_request);
     if amount_molt == 0 || amount_molt > state.config.max_per_request {
-        return error_json(StatusCode::BAD_REQUEST, "Requested amount exceeds faucet limit");
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            "Requested amount exceeds faucet limit",
+        );
     }
 
     if Pubkey::from_base58(request.address.trim()).is_err() {
@@ -274,7 +294,10 @@ async fn request_airdrop(
 
     let required_shells = amount_molt.saturating_mul(SHELLS_PER_MOLT);
     if treasury.treasury_balance < required_shells {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "Faucet temporarily empty - check back soon");
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Faucet temporarily empty - check back soon",
+        );
     }
 
     let rpc_result = match rpc_call(
@@ -289,7 +312,7 @@ async fn request_airdrop(
     };
 
     let mut limiter = state.rate_limiter.write().await;
-    limiter.record(&client_ip, now_ms);
+    limiter.record(&client_ip, now_ms, amount_molt);
     drop(limiter);
 
     let response = FaucetResponse {
@@ -298,13 +321,19 @@ async fn request_airdrop(
             .get("signature")
             .and_then(|value| value.as_str())
             .map(|value| value.to_string()),
-        amount: rpc_result.get("amount").and_then(|value| value.as_u64()).or(Some(amount_molt)),
+        amount: rpc_result
+            .get("amount")
+            .and_then(|value| value.as_u64())
+            .or(Some(amount_molt)),
         recipient: Some(request.address.trim().to_string()),
         message: rpc_result
             .get("message")
             .and_then(|value| value.as_str())
             .map(|value| value.to_string())
-            .or(Some(format!("{} MOLT airdropped successfully", amount_molt))),
+            .or(Some(format!(
+                "{} MOLT airdropped successfully",
+                amount_molt
+            ))),
         error: None,
     };
 
@@ -328,7 +357,11 @@ async fn fetch_treasury_info(state: &FaucetState) -> Result<TreasuryInfo, String
     serde_json::from_value(value).map_err(|err| format!("invalid treasury response: {}", err))
 }
 
-async fn rpc_call(state: &FaucetState, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn rpc_call(
+    state: &FaucetState,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -441,7 +474,11 @@ fn parse_csv_env(key: &str) -> Vec<String> {
         .collect()
 }
 
-fn extract_client_ip(headers: &HeaderMap, peer_addr: SocketAddr, trusted_proxies: &[String]) -> String {
+fn extract_client_ip(
+    headers: &HeaderMap,
+    peer_addr: SocketAddr,
+    trusted_proxies: &[String],
+) -> String {
     let peer_ip = peer_addr.ip().to_string();
     if trusted_proxies.iter().any(|value| value == &peer_ip) {
         if let Some(forwarded) = headers

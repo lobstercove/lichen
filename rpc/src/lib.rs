@@ -53,14 +53,13 @@ use axum::{
 use lru::LruCache;
 use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
+use moltchain_core::account::Keypair as TreasuryKeypair;
 use moltchain_core::{
-    decode_evm_transaction, shells_to_u256, simulate_evm_call, Account, FinalityTracker, Hash,
-    Instruction, MarketActivityKind, Pubkey, StakePool, StateStore, SymbolRegistryEntry,
-    Transaction, TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
+    decode_evm_transaction, shells_to_u256, simulate_evm_call, FinalityTracker, Hash, Instruction,
+    MarketActivityKind, Message, Pubkey, StakePool, StateStore, SymbolRegistryEntry, Transaction,
+    TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 
-/// System account owner (Pubkey([0x01; 32]))
-const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 // RPC-H05: keep tx listing endpoints under ~600 DB reads/page by bounding page size.
 // Each tx can consume up to ~4 reads in the worst common path:
 // - 1 index entry read (CF_ACCOUNT_TXS or CF_TX_BY_SLOT)
@@ -342,6 +341,9 @@ struct RpcState {
     custody_url: Option<String>,
     /// Bearer token for custody API auth
     custody_auth_token: Option<String>,
+    /// Treasury keypair for signing consensus-based airdrop transactions.
+    /// Loaded from the treasury keypair file at startup.
+    treasury_keypair: Option<Arc<TreasuryKeypair>>,
 }
 
 const AIRDROP_COOLDOWN_SECS: u64 = 60;
@@ -1694,6 +1696,7 @@ pub async fn start_rpc_server(
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
+    treasury_keypair: Option<TreasuryKeypair>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_rpc_router(
         state,
@@ -1706,6 +1709,7 @@ pub async fn start_rpc_server(
         finality,
         dex_broadcaster,
         prediction_broadcaster,
+        treasury_keypair,
     );
 
     let addr = format!("0.0.0.0:{}", port);
@@ -1740,6 +1744,7 @@ pub fn build_rpc_router(
     finality: Option<FinalityTracker>,
     dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
     prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
+    treasury_keypair: Option<TreasuryKeypair>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
     let solana_tx_cache = Arc::new(RwLock::new(LruCache::new(
@@ -1815,6 +1820,7 @@ pub fn build_rpc_router(
         custody_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN")
             .ok()
             .filter(|s| !s.is_empty()),
+        treasury_keypair: treasury_keypair.map(Arc::new),
     };
 
     // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
@@ -11242,17 +11248,15 @@ async fn handle_get_contract_events(
     }))
 }
 
-/// Testnet-only airdrop: credits MOLT from treasury to a given address.
+/// Testnet-only airdrop: creates a signed consensus transaction (type 19)
+/// that transfers MOLT from treasury to a given address.
 /// Usage: requestAirdrop [address, amount_in_molt]
-/// This mints tokens from treasury to support testnet development/faucet.
+/// The transaction goes through the mempool and consensus, ensuring all
+/// validators apply the same state change.
 async fn handle_request_airdrop(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    // L3-01: Block in multi-validator mode — direct state writes bypass consensus.
-    // Even on testnet, multiple validators would diverge on airdrop state.
-    require_single_validator(state, "requestAirdrop").await?;
-
     // Only allow on testnet / devnet (not mainnet)
     if state.network_id.contains("mainnet")
         || (!state.network_id.contains("testnet")
@@ -11264,6 +11268,12 @@ async fn handle_request_airdrop(
             message: "Airdrop only available on testnet/devnet".to_string(),
         });
     }
+
+    // Require treasury keypair to be configured
+    let treasury_kp = state.treasury_keypair.as_ref().ok_or(RpcError {
+        code: -32000,
+        message: "Treasury keypair not configured — cannot sign airdrop transactions".to_string(),
+    })?;
 
     let params = params.ok_or(RpcError {
         code: -32602,
@@ -11321,20 +11331,9 @@ async fn handle_request_airdrop(
 
     let amount_shells = amount_molt * 1_000_000_000;
 
-    // Get treasury
-    let treasury_pubkey = state
-        .state
-        .get_treasury_pubkey()
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to get treasury: {}", e),
-        })?
-        .ok_or(RpcError {
-            code: -32000,
-            message: "No treasury configured".to_string(),
-        })?;
-
-    let mut treasury_account = state
+    // Verify treasury has sufficient balance (pre-check, actual debit happens in consensus)
+    let treasury_pubkey = treasury_kp.pubkey();
+    let treasury_account = state
         .state
         .get_account(&treasury_pubkey)
         .map_err(|e| RpcError {
@@ -11353,52 +11352,56 @@ async fn handle_request_airdrop(
         });
     }
 
-    // Debit treasury
-    treasury_account
-        .deduct_spendable(amount_shells)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to debit treasury: {}", e),
-        })?;
-    state
+    // Get recent blockhash for the transaction
+    let slot = state.state.get_last_slot().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Failed to get latest slot: {}", e),
+    })?;
+    let block = state
         .state
-        .put_account(&treasury_pubkey, &treasury_account)
+        .get_block_by_slot(slot)
         .map_err(|e| RpcError {
             code: -32000,
-            message: format!("Failed to save treasury: {}", e),
+            message: format!("Failed to get latest block: {}", e),
+        })?
+        .ok_or(RpcError {
+            code: -32000,
+            message: "Latest block not found".to_string(),
         })?;
+    let recent_blockhash = block.hash();
 
-    // Credit recipient
-    let mut recipient_account = state
-        .state
-        .get_account(&recipient)
-        .unwrap_or(None)
-        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+    // Build instruction type 19 (FaucetAirdrop): [19 | amount_shells(8 LE)]
+    let mut ix_data = vec![19u8];
+    ix_data.extend_from_slice(&amount_shells.to_le_bytes());
 
-    recipient_account
-        .add_spendable(amount_shells)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to credit recipient: {}", e),
-        })?;
-    state
-        .state
-        .put_account(&recipient, &recipient_account)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Failed to save recipient: {}", e),
-        })?;
+    let ix = Instruction {
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: vec![treasury_pubkey, recipient],
+        data: ix_data,
+    };
+
+    // Build and sign the transaction
+    let msg = Message::new(vec![ix], recent_blockhash);
+    let mut tx = Transaction::new(msg);
+    let sig = treasury_kp.sign(&tx.message.serialize());
+    tx.signatures.push(sig);
+
+    let tx_hash = tx.signature().to_hex();
+
+    // Submit through mempool for consensus processing
+    submit_transaction(state, tx)?;
 
     info!(
-        "💧 Airdrop: {} MOLT from treasury to {}",
-        amount_molt, address_str
+        "💧 Airdrop tx submitted: {} MOLT from treasury to {} (tx: {})",
+        amount_molt, address_str, tx_hash
     );
 
     Ok(serde_json::json!({
         "success": true,
+        "signature": tx_hash,
         "amount": amount_molt,
         "recipient": address_str,
-        "message": format!("{} MOLT airdropped successfully", amount_molt),
+        "message": format!("{} MOLT airdrop transaction submitted", amount_molt),
     }))
 }
 

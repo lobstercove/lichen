@@ -8,16 +8,19 @@ extern crate alloc;
 #[cfg(target_arch = "wasm32")]
 use core::panic::PanicInfo;
 
-pub mod token;
-pub mod nft;
-pub mod dex;
 pub mod crosscall;
+pub mod dex;
+pub mod nft;
+pub mod token;
 
 // Re-export modules
-pub use token::Token;
-pub use nft::NFT;
+pub use crosscall::{
+    call_contract, call_nft_owner, call_nft_transfer, call_token_balance, call_token_transfer,
+    CrossCall,
+};
 pub use dex::Pool;
-pub use crosscall::{CrossCall, call_contract, call_token_transfer, call_nft_transfer, call_token_balance, call_nft_owner};
+pub use nft::NFT;
+pub use token::Token;
 
 /// Test mock infrastructure for host functions.
 /// When not compiling for wasm32, we provide mock implementations
@@ -25,10 +28,10 @@ pub use crosscall::{CrossCall, call_contract, call_token_transfer, call_nft_tran
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test_mock {
     extern crate std;
-    use std::collections::HashMap;
     use std::cell::RefCell;
-    use std::vec::Vec;
+    use std::collections::HashMap;
     use std::string::String;
+    use std::vec::Vec;
 
     std::thread_local! {
         pub static STORAGE: RefCell<HashMap<Vec<u8>, Vec<u8>>> = RefCell::new(HashMap::new());
@@ -119,7 +122,8 @@ pub mod storage {
     #[cfg(target_arch = "wasm32")]
     extern "C" {
         fn storage_read(key_ptr: *const u8, key_len: u32, val_ptr: *mut u8, val_len: u32) -> u32;
-        fn storage_write(key_ptr: *const u8, key_len: u32, val_ptr: *const u8, val_len: u32) -> u32;
+        fn storage_write(key_ptr: *const u8, key_len: u32, val_ptr: *const u8, val_len: u32)
+            -> u32;
     }
 
     /// Read value from storage
@@ -136,7 +140,7 @@ pub mod storage {
                     buffer.len() as u32,
                 )
             };
-            
+
             if result == 0 {
                 None
             } else {
@@ -206,7 +210,9 @@ pub mod contract {
         #[cfg(target_arch = "wasm32")]
         {
             let len = unsafe { get_args_len() } as usize;
-            if len == 0 { return Vec::new(); }
+            if len == 0 {
+                return Vec::new();
+            }
             let mut buf = vec![0u8; len];
             let read = unsafe { get_args(buf.as_mut_ptr(), len as u32) } as usize;
             buf.truncate(read);
@@ -281,10 +287,7 @@ pub mod log {
             let len = msg.len() as u32;
             unsafe {
                 // black_box the args to make the call opaque to the optimizer
-                log(
-                    core::hint::black_box(ptr),
-                    core::hint::black_box(len),
-                );
+                log(core::hint::black_box(ptr), core::hint::black_box(len));
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -296,7 +299,6 @@ pub mod log {
         }
     }
 }
-
 
 /// Account/Address type
 #[repr(C)]
@@ -323,6 +325,7 @@ pub enum ContractError {
     Unauthorized,
     InvalidInput,
     StorageError,
+    Overflow,
     Custom(&'static str),
 }
 
@@ -436,10 +439,10 @@ pub use alloc::string::String;
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 // Function re-exports
-pub use storage::{get as storage_get, set as storage_set};
-pub use log::info as log_info;
 pub use contract::{args as get_args, set_return as set_return_data};
 pub use event::emit as emit_event;
+pub use log::info as log_info;
+pub use storage::{get as storage_get, set as storage_set};
 // get_caller, get_value, get_slot, get_timestamp are already top-level pub fns
 
 #[cfg(test)]

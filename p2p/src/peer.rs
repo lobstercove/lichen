@@ -1367,6 +1367,20 @@ impl PeerFingerprintStore {
         }
     }
 
+    /// Remove a peer's stored fingerprint to allow reconnection after legitimate
+    /// certificate rotation. Returns true if the peer had a stored fingerprint.
+    #[allow(dead_code)]
+    pub fn remove_fingerprint(&self, addr: &SocketAddr) -> bool {
+        let addr_str = addr.to_string();
+        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = store.remove(&addr_str).is_some();
+        drop(store);
+        if removed {
+            self.save();
+        }
+        removed
+    }
+
     fn save(&self) {
         let store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(json) = serde_json::to_string_pretty(&*store) {

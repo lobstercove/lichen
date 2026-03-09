@@ -107,6 +107,7 @@ fn create_empty_app() -> axum::Router {
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -159,6 +160,7 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
         None,
         None,
         None,
@@ -819,6 +821,7 @@ fn create_app_from_state(state: StateStore) -> axum::Router {
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
         None,
         None,
         None,

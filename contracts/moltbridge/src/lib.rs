@@ -32,16 +32,18 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
-    Address, CrossCall, call_contract,
-    get_value, get_contract_address, call_token_transfer,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
 const MB_REENTRANCY_KEY: &[u8] = b"mb_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(MB_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(MB_REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(MB_REENTRANCY_KEY, &[1u8]);
@@ -56,7 +58,9 @@ fn reentrancy_exit() {
 const MB_PAUSE_KEY: &[u8] = b"mb_paused";
 
 fn is_mb_paused() -> bool {
-    storage_get(MB_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(MB_PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 // ============================================================================
@@ -249,9 +253,15 @@ fn is_zero(data: &[u8; 32]) -> bool {
 
 /// AUDIT-FIX G11-01: Load configured moltcoin address
 fn load_molt_addr() -> [u8; 32] {
-    storage_get(MOLTCOIN_ADDRESS_KEY).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(MOLTCOIN_ADDRESS_KEY)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
 
 /// AUDIT-FIX G11-01: Transfer tokens OUT from the bridge's own balance.
@@ -279,7 +289,9 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     log_info("Initializing MoltBridge v2 (multi-call confirmation)...");
 
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -294,10 +306,16 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
 
     storage_set(b"bridge_owner", &owner);
     storage_set(b"bridge_validator_count", &u64_to_bytes(0));
-    storage_set(b"bridge_required_confirms", &u64_to_bytes(DEFAULT_REQUIRED_CONFIRMATIONS));
+    storage_set(
+        b"bridge_required_confirms",
+        &u64_to_bytes(DEFAULT_REQUIRED_CONFIRMATIONS),
+    );
     storage_set(b"bridge_locked_amount", &u64_to_bytes(0));
     storage_set(b"bridge_nonce", &u64_to_bytes(0));
-    storage_set(b"bridge_request_timeout", &u64_to_bytes(DEFAULT_REQUEST_TIMEOUT));
+    storage_set(
+        b"bridge_request_timeout",
+        &u64_to_bytes(DEFAULT_REQUEST_TIMEOUT),
+    );
 
     log_info("MoltBridge v2 initialized");
     0
@@ -313,14 +331,15 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
 ///   - caller_ptr: 32-byte caller address (must be owner)
 ///   - validator_ptr: 32-byte validator pubkey to add
 #[no_mangle]
-pub extern "C" fn add_bridge_validator(
-    caller_ptr: *const u8,
-    validator_ptr: *const u8,
-) -> u32 {
+pub extern "C" fn add_bridge_validator(caller_ptr: *const u8, validator_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut val_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -360,14 +379,15 @@ pub extern "C" fn add_bridge_validator(
 ///   - caller_ptr: 32-byte caller address (must be owner)
 ///   - validator_ptr: 32-byte validator pubkey to remove
 #[no_mangle]
-pub extern "C" fn remove_bridge_validator(
-    caller_ptr: *const u8,
-    validator_ptr: *const u8,
-) -> u32 {
+pub extern "C" fn remove_bridge_validator(caller_ptr: *const u8, validator_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut val_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -417,12 +437,11 @@ pub extern "C" fn remove_bridge_validator(
 ///   - caller_ptr: 32-byte caller (must be owner)
 ///   - required: new threshold (1..100)
 #[no_mangle]
-pub extern "C" fn set_required_confirmations(
-    caller_ptr: *const u8,
-    required: u64,
-) -> u32 {
+pub extern "C" fn set_required_confirmations(caller_ptr: *const u8, required: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -434,8 +453,9 @@ pub extern "C" fn set_required_confirmations(
         return code;
     }
 
-    if required == 0 || required > MAX_REQUIRED_CONFIRMATIONS {
-        log_info("Required confirmations must be 1..100");
+    // AUDIT-FIX H-12: Minimum 2 confirmations required for bridge security
+    if required < 2 || required > MAX_REQUIRED_CONFIRMATIONS {
+        log_info("Required confirmations must be 2..100");
         return 3;
     }
 
@@ -450,12 +470,11 @@ pub extern "C" fn set_required_confirmations(
 ///   - caller_ptr: 32-byte caller (must be owner)
 ///   - timeout_slots: slots until request expires (min 100)
 #[no_mangle]
-pub extern "C" fn set_request_timeout(
-    caller_ptr: *const u8,
-    timeout_slots: u64,
-) -> u32 {
+pub extern "C" fn set_request_timeout(caller_ptr: *const u8, timeout_slots: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -507,11 +526,17 @@ pub extern "C" fn lock_tokens(
     log_info("Locking tokens for bridge...");
 
     let mut sender_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(sender_ptr, sender_arr.as_mut_ptr(), 32);
+    }
     let mut chain_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(dest_chain_ptr, chain_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(dest_chain_ptr, chain_arr.as_mut_ptr(), 32);
+    }
     let mut addr_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(dest_address_ptr, addr_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(dest_address_ptr, addr_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -554,14 +579,17 @@ pub extern "C" fn lock_tokens(
     let locked = storage_get(b"bridge_locked_amount")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
-    storage_set(b"bridge_locked_amount", &u64_to_bytes(locked.saturating_add(amount)));
+    storage_set(
+        b"bridge_locked_amount",
+        &u64_to_bytes(locked.saturating_add(amount)),
+    );
 
     // Store bridge transaction — lock is immediately complete (user-initiated)
     let current_slot = get_slot();
     let tx_data = encode_bridge_tx(
         &sender_arr,
         amount,
-        0, // direction: lock/out
+        0,                // direction: lock/out
         STATUS_COMPLETED, // lock is immediately complete
         current_slot,
         0, // no confirmations needed for lock
@@ -605,48 +633,66 @@ pub extern "C" fn submit_mint(
         log_info("Bridge is paused");
         return 20;
     }
+    // AUDIT-FIX C-7: Reentrancy guard (was missing on submit_mint)
+    if !reentrancy_enter() {
+        return 21;
+    }
     log_info("Submitting mint request...");
 
     let mut caller_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
+    }
     let mut recipient_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32);
+    }
     let mut chain_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(source_chain_ptr, chain_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(source_chain_ptr, chain_arr.as_mut_ptr(), 32);
+    }
     let mut tx_hash_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(source_tx_ptr, tx_hash_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(source_tx_ptr, tx_hash_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller_arr {
+        reentrancy_exit();
         return 200;
     }
 
     if amount == 0 {
         log_info("Amount must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     // Verify caller is a registered validator
     if !is_validator(&caller_arr) {
         log_info("Caller is not an authorized bridge validator");
+        reentrancy_exit();
         return 2;
     }
 
     // Source TX deduplication — prevent double-minting
     if is_zero(&tx_hash_arr) {
         log_info("Source transaction hash cannot be zero");
+        reentrancy_exit();
         return 5;
     }
     let stk = source_tx_used_key(&tx_hash_arr);
     if storage_get(&stk).is_some() {
         log_info("Source transaction already processed (duplicate)");
+        reentrancy_exit();
         return 4;
     }
 
     // Validate recipient
     if is_zero(&recipient_arr) {
         log_info("Recipient address cannot be zero");
+        reentrancy_exit();
         return 6;
     }
 
@@ -680,9 +726,20 @@ pub extern "C" fn submit_mint(
         let rc = transfer_out(&recipient_arr, amount);
         if rc != 0 {
             // Revert state on transfer failure
-            storage_set(&bridge_tx_key(nonce), &encode_bridge_tx(
-                &recipient_arr, amount, 1, STATUS_CANCELLED, current_slot, 0, &chain_arr, &tx_hash_arr,
-            ));
+            storage_set(
+                &bridge_tx_key(nonce),
+                &encode_bridge_tx(
+                    &recipient_arr,
+                    amount,
+                    1,
+                    STATUS_CANCELLED,
+                    current_slot,
+                    0,
+                    &chain_arr,
+                    &tx_hash_arr,
+                ),
+            );
+            reentrancy_exit();
             return rc;
         }
         update_bridge_tx_status(nonce, STATUS_COMPLETED, 1);
@@ -692,6 +749,7 @@ pub extern "C" fn submit_mint(
     }
 
     moltchain_sdk::set_return_data(&u64_to_bytes(nonce));
+    reentrancy_exit();
     0
 }
 
@@ -708,29 +766,34 @@ pub extern "C" fn submit_mint(
 ///
 /// Returns 0 on success.
 #[no_mangle]
-pub extern "C" fn confirm_mint(
-    caller_ptr: *const u8,
-    nonce: u64,
-) -> u32 {
+pub extern "C" fn confirm_mint(caller_ptr: *const u8, nonce: u64) -> u32 {
     // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
     if is_mb_paused() {
         log_info("Bridge is paused");
         return 20;
     }
+    // AUDIT-FIX C-7: Reentrancy guard (was missing on confirm_mint)
+    if !reentrancy_enter() {
+        return 21;
+    }
     log_info("Confirming mint request...");
 
     let mut caller_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller_arr {
+        reentrancy_exit();
         return 200;
     }
 
     // Verify caller is validator
     if !is_validator(&caller_arr) {
         log_info("Caller is not an authorized bridge validator");
+        reentrancy_exit();
         return 2;
     }
 
@@ -740,6 +803,7 @@ pub extern "C" fn confirm_mint(
         Some(data) if data.len() == BRIDGE_TX_SIZE => data,
         _ => {
             log_info("Bridge transaction not found");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -747,10 +811,12 @@ pub extern "C" fn confirm_mint(
     // Verify it's a pending mint
     if tx_data[40] != 1 {
         log_info("Transaction is not a mint request");
+        reentrancy_exit();
         return 5;
     }
     if tx_data[41] != STATUS_PENDING {
         log_info("Mint request is not pending");
+        reentrancy_exit();
         return 6;
     }
 
@@ -761,6 +827,7 @@ pub extern "C" fn confirm_mint(
     if current_slot > created_slot.saturating_add(timeout) {
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Mint request has expired");
+        reentrancy_exit();
         return 7;
     }
 
@@ -768,6 +835,7 @@ pub extern "C" fn confirm_mint(
     let ck = mint_confirm_key(nonce, &caller_arr);
     if storage_get(&ck).is_some() {
         log_info("Validator already confirmed this mint");
+        reentrancy_exit();
         return 8;
     }
 
@@ -787,6 +855,7 @@ pub extern "C" fn confirm_mint(
             // Don't update status — let validators retry
             log_info("Mint transfer failed, confirmations recorded but not completed");
             update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
+            reentrancy_exit();
             return rc;
         }
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
@@ -796,6 +865,7 @@ pub extern "C" fn confirm_mint(
         log_info("Mint confirmation recorded, awaiting more");
     }
 
+    reentrancy_exit();
     0
 }
 
@@ -829,11 +899,17 @@ pub extern "C" fn submit_unlock(
     log_info("Submitting unlock request...");
 
     let mut caller_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
+    }
     let mut recipient_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32);
+    }
     let mut proof_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(burn_proof_ptr, proof_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(burn_proof_ptr, proof_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -896,7 +972,7 @@ pub extern "C" fn submit_unlock(
         2, // direction: unlock/return
         STATUS_PENDING,
         current_slot,
-        1, // submitter = first confirmation
+        1,          // submitter = first confirmation
         &[0u8; 32], // no chain hash for unlock
         &proof_arr,
     );
@@ -940,10 +1016,7 @@ pub extern "C" fn submit_unlock(
 ///
 /// Returns 0 on success.
 #[no_mangle]
-pub extern "C" fn confirm_unlock(
-    caller_ptr: *const u8,
-    nonce: u64,
-) -> u32 {
+pub extern "C" fn confirm_unlock(caller_ptr: *const u8, nonce: u64) -> u32 {
     // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
     if is_mb_paused() {
         log_info("Bridge is paused");
@@ -952,7 +1025,9 @@ pub extern "C" fn confirm_unlock(
     log_info("Confirming unlock request...");
 
     let mut caller_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -996,7 +1071,10 @@ pub extern "C" fn confirm_unlock(
         let locked = storage_get(b"bridge_locked_amount")
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(0);
-        storage_set(b"bridge_locked_amount", &u64_to_bytes(locked.saturating_add(amount)));
+        storage_set(
+            b"bridge_locked_amount",
+            &u64_to_bytes(locked.saturating_add(amount)),
+        );
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
         log_info("Unlock request has expired, funds returned to reserve");
         return 7;
@@ -1079,7 +1157,10 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
         let locked = storage_get(b"bridge_locked_amount")
             .map(|d| bytes_to_u64(&d))
             .unwrap_or(0);
-        storage_set(b"bridge_locked_amount", &u64_to_bytes(locked.saturating_add(amount)));
+        storage_set(
+            b"bridge_locked_amount",
+            &u64_to_bytes(locked.saturating_add(amount)),
+        );
     }
 
     update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
@@ -1122,7 +1203,9 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u32 {
     let mut val_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
+    }
 
     if storage_get(&mint_confirm_key(nonce, &val_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1142,7 +1225,9 @@ pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u3
 #[no_mangle]
 pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> u32 {
     let mut val_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32);
+    }
 
     if storage_get(&unlock_confirm_key(nonce, &val_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1161,7 +1246,9 @@ pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> 
 #[no_mangle]
 pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
     let mut hash_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(tx_hash_ptr, hash_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(tx_hash_ptr, hash_arr.as_mut_ptr(), 32);
+    }
 
     if storage_get(&source_tx_used_key(&hash_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1180,7 +1267,9 @@ pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn is_burn_proof_used(proof_ptr: *const u8) -> u32 {
     let mut proof_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(proof_ptr, proof_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(proof_ptr, proof_arr.as_mut_ptr(), 32);
+    }
 
     if storage_get(&burn_proof_used_key(&proof_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1204,9 +1293,13 @@ const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut moltyid_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1228,7 +1321,9 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1285,7 +1380,9 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1298,7 +1395,9 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
     }
 
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     if is_zero(&addr) {
         log_info("Cannot set zero token address");
@@ -1317,7 +1416,9 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, addr_ptr: *const u8) 
 #[no_mangle]
 pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1337,7 +1438,9 @@ pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn mb_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1435,7 +1538,10 @@ mod tests {
 
         // Remove fails: would drop below required_confirmations threshold (default=2)
         test_mock::set_caller(owner);
-        assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 4);
+        assert_eq!(
+            remove_bridge_validator(owner.as_ptr(), validator.as_ptr()),
+            4
+        );
 
         // Lower threshold to 1, add second validator, then remove first
         test_mock::set_caller(owner);
@@ -1445,13 +1551,19 @@ mod tests {
         assert_eq!(add_bridge_validator(owner.as_ptr(), validator2.as_ptr()), 0);
         // Now count=2, required=1 -> removing one leaves 1 >= 1 -> allowed
         test_mock::set_caller(owner);
-        assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 0);
+        assert_eq!(
+            remove_bridge_validator(owner.as_ptr(), validator.as_ptr()),
+            0
+        );
         let count = test_mock::get_storage(b"bridge_validator_count").unwrap();
         assert_eq!(bytes_to_u64(&count), 1);
 
         // Remove again fails (already removed)
         test_mock::set_caller(owner);
-        assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 3);
+        assert_eq!(
+            remove_bridge_validator(owner.as_ptr(), validator.as_ptr()),
+            3
+        );
     }
 
     #[test]
@@ -1534,7 +1646,12 @@ mod tests {
 
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        let result = lock_tokens(sender.as_ptr(), 1_000_000, dest_chain.as_ptr(), dest_addr.as_ptr());
+        let result = lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            dest_chain.as_ptr(),
+            dest_addr.as_ptr(),
+        );
         assert_eq!(result, 0);
 
         // Verify locked amount
@@ -1564,7 +1681,10 @@ mod tests {
         initialize(owner.as_ptr());
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
-        assert_eq!(lock_tokens(sender.as_ptr(), 0, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr()), 1);
+        assert_eq!(
+            lock_tokens(sender.as_ptr(), 0, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr()),
+            1
+        );
     }
 
     #[test]
@@ -1576,7 +1696,15 @@ mod tests {
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1000);
-        assert_eq!(lock_tokens(sender.as_ptr(), 1000, [0xAA; 32].as_ptr(), [0u8; 32].as_ptr()), 5);
+        assert_eq!(
+            lock_tokens(
+                sender.as_ptr(),
+                1000,
+                [0xAA; 32].as_ptr(),
+                [0u8; 32].as_ptr()
+            ),
+            5
+        );
     }
 
     // =============================================
@@ -1684,7 +1812,13 @@ mod tests {
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            source_tx.as_ptr(),
+        );
 
         // Same validator tries to confirm again
         test_mock::set_caller(val1);
@@ -1706,7 +1840,13 @@ mod tests {
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            source_tx.as_ptr(),
+        );
 
         let non_val = [9u8; 32];
         test_mock::set_caller(non_val);
@@ -1728,11 +1868,29 @@ mod tests {
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr()), 0);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr()
+            ),
+            0
+        );
 
         // Same source TX hash - rejected
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr()), 4);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr()
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1745,7 +1903,16 @@ mod tests {
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0u8; 32].as_ptr()), 5);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0u8; 32].as_ptr()
+            ),
+            5
+        );
     }
 
     #[test]
@@ -1758,7 +1925,16 @@ mod tests {
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [0u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr()), 6);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [0u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr()
+            ),
+            6
+        );
     }
 
     #[test]
@@ -1769,7 +1945,16 @@ mod tests {
         initialize(owner.as_ptr());
         let non_val = [9u8; 32];
         test_mock::set_caller(non_val);
-        assert_eq!(submit_mint(non_val.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr()), 2);
+        assert_eq!(
+            submit_mint(
+                non_val.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr()
+            ),
+            2
+        );
     }
 
     // =============================================
@@ -1796,12 +1981,22 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         // Submit unlock
         let burn_proof = [0xEE; 32];
         test_mock::set_caller(val1);
-        let result = submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr());
+        let result = submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            burn_proof.as_ptr(),
+        );
         assert_eq!(result, 0);
 
         // Locked amount reduced immediately (reserved)
@@ -1843,7 +2038,15 @@ mod tests {
         // No tokens locked
         let burn_proof = [0xEE; 32];
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr()), 3);
+        assert_eq!(
+            submit_unlock(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                burn_proof.as_ptr()
+            ),
+            3
+        );
     }
 
     #[test]
@@ -1861,15 +2064,36 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(2_000_000);
-        lock_tokens(sender.as_ptr(), 2_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            2_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         let burn_proof = [0xEE; 32];
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr()), 0);
+        assert_eq!(
+            submit_unlock(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                burn_proof.as_ptr()
+            ),
+            0
+        );
 
         // Same burn proof - rejected
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr()), 4);
+        assert_eq!(
+            submit_unlock(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                burn_proof.as_ptr()
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1890,11 +2114,21 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         let burn_proof = [0xEE; 32];
         test_mock::set_caller(val1);
-        submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr());
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            burn_proof.as_ptr(),
+        );
 
         // Same validator tries again
         test_mock::set_caller(val1);
@@ -1926,7 +2160,13 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
 
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // Advance past timeout
         test_mock::SLOT.with(|s| *s.borrow_mut() = 1200);
@@ -1961,12 +2201,22 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         // Submit unlock - reserves 500K from locked
         let burn_proof = [0xEE; 32];
         test_mock::set_caller(val1);
-        submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, burn_proof.as_ptr());
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            burn_proof.as_ptr(),
+        );
         let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
         assert_eq!(locked, 500_000);
 
@@ -2001,7 +2251,13 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
 
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // Try cancel while still valid
         assert_eq!(cancel_expired_request(0), 3);
@@ -2024,7 +2280,13 @@ mod tests {
 
         // Auto-completes
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // Can't cancel a completed request
         test_mock::SLOT.with(|s| *s.borrow_mut() = 99999);
@@ -2047,7 +2309,12 @@ mod tests {
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(100_000);
-        lock_tokens(sender.as_ptr(), 100_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            100_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         let result = get_bridge_status(0);
         assert_eq!(result, 0);
@@ -2075,7 +2342,13 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
 
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // val1 confirmed (via submit)
         has_confirmed_mint(val1.as_ptr(), 0);
@@ -2100,7 +2373,13 @@ mod tests {
 
         let source_tx = [0xDD; 32];
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            source_tx.as_ptr(),
+        );
 
         is_source_tx_used(source_tx.as_ptr());
         assert_eq!(test_mock::get_return_data(), vec![1]);
@@ -2125,7 +2404,12 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         let proof = [0xEE; 32];
         test_mock::set_caller(val1);
@@ -2155,7 +2439,10 @@ mod tests {
         // Configure identity gate
         let moltyid_addr = [0x42u8; 32];
         test_mock::set_caller(owner);
-        assert_eq!(set_moltyid_address(owner.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(owner.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         test_mock::set_caller(owner);
         assert_eq!(set_identity_gate(owner.as_ptr(), 100), 0);
 
@@ -2163,7 +2450,12 @@ mod tests {
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        let result = lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        let result = lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
         assert_eq!(result, 10);
     }
 
@@ -2180,7 +2472,12 @@ mod tests {
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        let result = lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        let result = lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
         assert_eq!(result, 0);
     }
 
@@ -2195,12 +2492,18 @@ mod tests {
         test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
         test_mock::set_caller(other);
-        assert_eq!(set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()), 2);
+        assert_eq!(
+            set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()),
+            2
+        );
 
         test_mock::set_caller(owner);
         assert_eq!(set_identity_gate(owner.as_ptr(), 100), 0);
         test_mock::set_caller(owner);
-        assert_eq!(set_moltyid_address(owner.as_ptr(), [0x42u8; 32].as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(owner.as_ptr(), [0x42u8; 32].as_ptr()),
+            0
+        );
     }
 
     // =============================================
@@ -2233,7 +2536,13 @@ mod tests {
 
         // val1 submits mint
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [5u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [5u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // Owner removes val2 (count=4->3, required=3, 3>=3 -> allowed)
         test_mock::set_caller(owner);
@@ -2267,11 +2576,29 @@ mod tests {
 
         // First mint succeeds
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), source_tx.as_ptr()), 0);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr()
+            ),
+            0
+        );
 
         // Try to mint same source TX to different recipient - BLOCKED
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(val1.as_ptr(), [5u8; 32].as_ptr(), 999_999, [0xCC; 32].as_ptr(), source_tx.as_ptr()), 4);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [5u8; 32].as_ptr(),
+                999_999,
+                [0xCC; 32].as_ptr(),
+                source_tx.as_ptr()
+            ),
+            4
+        );
     }
 
     #[test]
@@ -2294,7 +2621,13 @@ mod tests {
 
         // Submit a mint (nonce 0)
         test_mock::set_caller(val1);
-        submit_mint(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        submit_mint(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
 
         // Try to confirm_unlock on a mint request - REJECTED
         test_mock::set_caller(val2);
@@ -2303,9 +2636,19 @@ mod tests {
         // Lock then submit unlock (nonce 1, 2)
         test_mock::set_caller([5u8; 32]);
         test_mock::set_value(1_000_000);
-        lock_tokens([5u8; 32].as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            [5u8; 32].as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
         test_mock::set_caller(val1);
-        submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr());
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            500_000,
+            [0xEE; 32].as_ptr(),
+        );
 
         // Try to confirm_mint on an unlock request - REJECTED
         test_mock::set_caller(val2);
@@ -2330,22 +2673,38 @@ mod tests {
         // Lock 1M
         test_mock::set_caller([5u8; 32]);
         test_mock::set_value(1_000_000);
-        lock_tokens([5u8; 32].as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            [5u8; 32].as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         // Submit unlock for 700K - reserves immediately
         test_mock::set_caller(val1);
-        submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 700_000, [0xEE; 32].as_ptr());
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            700_000,
+            [0xEE; 32].as_ptr(),
+        );
         let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
         assert_eq!(locked, 300_000);
 
         // Try to submit another unlock for 400K - FAILS (only 300K available)
         let proof2 = [0xFF; 32];
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 400_000, proof2.as_ptr()), 3);
+        assert_eq!(
+            submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 400_000, proof2.as_ptr()),
+            3
+        );
 
         // Submit unlock for 300K - succeeds (exactly what's left)
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 300_000, proof2.as_ptr()), 0);
+        assert_eq!(
+            submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 300_000, proof2.as_ptr()),
+            0
+        );
         let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
         assert_eq!(locked, 0);
     }
@@ -2373,9 +2732,19 @@ mod tests {
         // Lock and submit unlock
         test_mock::set_caller([5u8; 32]);
         test_mock::set_value(1_000_000);
-        lock_tokens([5u8; 32].as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            [5u8; 32].as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
         test_mock::set_caller(val1);
-        submit_unlock(val1.as_ptr(), [4u8; 32].as_ptr(), 600_000, [0xEE; 32].as_ptr());
+        submit_unlock(
+            val1.as_ptr(),
+            [4u8; 32].as_ptr(),
+            600_000,
+            [0xEE; 32].as_ptr(),
+        );
         let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
         assert_eq!(locked, 400_000);
 
@@ -2440,10 +2809,16 @@ mod tests {
 
         // Submit a mint request before pause
         test_mock::set_caller(val1);
-        assert_eq!(submit_mint(
-            val1.as_ptr(), [4u8; 32].as_ptr(), 500_000,
-            [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr(),
-        ), 0);
+        assert_eq!(
+            submit_mint(
+                val1.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr(),
+            ),
+            0
+        );
 
         // Pause bridge
         test_mock::set_caller(owner);
@@ -2468,7 +2843,12 @@ mod tests {
         let locker = [5u8; 32];
         test_mock::set_caller(locker);
         test_mock::set_value(1_000_000);
-        lock_tokens(locker.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            locker.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         // Pause bridge
         test_mock::set_caller(owner);
@@ -2477,7 +2857,10 @@ mod tests {
         // submit_unlock must be blocked
         test_mock::set_caller(val);
         let result = submit_unlock(
-            val.as_ptr(), [6u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr(),
+            val.as_ptr(),
+            [6u8; 32].as_ptr(),
+            500_000,
+            [0xEE; 32].as_ptr(),
         );
         assert_eq!(result, 20); // paused
     }
@@ -2496,12 +2879,23 @@ mod tests {
         let locker = [5u8; 32];
         test_mock::set_caller(locker);
         test_mock::set_value(1_000_000);
-        lock_tokens(locker.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            locker.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
 
         test_mock::set_caller(val1);
-        assert_eq!(submit_unlock(
-            val1.as_ptr(), [6u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr(),
-        ), 0);
+        assert_eq!(
+            submit_unlock(
+                val1.as_ptr(),
+                [6u8; 32].as_ptr(),
+                500_000,
+                [0xEE; 32].as_ptr(),
+            ),
+            0
+        );
 
         // Pause bridge
         test_mock::set_caller(owner);
@@ -2553,7 +2947,15 @@ mod tests {
         let sender = [3u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(50);
-        assert_eq!(lock_tokens(sender.as_ptr(), 100, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr()), 30);
+        assert_eq!(
+            lock_tokens(
+                sender.as_ptr(),
+                100,
+                [0xAA; 32].as_ptr(),
+                [0xBB; 32].as_ptr()
+            ),
+            30
+        );
     }
 
     #[test]
@@ -2570,7 +2972,16 @@ mod tests {
         add_bridge_validator(owner.as_ptr(), val.as_ptr());
         // Auto-complete triggers transfer_out which needs moltcoin address
         test_mock::set_caller(val);
-        assert_eq!(submit_mint(val.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr()), 30);
+        assert_eq!(
+            submit_mint(
+                val.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xCC; 32].as_ptr(),
+                [0xDD; 32].as_ptr()
+            ),
+            30
+        );
     }
 
     #[test]
@@ -2589,10 +3000,23 @@ mod tests {
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
         test_mock::set_value(1_000_000);
-        lock_tokens(sender.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+        lock_tokens(
+            sender.as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
         // Auto-complete triggers transfer_out which needs moltcoin address
         test_mock::set_caller(val);
-        assert_eq!(submit_unlock(val.as_ptr(), [4u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr()), 30);
+        assert_eq!(
+            submit_unlock(
+                val.as_ptr(),
+                [4u8; 32].as_ptr(),
+                500_000,
+                [0xEE; 32].as_ptr()
+            ),
+            30
+        );
     }
 
     #[test]
@@ -2644,7 +3068,13 @@ mod tests {
         // Mint auto-completes and triggers transfer_out
         let recipient = [4u8; 32];
         test_mock::set_caller(val);
-        let result = submit_mint(val.as_ptr(), recipient.as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
+        let result = submit_mint(
+            val.as_ptr(),
+            recipient.as_ptr(),
+            500_000,
+            [0xCC; 32].as_ptr(),
+            [0xDD; 32].as_ptr(),
+        );
         assert_eq!(result, 0);
         // Verify tx completed (transfer_out returns 0 in test mock)
         let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();

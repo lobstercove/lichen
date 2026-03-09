@@ -424,6 +424,11 @@ pub struct ContractContext {
     pub pending_ccc_events: Arc<Mutex<Vec<ContractEvent>>>,
     /// Logs collected from cross-contract sub-calls.
     pub pending_ccc_logs: Arc<Mutex<Vec<String>>>,
+    /// AUDIT-FIX C-2: Accumulated value transfer deltas from cross-contract calls.
+    /// Positive = credit, negative = debit. Applied atomically through the
+    /// StateBatch by the processor after execution, preventing the split-brain
+    /// between direct state_store writes and the batch overlay.
+    pub pending_ccc_value_deltas: Arc<Mutex<HashMap<Pubkey, i64>>>,
 }
 
 impl ContractContext {
@@ -448,6 +453,7 @@ impl ContractContext {
             pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -479,6 +485,7 @@ impl ContractContext {
             pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -511,6 +518,7 @@ impl ContractContext {
             pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -546,6 +554,9 @@ pub struct ContractResult {
     pub cross_call_events: Vec<ContractEvent>,
     /// Logs emitted by cross-contract sub-calls.
     pub cross_call_logs: Vec<String>,
+    /// AUDIT-FIX C-2: Accumulated value transfer deltas from cross-contract calls.
+    /// Applied atomically through the StateBatch by the processor.
+    pub ccc_value_deltas: HashMap<Pubkey, i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -852,17 +863,21 @@ impl ContractRuntime {
             // auto-encode them to binary with a layout descriptor so the WASM
             // function receives correctly laid-out memory (base58 → 32 bytes,
             // strings → pointer data, integers → raw bytes).
-            let args =
-                if !args.is_empty() && args[0] == b'[' && !params.is_empty() && args[0] != 0xAB {
-                    if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
-                        encode_json_args_to_binary(&json_vals, &params)
-                            .unwrap_or_else(|_| args.to_vec())
-                    } else {
-                        args.to_vec()
-                    }
+            let args = if !args.is_empty()
+                && args[0] == b'['
+                && !params.is_empty()
+                && args[0] != 0xAB
+                && std::str::from_utf8(args).is_ok()
+            {
+                if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
+                    encode_json_args_to_binary(&json_vals, &params)
+                        .unwrap_or_else(|_| args.to_vec())
                 } else {
                     args.to_vec()
-                };
+                }
+            } else {
+                args.to_vec()
+            };
             let args = &args;
 
             let view = memory.view(&self.store);
@@ -1037,6 +1052,7 @@ impl ContractRuntime {
                     cross_call_changes: HashMap::new(),
                     cross_call_events: Vec::new(),
                     cross_call_logs: Vec::new(),
+                    ccc_value_deltas: HashMap::new(),
                 });
             }
         }
@@ -1065,6 +1081,7 @@ impl ContractRuntime {
                 cross_call_changes: HashMap::new(),
                 cross_call_events: Vec::new(),
                 cross_call_logs: Vec::new(),
+                ccc_value_deltas: HashMap::new(),
             });
         }
 
@@ -1113,6 +1130,11 @@ impl ContractRuntime {
                     cross_call_changes: ccc_changes,
                     cross_call_events: ccc_events,
                     cross_call_logs: ccc_logs,
+                    ccc_value_deltas: final_ctx
+                        .pending_ccc_value_deltas
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
                 })
             }
             Err(e) => {
@@ -1133,6 +1155,7 @@ impl ContractRuntime {
                     cross_call_changes: HashMap::new(),
                     cross_call_events: Vec::new(),
                     cross_call_logs: Vec::new(),
+                    ccc_value_deltas: HashMap::new(),
                 })
             }
         }
@@ -1674,6 +1697,7 @@ fn host_cross_contract_call(
     let pending_changes = env.data().pending_ccc_changes.clone();
     let pending_events = env.data().pending_ccc_events.clone();
     let pending_logs = env.data().pending_ccc_logs.clone();
+    let pending_value_deltas = env.data().pending_ccc_value_deltas.clone();
 
     // ── Deduct base compute cost ─────────────────────────────────────
     {
@@ -1738,28 +1762,45 @@ fn host_cross_contract_call(
         pending_ccc_changes: pending_changes.clone(),
         pending_ccc_events: pending_events.clone(),
         pending_ccc_logs: pending_logs.clone(),
+        // AUDIT-FIX C-2: Fresh delta map so nested CCC deltas can be
+        // rolled back if this callee fails.
+        pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    // ── AUDIT-FIX D-2: Verify caller has sufficient balance for value ──
+    // ── AUDIT-FIX C-2: Track value as deltas instead of direct DB writes ──
+    // Direct state_store.put_account writes bypass the StateBatch overlay,
+    // causing balance inflation when the batch commits and overwrites the
+    // CCC-modified values.  Track all value movements as deltas that the
+    // processor applies atomically through the batch after execution.
     if value > 0 {
-        match state_store.get_account(&caller_contract) {
-            Ok(Some(caller_acct)) if caller_acct.spendable >= value => {
-                // Escrow: deduct from caller before callee executes
-                let mut updated = caller_acct;
-                updated.spendable = updated.spendable.saturating_sub(value);
-                if state_store.put_account(&caller_contract, &updated).is_err() {
-                    return 0;
-                }
-            }
-            _ => {
-                // Caller doesn't have enough balance — reject forged value
-                let ctx = env.data_mut();
-                ctx.logs.push(format!(
-                    "[CCC] Call to {}::{} rejected: caller {} has insufficient balance for value {}",
-                    crate::Pubkey(target.0), function_name, crate::Pubkey(caller_contract.0), value
-                ));
-                return 0;
-            }
+        let base_balance = match state_store.get_account(&caller_contract) {
+            Ok(Some(a)) => a.spendable,
+            _ => 0u64,
+        };
+        let current_delta = {
+            let deltas = pending_value_deltas
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *deltas.get(&caller_contract).unwrap_or(&0)
+        };
+        let effective = (base_balance as i128) + (current_delta as i128);
+        if effective < (value as i128) {
+            let ctx = env.data_mut();
+            ctx.logs.push(format!(
+                "[CCC] Call to {}::{} rejected: caller {} has insufficient balance for value {}",
+                crate::Pubkey(target.0),
+                function_name,
+                crate::Pubkey(caller_contract.0),
+                value
+            ));
+            return 0;
+        }
+        // Record escrow delta (deduct from caller)
+        {
+            let mut deltas = pending_value_deltas
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *deltas.entry(caller_contract).or_default() -= value as i64;
         }
     }
 
@@ -1769,12 +1810,12 @@ fn host_cross_contract_call(
         Ok(r) => r,
         Err(e) => {
             runtime.return_to_pool();
-            // AUDIT-FIX D-2: Refund escrowed value on execute error
+            // AUDIT-FIX C-2: Refund escrowed value via delta on execute error
             if value > 0 {
-                if let Ok(Some(mut caller_acct)) = state_store.get_account(&caller_contract) {
-                    caller_acct.spendable = caller_acct.spendable.saturating_add(value);
-                    let _ = state_store.put_account(&caller_contract, &caller_acct);
-                }
+                let mut deltas = pending_value_deltas
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *deltas.entry(caller_contract).or_default() += value as i64;
             }
             // Log the error for diagnostics
             let ctx = env.data_mut();
@@ -1797,12 +1838,12 @@ fn host_cross_contract_call(
 
     if !result.success {
         // Callee failed — return 0, don't apply any changes
-        // AUDIT-FIX D-2: Refund escrowed value on callee failure
+        // AUDIT-FIX C-2: Refund escrowed value via delta on callee failure
         if value > 0 {
-            if let Ok(Some(mut caller_acct)) = state_store.get_account(&caller_contract) {
-                caller_acct.spendable = caller_acct.spendable.saturating_add(value);
-                let _ = state_store.put_account(&caller_contract, &caller_acct);
-            }
+            let mut deltas = pending_value_deltas
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *deltas.entry(caller_contract).or_default() += value as i64;
         }
         let ctx = env.data_mut();
         if let Some(ref err) = result.error {
@@ -1816,12 +1857,12 @@ fn host_cross_contract_call(
         return 0;
     }
 
-    // ── AUDIT-FIX D-2: Credit value to callee on success ─────────────
+    // ── AUDIT-FIX C-2: Credit value to callee via delta on success ──────
     if value > 0 {
-        if let Ok(Some(mut callee_acct)) = state_store.get_account(&target) {
-            callee_acct.spendable = callee_acct.spendable.saturating_add(value);
-            let _ = state_store.put_account(&target, &callee_acct);
-        }
+        let mut deltas = pending_value_deltas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *deltas.entry(target).or_default() += value as i64;
     }
 
     // ── Merge callee's direct storage changes into pending ───────────
@@ -1854,6 +1895,16 @@ fn host_cross_contract_call(
         let mut logs = pending_logs.lock().unwrap_or_else(|e| e.into_inner());
         logs.extend(result.logs);
         logs.extend(result.cross_call_logs);
+    }
+
+    // ── AUDIT-FIX C-2: Merge callee's CCC value deltas on success ───
+    if !result.ccc_value_deltas.is_empty() {
+        let mut deltas = pending_value_deltas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (addr, delta) in &result.ccc_value_deltas {
+            *deltas.entry(*addr).or_default() += delta;
+        }
     }
 
     // ── Determine result data to write back to caller ────────────────
@@ -2118,6 +2169,7 @@ mod tests {
             cross_call_changes: HashMap::new(),
             cross_call_events: Vec::new(),
             cross_call_logs: Vec::new(),
+            ccc_value_deltas: HashMap::new(),
         };
 
         assert!(result.success);
@@ -2280,6 +2332,7 @@ mod tests {
             cross_call_changes: HashMap::new(),
             cross_call_events: Vec::new(),
             cross_call_logs: Vec::new(),
+            ccc_value_deltas: HashMap::new(),
         };
         assert!(result.success);
         assert_eq!(result.return_code, Some(1));

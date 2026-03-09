@@ -81,6 +81,7 @@ fn fresh_app() -> axum::Router {
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -133,6 +134,7 @@ fn app_with_state() -> (axum::Router, String) {
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
         None,
         None,
         None,
@@ -1983,6 +1985,7 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
         None,
         None,
         None,

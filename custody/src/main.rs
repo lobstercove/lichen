@@ -17,8 +17,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
-use zeroize::Zeroize;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -1788,6 +1788,26 @@ fn load_config() -> CustodyConfig {
         master_seed: {
             let seed = if let Ok(seed_path) = std::env::var("CUSTODY_MASTER_SEED_FILE") {
                 let seed_path = seed_path.trim().to_string();
+                // AUDIT-FIX C-10: Verify seed file has restricted permissions
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&seed_path) {
+                        let mode = meta.permissions().mode() & 0o777;
+                        if mode & 0o077 != 0 {
+                            tracing::warn!(
+                                "⚠️  CUSTODY_MASTER_SEED_FILE '{}' has permissions {:o} — \
+                                 should be 0600 or stricter. Tightening now.",
+                                seed_path,
+                                mode
+                            );
+                            let _ = std::fs::set_permissions(
+                                &seed_path,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                    }
+                }
                 match std::fs::read_to_string(&seed_path) {
                     Ok(contents) => {
                         let s = contents.trim().to_string();
@@ -1824,7 +1844,17 @@ fn load_config() -> CustodyConfig {
             });
 
             match seed {
-                Some(s) => s,
+                Some(s) => {
+                    // AUDIT-FIX C-10: Reject seeds shorter than 32 chars
+                    if s.len() < 32 && !s.starts_with("INSECURE_DEFAULT") {
+                        panic!(
+                            "FATAL: Master seed is too short ({} chars, minimum 32). \
+                             Use a high-entropy seed (e.g., 64-char hex string).",
+                            s.len()
+                        );
+                    }
+                    s
+                }
                 None => {
                     if std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1" {
                         tracing::warn!(
