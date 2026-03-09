@@ -175,7 +175,7 @@ All system instructions use `program_id = System Program (all zeros)`. The first
 | **16** | `system_reefstake_transfer` | `[0x10, st_molt_amount:u64 LE]` | `[from, to]` | Transfer stMOLT between accounts. |
 | **17** | `system_deploy_contract` | `[0x11, code_len:u32 LE, code..., init...]` | `[deployer, treasury]` | Deploy WASM contract. Max 512KB. |
 | **18** | `system_set_contract_abi` | `[0x12, abi_json...]` | `[owner, contract_id]` | Set contract ABI. Owner-only. |
-| **19** | `system_faucet_airdrop` | `[0x13, amount_shells:u64 LE]` | `[treasury, recipient]` | Testnet faucet. Cap: 100 MOLT. |
+| **19** | `system_faucet_airdrop` | `[0x13, amount_shells:u64 LE]` | `[treasury, recipient]` | Testnet faucet. Cap: 10 MOLT. |
 | **20** | `system_register_symbol` | `[0x14, json...]` | `[owner, contract_id]` | Register contract symbol in registry. |
 | **21** | `system_propose_governed_transfer` | `[0x15, amount:u64 LE]` | `[proposer, governed_wallet, recipient]` | Multi-sig transfer proposal. |
 | **22** | `system_approve_governed_transfer` | `[0x16, proposal_id:u64 LE]` | `[approver]` | Approve multi-sig. Auto-executes at threshold. |
