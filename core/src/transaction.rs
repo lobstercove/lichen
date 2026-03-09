@@ -198,7 +198,7 @@ where
 /// Maximum instructions per transaction (T1.7)
 pub const MAX_INSTRUCTIONS_PER_TX: usize = 64;
 /// Maximum data bytes per instruction (T1.7)
-pub const MAX_INSTRUCTION_DATA: usize = 10_240; // 10KB
+pub const MAX_INSTRUCTION_DATA: usize = 204_800; // 200KB — contract calls may carry significant payloads
 pub const MAX_DEPLOY_INSTRUCTION_DATA: usize = 4_194_304; // 4MB — WASM deploys via instruction type 17
 /// Maximum accounts per instruction
 pub const MAX_ACCOUNTS_PER_IX: usize = 64;
@@ -214,6 +214,11 @@ impl Transaction {
     /// Get transaction signature (first signature's identifier)
     pub fn signature(&self) -> Hash {
         self.hash()
+    }
+
+    /// Get the sender/fee-payer (first account of first instruction)
+    pub fn sender(&self) -> Pubkey {
+        self.message.instructions[0].accounts[0]
     }
 
     /// Get transaction hash (includes signatures for unique deduplication).
@@ -297,7 +302,7 @@ mod tests {
     // ── H16 tests: deploy instruction data limit exemption ──
 
     #[test]
-    fn test_validate_structure_normal_instruction_10kb_limit() {
+    fn test_validate_structure_normal_instruction_200kb_limit() {
         let ix = Instruction {
             program_id: Pubkey([1u8; 32]),
             accounts: vec![Pubkey([2u8; 32])],
@@ -313,7 +318,7 @@ mod tests {
         // System program (all zeros), instruction type 17 = DeployContract
         let mut data = vec![17u8]; // type byte
         data.extend_from_slice(&(100_000u32).to_le_bytes()); // code_length
-        data.extend(vec![0u8; 100_000]); // fake WASM code (100KB > 10KB limit)
+        data.extend(vec![0u8; 100_000]); // fake WASM code (100KB — within 200KB general limit but tests deploy path)
 
         let ix = Instruction {
             program_id: Pubkey([0u8; 32]), // system program
@@ -324,7 +329,7 @@ mod tests {
         let tx = Transaction::new(msg);
         assert!(
             tx.validate_structure().is_ok(),
-            "Deploy instruction should allow >10KB data"
+            "Deploy instruction should allow >200KB data"
         );
     }
 

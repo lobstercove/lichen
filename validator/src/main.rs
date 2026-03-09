@@ -26,8 +26,8 @@ use moltchain_core::{
     NftActivity, NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense,
     StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -35,12 +35,12 @@ use moltchain_genesis::{
     genesis_seed_oracle,
 };
 use moltchain_p2p::{
-    validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole,
-    P2PConfig, P2PMessage, P2PNetwork, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
+    validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
+    P2PMessage, P2PNetwork, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
     StatusRequestMsg, StatusResponseMsg,
 };
-use semver::Version;
 use moltchain_rpc::start_rpc_server;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -531,7 +531,11 @@ fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
     let seeds: SeedsFile = match serde_json::from_str(&contents) {
         Ok(value) => value,
         Err(e) => {
-            warn!("⚠️  Failed to parse {}: {} — using embedded bootstrap peers", seeds_path.display(), e);
+            warn!(
+                "⚠️  Failed to parse {}: {} — using embedded bootstrap peers",
+                seeds_path.display(),
+                e
+            );
             return load_embedded_seed_peers(chain_id);
         }
     };
@@ -1108,35 +1112,62 @@ fn emit_dex_events(
             if let Some(od) = state.get_program_storage("DEX", okey.as_bytes()) {
                 if od.len() >= 128 {
                     let opid = u64::from_le_bytes(od[32..40].try_into().unwrap_or([0; 8]));
-                    if opid != *pair_id { continue; }
+                    if opid != *pair_id {
+                        continue;
+                    }
                     let ostatus = od[66];
-                    if ostatus != 0 && ostatus != 1 { continue; } // only open/partial
+                    if ostatus != 0 && ostatus != 1 {
+                        continue;
+                    } // only open/partial
                     let oqty = u64::from_le_bytes(od[50..58].try_into().unwrap_or([0; 8]));
                     let ofilled = u64::from_le_bytes(od[58..66].try_into().unwrap_or([0; 8]));
                     let remaining = oqty.saturating_sub(ofilled);
-                    if remaining == 0 { continue; }
+                    if remaining == 0 {
+                        continue;
+                    }
                     let oprice = u64::from_le_bytes(od[42..50].try_into().unwrap_or([0; 8]));
                     let side_byte = od[40];
-                    let entry = if side_byte == 0 { bids.entry(oprice).or_insert((0, 0)) }
-                                else { asks.entry(oprice).or_insert((0, 0)) };
+                    let entry = if side_byte == 0 {
+                        bids.entry(oprice).or_insert((0, 0))
+                    } else {
+                        asks.entry(oprice).or_insert((0, 0))
+                    };
                     entry.0 += remaining;
                     entry.1 += 1;
                 }
             }
         }
         let bid_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
-            let mut v: Vec<_> = bids.into_iter().map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
-                price: p as f64 / PRICE_SCALE, quantity: q, orders: c,
-            }).collect();
-            v.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+            let mut v: Vec<_> = bids
+                .into_iter()
+                .map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                    price: p as f64 / PRICE_SCALE,
+                    quantity: q,
+                    orders: c,
+                })
+                .collect();
+            v.sort_by(|a, b| {
+                b.price
+                    .partial_cmp(&a.price)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             v.truncate(20);
             v
         };
         let ask_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
-            let mut v: Vec<_> = asks.into_iter().map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
-                price: p as f64 / PRICE_SCALE, quantity: q, orders: c,
-            }).collect();
-            v.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+            let mut v: Vec<_> = asks
+                .into_iter()
+                .map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                    price: p as f64 / PRICE_SCALE,
+                    quantity: q,
+                    orders: c,
+                })
+                .collect();
+            v.sort_by(|a, b| {
+                a.price
+                    .partial_cmp(&b.price)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             v.truncate(20);
             v
         };
@@ -1155,8 +1186,21 @@ fn emit_dex_events(
                         let trader = hex::encode(&od[0..32]);
                         let qty = u64::from_le_bytes(od[50..58].try_into().unwrap_or([0; 8]));
                         let filled = u64::from_le_bytes(od[58..66].try_into().unwrap_or([0; 8]));
-                        let status = match od[66] { 0 => "open", 1 => "partial", 2 => "filled", 3 => "cancelled", _ => "expired" };
-                        dex_broadcaster.emit_order_update(maker_order_id, &trader, status, filled, qty.saturating_sub(filled), slot);
+                        let status = match od[66] {
+                            0 => "open",
+                            1 => "partial",
+                            2 => "filled",
+                            3 => "cancelled",
+                            _ => "expired",
+                        };
+                        dex_broadcaster.emit_order_update(
+                            maker_order_id,
+                            &trader,
+                            status,
+                            filled,
+                            qty.saturating_sub(filled),
+                            slot,
+                        );
                     }
                 }
             }
@@ -3700,7 +3744,11 @@ fn spawn_oracle_price_feeder(
                 let volume_24h = u64::from_le_bytes(stats[0..8].try_into().unwrap_or([0; 8]));
                 let open_raw = u64::from_le_bytes(stats[24..32].try_into().unwrap_or([0; 8]));
                 let open_f = open_raw as f64 / PRICE_SCALE_F;
-                let change_24h = if open_f > 0.0 { ((*price_f64 - open_f) / open_f) * 100.0 } else { 0.0 };
+                let change_24h = if open_f > 0.0 {
+                    ((*price_f64 - open_f) / open_f) * 100.0
+                } else {
+                    0.0
+                };
                 dex_broadcaster.emit_ticker(
                     *pair_id, *price_f64, *price_f64, *price_f64, volume_24h, change_24h,
                 );
@@ -3709,21 +3757,43 @@ fn spawn_oracle_price_feeder(
                 // Read consensus-written candles and broadcast via WebSocket
                 for &ci in &candle_intervals {
                     let count_key_c = format!("ana_cc_{}_{}", pair_id, ci);
-                    let candle_count_c: u64 = match state.get_contract_storage(&analytics_pk, count_key_c.as_bytes()) {
-                        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-                        _ => 0,
-                    };
+                    let candle_count_c: u64 =
+                        match state.get_contract_storage(&analytics_pk, count_key_c.as_bytes()) {
+                            Ok(Some(d)) if d.len() >= 8 => {
+                                u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
+                            }
+                            _ => 0,
+                        };
                     if candle_count_c > 0 {
                         let idx_c = candle_count_c - 1;
                         let ck = format!("ana_c_{}_{}_{}", pair_id, ci, idx_c);
-                        if let Ok(Some(cd)) = state.get_contract_storage(&analytics_pk, ck.as_bytes()) {
+                        if let Ok(Some(cd)) =
+                            state.get_contract_storage(&analytics_pk, ck.as_bytes())
+                        {
                             if cd.len() >= 48 {
-                                let o = u64::from_le_bytes(cd[0..8].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
-                                let h = u64::from_le_bytes(cd[8..16].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
-                                let l = u64::from_le_bytes(cd[16..24].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
-                                let c = u64::from_le_bytes(cd[24..32].try_into().unwrap_or([0; 8])) as f64 / PRICE_SCALE_F;
+                                let o = u64::from_le_bytes(cd[0..8].try_into().unwrap_or([0; 8]))
+                                    as f64
+                                    / PRICE_SCALE_F;
+                                let h = u64::from_le_bytes(cd[8..16].try_into().unwrap_or([0; 8]))
+                                    as f64
+                                    / PRICE_SCALE_F;
+                                let l = u64::from_le_bytes(cd[16..24].try_into().unwrap_or([0; 8]))
+                                    as f64
+                                    / PRICE_SCALE_F;
+                                let c = u64::from_le_bytes(cd[24..32].try_into().unwrap_or([0; 8]))
+                                    as f64
+                                    / PRICE_SCALE_F;
                                 let v = u64::from_le_bytes(cd[32..40].try_into().unwrap_or([0; 8]));
-                                dex_broadcaster.emit_candle(*pair_id, ci, o, h, l, c, v, current_slot);
+                                dex_broadcaster.emit_candle(
+                                    *pair_id,
+                                    ci,
+                                    o,
+                                    h,
+                                    l,
+                                    c,
+                                    v,
+                                    current_slot,
+                                );
                             }
                         }
                     }
@@ -5035,9 +5105,9 @@ async fn run_validator() {
         }
     }
 
-    // Treasury keypair kept for governance/manual operations only.
+    // Treasury keypair kept for governance/manual operations and airdrop signing.
     // Block rewards use protocol-level coinbase (no signing needed).
-    let _treasury_keypair = load_treasury_keypair(
+    let treasury_keypair = load_treasury_keypair(
         genesis_wallet.as_ref(),
         &genesis_keypairs_dir,
         &genesis_config.chain_id,
@@ -5296,7 +5366,10 @@ async fn run_validator() {
                 );
                 warn!("   This likely means HOME changed and a new keypair was generated.");
                 warn!("   To fix: use --import-key to restore the old keypair, or");
-                warn!("   copy the old validator-*.json keypair to {}/validator-keypair.json", data_dir);
+                warn!(
+                    "   copy the old validator-*.json keypair to {}/validator-keypair.json",
+                    data_dir
+                );
                 error!("❌ Refusing to start with duplicate identity — each machine gets ONE validator grant.");
                 std::process::exit(1);
             }
@@ -6418,8 +6491,14 @@ async fn run_validator() {
                                     sync_mgr.add_pending_block(pending_block).await;
                                     continue;
                                 }
-                                if sync_mgr.should_full_validate(pending_block.header.slot).await {
-                                    replay_block_transactions(&processor_for_blocks, &pending_block);
+                                if sync_mgr
+                                    .should_full_validate(pending_block.header.slot)
+                                    .await
+                                {
+                                    replay_block_transactions(
+                                        &processor_for_blocks,
+                                        &pending_block,
+                                    );
                                 }
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
@@ -6512,10 +6591,8 @@ async fn run_validator() {
                             // Send CheckpointMetaRequest to all known peers
                             let peer_infos = peer_mgr_for_sync.get_peer_infos();
                             for (peer_addr, _) in peer_infos.iter().take(3) {
-                                let meta_request = P2PMessage::new(
-                                    MessageType::CheckpointMetaRequest,
-                                    local_addr,
-                                );
+                                let meta_request =
+                                    P2PMessage::new(MessageType::CheckpointMetaRequest, local_addr);
                                 let _ = peer_mgr_for_sync
                                     .send_to_peer(peer_addr, meta_request)
                                     .await;
@@ -6803,7 +6880,10 @@ async fn run_validator() {
                                             sync_mgr.add_pending_block(pending_block).await;
                                             continue;
                                         }
-                                        if sync_mgr.should_full_validate(pending_block.header.slot).await {
+                                        if sync_mgr
+                                            .should_full_validate(pending_block.header.slot)
+                                            .await
+                                        {
                                             replay_block_transactions(
                                                 &processor_for_blocks,
                                                 &pending_block,
@@ -8646,6 +8726,7 @@ async fn run_validator() {
             finality_for_rpc,
             Some(dex_bc_for_rpc),
             Some(pred_bc_for_rpc),
+            treasury_keypair,
         )
         .await
         {
@@ -8670,7 +8751,11 @@ async fn run_validator() {
         info!("🔮 Oracle price feeder disabled via MOLTCHAIN_DISABLE_ORACLE");
     } else {
         let state_for_oracle = state.clone();
-        spawn_oracle_price_feeder(state_for_oracle, shared_oracle_prices.clone(), ws_dex_broadcaster.clone());
+        spawn_oracle_price_feeder(
+            state_for_oracle,
+            shared_oracle_prices.clone(),
+            ws_dex_broadcaster.clone(),
+        );
     }
 
     info!("⚡ Starting consensus-based block production");
@@ -8812,8 +8897,10 @@ async fn run_validator() {
             interval.tick().await;
             let mut pool = mempool_for_cleanup.lock().await;
             pool.cleanup_expired();
-            // Prune transactions referencing blockhashes older than 300 slots
-            if let Ok(valid_hashes) = state_for_mempool_cleanup.get_recent_blockhashes(300) {
+            // Prune transactions referencing blockhashes older than MAX_TX_AGE_BLOCKS slots
+            if let Ok(valid_hashes) =
+                state_for_mempool_cleanup.get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+            {
                 let evicted = pool.prune_stale_blockhashes(&valid_hashes);
                 if evicted > 0 {
                     warn!("🧹 Mempool pruned {} stale-blockhash transactions", evicted);
@@ -8910,7 +8997,10 @@ async fn run_validator() {
                     match state_for_cold.migrate_to_cold(cutoff) {
                         Ok(0) => {} // nothing to migrate
                         Ok(n) => {
-                            info!("🗄️  Cold migration: moved {} blocks (cutoff slot {})", n, cutoff);
+                            info!(
+                                "🗄️  Cold migration: moved {} blocks (cutoff slot {})",
+                                n, cutoff
+                            );
                         }
                         Err(e) => {
                             warn!("🗄️  Cold migration error: {}", e);
@@ -9124,12 +9214,15 @@ async fn run_validator() {
                 let slot = cb.header.slot;
                 debug!(
                     "📦 Compact block slot {} from {} ({} short IDs)",
-                    slot, sender, cb.short_ids.len()
+                    slot,
+                    sender,
+                    cb.short_ids.len()
                 );
 
                 // Attempt reconstruction from mempool
                 let pool = mempool_for_compact.lock().await;
-                let mut reconstructed_txs: Vec<Option<Transaction>> = Vec::with_capacity(cb.short_ids.len());
+                let mut reconstructed_txs: Vec<Option<Transaction>> =
+                    Vec::with_capacity(cb.short_ids.len());
                 let mut missing_hashes: Vec<Hash> = Vec::new();
 
                 // Build a lookup: short_id → (full_hash, Transaction)
@@ -9163,7 +9256,19 @@ async fn run_validator() {
 
                 if missing_hashes.is_empty() {
                     // Full reconstruction succeeded
-                    let transactions: Vec<Transaction> = reconstructed_txs.into_iter().map(|t| t.unwrap()).collect();
+                    // AUDIT-FIX C-8: Avoid unwrap() crash — gracefully skip
+                    // block if any tx is unexpectedly None.
+                    let transactions: Vec<Transaction> =
+                        match reconstructed_txs.into_iter().collect::<Option<Vec<_>>>() {
+                            Some(txs) => txs,
+                            None => {
+                                warn!(
+                                "📦 Compact block slot {} reconstruction had unexpected None tx",
+                                cb.header.slot
+                            );
+                                continue;
+                            }
+                        };
 
                     // AUDIT-FIX H1: Verify tx_root to guard against short-ID collision.
                     // Recompute tx_root from reconstructed transactions and compare
@@ -9192,7 +9297,10 @@ async fn run_validator() {
                             let pm2 = pm.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = pm2.send_to_peer(&sender, request).await {
-                                    warn!("P2P: Failed to request full block from {}: {}", sender, e);
+                                    warn!(
+                                        "P2P: Failed to request full block from {}: {}",
+                                        sender, e
+                                    );
                                 }
                             });
                         }
@@ -9209,7 +9317,10 @@ async fn run_validator() {
                             block.transactions.len()
                         );
                         if let Err(e) = block_tx_for_compact_task.try_send(block) {
-                            warn!("P2P: Compact block channel full after reconstruction ({})", e);
+                            warn!(
+                                "P2P: Compact block channel full after reconstruction ({})",
+                                e
+                            );
                         }
                     }
                 } else {
@@ -9317,7 +9428,8 @@ async fn run_validator() {
                                 if let Some(ref pm) = peer_mgr_for_erasure {
                                     let pm = pm.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = pm.send_to_peer(&requester, response).await {
+                                        if let Err(e) = pm.send_to_peer(&requester, response).await
+                                        {
                                             warn!("P2P: Failed to send erasure shards for slot {} to {}: {}", slot, requester, e);
                                         }
                                     });
@@ -9329,7 +9441,10 @@ async fn run_validator() {
                         }
                     }
                     _ => {
-                        debug!("P2P: ErasureShardRequest for slot {} — block not found", slot);
+                        debug!(
+                            "P2P: ErasureShardRequest for slot {} — block not found",
+                            slot
+                        );
                     }
                 }
             }
@@ -10023,7 +10138,7 @@ async fn run_validator() {
         // drops them all, and produces only empty heartbeats.
         {
             let mut pool = mempool.lock().await;
-            if let Ok(valid_hashes) = state.get_recent_blockhashes(300) {
+            if let Ok(valid_hashes) = state.get_recent_blockhashes(MAX_TX_AGE_BLOCKS) {
                 let evicted = pool.prune_stale_blockhashes(&valid_hashes);
                 if evicted > 0 {
                     warn!(

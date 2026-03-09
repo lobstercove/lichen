@@ -94,6 +94,7 @@ fn create_test_app() -> axum::Router {
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -297,6 +298,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
         None,
         None,
         None,

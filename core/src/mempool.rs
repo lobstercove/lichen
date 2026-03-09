@@ -3,12 +3,16 @@
 use crate::hash::Hash;
 use crate::processor::get_trust_tier;
 use crate::transaction::Transaction;
+use crate::Pubkey;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Reputation threshold for express-lane inclusion (Tier 4+)
 const EXPRESS_LANE_MIN_REPUTATION: u64 = 5_000;
+
+/// AUDIT-FIX H-6: Maximum pending transactions per sender
+const MAX_PENDING_PER_SENDER: usize = 100;
 
 /// Transaction with priority metadata
 #[derive(Clone, Debug)]
@@ -86,6 +90,9 @@ pub struct Mempool {
     /// Transaction hash -> transaction (for deduplication)
     transactions: HashMap<Hash, Transaction>,
 
+    /// AUDIT-FIX H-6: Per-sender pending transaction count
+    sender_counts: HashMap<Pubkey, usize>,
+
     /// Maximum mempool size
     max_size: usize,
 
@@ -100,6 +107,7 @@ impl Mempool {
             queue: BinaryHeap::new(),
             express_queue: BinaryHeap::new(),
             transactions: HashMap::new(),
+            sender_counts: HashMap::new(),
             max_size,
             expiration_time,
         }
@@ -124,6 +132,16 @@ impl Mempool {
             return Err("Mempool full".to_string());
         }
 
+        // AUDIT-FIX H-6: Per-sender transaction limit
+        let sender = transaction.sender();
+        let sender_count = self.sender_counts.get(&sender).copied().unwrap_or(0);
+        if sender_count >= MAX_PENDING_PER_SENDER {
+            return Err(format!(
+                "Sender {} has {} pending transactions (max {})",
+                sender, sender_count, MAX_PENDING_PER_SENDER
+            ));
+        }
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -144,6 +162,7 @@ impl Mempool {
             self.queue.push(prioritized);
         }
         self.transactions.insert(tx_hash, transaction);
+        *self.sender_counts.entry(sender).or_default() += 1;
 
         Ok(())
     }
@@ -188,7 +207,15 @@ impl Mempool {
 
     /// Remove transaction from mempool (after inclusion in block)
     pub fn remove_transaction(&mut self, tx_hash: &Hash) {
-        if self.transactions.remove(tx_hash).is_some() {
+        if let Some(tx) = self.transactions.remove(tx_hash) {
+            // Decrement sender count
+            let sender = tx.sender();
+            if let Some(count) = self.sender_counts.get_mut(&sender) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.sender_counts.remove(&sender);
+                }
+            }
             // Rebuild both queues without the removed transaction
             let regular: Vec<_> = self.queue.drain().collect();
             self.queue = regular
@@ -210,7 +237,15 @@ impl Mempool {
         let hash_set: std::collections::HashSet<&Hash> = tx_hashes.iter().collect();
         let mut any_removed = false;
         for h in tx_hashes {
-            if self.transactions.remove(h).is_some() {
+            if let Some(tx) = self.transactions.remove(h) {
+                // Decrement sender count
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
                 any_removed = true;
             }
         }
@@ -242,7 +277,15 @@ impl Mempool {
             .into_iter()
             .partition(|ptx| now.saturating_sub(ptx.timestamp) < self.expiration_time);
         for ptx in &expired {
-            self.transactions.remove(&ptx.hash);
+            if let Some(tx) = self.transactions.remove(&ptx.hash) {
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
+            }
         }
         self.queue = valid.into_iter().collect();
 
@@ -252,7 +295,15 @@ impl Mempool {
             .into_iter()
             .partition(|ptx| now.saturating_sub(ptx.timestamp) < self.expiration_time);
         for ptx in &expired_express {
-            self.transactions.remove(&ptx.hash);
+            if let Some(tx) = self.transactions.remove(&ptx.hash) {
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
+            }
         }
         self.express_queue = valid_express.into_iter().collect();
     }
@@ -274,7 +325,15 @@ impl Mempool {
             .into_iter()
             .partition(|ptx| valid_blockhashes.contains(&ptx.transaction.message.recent_blockhash));
         for ptx in &stale_regular {
-            self.transactions.remove(&ptx.hash);
+            if let Some(tx) = self.transactions.remove(&ptx.hash) {
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
+            }
         }
         self.queue = valid_regular.into_iter().collect();
 
@@ -284,7 +343,15 @@ impl Mempool {
             .into_iter()
             .partition(|ptx| valid_blockhashes.contains(&ptx.transaction.message.recent_blockhash));
         for ptx in &stale_express {
-            self.transactions.remove(&ptx.hash);
+            if let Some(tx) = self.transactions.remove(&ptx.hash) {
+                let sender = tx.sender();
+                if let Some(count) = self.sender_counts.get_mut(&sender) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.sender_counts.remove(&sender);
+                    }
+                }
+            }
         }
         self.express_queue = valid_express.into_iter().collect();
 

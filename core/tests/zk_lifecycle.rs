@@ -427,7 +427,11 @@ fn test_wrong_merkle_root_rejected() {
 
     // Now try to unshield with a WRONG merkle root
     let wrong_root = [0xAB; 32];
-    let nullifier = [0xCD; 32];
+    // Use a canonical nullifier (valid BN254 field element) so the test
+    // reaches the merkle-root check instead of being rejected earlier by
+    // the C-1 nullifier canonicality validation.
+    let nullifier_fr = Fr::from(123456789u64);
+    let nullifier = fr_to_bytes(&nullifier_fr);
     let recipient_preimage = Fr::from_le_bytes_mod_order(&env.alice.0);
     let recipient_fr = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
     let recipient_fr_bytes = fr_to_bytes(&recipient_fr);

@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
+use zeroize::Zeroize;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -188,7 +189,10 @@ fn load_signer_keypair(path: &Path) -> Result<Keypair, String> {
     }
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&keypair_file.private_key);
-    Ok(Keypair::from_seed(&seed))
+    let kp = Keypair::from_seed(&seed);
+    // AUDIT-FIX C-9: Zeroize seed material after use
+    seed.zeroize();
+    Ok(kp)
 }
 
 fn save_signer_keypair(keypair: &Keypair, path: &Path) -> Result<(), String> {
@@ -197,14 +201,18 @@ fn save_signer_keypair(keypair: &Keypair, path: &Path) -> Result<(), String> {
     }
 
     let pubkey = keypair.pubkey();
-    let seed = keypair.to_seed();
-    let keypair_file = SignerKeyFile {
+    let mut seed = keypair.to_seed();
+    let mut keypair_file = SignerKeyFile {
         private_key: seed.to_vec(),
         public_key: pubkey.0.to_vec(),
         public_key_base58: pubkey.to_base58(),
     };
+    // AUDIT-FIX C-9: Zeroize seed material after use
+    seed.zeroize();
 
     let json = serde_json::to_string_pretty(&keypair_file).map_err(|e| format!("encode: {}", e))?;
+    // Zeroize private key from struct immediately after serialization
+    keypair_file.private_key.zeroize();
     fs::write(path, json).map_err(|e| format!("write: {}", e))?;
 
     #[cfg(unix)]

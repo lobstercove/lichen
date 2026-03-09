@@ -3833,6 +3833,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber 0.3.22",
+ "zeroize",
 ]
 
 [[package]]

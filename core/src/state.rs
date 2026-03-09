@@ -1173,15 +1173,15 @@ impl StateStore {
             }
         }
 
-        // Commit all block + tx writes atomically
+        // AUDIT-FIX M7: Fold account-transaction indexes into the same atomic
+        // WriteBatch so a crash between block commit and index write cannot
+        // leave transaction history in an inconsistent state.
+        self.batch_index_account_transactions(block, &mut batch)?;
+
+        // Commit all block + tx + account-index writes atomically
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to write block batch: {}", e))?;
-
-        // Account-transaction indexes still use individual puts (they have
-        // their own counter logic). This is a smaller number of writes and
-        // can be batched in a follow-up optimization.
-        self.index_account_transactions(block)?;
 
         // Track metrics for new slots (skip fork-choice replacements)
         if is_new_slot {
@@ -2283,6 +2283,86 @@ fn extract_token_recipient_from_ix(ix: &crate::transaction::Instruction) -> Opti
 }
 
 impl StateStore {
+    /// AUDIT-FIX M7: Write account-transaction indexes into the provided WriteBatch
+    /// so they are committed atomically with the block data.
+    fn batch_index_account_transactions(
+        &self,
+        block: &Block,
+        batch: &mut WriteBatch,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_TXS)
+            .ok_or_else(|| "Account txs CF not found".to_string())?;
+
+        let cf_stats = self.db.cf_handle(CF_STATS);
+
+        let contract_program_id = crate::processor::CONTRACT_PROGRAM_ID;
+
+        // Track counter deltas in-memory so multiple txs touching the same
+        // account within one block produce correct sequential counts.
+        let mut counter_deltas: std::collections::HashMap<Pubkey, u64> =
+            std::collections::HashMap::new();
+
+        for (tx_index, tx) in block.transactions.iter().enumerate() {
+            let mut accounts = std::collections::HashSet::new();
+            for ix in &tx.message.instructions {
+                for account in &ix.accounts {
+                    accounts.insert(*account);
+                }
+                if ix.program_id == contract_program_id {
+                    if let Some(recipient) = extract_token_recipient_from_ix(ix) {
+                        accounts.insert(recipient);
+                    }
+                }
+            }
+
+            let tx_hash = tx.signature();
+            let seq = tx_index as u32;
+
+            for account in accounts {
+                let mut key = Vec::with_capacity(32 + 8 + 4 + 32);
+                key.extend_from_slice(&account.0);
+                key.extend_from_slice(&block.header.slot.to_be_bytes());
+                key.extend_from_slice(&seq.to_be_bytes());
+                key.extend_from_slice(&tx_hash.0);
+
+                batch.put_cf(&cf, &key, []);
+
+                // Increment counter using in-memory delta tracking
+                if let Some(ref cf_s) = cf_stats {
+                    let delta = counter_deltas.entry(account).or_insert_with(|| {
+                        let mut counter_key = Vec::with_capacity(5 + 32);
+                        counter_key.extend_from_slice(b"atxc:");
+                        counter_key.extend_from_slice(&account.0);
+                        match self.db.get_cf(cf_s, &counter_key) {
+                            Ok(Some(data)) if data.len() == 8 => {
+                                u64::from_le_bytes(data.as_slice().try_into().unwrap())
+                            }
+                            _ => 0,
+                        }
+                    });
+                    *delta += 1;
+                }
+            }
+        }
+
+        // Write final counter values into the batch
+        if let Some(ref cf_s) = cf_stats {
+            for (account, count) in &counter_deltas {
+                let mut counter_key = Vec::with_capacity(5 + 32);
+                counter_key.extend_from_slice(b"atxc:");
+                counter_key.extend_from_slice(&account.0);
+                batch.put_cf(cf_s, &counter_key, count.to_le_bytes());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Legacy non-batched version — kept for backwards compatibility.
+    /// Prefer `batch_index_account_transactions` for atomic block commits.
+    #[allow(dead_code)]
     fn index_account_transactions(&self, block: &Block) -> Result<(), String> {
         let cf = self
             .db

@@ -73,6 +73,9 @@ pub const EVM_SENTINEL_BLOCKHASH: Hash = Hash([0xEE; 32]);
 
 /// Slot-based month length (400ms slots, 216,000 per day)
 pub const SLOTS_PER_MONTH: u64 = 216_000 * 30;
+/// Maximum age in blocks for a transaction's recent_blockhash.
+/// Transactions referencing a blockhash older than this are rejected.
+pub const MAX_TX_AGE_BLOCKS: u64 = 300;
 /// Base transaction fee (0.001 MOLT = 1,000,000 shells)
 /// At $0.10/MOLT: $0.0001 per tx  |  At $1.00/MOLT: $0.001 per tx
 /// Solana ~$0.00025/tx — MoltChain is 2.5x cheaper at $0.10/MOLT
@@ -719,7 +722,10 @@ impl TxProcessor {
             let valid = if let Some(hashes) = cached_blockhashes {
                 hashes.contains(&tx.message.recent_blockhash)
             } else {
-                let recent = self.state.get_recent_blockhashes(300).unwrap_or_default();
+                let recent = self
+                    .state
+                    .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+                    .unwrap_or_default();
                 recent.contains(&tx.message.recent_blockhash)
             };
             if !valid {
@@ -903,7 +909,7 @@ impl TxProcessor {
         // PERF-FIX 10: Cache blockhashes ONCE for the entire batch
         let cached_blockhashes: HashSet<Hash> = self
             .state
-            .get_recent_blockhashes(300)
+            .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
             .unwrap_or_default()
             .into_iter()
             .collect();
@@ -1080,7 +1086,10 @@ impl TxProcessor {
             // EVM sentinel: skip blockhash validation (EVM has its own replay protection)
         } else {
             // Validate blockhash
-            let recent = self.state.get_recent_blockhashes(300).unwrap_or_default();
+            let recent = self
+                .state
+                .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
+                .unwrap_or_default();
             if !recent.contains(&tx.message.recent_blockhash) {
                 return SimulationResult {
                     success: false,
@@ -2238,6 +2247,23 @@ impl TxProcessor {
         let mut nullifier = [0u8; 32];
         nullifier.copy_from_slice(&ix.data[9..41]);
 
+        // AUDIT-FIX C-1: Reject non-canonical nullifier encodings.
+        // Fr::from_le_bytes_mod_order reduces bytes >= field modulus, so
+        // different byte arrays can map to the same Fr. Without this check,
+        // an attacker could double-spend a shielded note by submitting
+        // nullifier N (canonical) and N+r (non-canonical but same Fr).
+        {
+            let fr = Fr::from_le_bytes_mod_order(&nullifier);
+            let canonical = fr_to_bytes(&fr);
+            if canonical != nullifier {
+                return Err(format!(
+                    "Unshield: non-canonical nullifier encoding (got {}, canonical {})",
+                    hex::encode(nullifier),
+                    hex::encode(canonical)
+                ));
+            }
+        }
+
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&ix.data[41..73]);
 
@@ -2401,6 +2427,19 @@ impl TxProcessor {
 
         let mut nullifier_b = [0u8; 32];
         nullifier_b.copy_from_slice(&ix.data[33..65]);
+
+        // AUDIT-FIX C-1: Reject non-canonical nullifier encodings to prevent
+        // double-spend via Fr reduction (N and N+r map to same field element).
+        for (label, nul) in [("A", &nullifier_a), ("B", &nullifier_b)] {
+            let fr = Fr::from_le_bytes_mod_order(nul);
+            let canonical = fr_to_bytes(&fr);
+            if canonical != *nul {
+                return Err(format!(
+                    "ShieldedTransfer: non-canonical nullifier {} encoding",
+                    label
+                ));
+            }
+        }
 
         let mut commitment_c = [0u8; 32];
         commitment_c.copy_from_slice(&ix.data[65..97]);
@@ -3407,6 +3446,26 @@ impl TxProcessor {
             return Err(result
                 .error
                 .unwrap_or("Contract execution failed".to_string()));
+        }
+
+        // ── AUDIT-FIX C-2: Apply CCC value deltas through the batch ─────
+        // Value movements from cross-contract calls are tracked as deltas
+        // (not direct DB writes) to maintain atomicity with the StateBatch
+        // overlay.  Apply them here so they participate in the batch commit.
+        for (addr, delta) in &result.ccc_value_deltas {
+            if *delta == 0 {
+                continue;
+            }
+            let mut acct = self
+                .b_get_account(addr)?
+                .ok_or_else(|| format!("CCC value delta target {} not found", addr))?;
+            if *delta > 0 {
+                acct.add_spendable(*delta as u64)?;
+            } else {
+                let abs = (-*delta) as u64;
+                acct.deduct_spendable(abs)?;
+            }
+            self.b_put_account(addr, &acct)?;
         }
 
         // Store contract events (top-level)

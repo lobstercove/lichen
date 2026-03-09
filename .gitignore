@@ -28,7 +28,7 @@ state-*/
 
 # ── Security-sensitive runtime files ────────────────────────
 keypairs/
-genesis/
+genesis/target/
 tests/
 examples/
 genesis.json

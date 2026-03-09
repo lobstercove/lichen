@@ -14,8 +14,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{Pool, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    CrossCall, call_contract, get_caller, call_token_transfer, get_value, get_contract_address,
+use moltchain_sdk::{
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
+    get_timestamp, get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
+    Pool,
 };
 
 // ============================================================================
@@ -57,15 +59,22 @@ const MS_VOLUME_A_KEY: &[u8] = b"ms_volume_a";
 const MS_VOLUME_B_KEY: &[u8] = b"ms_volume_b";
 
 fn is_ms_paused() -> bool {
-    storage_get(MS_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(MS_PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn is_ms_admin(caller: &[u8]) -> bool {
-    storage_get(MS_ADMIN_KEY).map(|d| d.as_slice() == caller).unwrap_or(false)
+    storage_get(MS_ADMIN_KEY)
+        .map(|d| d.as_slice() == caller)
+        .unwrap_or(false)
 }
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false; // Already entered
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
@@ -197,10 +206,12 @@ fn accrue_protocol_fee(amount_out: u64, is_token_a: bool) -> u64 {
     if protocol_cut == 0 {
         return amount_out;
     }
-    let fee_key = if is_token_a { PROTOCOL_FEES_A_KEY } else { PROTOCOL_FEES_B_KEY };
-    let accrued = storage_get(fee_key)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let fee_key = if is_token_a {
+        PROTOCOL_FEES_A_KEY
+    } else {
+        PROTOCOL_FEES_B_KEY
+    };
+    let accrued = storage_get(fee_key).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     storage_set(fee_key, &u64_to_bytes(accrued + protocol_cut));
     // AUDIT-FIX 1.11: Return amount MINUS protocol cut — was returning full amount_out
     amount_out - protocol_cut
@@ -220,11 +231,11 @@ pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
         let mut token_a_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(token_a_ptr, token_a_addr.as_mut_ptr(), 32);
         let token_a = Address(token_a_addr);
-        
+
         let mut token_b_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(token_b_ptr, token_b_addr.as_mut_ptr(), 32);
         let token_b = Address(token_b_addr);
-        
+
         // Pool::initialize calls save() which now persists token addresses too
         let mut pool = Pool::new(token_a, token_b);
         pool.initialize(token_a, token_b).expect("Init failed");
@@ -232,7 +243,7 @@ pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
         // SECURITY FIX: Set caller as admin, not token_a address
         let caller = get_caller();
         storage_set(MS_ADMIN_KEY, &caller.0);
-        
+
         log_info("MoltSwap liquidity pool initialized");
     }
 }
@@ -332,14 +343,14 @@ pub extern "C" fn remove_liquidity(
                     reentrancy_exit();
                     return 0;
                 }
-                
+
                 // Write amounts to output pointers
                 let out_a_slice = core::slice::from_raw_parts_mut(out_a_ptr, 8);
                 out_a_slice.copy_from_slice(&amount_a.to_le_bytes());
-                
+
                 let out_b_slice = core::slice::from_raw_parts_mut(out_b_ptr, 8);
                 out_b_slice.copy_from_slice(&amount_b.to_le_bytes());
-                
+
                 reentrancy_exit();
                 1
             }
@@ -393,11 +404,14 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
 
             let bonus = get_reputation_bonus(amount_b_out);
             let final_out = if bonus > 0 {
-                let mut pool2 = load_pool();
-                if pool2.reserve_b >= bonus {
-                    pool2.reserve_b -= bonus;
-                    let _ = pool2.save();
-                    log_info("Reputation fee discount applied");
+                // AUDIT-FIX C-6: Fund reputation bonus from accrued protocol fees,
+                // not LP reserves. Prevents drain of liquidity provider funds.
+                let accrued = storage_get(PROTOCOL_FEES_B_KEY)
+                    .map(|d| bytes_to_u64(&d))
+                    .unwrap_or(0);
+                if accrued >= bonus {
+                    storage_set(PROTOCOL_FEES_B_KEY, &u64_to_bytes(accrued - bonus));
+                    log_info("Reputation fee discount applied from protocol fees");
                     amount_b_out + bonus
                 } else {
                     amount_b_out
@@ -426,13 +440,19 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
 
 /// Track swap count and volume (internal)
 fn track_swap(amount_a: u64, amount_b: u64, is_a_to_b: bool) {
-    let count = storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let count = storage_get(MS_SWAP_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(MS_SWAP_COUNT_KEY, &u64_to_bytes(count + 1));
     if is_a_to_b {
-        let vol = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let vol = storage_get(MS_VOLUME_A_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MS_VOLUME_A_KEY, &u64_to_bytes(vol.saturating_add(amount_a)));
     } else {
-        let vol = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let vol = storage_get(MS_VOLUME_B_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MS_VOLUME_B_KEY, &u64_to_bytes(vol.saturating_add(amount_b)));
     }
 }
@@ -478,11 +498,14 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
 
             let bonus = get_reputation_bonus(amount_a_out);
             let final_out = if bonus > 0 {
-                let mut pool2 = load_pool();
-                if pool2.reserve_a >= bonus {
-                    pool2.reserve_a -= bonus;
-                    let _ = pool2.save();
-                    log_info("Reputation fee discount applied");
+                // AUDIT-FIX C-6: Fund reputation bonus from accrued protocol fees,
+                // not LP reserves. Prevents drain of liquidity provider funds.
+                let accrued = storage_get(PROTOCOL_FEES_A_KEY)
+                    .map(|d| bytes_to_u64(&d))
+                    .unwrap_or(0);
+                if accrued >= bonus {
+                    storage_set(PROTOCOL_FEES_A_KEY, &u64_to_bytes(accrued - bonus));
+                    log_info("Reputation fee discount applied from protocol fees");
                     amount_a_out + bonus
                 } else {
                     amount_a_out
@@ -511,7 +534,11 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
 
 /// Swap token A for B with deadline. Rejected if current timestamp > deadline.
 #[no_mangle]
-pub extern "C" fn swap_a_for_b_with_deadline(amount_a_in: u64, min_amount_b_out: u64, deadline: u64) -> u64 {
+pub extern "C" fn swap_a_for_b_with_deadline(
+    amount_a_in: u64,
+    min_amount_b_out: u64,
+    deadline: u64,
+) -> u64 {
     if get_timestamp() > deadline {
         log_info("Transaction expired (deadline passed)");
         return 0;
@@ -521,7 +548,11 @@ pub extern "C" fn swap_a_for_b_with_deadline(amount_a_in: u64, min_amount_b_out:
 
 /// Swap token B for A with deadline. Rejected if current timestamp > deadline.
 #[no_mangle]
-pub extern "C" fn swap_b_for_a_with_deadline(amount_b_in: u64, min_amount_a_out: u64, deadline: u64) -> u64 {
+pub extern "C" fn swap_b_for_a_with_deadline(
+    amount_b_in: u64,
+    min_amount_a_out: u64,
+    deadline: u64,
+) -> u64 {
     if get_timestamp() > deadline {
         log_info("Transaction expired (deadline passed)");
         return 0;
@@ -533,7 +564,7 @@ pub extern "C" fn swap_b_for_a_with_deadline(amount_b_in: u64, min_amount_a_out:
 #[no_mangle]
 pub extern "C" fn get_quote(amount_in: u64, is_a_to_b: u32) -> u64 {
     let pool = load_pool();
-    
+
     if is_a_to_b == 1 {
         pool.get_amount_out(amount_in, pool.reserve_a, pool.reserve_b)
     } else {
@@ -546,10 +577,10 @@ pub extern "C" fn get_quote(amount_in: u64, is_a_to_b: u32) -> u64 {
 pub extern "C" fn get_reserves(out_a_ptr: *mut u8, out_b_ptr: *mut u8) {
     unsafe {
         let pool = load_pool();
-        
+
         let out_a_slice = core::slice::from_raw_parts_mut(out_a_ptr, 8);
         out_a_slice.copy_from_slice(&pool.reserve_a.to_le_bytes());
-        
+
         let out_b_slice = core::slice::from_raw_parts_mut(out_b_ptr, 8);
         out_b_slice.copy_from_slice(&pool.reserve_b.to_le_bytes());
     }
@@ -562,7 +593,7 @@ pub extern "C" fn get_liquidity_balance(provider_ptr: *const u8) -> u64 {
         let mut provider_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(provider_ptr, provider_addr.as_mut_ptr(), 32);
         let provider = Address(provider_addr);
-        
+
         load_pool().get_liquidity_balance(provider)
     }
 }
@@ -592,7 +623,9 @@ const FL_AMOUNT_KEY: &[u8] = b"_fl_amount";
 const FL_FEE_KEY: &[u8] = b"_fl_fee";
 
 fn fl_is_active() -> bool {
-    storage_get(FL_ACTIVE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(FL_ACTIVE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn fl_set_active(active: bool) {
@@ -600,15 +633,21 @@ fn fl_set_active(active: bool) {
 }
 
 fn fl_get_token_is_a() -> bool {
-    storage_get(FL_TOKEN_IS_A_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(true)
+    storage_get(FL_TOKEN_IS_A_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(true)
 }
 
 fn fl_get_amount() -> u64 {
-    storage_get(FL_AMOUNT_KEY).map(|v| bytes_to_u64(&v)).unwrap_or(0)
+    storage_get(FL_AMOUNT_KEY)
+        .map(|v| bytes_to_u64(&v))
+        .unwrap_or(0)
 }
 
 fn fl_get_fee() -> u64 {
-    storage_get(FL_FEE_KEY).map(|v| bytes_to_u64(&v)).unwrap_or(0)
+    storage_get(FL_FEE_KEY)
+        .map(|v| bytes_to_u64(&v))
+        .unwrap_or(0)
 }
 
 fn fl_store_loan(token_is_a: bool, amount: u64, fee: u64) {
@@ -644,7 +683,11 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
     }
 
     let pool = load_pool();
-    let reserve = if token_is_a == 1 { pool.reserve_a } else { pool.reserve_b };
+    let reserve = if token_is_a == 1 {
+        pool.reserve_a
+    } else {
+        pool.reserve_b
+    };
 
     if amount == 0 || amount > reserve {
         log_info("Flash loan: invalid amount or insufficient reserves");
@@ -671,7 +714,11 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
 
     // G17-02: Transfer borrowed tokens to borrower
     let borrower = get_caller();
-    let token_addr = if token_is_a == 1 { pool.token_a.0 } else { pool.token_b.0 };
+    let token_addr = if token_is_a == 1 {
+        pool.token_a.0
+    } else {
+        pool.token_b.0
+    };
     if transfer_out(&token_addr, &borrower.0, amount) != 0 {
         log_info("Flash loan token transfer failed");
         fl_clear();
@@ -690,7 +737,7 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
 }
 
 /// Repay flash loan. Must return borrowed amount + fee.
-/// On success: fee is added to reserves (benefits LPs). 
+/// On success: fee is added to reserves (benefits LPs).
 /// On failure: nothing changes (reserves were never decremented).
 /// Returns 0 on success, non-zero on failure.
 #[no_mangle]
@@ -740,24 +787,37 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
 /// Abort a stale flash loan. Anyone can call this if a loan has been active
 /// for more than 60 seconds (covers block finality window).
 /// This ensures reserves can never be permanently locked.
+/// AUDIT-FIX C-5: Deduct borrowed amount from reserves so accounting
+/// matches actual token balances (tokens were already transferred out
+/// in flash_loan_borrow via transfer_out).
 #[no_mangle]
 pub extern "C" fn flash_loan_abort() -> u32 {
     if !fl_is_active() {
         return 0; // Nothing to abort
     }
-    
+
     let borrow_time = storage_get(b"fl_borrow_time")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     let now = get_timestamp();
-    
+
     if now.saturating_sub(borrow_time) < 60 {
         log_info("Flash loan not yet stale (< 60s)");
         return 1;
     }
-    
-    // Clear stale loan — reserves were never modified, so nothing to restore
-    log_info("Stale flash loan aborted");
+
+    // Deduct borrowed amount from reserves to match actual token balances
+    let loan_amount = fl_get_amount();
+    let token_is_a = fl_get_token_is_a();
+    let mut pool = load_pool();
+    if token_is_a {
+        pool.reserve_a = pool.reserve_a.saturating_sub(loan_amount);
+    } else {
+        pool.reserve_b = pool.reserve_b.saturating_sub(loan_amount);
+    }
+    let _ = pool.save();
+
+    log_info("Stale flash loan aborted — reserves adjusted for unreturned tokens");
     fl_clear();
     reentrancy_exit();
     0
@@ -768,7 +828,11 @@ pub extern "C" fn flash_loan_abort() -> u32 {
 pub extern "C" fn get_flash_loan_fee(amount: u64) -> u64 {
     // AUDIT-FIX NEW-M2: consistent round-up with u128 intermediate
     let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + 9999) / 10000) as u64;
-    if fee == 0 { 1 } else { fee }
+    if fee == 0 {
+        1
+    } else {
+        fee
+    }
 }
 
 // ============================================================================
@@ -817,7 +881,9 @@ pub extern "C" fn set_protocol_fee(
     fee_share: u64,
 ) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // P9-SC-04: Verify caller matches transaction signer
     let real_caller = get_caller();
@@ -841,7 +907,9 @@ pub extern "C" fn set_protocol_fee(
     }
 
     let mut treasury = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(treasury_ptr, treasury.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(treasury_ptr, treasury.as_mut_ptr(), 32);
+    }
     storage_set(PROTOCOL_TREASURY_KEY, &treasury);
     storage_set(PROTOCOL_FEE_SHARE_KEY, &u64_to_bytes(fee_share));
     log_info("Protocol fee configured");
@@ -883,7 +951,9 @@ const MOLTYID_DISCOUNT_BPS_KEY: &[u8] = b"moltyid_disc_bps";
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
 
     // P9-SC-05: Verify caller matches the claimed admin address
     let real_caller = get_caller();
@@ -907,9 +977,13 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut moltyid_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -941,7 +1015,9 @@ pub extern "C" fn set_reputation_discount(
     discount_bps: u64,
 ) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1016,7 +1092,9 @@ fn get_reputation_bonus(amount_out: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn ms_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1034,7 +1112,9 @@ pub extern "C" fn ms_pause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn ms_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1089,7 +1169,11 @@ pub extern "C" fn get_pool_info() -> u32 {
 /// Tests expect `get_pool_count` — single-pool AMM, returns 1 if initialized
 #[no_mangle]
 pub extern "C" fn get_pool_count() -> u64 {
-    if storage_get(b"pool_token_a").is_some() { 1 } else { 0 }
+    if storage_get(b"pool_token_a").is_some() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Alias: tests call `set_platform_fee` — wraps `set_protocol_fee` with zero treasury
@@ -1102,14 +1186,20 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 /// Get total number of swaps
 #[no_mangle]
 pub extern "C" fn get_swap_count() -> u64 {
-    storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(MS_SWAP_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
 
 /// Get total volume for token A and B [volume_a(8), volume_b(8)]
 #[no_mangle]
 pub extern "C" fn get_total_volume() -> u32 {
-    let vol_a = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    let vol_b = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let vol_a = storage_get(MS_VOLUME_A_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    let vol_b = storage_get(MS_VOLUME_B_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     let mut buf = Vec::with_capacity(16);
     buf.extend_from_slice(&u64_to_bytes(vol_a));
     buf.extend_from_slice(&u64_to_bytes(vol_b));
@@ -1120,9 +1210,15 @@ pub extern "C" fn get_total_volume() -> u32 {
 /// Get swap stats [swap_count(8), volume_a(8), volume_b(8), pool_count(8), total_liquidity(8)]
 #[no_mangle]
 pub extern "C" fn get_swap_stats() -> u32 {
-    let swap_count = storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    let vol_a = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    let vol_b = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let swap_count = storage_get(MS_SWAP_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    let vol_a = storage_get(MS_VOLUME_A_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    let vol_b = storage_get(MS_VOLUME_B_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     let pool_count = get_pool_count();
     let total_liq = get_total_liquidity();
     let mut buf = Vec::with_capacity(40);
@@ -1139,8 +1235,8 @@ pub extern "C" fn get_swap_stats() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -1161,8 +1257,12 @@ mod tests {
         assert_eq!(test_mock::get_storage(b"token_b"), Some(token_b.to_vec()));
 
         // Reserves should be 0
-        let ra = test_mock::get_storage(b"reserve_a").map(|b| bytes_to_u64(&b)).unwrap_or(0);
-        let rb = test_mock::get_storage(b"reserve_b").map(|b| bytes_to_u64(&b)).unwrap_or(0);
+        let ra = test_mock::get_storage(b"reserve_a")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
+        let rb = test_mock::get_storage(b"reserve_b")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
         assert_eq!(ra, 0);
         assert_eq!(rb, 0);
     }
@@ -1182,18 +1282,17 @@ mod tests {
         test_mock::set_caller(provider);
         // G17-02: Attach value covering both token deposits
         test_mock::set_value(amount_a + amount_b);
-        let liquidity = add_liquidity(
-            provider.as_ptr(),
-            amount_a,
-            amount_b,
-            min_liquidity,
-        );
+        let liquidity = add_liquidity(provider.as_ptr(), amount_a, amount_b, min_liquidity);
 
         assert!(liquidity > 0, "Should receive liquidity tokens");
 
         // Check reserves updated
-        let ra = test_mock::get_storage(b"reserve_a").map(|b| bytes_to_u64(&b)).unwrap_or(0);
-        let rb = test_mock::get_storage(b"reserve_b").map(|b| bytes_to_u64(&b)).unwrap_or(0);
+        let ra = test_mock::get_storage(b"reserve_a")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
+        let rb = test_mock::get_storage(b"reserve_b")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
         assert_eq!(ra, amount_a);
         assert_eq!(rb, amount_b);
     }
@@ -1221,12 +1320,20 @@ mod tests {
         assert!(amount_out < amount_in, "Output should be less due to fees");
 
         // Verify reserves changed
-        let ra = test_mock::get_storage(b"reserve_a").map(|b| bytes_to_u64(&b)).unwrap_or(0);
-        let rb = test_mock::get_storage(b"reserve_b").map(|b| bytes_to_u64(&b)).unwrap_or(0);
+        let ra = test_mock::get_storage(b"reserve_a")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
+        let rb = test_mock::get_storage(b"reserve_b")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
         assert_eq!(ra, 1_000_000 + amount_in);
         // Reserve decrease may differ by ±1 from amount_out due to protocol fee rounding (u128 precision)
-        assert!((rb as i64 - (1_000_000 - amount_out) as i64).unsigned_abs() <= 1,
-            "Reserve B should approximate 1M - amount_out, got rb={} vs expected={}", rb, 1_000_000 - amount_out);
+        assert!(
+            (rb as i64 - (1_000_000 - amount_out) as i64).unsigned_abs() <= 1,
+            "Reserve B should approximate 1M - amount_out, got rb={} vs expected={}",
+            rb,
+            1_000_000 - amount_out
+        );
     }
 
     #[test]
@@ -1354,10 +1461,16 @@ mod tests {
         let other = [9u8; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(other);
-        assert_eq!(set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()), 2);
+        assert_eq!(
+            set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()),
+            2
+        );
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
-        assert_eq!(set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()),
+            0
+        );
     }
 
     // =============================================
@@ -1483,7 +1596,10 @@ mod tests {
         // Try to swap 10% of reserves (>5% impact) — should be rejected
         test_mock::set_value(100_000);
         let out = swap_a_for_b(100_000, 0);
-        assert_eq!(out, 0, "Large swap should be rejected by price impact guard");
+        assert_eq!(
+            out, 0,
+            "Large swap should be rejected by price impact guard"
+        );
     }
 
     #[test]
@@ -1599,7 +1715,10 @@ mod tests {
         // Attach less value than amount_a + amount_b
         test_mock::set_value(500_000);
         let liquidity = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
-        assert_eq!(liquidity, 0, "Should reject insufficient value for liquidity");
+        assert_eq!(
+            liquidity, 0,
+            "Should reject insufficient value for liquidity"
+        );
     }
 
     #[test]
@@ -1685,7 +1804,10 @@ mod tests {
 
         // Borrow 50% of reserves (within cap)
         let borrowed = flash_loan_borrow(500_000, 1);
-        assert_eq!(borrowed, 500_000, "Should borrow successfully with token transfer");
+        assert_eq!(
+            borrowed, 500_000,
+            "Should borrow successfully with token transfer"
+        );
     }
 
     #[test]
@@ -1709,7 +1831,10 @@ mod tests {
         let repay_total = 100_000 + fee;
         test_mock::set_value(repay_total / 2); // insufficient
         let result = flash_loan_repay(repay_total);
-        assert_eq!(result, 3, "Should fail with insufficient value for repayment");
+        assert_eq!(
+            result, 3,
+            "Should fail with insufficient value for repayment"
+        );
     }
 
     #[test]
@@ -1736,8 +1861,14 @@ mod tests {
         assert_eq!(result, 0, "Flash loan repay should succeed");
 
         // Reserves should have increased by the fee
-        let ra = test_mock::get_storage(b"reserve_a").map(|b| bytes_to_u64(&b)).unwrap_or(0);
-        assert_eq!(ra, 1_000_000 + fee, "Reserve A should increase by flash loan fee");
+        let ra = test_mock::get_storage(b"reserve_a")
+            .map(|b| bytes_to_u64(&b))
+            .unwrap_or(0);
+        assert_eq!(
+            ra,
+            1_000_000 + fee,
+            "Reserve A should increase by flash loan fee"
+        );
     }
 
     #[test]
@@ -1754,7 +1885,10 @@ mod tests {
 
         // Verify contract address is set for self-custody
         let self_addr = get_contract_address();
-        assert_eq!(self_addr.0, [0xCC; 32], "Contract address should be configured");
+        assert_eq!(
+            self_addr.0, [0xCC; 32],
+            "Contract address should be configured"
+        );
 
         // Swap triggers transfer_out from self-custody
         test_mock::set_value(10_000);

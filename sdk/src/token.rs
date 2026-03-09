@@ -4,7 +4,9 @@
 // Allowance: {prefix}_alw_{hex64}_{hex64} → u64 LE
 // Supply:    {prefix}_supply        → u64 LE
 
-use crate::{Address, ContractResult, ContractError, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
+use crate::{
+    bytes_to_u64, storage_get, storage_set, u64_to_bytes, Address, ContractError, ContractResult,
+};
 use alloc::vec::Vec;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -28,7 +30,12 @@ pub struct Token {
 impl Token {
     /// Create new token with storage key prefix.
     /// `prefix` should be lowercase symbol (e.g., "molt", "wbnb").
-    pub const fn new(name: &'static str, symbol: &'static str, decimals: u8, prefix: &'static str) -> Self {
+    pub const fn new(
+        name: &'static str,
+        symbol: &'static str,
+        decimals: u8,
+        prefix: &'static str,
+    ) -> Self {
         Token {
             name,
             symbol,
@@ -58,27 +65,39 @@ impl Token {
     /// Transfer tokens
     pub fn transfer(&self, from: Address, to: Address, amount: u64) -> ContractResult<()> {
         let from_balance = self.balance_of(from);
-        if from_balance < amount {
-            return Err(ContractError::InsufficientFunds);
-        }
-        self.set_balance(from, from_balance - amount)?;
+        let new_from = from_balance
+            .checked_sub(amount)
+            .ok_or(ContractError::InsufficientFunds)?;
         let to_balance = self.balance_of(to);
-        self.set_balance(to, to_balance + amount)?;
+        let new_to = to_balance
+            .checked_add(amount)
+            .ok_or(ContractError::Overflow)?;
+        self.set_balance(from, new_from)?;
+        self.set_balance(to, new_to)?;
         Ok(())
     }
 
     /// Mint new tokens (only owner)
-    pub fn mint(&mut self, to: Address, amount: u64, caller: Address, owner: Address) -> ContractResult<()> {
+    pub fn mint(
+        &mut self,
+        to: Address,
+        amount: u64,
+        caller: Address,
+        owner: Address,
+    ) -> ContractResult<()> {
         if caller != owner {
             return Err(ContractError::Unauthorized);
         }
         let balance = self.balance_of(to);
-        self.set_balance(to, balance + amount)?;
+        let new_balance = balance.checked_add(amount).ok_or(ContractError::Overflow)?;
         let current_supply = match storage_get(&self.supply_key()) {
             Some(bytes) => bytes_to_u64(&bytes),
             None => 0,
         };
-        let new_supply = current_supply + amount;
+        let new_supply = current_supply
+            .checked_add(amount)
+            .ok_or(ContractError::Overflow)?;
+        self.set_balance(to, new_balance)?;
         self.total_supply = new_supply;
         storage_set(&self.supply_key(), &u64_to_bytes(new_supply));
         Ok(())
@@ -87,15 +106,17 @@ impl Token {
     /// Burn tokens
     pub fn burn(&mut self, from: Address, amount: u64) -> ContractResult<()> {
         let balance = self.balance_of(from);
-        if balance < amount {
-            return Err(ContractError::InsufficientFunds);
-        }
-        self.set_balance(from, balance - amount)?;
+        let new_balance = balance
+            .checked_sub(amount)
+            .ok_or(ContractError::InsufficientFunds)?;
         let current_supply = match storage_get(&self.supply_key()) {
             Some(bytes) => bytes_to_u64(&bytes),
             None => 0,
         };
-        let new_supply = current_supply - amount;
+        let new_supply = current_supply
+            .checked_sub(amount)
+            .ok_or(ContractError::Overflow)?;
+        self.set_balance(from, new_balance)?;
         self.total_supply = new_supply;
         storage_set(&self.supply_key(), &u64_to_bytes(new_supply));
         Ok(())
@@ -118,13 +139,19 @@ impl Token {
     }
 
     /// Transfer from (using allowance)
-    pub fn transfer_from(&self, caller: Address, from: Address, to: Address, amount: u64) -> ContractResult<()> {
+    pub fn transfer_from(
+        &self,
+        caller: Address,
+        from: Address,
+        to: Address,
+        amount: u64,
+    ) -> ContractResult<()> {
         let allowance = self.allowance(from, caller);
-        if allowance < amount {
-            return Err(ContractError::Unauthorized);
-        }
+        let new_allowance = allowance
+            .checked_sub(amount)
+            .ok_or(ContractError::Unauthorized)?;
         let key = self.allowance_key(from, caller);
-        storage_set(&key, &u64_to_bytes(allowance - amount));
+        storage_set(&key, &u64_to_bytes(new_allowance));
         self.transfer(from, to, amount)?;
         Ok(())
     }
@@ -195,13 +222,17 @@ mod tests {
 
     #[test]
     fn test_hex_encode() {
-        let bytes = [0x01, 0xab, 0xff, 0x00, 0x10, 0x20, 0x30, 0x40,
-                     0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0,
-                     0xd0, 0xe0, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55,
-                     0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd];
+        let bytes = [
+            0x01, 0xab, 0xff, 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0,
+            0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+            0xaa, 0xbb, 0xcc, 0xdd,
+        ];
         let mut hex = [0u8; 64];
         hex_encode_32(&bytes, &mut hex);
-        assert_eq!(&hex, b"01abff00102030405060708090a0b0c0d0e0f0112233445566778899aabbccdd");
+        assert_eq!(
+            &hex,
+            b"01abff00102030405060708090a0b0c0d0e0f0112233445566778899aabbccdd"
+        );
     }
 
     #[test]

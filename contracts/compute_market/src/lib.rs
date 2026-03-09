@@ -35,15 +35,17 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
-    get_caller, get_contract_address, Address, CrossCall, call_contract, call_token_transfer,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // SECURITY: Reentrancy guard
 const CM_REENTRANCY_KEY: &[u8] = b"cm_reentrancy";
 fn reentrancy_enter() -> bool {
     if let Some(v) = storage_get(CM_REENTRANCY_KEY) {
-        if !v.is_empty() && v[0] == 1 { return false; }
+        if !v.is_empty() && v[0] == 1 {
+            return false;
+        }
     }
     storage_set(CM_REENTRANCY_KEY, &[1u8]);
     true
@@ -291,7 +293,9 @@ pub extern "C" fn register_provider(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let addr = match read_address32(provider_ptr) {
         Some(v) => v,
@@ -329,7 +333,14 @@ pub extern "C" fn register_provider(
     }
 
     let current_slot = get_slot();
-    let data = encode_provider(&addr, compute_units_available, price_per_unit, 0, true, current_slot);
+    let data = encode_provider(
+        &addr,
+        compute_units_available,
+        price_per_unit,
+        0,
+        true,
+        current_slot,
+    );
     storage_set(&pk, &data);
 
     log_info("Compute provider registered");
@@ -360,7 +371,9 @@ pub extern "C" fn submit_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let req_arr = match read_address32(requester_ptr) {
         Some(v) => v,
@@ -412,7 +425,9 @@ pub extern "C" fn submit_job(
         Address(req_arr),
         contract_addr,
         max_price,
-    ).is_err() {
+    )
+    .is_err()
+    {
         log_info("Token transfer failed — requester has insufficient balance");
         return 13;
     }
@@ -457,15 +472,14 @@ pub extern "C" fn submit_job(
 ///   - provider_ptr: 32-byte provider address
 ///   - job_id: the job to claim
 #[no_mangle]
-pub extern "C" fn claim_job(
-    provider_ptr: *const u8,
-    job_id: u64,
-) -> u32 {
+pub extern "C" fn claim_job(provider_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Claiming compute job...");
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let mut prov_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
@@ -532,7 +546,9 @@ pub extern "C" fn complete_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let mut prov_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
@@ -600,15 +616,14 @@ pub extern "C" fn complete_job(
 ///   - requester_ptr: 32-byte requester address
 ///   - job_id: the job to dispute
 #[no_mangle]
-pub extern "C" fn dispute_job(
-    requester_ptr: *const u8,
-    job_id: u64,
-) -> u32 {
+pub extern "C" fn dispute_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Disputing compute job...");
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
@@ -647,7 +662,9 @@ pub extern "C" fn dispute_job(
     storage_set(&jk, &job_data);
 
     // Track dispute stats
-    let cmd = storage_get(CM_DISPUTE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let cmd = storage_get(CM_DISPUTE_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(CM_DISPUTE_COUNT_KEY, &u64_to_bytes(cmd + 1));
 
     log_info("Job disputed");
@@ -897,15 +914,14 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8)
 ///
 /// Escrowed funds returned to requester.
 #[no_mangle]
-pub extern "C" fn cancel_job(
-    requester_ptr: *const u8,
-    job_id: u64,
-) -> u32 {
+pub extern "C" fn cancel_job(requester_ptr: *const u8, job_id: u64) -> u32 {
     log_info("Cancelling compute job...");
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
     let requester = match read_address32(requester_ptr) {
         Some(v) => v,
@@ -970,9 +986,7 @@ pub extern "C" fn cancel_job(
     job_data[80] = JOB_CANCELLED;
     storage_set(&jk, &job_data);
     let ek = escrow_key(job_id);
-    let escrowed = storage_get(&ek)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let escrowed = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     storage_set(&ek, &u64_to_bytes(0));
 
     // AUDIT-FIX H-2: Return escrowed tokens to requester
@@ -984,7 +998,9 @@ pub extern "C" fn cancel_job(
                 contract_addr,
                 Address(requester),
                 escrowed,
-            ).is_err() {
+            )
+            .is_err()
+            {
                 log_info("cancel_job: token refund transfer failed");
                 return 7;
             }
@@ -1009,9 +1025,13 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
-    if !reentrancy_enter() { return 20; }
+    if !reentrancy_enter() {
+        return 20;
+    }
 
     let jk = job_key(job_id);
     let mut job_data = match storage_get(&jk) {
@@ -1053,9 +1073,7 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
     storage_set(&jk, &job_data);
 
     let ek = escrow_key(job_id);
-    let escrowed = storage_get(&ek)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let escrowed = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     storage_set(&ek, &u64_to_bytes(0));
 
     // AUDIT-FIX H-3: Actually transfer escrowed tokens to the provider
@@ -1069,7 +1087,9 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
                 contract_addr,
                 Address(provider_arr),
                 escrowed,
-            ).is_err() {
+            )
+            .is_err()
+            {
                 // Revert: put escrow back and undo status
                 storage_set(&ek, &u64_to_bytes(escrowed));
                 job_data[80] = JOB_COMPLETED;
@@ -1082,10 +1102,17 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
     }
 
     // Track completion stats
-    let cmc = storage_get(CM_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let cmc = storage_get(CM_COMPLETED_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(CM_COMPLETED_COUNT_KEY, &u64_to_bytes(cmc + 1));
-    let cmv = storage_get(CM_PAYMENT_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(CM_PAYMENT_VOLUME_KEY, &u64_to_bytes(cmv.saturating_add(escrowed)));
+    let cmv = storage_get(CM_PAYMENT_VOLUME_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(
+        CM_PAYMENT_VOLUME_KEY,
+        &u64_to_bytes(cmv.saturating_add(escrowed)),
+    );
 
     log_info("Payment released to provider");
     reentrancy_exit();
@@ -1113,9 +1140,13 @@ pub extern "C" fn resolve_dispute(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 99; }
+    if paused.len() > 0 && paused[0] == 1 {
+        return 99;
+    }
 
-    if !reentrancy_enter() { return 20; }
+    if !reentrancy_enter() {
+        return 20;
+    }
 
     let mut arb_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(arbitrator_ptr, arb_arr.as_mut_ptr(), 32) };
@@ -1162,9 +1193,7 @@ pub extern "C" fn resolve_dispute(
 
     // Calculate split
     let ek = escrow_key(job_id);
-    let escrowed = storage_get(&ek)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let escrowed = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
 
     let _to_requester = (escrowed as u128 * requester_pct as u128 / 100) as u64;
     let _to_provider = escrowed.saturating_sub(_to_requester);
@@ -1182,7 +1211,9 @@ pub extern "C" fn resolve_dispute(
                 contract_addr,
                 Address(requester_arr),
                 _to_requester,
-            ).is_err() {
+            )
+            .is_err()
+            {
                 log_info("resolve_dispute: transfer to requester failed");
                 reentrancy_exit();
                 return 6;
@@ -1194,7 +1225,9 @@ pub extern "C" fn resolve_dispute(
                 contract_addr,
                 Address(provider_arr),
                 _to_provider,
-            ).is_err() {
+            )
+            .is_err()
+            {
                 log_info("resolve_dispute: transfer to provider failed");
                 reentrancy_exit();
                 return 7;
@@ -1438,6 +1471,38 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
     0
 }
 
+/// Pause the compute market. Only callable by admin.
+/// While paused, submit_job, claim_job, complete_job, raise_dispute,
+/// and resolve_dispute all reject with error code 99.
+#[no_mangle]
+pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !is_admin(&caller) {
+        return 2;
+    }
+    storage_set(b"cm_paused", &[1]);
+    log_info("Compute market paused");
+    0
+}
+
+/// Unpause the compute market. Only callable by admin.
+#[no_mangle]
+pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 98,
+    };
+    if !is_admin(&caller) {
+        return 2;
+    }
+    storage_set(b"cm_paused", &[]);
+    log_info("Compute market unpaused");
+    0
+}
+
 /// Check if caller meets the MoltyID reputation threshold.
 /// Returns true if no gate is set or caller meets threshold.
 fn check_identity_gate(caller: &[u8]) -> bool {
@@ -1482,15 +1547,17 @@ pub extern "C" fn create_job(
     max_price: u64,
     code_hash_ptr: *const u8,
 ) -> u32 {
-    submit_job(requester_ptr, compute_units_needed, max_price, code_hash_ptr)
+    submit_job(
+        requester_ptr,
+        compute_units_needed,
+        max_price,
+        code_hash_ptr,
+    )
 }
 
 /// Alias: tests call `accept_job` but contract uses `claim_job`
 #[no_mangle]
-pub extern "C" fn accept_job(
-    provider_ptr: *const u8,
-    job_id: u64,
-) -> u32 {
+pub extern "C" fn accept_job(provider_ptr: *const u8, job_id: u64) -> u32 {
     claim_job(provider_ptr, job_id)
 }
 
@@ -1550,8 +1617,12 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     };
     // AUDIT-FIX: verify transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller { return 200; }
-    if !is_admin(&caller) { return 1; }
+    if real_caller.0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
     0
@@ -1566,8 +1637,12 @@ pub extern "C" fn cm_pause(caller_ptr: *const u8) -> u32 {
     };
     // AUDIT-FIX: verify transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller { return 200; }
-    if !is_admin(&caller) { return 1; }
+    if real_caller.0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
     storage_set(b"cm_paused", &[1u8]);
     log_info("Compute market paused");
     0
@@ -1582,8 +1657,12 @@ pub extern "C" fn cm_unpause(caller_ptr: *const u8) -> u32 {
     };
     // AUDIT-FIX: verify transaction signer
     let real_caller = get_caller();
-    if real_caller.0 != caller { return 200; }
-    if !is_admin(&caller) { return 1; }
+    if real_caller.0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        return 1;
+    }
     storage_set(b"cm_paused", &[0u8]);
     log_info("Compute market unpaused");
     0
@@ -1594,16 +1673,24 @@ pub extern "C" fn cm_unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn get_platform_stats() -> u32 {
     let mut buf = Vec::with_capacity(32);
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(b"job_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(b"job_count")
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CM_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CM_COMPLETED_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CM_PAYMENT_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CM_PAYMENT_VOLUME_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CM_DISPUTE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CM_DISPUTE_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     moltchain_sdk::set_return_data(&buf);
     0
@@ -1778,7 +1865,10 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
 
         let requester = [2u8; 32];
@@ -1794,7 +1884,10 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
 
         let provider_addr = [2u8; 32];
@@ -1825,11 +1918,17 @@ mod tests {
         let other = [9u8; 32];
         test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
-        assert_eq!(set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()), 2);
+        assert_eq!(
+            set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()),
+            2
+        );
 
         test_mock::set_caller(admin);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
-        assert_eq!(set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()),
+            0
+        );
     }
 
     // ========================================================================
