@@ -140,6 +140,7 @@ DEPLOYMENT_STATUS.md
 VPS_CREDENTIALS.md
 
 # ── Frontends / proprietary UI (local only) ────────────────
+# Note: the open-source faucet backend lives in faucet-service/.
 developers/
 dex/
 faucet/

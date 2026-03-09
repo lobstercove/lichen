@@ -42,13 +42,13 @@ moltchain/
 ├── p2p/         # QUIC-based peer mesh, NAT traversal, gossip
 ├── cli/         # `molt` command-line tool
 ├── custody/     # Threshold-signing custody service
-├── faucet/      # Testnet token faucet (HTTP + WebSocket)
+├── faucet-service/ # Open-source testnet token faucet service
 ├── contracts/   # On-chain WASM smart contracts
 ├── sdk/         # JavaScript, Python & Rust client SDKs
-├── wallet/      # Browser wallet app
-├── explorer/    # Block explorer
-├── dex/         # ClawSwap decentralized exchange
-├── developers/  # Developer portal & documentation hub
+├── wallet/      # Browser wallet app (local-only in public repo)
+├── explorer/    # Block explorer (local-only in public repo)
+├── dex/         # ClawSwap decentralized exchange (local-only in public repo)
+├── developers/  # Developer portal & documentation hub (local-only in public repo)
 ├── deploy/      # Systemd services, Caddy configs
 ├── infra/       # Docker Compose, Prometheus, Grafana
 ├── scripts/     # Operational scripts (genesis, health-check, deploy)
