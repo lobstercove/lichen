@@ -121,13 +121,13 @@ for contract in "${CONTRACTS[@]}"; do
     
     if [ ! -d "$CONTRACT_DIR" ]; then
         echo -e "  ${YELLOW}⚠  ${contract}: directory not found, skipping${NC}"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         continue
     fi
     
     if [ ! -f "$CONTRACT_DIR/Cargo.toml" ]; then
         echo -e "  ${YELLOW}⚠  ${contract}: no Cargo.toml, skipping${NC}"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         continue
     fi
 
@@ -145,7 +145,7 @@ for contract in "${CONTRACTS[@]}"; do
             cp "$WASM_SOURCE" "$WASM_DEST"
             SIZE=$(wc -c < "$WASM_DEST" | tr -d ' ')
             echo -e "  ${GREEN}✅ ${contract}.wasm — ${SIZE} bytes${NC}"
-            ((BUILT++))
+            ((BUILT++)) || true
         else
             # Try with the directory name directly
             ALT_SOURCE="${CONTRACT_DIR}/target/wasm32-unknown-unknown/release/${contract}.wasm"
@@ -153,17 +153,17 @@ for contract in "${CONTRACTS[@]}"; do
                 cp "$ALT_SOURCE" "$WASM_DEST"
                 SIZE=$(wc -c < "$WASM_DEST" | tr -d ' ')
                 echo -e "  ${GREEN}✅ ${contract}.wasm — ${SIZE} bytes${NC}"
-                ((BUILT++))
+                ((BUILT++)) || true
             else
                 echo -e "  ${RED}❌ ${contract}: build succeeded but .wasm not found${NC}"
                 echo "     Expected: ${WASM_SOURCE}"
-                ((FAILED++))
+                ((FAILED++)) || true
                 FAILED_LIST+=("$contract")
             fi
         fi
     else
         echo -e "  ${RED}❌ ${contract}: compilation failed${NC}"
-        ((FAILED++))
+        ((FAILED++)) || true
         FAILED_LIST+=("$contract")
     fi
 done
@@ -183,10 +183,10 @@ if $RUN_TESTS; then
         echo -e "\n  Testing ${contract}..."
         if (cd "$CONTRACT_DIR" && cargo test 2>&1); then
             echo -e "  ${GREEN}✅ ${contract} tests passed${NC}"
-            ((TEST_PASSED++))
+            ((TEST_PASSED++)) || true
         else
             echo -e "  ${RED}❌ ${contract} tests failed${NC}"
-            ((TEST_FAILED++))
+            ((TEST_FAILED++)) || true
         fi
     done
     
