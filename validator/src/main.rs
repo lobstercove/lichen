@@ -4022,6 +4022,34 @@ fn spawn_log_cleanup_task(log_dir: PathBuf, max_age_days: u64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  CLI ARGUMENT HELPERS — support both `--flag value` and `--flag=value`
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Find the value for a CLI flag, supporting both `--flag value` and `--flag=value`.
+/// For flags with aliases, pass all names (e.g. `&["--db-path", "--db", "--data-dir"]`).
+fn get_flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+    for (i, arg) in args.iter().enumerate() {
+        for name in names {
+            if arg == *name {
+                // --flag value
+                return args.get(i + 1).map(|s| s.as_str());
+            }
+            if let Some(val) = arg.strip_prefix(&format!("{}=", name)) {
+                // --flag=value
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// Check if a boolean flag is present, supporting `--flag` and `--flag=true`.
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter()
+        .any(|a| a == name || a.starts_with(&format!("{}=", name)))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SUPERVISOR — wraps the validator in a restart loop.
 //  When the internal watchdog detects a stall it exits with EXIT_CODE_RESTART;
 //  the supervisor catches that and relaunches the process automatically.
@@ -4033,20 +4061,17 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     // If we're the child (worker) process, go straight to the async validator.
-    if args.iter().any(|a| a == "--supervised") {
+    if has_flag(&args, "--supervised") {
         return run_validator_sync();
     }
 
     // If the user opted out of the built-in supervisor, also run directly.
-    if args.iter().any(|a| a == "--no-watchdog") {
+    if has_flag(&args, "--no-watchdog") {
         return run_validator_sync();
     }
 
     // Parse supervisor-specific flags
-    let max_restarts = args
-        .iter()
-        .position(|a| a == "--max-restarts")
-        .and_then(|i| args.get(i + 1))
+    let max_restarts = get_flag_value(&args, &["--max-restarts"])
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(DEFAULT_MAX_RESTARTS);
 
@@ -4066,10 +4091,13 @@ fn main() {
     let child_args: Vec<String> = args[1..]
         .iter()
         .filter(|a| {
-            !matches!(
-                a.as_str(),
-                "--no-watchdog" | "--max-restarts" | "--supervised"
-            )
+            let s = a.as_str();
+            !(s == "--no-watchdog"
+                || s == "--supervised"
+                || s == "--max-restarts"
+                || s.starts_with("--max-restarts=")
+                || s.starts_with("--no-watchdog=")
+                || s.starts_with("--supervised="))
         })
         .cloned()
         .collect();
@@ -4253,16 +4281,10 @@ async fn run_validator() {
     // ── Logging ──
     // Parse data-dir early so we can place log files inside it.
     let pre_args: Vec<String> = env::args().collect();
-    let pre_data_dir = pre_args
-        .iter()
-        .position(|arg| arg == "--db-path" || arg == "--db" || arg == "--data-dir")
-        .and_then(|pos| pre_args.get(pos + 1))
+    let pre_data_dir = get_flag_value(&pre_args, &["--db-path", "--db", "--data-dir"])
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
-            let port = pre_args
-                .iter()
-                .position(|arg| arg == "--p2p-port")
-                .and_then(|pos| pre_args.get(pos + 1))
+            let port = get_flag_value(&pre_args, &["--p2p-port"])
                 .and_then(|s| s.parse::<u16>().ok())
                 .unwrap_or(7001);
             format!("./data/state-{}", port)
@@ -4294,32 +4316,18 @@ async fn run_validator() {
     let args: Vec<String> = env::args().collect();
 
     // Parse --genesis flag
-    let genesis_path = args
-        .iter()
-        .position(|arg| arg == "--genesis")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.to_string());
+    let genesis_path = get_flag_value(&args, &["--genesis"]).map(|s| s.to_string());
 
     // Parse --network flag (testnet | mainnet)
-    let network_arg = args
-        .iter()
-        .position(|arg| arg == "--network")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.to_lowercase());
+    let network_arg = get_flag_value(&args, &["--network"]).map(|s| s.to_lowercase());
 
     // Parse --p2p-port flag properly
-    let p2p_port = args
-        .iter()
-        .position(|arg| arg == "--p2p-port")
-        .and_then(|pos| args.get(pos + 1))
+    let p2p_port = get_flag_value(&args, &["--p2p-port"])
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(7001);
 
     // Parse --db-path / --db / --data-dir flag or use default based on port
-    let data_dir = args
-        .iter()
-        .position(|arg| arg == "--db-path" || arg == "--db" || arg == "--data-dir")
-        .and_then(|pos| args.get(pos + 1))
+    let data_dir = get_flag_value(&args, &["--db-path", "--db", "--data-dir"])
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("./data/state-{}", p2p_port));
     // Canonicalize to absolute path to prevent CWD-dependent state location
@@ -4359,11 +4367,8 @@ async fn run_validator() {
     }
 
     // Parse --cache-size-mb flag for RocksDB shared block cache
-    let cache_size_mb: Option<usize> = args
-        .iter()
-        .position(|arg| arg == "--cache-size-mb")
-        .and_then(|pos| args.get(pos + 1))
-        .and_then(|s| s.parse().ok());
+    let cache_size_mb: Option<usize> =
+        get_flag_value(&args, &["--cache-size-mb"]).and_then(|s| s.parse().ok());
 
     // Open state database
     let mut state = match StateStore::open_with_cache_mb(&data_dir, cache_size_mb) {
@@ -4375,11 +4380,8 @@ async fn run_validator() {
     };
 
     // ── P2-3: Open cold/archival storage if --cold-store is given ──
-    let cold_store_path: Option<String> = args
-        .iter()
-        .position(|arg| arg == "--cold-store")
-        .and_then(|pos| args.get(pos + 1))
-        .cloned();
+    let cold_store_path: Option<String> =
+        get_flag_value(&args, &["--cold-store"]).map(|s| s.to_string());
 
     if let Some(ref cold_path) = cold_store_path {
         if let Err(e) = state.open_cold_store(cold_path) {
@@ -4445,94 +4447,100 @@ async fn run_validator() {
     //   positional peers (legacy)
     let mut seed_peer_strings: Vec<String> = Vec::new();
     let mut explicit_seed_peer_strings: Vec<String> = Vec::new();
+
+    // Known flags that take a value — used to skip their arguments in the
+    // positional-peer fallback below.
+    const VALUE_FLAGS: &[&str] = &[
+        "--bootstrap",
+        "--bootstrap-peers",
+        "--rpc-port",
+        "--ws-port",
+        "--p2p-port",
+        "--db-path",
+        "--db",
+        "--data-dir",
+        "--genesis",
+        "--keypair",
+        "--import-key",
+        "--network",
+        "--admin-token",
+        "--watchdog-timeout",
+        "--max-restarts",
+        "--listen-addr",
+        "--auto-update",
+        "--update-check-interval",
+        "--update-channel",
+        "--cache-size-mb",
+        "--cold-store",
+    ];
+    const BOOL_FLAGS: &[&str] = &[
+        "--supervised",
+        "--no-watchdog",
+        "--no-auto-restart",
+        "--dev-mode",
+    ];
+
+    // Extract --bootstrap / --bootstrap-peers via get_flag_value helpers
+    if let Some(val) = get_flag_value(&args, &["--bootstrap"]) {
+        seed_peer_strings.push(val.to_string());
+        explicit_seed_peer_strings.push(val.to_string());
+    }
+    if let Some(val) = get_flag_value(&args, &["--bootstrap-peers"]) {
+        for part in val.split(',') {
+            seed_peer_strings.push(part.to_string());
+            explicit_seed_peer_strings.push(part.to_string());
+        }
+    }
+
+    // Collect positional peer arguments (legacy)
     let mut skip_next = false;
     for (i, arg) in args.iter().enumerate() {
         if skip_next {
             skip_next = false;
             continue;
         }
-
-        match arg.as_str() {
-            "--bootstrap" => {
-                if let Some(value) = args.get(i + 1) {
-                    seed_peer_strings.push(value.to_string());
-                    explicit_seed_peer_strings.push(value.to_string());
-                }
-                skip_next = true;
-            }
-            "--bootstrap-peers" => {
-                if let Some(value) = args.get(i + 1) {
-                    for part in value.split(',') {
-                        seed_peer_strings.push(part.to_string());
-                        explicit_seed_peer_strings.push(part.to_string());
-                    }
-                }
-                skip_next = true;
-            }
-            "--rpc-port"
-            | "--ws-port"
-            | "--p2p-port"
-            | "--db-path"
-            | "--genesis"
-            | "--keypair"
-            | "--import-key"
-            | "--network"
-            | "--admin-token"
-            | "--watchdog-timeout"
-            | "--max-restarts"
-            | "--listen-addr"
-            | "--auto-update"
-            | "--update-check-interval"
-            | "--update-channel"
-            | "--cache-size-mb" => {
-                skip_next = true;
-            }
-            "--supervised" | "--no-watchdog" | "--no-auto-restart" | "--dev-mode" => {
-                // Supervisor flags / boolean flags — skip without consuming next arg
-                continue;
-            }
-            _ => {
-                if i == 0 {
-                    continue; // binary name
-                }
-                seed_peer_strings.push(arg.to_string());
-                explicit_seed_peer_strings.push(arg.to_string());
-            }
+        if i == 0 {
+            continue; // binary name
         }
+        // Check if this arg is a known flag (either --flag or --flag=value)
+        let is_flag = VALUE_FLAGS
+            .iter()
+            .any(|f| arg == *f || arg.starts_with(&format!("{}=", f)))
+            || BOOL_FLAGS
+                .iter()
+                .any(|f| arg == *f || arg.starts_with(&format!("{}=", f)));
+        if is_flag {
+            // If it's a space-separated value flag (not --flag=...), skip next arg
+            if VALUE_FLAGS.iter().any(|f| arg == *f) {
+                skip_next = true;
+            }
+            continue;
+        }
+        seed_peer_strings.push(arg.to_string());
+        explicit_seed_peer_strings.push(arg.to_string());
     }
 
-    // Parse --listen-addr flag for P2P bind address (default: 127.0.0.1 = local only)
-    // For VPS / production use: --listen-addr 0.0.0.0
-    let listen_host = args
-        .iter()
-        .position(|arg| arg == "--listen-addr")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    // Parse --listen-addr flag for P2P bind address.
+    // Default 0.0.0.0 — binding to loopback prevents outbound QUIC connections
+    // from reaching external peers (sendmsg EADDRNOTAVAIL).
+    let listen_host = get_flag_value(&args, &["--listen-addr"])
+        .unwrap_or("0.0.0.0")
+        .to_string();
 
     // ── Auto-Update Configuration ───────────────────────────────────────
-    let auto_update_mode = args
-        .iter()
-        .position(|arg| arg == "--auto-update")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| updater::UpdateMode::parse_mode(s))
+    let auto_update_mode = get_flag_value(&args, &["--auto-update"])
+        .map(updater::UpdateMode::parse_mode)
         .unwrap_or(updater::UpdateMode::Off);
 
-    let update_check_interval = args
-        .iter()
-        .position(|arg| arg == "--update-check-interval")
-        .and_then(|pos| args.get(pos + 1))
+    let update_check_interval = get_flag_value(&args, &["--update-check-interval"])
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(300);
 
-    let update_channel = args
-        .iter()
-        .position(|arg| arg == "--update-channel")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "stable".to_string());
+    let update_channel = get_flag_value(&args, &["--update-channel"])
+        .unwrap_or("stable")
+        .to_string();
 
-    let no_auto_restart = args.iter().any(|a| a == "--no-auto-restart");
+    let no_auto_restart = has_flag(&args, "--no-auto-restart");
 
     let update_config = updater::UpdateConfig {
         mode: auto_update_mode,
@@ -5118,7 +5126,7 @@ async fn run_validator() {
     // ========================================================================
 
     // Parse --dev-mode flag (disables machine fingerprint, blocks mainnet)
-    let dev_mode = args.iter().any(|arg| arg == "--dev-mode");
+    let dev_mode = has_flag(&args, "--dev-mode");
     if dev_mode {
         info!("🔧 Developer mode enabled — machine fingerprint disabled");
         if genesis_config.chain_id.contains("mainnet") {
@@ -5129,41 +5137,52 @@ async fn run_validator() {
 
     // Parse --import-key: copy an existing keypair file into the validator data directory,
     // then use it as the validator identity. This is for machine migration.
-    if let Some(import_pos) = args.iter().position(|arg| arg == "--import-key") {
-        if let Some(import_path) = args.get(import_pos + 1) {
-            let source = Path::new(import_path);
-            if !source.exists() {
-                error!("❌ --import-key file not found: {}", import_path);
-                std::process::exit(1);
-            }
-            let dest = keypair_loader::default_validator_keypair_path(p2p_port);
-            if dest.exists() {
-                // Back up existing keypair before overwriting
-                let backup = dest.with_extension("json.bak");
-                info!("📋 Backing up existing keypair to {:?}", backup);
-                if let Err(e) = fs::copy(&dest, &backup) {
-                    warn!("⚠️  Failed to backup existing keypair: {}", e);
-                }
-            }
-            info!("🔑 Importing keypair from {:?} → {:?}", source, dest);
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            if let Err(e) = fs::copy(source, &dest) {
-                error!("❌ Failed to copy keypair file for --import-key: {}", e);
-                std::process::exit(1);
-            }
-            // Set restrictive permissions
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).ok();
-            }
-            info!("✅ Keypair imported successfully — this validator will resume the imported identity");
+    if let Some(import_pos) = args
+        .iter()
+        .position(|arg| arg == "--import-key" || arg.starts_with("--import-key="))
+    {
+        let import_path = if args[import_pos].starts_with("--import-key=") {
+            args[import_pos]
+                .strip_prefix("--import-key=")
+                .unwrap()
+                .to_string()
+        } else if let Some(p) = args.get(import_pos + 1) {
+            p.to_string()
         } else {
             error!("❌ --import-key requires a file path argument");
             std::process::exit(1);
+        };
+        let source = Path::new(&import_path);
+        if !source.exists() {
+            error!("❌ --import-key file not found: {}", import_path);
+            std::process::exit(1);
         }
+        let dest = keypair_loader::default_validator_keypair_path(p2p_port);
+        if dest.exists() {
+            // Back up existing keypair before overwriting
+            let backup = dest.with_extension("json.bak");
+            info!("📋 Backing up existing keypair to {:?}", backup);
+            if let Err(e) = fs::copy(&dest, &backup) {
+                warn!("⚠️  Failed to backup existing keypair: {}", e);
+            }
+        }
+        info!("🔑 Importing keypair from {:?} → {:?}", source, dest);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::copy(source, &dest) {
+            error!("❌ Failed to copy keypair file for --import-key: {}", e);
+            std::process::exit(1);
+        }
+        // Set restrictive permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).ok();
+        }
+        info!(
+            "✅ Keypair imported successfully — this validator will resume the imported identity"
+        );
     }
 
     // Load validator keypair from file (production-ready)
@@ -5173,11 +5192,7 @@ async fn run_validator() {
     // 3. ~/.moltchain/validators/validator-{port}.json
     // 4. Generate new and save
 
-    let keypair_path = args
-        .iter()
-        .position(|arg| arg == "--keypair")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.as_str());
+    let keypair_path = get_flag_value(&args, &["--keypair"]);
 
     let validator_keypair = match keypair_loader::load_or_generate_keypair(
         keypair_path,
@@ -8548,10 +8563,7 @@ async fn run_validator() {
     //   Mainnet V1 (p2p 8001): rpc=9899, ws=9900
     //   Mainnet V2 (p2p 8002): rpc=9901, ws=9902
     // Formula: offset = p2p_port - base_p2p, rpc = base_rpc + 2*offset
-    let rpc_port = args
-        .iter()
-        .position(|arg| arg == "--rpc-port")
-        .and_then(|pos| args.get(pos + 1))
+    let rpc_port = get_flag_value(&args, &["--rpc-port"])
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
             let base_p2p = if p2p_port >= 8000 { 8001u16 } else { 7001u16 };
@@ -8560,10 +8572,7 @@ async fn run_validator() {
             base_rpc.saturating_add(offset.saturating_mul(2))
         });
 
-    let ws_port = args
-        .iter()
-        .position(|arg| arg == "--ws-port")
-        .and_then(|pos| args.get(pos + 1))
+    let ws_port = get_flag_value(&args, &["--ws-port"])
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
             let base_p2p = if p2p_port >= 8000 { 8001u16 } else { 7001u16 };
@@ -8573,10 +8582,7 @@ async fn run_validator() {
         });
 
     // Parse --admin-token from CLI or MOLTCHAIN_ADMIN_TOKEN env var
-    let admin_token: Option<String> = args
-        .iter()
-        .position(|arg| arg == "--admin-token")
-        .and_then(|pos| args.get(pos + 1))
+    let admin_token: Option<String> = get_flag_value(&args, &["--admin-token"])
         .map(|s| s.to_string())
         .or_else(|| env::var("MOLTCHAIN_ADMIN_TOKEN").ok())
         .filter(|t| !t.is_empty());
@@ -9543,10 +9549,7 @@ async fn run_validator() {
     // Monitors last_block_time.  If no block is produced or received for
     // watchdog_timeout seconds, the validator is likely deadlocked.
     // Exit with EXIT_CODE_RESTART so the supervisor can relaunch us.
-    let watchdog_timeout_secs = args
-        .iter()
-        .position(|a| a == "--watchdog-timeout")
-        .and_then(|i| args.get(i + 1))
+    let watchdog_timeout_secs = get_flag_value(&args, &["--watchdog-timeout"])
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_WATCHDOG_TIMEOUT_SECS);
 
