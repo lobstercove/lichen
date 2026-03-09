@@ -73,6 +73,12 @@ fn parse_cli_arg(flag: &str, default: &str) -> String {
     default.to_string()
 }
 
+fn default_wallet_path() -> String {
+    std::env::var("HOME")
+        .map(|home| format!("{}/.moltchain/wallets/agent.json", home))
+        .unwrap_or_else(|_| ".moltchain/wallets/agent.json".to_string())
+}
+
 fn default_arg_for_type(t: &str, caller: &str) -> Value {
     let tl = t.to_ascii_lowercase();
     if tl.contains("vec<") || tl.ends_with("[]") {
@@ -169,10 +175,14 @@ fn build_contract_call_tx_b64(
 #[tokio::main]
 async fn main() -> Result<()> {
     let rpc_url = parse_cli_arg("--rpc-url", "http://localhost:8899");
-    let wallet_path = parse_cli_arg(
-        "--wallet",
-        "/Users/johnrobin/.moltchain/wallets/agent-phase2-1771420077.json",
-    );
+    let wallet_path = {
+        let wallet_arg = parse_cli_arg("--wallet", "");
+        if wallet_arg.is_empty() {
+            default_wallet_path()
+        } else {
+            wallet_arg
+        }
+    };
     let max_functions: usize = parse_cli_arg("--max-functions", "0")
         .parse()
         .unwrap_or(0);

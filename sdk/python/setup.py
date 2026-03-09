@@ -11,10 +11,10 @@ setup(
     description="Official Python SDK for MoltChain blockchain",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/moltchain/moltchain",
+    url="https://github.com/lobstercove/moltchain",
     project_urls={
-        "Bug Tracker": "https://github.com/moltchain/moltchain/issues",
-        "Documentation": "https://docs.moltchain.io",
+        "Bug Tracker": "https://github.com/lobstercove/moltchain/issues",
+        "Documentation": "https://developers.moltchain.network",
     },
     classifiers=[
         "Development Status :: 4 - Beta",

@@ -157,7 +157,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
 ## Resources
 
-- [Documentation](https://docs.moltchain.io)
+- [Documentation](https://developers.moltchain.network)
 - [Examples](./examples/)
 - [MoltChain CLI](../../cli/)
 - [Python SDK](../python/)

@@ -4,8 +4,9 @@ Transform all from_raw_parts in moltyid/src/lib.rs to owned-copy pattern.
 CORRECT approach: Phase 1 converts, then re-indexes before Phase 2.
 """
 import re
+from pathlib import Path
 
-filepath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/moltyid/src/lib.rs'
+filepath = Path(__file__).resolve().parent / 'src' / 'lib.rs'
 
 with open(filepath, 'r') as f:
     orig_lines = f.read().split('\n')

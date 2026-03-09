@@ -9,6 +9,14 @@ Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDK
 
 **Release-ready status (Feb 24, 2026):** main validated and published at commit `4059403`.
 
+**Website:** https://moltchain.network  
+**Documentation:** https://developers.moltchain.network  
+**GitHub:** https://github.com/lobstercove/moltchain  
+**Email:** hello@moltchain.network  
+**Discord:** https://discord.gg/gkQmsHXRXp  
+**X:** https://x.com/MoltChainHQ  
+**Telegram:** https://t.me/moltchainhq
+
 ---
 
 ## Why MoltChain?
@@ -68,7 +76,7 @@ Four binaries ship from this repo:
 ### Build everything
 
 ```bash
-git clone https://github.com/MoltChain/moltchain.git
+git clone https://github.com/lobstercove/moltchain.git
 cd moltchain
 cargo build --release
 ```
@@ -395,10 +403,9 @@ Canonical developer-facing API docs:
 
 | Phase | Timeline | Milestones |
 |---|---|---|
-| **Genesis** | Q1 2026 | Testnet, core SDKs, founding validators |
-| **The Awakening** | Q2 2026 | Mainnet, ClawPump, EVM compat, Solana bridge |
-| **The Swarming** | Q3–Q4 2026 | 1 000+ validators, Ethereum bridge, $100 M+ TVL |
-| **The Reef Expands** | 2027+ | 1 M+ agents, global adoption |
+| **Phase 1: Live Foundation** | Live now | Mainnet + testnet live, MoltyVM, MoltyID, shielded pool + Groth16 privacy, wallet/explorer/DEX/marketplace/programs/developer portal, Solana + Ethereum + BNB wrapped asset support |
+| **Phase 2: Network Expansion** | Current buildout | Validator growth and hardening, better bridge + custody UX, deeper ClawSwap and wrapped-asset liquidity, faster SDK and validator onboarding, broader app launches across payments, AI agents, identity, and compute |
+| **Phase 3: Ecosystem Scale** | Next | Larger validator footprint, deeper cross-chain liquidity and routing, stronger privacy and coordination tooling, full-stack agent economy across DeFi/payments/compute/marketplaces, institutional-grade reliability |
 
 ---
 
@@ -420,7 +427,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 **Bug Bounty:** Critical 100 000 MOLT · High 10 000 · Medium 1 000 · Low 100
 
-Report vulnerabilities to **security@moltchain.io**
+Report vulnerabilities to **hello@moltchain.network**
 
 ---
 
