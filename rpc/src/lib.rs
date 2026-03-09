@@ -212,7 +212,6 @@ fn sanitize_rpc_error_message(message: &str) -> String {
         let is_path = token.starts_with('/')
             || token.contains("/Users/")
             || token.contains("/home/")
-            || token.contains("/.openclaw/")
             || token.starts_with("file://");
         if is_path {
             redacted.push("<redacted-path>");

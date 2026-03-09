@@ -4,12 +4,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RPC_URL="http://localhost:8899"
 
-KEYPAIR_PATH=$(find /Users/johnrobin/.openclaw -path "*/genesis-keys/genesis-primary-cli.json" -type f 2>/dev/null | sort | tail -n 1)
+KEYPAIR_PATH="${GENESIS_KEYPAIR_PATH:-}"
 if [[ -z "${KEYPAIR_PATH}" ]]; then
-  KEYPAIR_PATH=$(find /Users/johnrobin/.openclaw -path "*/genesis-keys/genesis-primary-*.json" -type f 2>/dev/null | sort | tail -n 1)
+  KEYPAIR_PATH=$(find "$REPO_ROOT" "$HOME" -path "*/genesis-keys/genesis-primary-cli.json" -type f 2>/dev/null | sort | tail -n 1)
+fi
+if [[ -z "${KEYPAIR_PATH}" ]]; then
+  KEYPAIR_PATH=$(find "$REPO_ROOT" "$HOME" -path "*/genesis-keys/genesis-primary-*.json" -type f 2>/dev/null | sort | tail -n 1)
 fi
 if [[ -z "${KEYPAIR_PATH}" ]]; then
   echo "ERROR: Genesis keypair not found." >&2
+  echo "Set GENESIS_KEYPAIR_PATH to override auto-discovery." >&2
   exit 1
 fi
 

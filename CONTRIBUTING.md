@@ -19,7 +19,7 @@ will help you get started.
 ### Clone & Build
 
 ```bash
-git clone https://github.com/moltchain/moltchain.git
+git clone https://github.com/lobstercove/moltchain.git
 cd moltchain
 cargo build --workspace
 ```

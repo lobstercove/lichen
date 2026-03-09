@@ -10,9 +10,9 @@
 # no deploy_dex.py or first-boot-deploy.sh needed.
 #
 # What this script does:
-#   1. Copies genesis primary keypair → /etc/moltchain/custody-treasury.json
-#      (so custody signs mint() calls with the contract admin key)
-#   2. Copies faucet keypair → /var/lib/moltchain/faucet-keypair.json
+#   1. Copies genesis primary keypair → /etc/moltchain/custody-treasury-<network>.json
+#      (so custody signs mint() calls with the matching contract admin key)
+#   2. Copies faucet keypair → /var/lib/moltchain/faucet-keypair-<network>.json
 #   3. Optionally restarts custody + faucet systemd services
 #
 # Usage:
@@ -53,6 +53,8 @@ if [ -z "$NETWORK" ]; then
 fi
 
 GENESIS_KEYS_DIR="$VPS_STATE/state-$NETWORK/genesis-keys"
+CUSTODY_KEY_TARGET="$VPS_CONFIG/custody-treasury-$NETWORK.json"
+FAUCET_KEY_TARGET="$VPS_STATE/faucet-keypair-$NETWORK.json"
 if ! sudo test -d "$GENESIS_KEYS_DIR"; then
 	echo -e "${RED}Genesis keys not yet created: $GENESIS_KEYS_DIR${NC}"
 	echo "  The validator must complete genesis first. Wait 30s after starting it."
@@ -67,13 +69,13 @@ echo ""
 # ── 1. Genesis primary keypair → custody treasury ──
 GENESIS_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "genesis-primary-*.json" -type f 2>/dev/null | head -1)
 if [ -n "$GENESIS_KEY" ]; then
-	sudo cp "$GENESIS_KEY" "$VPS_CONFIG/custody-treasury.json"
-	sudo chmod 600 "$VPS_CONFIG/custody-treasury.json"
-	sudo chown moltchain:moltchain "$VPS_CONFIG/custody-treasury.json"
+	sudo cp "$GENESIS_KEY" "$CUSTODY_KEY_TARGET"
+	sudo chmod 600 "$CUSTODY_KEY_TARGET"
+	sudo chown moltchain:moltchain "$CUSTODY_KEY_TARGET"
 
 	PUBKEY=$(sudo python3 -c "import json; d=json.load(open('$GENESIS_KEY')); print(d.get('pubkey','?'))" 2>/dev/null || echo '?')
 	echo -e "  ${GREEN}✓${NC} Custody treasury = genesis admin: $PUBKEY"
-	echo -e "    $GENESIS_KEY → $VPS_CONFIG/custody-treasury.json"
+	echo -e "    $GENESIS_KEY → $CUSTODY_KEY_TARGET"
 else
 	echo -e "  ${RED}✗${NC} Genesis primary keypair not found in $GENESIS_KEYS_DIR"
 fi
@@ -81,13 +83,13 @@ fi
 # ── 2. Faucet keypair ──
 FAUCET_KEY=$(sudo find "$GENESIS_KEYS_DIR" -name "faucet-*.json" -type f 2>/dev/null | head -1)
 if [ -n "$FAUCET_KEY" ]; then
-	sudo cp "$FAUCET_KEY" "$VPS_STATE/faucet-keypair.json"
-	sudo chmod 600 "$VPS_STATE/faucet-keypair.json"
-	sudo chown moltchain:moltchain "$VPS_STATE/faucet-keypair.json"
+	sudo cp "$FAUCET_KEY" "$FAUCET_KEY_TARGET"
+	sudo chmod 600 "$FAUCET_KEY_TARGET"
+	sudo chown moltchain:moltchain "$FAUCET_KEY_TARGET"
 
 	FAUCET_PK=$(sudo python3 -c "import json; d=json.load(open('$FAUCET_KEY')); print(d.get('pubkey','?'))" 2>/dev/null || echo '?')
 	echo -e "  ${GREEN}✓${NC} Faucet keypair: $FAUCET_PK"
-	echo -e "    $FAUCET_KEY → $VPS_STATE/faucet-keypair.json"
+	echo -e "    $FAUCET_KEY → $FAUCET_KEY_TARGET"
 else
 	echo -e "  ${YELLOW}⚠${NC} Faucet keypair not found (faucet may not work)"
 fi

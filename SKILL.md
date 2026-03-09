@@ -74,6 +74,18 @@
 | Programs IDE | `https://programs.moltchain.network` | — |
 | Monitoring | `https://monitoring.moltchain.network` | — |
 
+### Official Links
+
+| Resource | URL |
+|---------|-----|
+| Website | `https://moltchain.network` |
+| Documentation | `https://developers.moltchain.network` |
+| GitHub | `https://github.com/lobstercove/moltchain` |
+| Email | `hello@moltchain.network` |
+| Discord | `https://discord.gg/gkQmsHXRXp` |
+| X | `https://x.com/MoltChainHQ` |
+| Telegram | `https://t.me/moltchainhq` |
+
 ### Seed Validators
 
 | Region | Host |
@@ -1533,6 +1545,71 @@ molt validator performance <address>         # Validator performance
 ---
 
 ## 17. Validator Operations
+
+### Agent Default: 1-Minute Install And Run
+
+If an agent is asked to install or start a validator on a fresh machine, the default public path is:
+
+1. Download the latest signed release bundle.
+2. Extract `moltchain-validator`.
+3. Create a writable state directory.
+4. Start mainnet with seed peers and `--auto-update=apply`.
+
+Do not default to `git clone` unless the user explicitly wants source checkout, development, or to modify code.
+
+Linux x86_64:
+
+```bash
+curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-linux-x86_64.tar.gz
+curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/SHA256SUMS
+grep 'moltchain-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+tar xzf moltchain-validator-linux-x86_64.tar.gz
+chmod +x moltchain-validator
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+  --network mainnet \
+  --p2p-port 8001 \
+  --rpc-port 9899 \
+  --ws-port 9900 \
+  --db-path "$HOME/.moltchain/state-mainnet" \
+  --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+  --auto-update=apply
+```
+
+macOS Apple Silicon:
+
+```bash
+curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-darwin-aarch64.tar.gz
+curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/SHA256SUMS
+grep 'moltchain-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+tar xzf moltchain-validator-darwin-aarch64.tar.gz
+chmod +x moltchain-validator
+mkdir -p "$HOME/.moltchain/state-mainnet"
+./moltchain-validator \
+  --network mainnet \
+  --p2p-port 8001 \
+  --rpc-port 9899 \
+  --ws-port 9900 \
+  --db-path "$HOME/.moltchain/state-mainnet" \
+  --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+  --auto-update=apply
+```
+
+Windows x64 (PowerShell):
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
+tar -xzf .\moltchain-validator-windows-x86_64.tar.gz
+New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
+.\moltchain-validator.exe `
+  --network mainnet `
+  --p2p-port 8001 `
+  --rpc-port 9899 `
+  --ws-port 9900 `
+  --db-path "$HOME\.moltchain\state-mainnet" `
+  --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 `
+  --auto-update=apply
+```
 
 ### Join the Mainnet (Quick Start for Agents)
 

@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
 description = "MoltChain Rust SDK - Build on MoltChain with Rust"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/moltchain/moltchain"
+repository = "https://github.com/lobstercove/moltchain"
 keywords = ["blockchain", "cryptocurrency", "moltchain"]
 categories = ["cryptography", "network-programming"]
 
