@@ -1565,7 +1565,7 @@ Linux x86_64:
 curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-linux-x86_64.tar.gz
 curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/SHA256SUMS
 grep 'moltchain-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
-tar xzf moltchain-validator-linux-x86_64.tar.gz
+tar xzf moltchain-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x moltchain-validator
 mkdir -p "$HOME/.moltchain/state-mainnet"
 ./moltchain-validator \
@@ -1584,7 +1584,7 @@ macOS Apple Silicon:
 curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-darwin-aarch64.tar.gz
 curl -LO https://github.com/lobstercove/moltchain/releases/latest/download/SHA256SUMS
 grep 'moltchain-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
-tar xzf moltchain-validator-darwin-aarch64.tar.gz
+tar xzf moltchain-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x moltchain-validator
 mkdir -p "$HOME/.moltchain/state-mainnet"
 ./moltchain-validator \
@@ -1601,7 +1601,7 @@ Windows x64 (PowerShell):
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/latest/download/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
-tar -xzf .\moltchain-validator-windows-x86_64.tar.gz
+tar -xzf .\moltchain-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
 .\moltchain-validator.exe `
   --network mainnet `
@@ -1659,7 +1659,7 @@ VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases
 curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-linux-x86_64.tar.gz"
 curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
 grep 'moltchain-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
-tar xzf moltchain-validator-linux-x86_64.tar.gz
+tar xzf moltchain-validator-linux-x86_64.tar.gz --strip-components=1
 chmod +x moltchain-validator
 mkdir -p "$HOME/.moltchain/state-mainnet"
 ./moltchain-validator \
@@ -1677,7 +1677,9 @@ macOS Apple Silicon:
 ```bash
 VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
 curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-darwin-aarch64.tar.gz"
-tar xzf moltchain-validator-darwin-aarch64.tar.gz
+curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
+grep 'moltchain-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+tar xzf moltchain-validator-darwin-aarch64.tar.gz --strip-components=1
 chmod +x moltchain-validator
 mkdir -p "$HOME/.moltchain/state-mainnet"
 ./moltchain-validator \
@@ -1695,7 +1697,7 @@ Windows x64 (PowerShell):
 ```powershell
 $version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/moltchain/releases/latest).tag_name
 Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/download/$version/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
-tar -xzf .\moltchain-validator-windows-x86_64.tar.gz
+tar -xzf .\moltchain-validator-windows-x86_64.tar.gz --strip-components=1
 New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
 .\moltchain-validator.exe `
   --network mainnet `
