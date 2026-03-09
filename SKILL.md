@@ -25,7 +25,8 @@
 15. Wallet Operations
 16. CLI Reference
 17. Validator Operations
-18. Build & Test
+18. Contract Development
+19. Build & Test
 
 ---
 
@@ -1871,7 +1872,77 @@ curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 
 ---
 
-## 18. Build & Test
+## 18. Contract Development
+
+See `docs/guides/CONTRACT_DEVELOPMENT.md` for the complete guide.
+
+### Two SDKs (Different Packages)
+
+| SDK | Package | Purpose | Environment |
+|-----|---------|---------|-------------|
+| Contract SDK | `moltchain-contract-sdk` | Write on-chain WASM contracts | `#![no_std]`, `wasm32-unknown-unknown` |
+| Client SDK (Rust) | `moltchain-client-sdk` | Call RPC from Rust apps | `tokio`, `reqwest` |
+
+### `molt deploy` vs `molt token create`
+
+| Command | What it does | WASM? | Fee |
+|---------|-------------|-------|-----|
+| `molt deploy contract.wasm` | Deploy custom WASM contract | Yes | 25.001 MOLT |
+| `molt token create "Name" SYM` | Create native MT-20 token | No | 0.001 MOLT |
+
+Use `molt deploy` when you need custom logic. Use `molt token create` for a standard fungible token.
+
+### Contract Function Convention
+
+```rust
+#[no_mangle]
+pub extern "C" fn my_function(addr_ptr: *const u8, amount: u64) -> u32 {
+    // addr_ptr = 32-byte address pointer
+    // Returns: 1 = success, 0 = failure
+    1
+}
+```
+
+### Deploy Fee Refund
+
+If deployment fails (invalid WASM, duplicate address, etc.), the 25 MOLT deploy premium is refunded. Only the 0.001 MOLT base fee is kept. Failed transactions are stored on-chain and queryable via `getTransaction`.
+
+### Contract SDK Modules
+
+| Module | Key Functions |
+|--------|--------------|
+| `storage` | `storage_get(key)`, `storage_set(key, val)`, `storage::remove(key)` |
+| `contract` | `contract::args()`, `contract::set_return(data)` |
+| `event` | `event::emit(json_str)` |
+| `log` | `log::info(msg)` |
+| `token` | `Token::new(name, symbol, decimals, prefix)` — MT-20 |
+| `nft` | `NFT::new(name, symbol)` — MT-721 |
+| `crosscall` | `CrossCall::new(target, fn, args)`, `call_contract(call)` |
+| `dex` | `Pool::new(token_a, token_b)` — AMM |
+| `test_mock` | Thread-local mocks for native testing |
+
+### Quick Start
+
+```bash
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+
+# Build contract
+cargo build --target wasm32-unknown-unknown --release
+
+# Test locally
+cargo test
+
+# Deploy (need 25.001 MOLT)
+molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+
+# Call a function
+molt call <address> <function_name> [args]
+```
+
+---
+
+## 19. Build & Test
 
 ### Build
 

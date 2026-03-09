@@ -1,5 +1,5 @@
 [package]
-name = "moltchain-sdk"
+name = "moltchain-contract-sdk"
 version = "0.1.0"
 edition = "2021"
 authors = ["Trading Lobster <trading.lobster@moltchain.io>"]

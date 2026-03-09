@@ -1,5 +1,5 @@
 [package]
-name = "moltchain-sdk"
+name = "moltchain-client-sdk"
 version = "0.1.0"
 edition = "2021"
 authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
@@ -10,7 +10,7 @@ keywords = ["blockchain", "cryptocurrency", "moltchain"]
 categories = ["cryptography", "network-programming"]
 
 [lib]
-name = "moltchain_sdk"
+name = "moltchain_client_sdk"
 path = "src/lib.rs"
 
 [dependencies]
