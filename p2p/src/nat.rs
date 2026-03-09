@@ -18,20 +18,15 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// NAT status of a peer — determines connectivity strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NatStatus {
     /// Peer is directly reachable (public IP, port-forwarded, or cloud VM)
     Public,
     /// Peer is behind NAT but reachable via hole punching
     NatPunched,
     /// NAT status unknown — default for new peers
+    #[default]
     Unknown,
-}
-
-impl Default for NatStatus {
-    fn default() -> Self {
-        NatStatus::Unknown
-    }
 }
 
 /// Observed address information for NAT detection.
@@ -169,6 +164,12 @@ impl HolePunchTracker {
             .iter()
             .filter(|(_, t)| t.elapsed() < self.timeout)
             .count()
+    }
+}
+
+impl Default for HolePunchTracker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

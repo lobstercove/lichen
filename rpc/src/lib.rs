@@ -99,11 +99,11 @@ fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Err
         ))),
     }
 }
+use dashmap::DashMap;
 use moltchain_core::consensus::{
     decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
 };
 use serde::{Deserialize, Serialize};
-use dashmap::DashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -824,9 +824,12 @@ impl RateLimiter {
         {
             let mut last = self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
             if now.duration_since(*last).as_secs() >= 30 {
-                self.requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
-                self.tier_requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
-                self.rest_tier_requests.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                self.requests
+                    .retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                self.tier_requests
+                    .retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                self.rest_tier_requests
+                    .retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
                 *last = now;
             }
         }
@@ -873,7 +876,10 @@ impl RateLimiter {
     fn check_rest_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
         let limit = self.rest_tier_limits[tier as usize];
         let now = Instant::now();
-        let mut entry = self.rest_tier_requests.entry((ip, tier)).or_insert((0, now));
+        let mut entry = self
+            .rest_tier_requests
+            .entry((ip, tier))
+            .or_insert((0, now));
         if now.duration_since(entry.1).as_secs() >= 1 {
             entry.0 = 1;
             entry.1 = now;
@@ -12634,16 +12640,22 @@ async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Val
 /// getDexPairs — Returns trading pairs with last price for wallet price display.
 /// Reads dex_core pair storage and enriches with oracle prices.
 async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let pair_count = state.state.get_program_storage_u64("DEX", b"dex_pair_count");
+    let pair_count = state
+        .state
+        .get_program_storage_u64("DEX", b"dex_pair_count");
     let limit = pair_count.min(100);
     let mut pairs = Vec::new();
 
     // Build symbol map from known token contracts
     let known_tokens: &[(&str, &str)] = &[
-        ("MOLT", "MOLT"), ("MUSD", "mUSD"), ("WSOL", "wSOL"),
-        ("WETH", "wETH"), ("WBNB", "wBNB"),
+        ("MOLT", "MOLT"),
+        ("MUSD", "mUSD"),
+        ("WSOL", "wSOL"),
+        ("WETH", "wETH"),
+        ("WBNB", "wBNB"),
     ];
-    let mut symbol_for_addr: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut symbol_for_addr: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for &(sym, display) in known_tokens {
         if let Ok(Some(entry)) = state.state.get_symbol_registry(sym) {
             symbol_for_addr.insert(entry.program.to_string(), display.to_string());

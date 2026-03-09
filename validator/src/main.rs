@@ -5109,7 +5109,12 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.as_str());
 
-    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port, Some(&data_dir_path), network_arg.as_deref()) {
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(
+        keypair_path,
+        p2p_port,
+        Some(data_dir_path),
+        network_arg.as_deref(),
+    ) {
         Ok(keypair) => keypair,
         Err(err) => {
             error!("Failed to load or generate validator keypair: {}", err);

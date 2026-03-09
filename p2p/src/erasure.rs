@@ -38,7 +38,7 @@ pub fn encode_shards(slot: u64, data: &[u8]) -> Result<Vec<ErasureShard>, String
     let rs = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)
         .map_err(|e| format!("Reed-Solomon init failed: {}", e))?;
 
-    let shard_size = (data.len() + DATA_SHARDS - 1) / DATA_SHARDS;
+    let shard_size = data.len().div_ceil(DATA_SHARDS);
 
     let mut shards: Vec<Vec<u8>> = Vec::with_capacity(TOTAL_SHARDS);
     for i in 0..DATA_SHARDS {

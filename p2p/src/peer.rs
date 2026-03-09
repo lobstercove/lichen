@@ -322,7 +322,9 @@ impl PeerManager {
             seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
             max_peers,
             reserved_peers,
-            kademlia: Arc::new(Mutex::new(crate::kademlia::KademliaTable::new(local_fingerprint))),
+            kademlia: Arc::new(Mutex::new(crate::kademlia::KademliaTable::new(
+                local_fingerprint,
+            ))),
         })
     }
 
@@ -345,9 +347,10 @@ impl PeerManager {
     /// Count how many currently-connected peers share the same subnet as `ip`.
     /// IPv4: /24 prefix (first 3 octets).  IPv6: /48 prefix (first 3 hextets).
     pub fn count_peers_in_subnet(&self, ip: &IpAddr) -> usize {
-        self.peers.iter().filter(|entry| {
-            same_subnet(&entry.key().ip(), ip)
-        }).count()
+        self.peers
+            .iter()
+            .filter(|entry| same_subnet(&entry.key().ip(), ip))
+            .count()
     }
 
     /// Return peers sorted by lowest average response latency (best first).
@@ -362,7 +365,11 @@ impl PeerManager {
             })
             .collect();
         peers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        peers.into_iter().take(count).map(|(addr, _)| addr).collect()
+        peers
+            .into_iter()
+            .take(count)
+            .map(|(addr, _)| addr)
+            .collect()
     }
 
     /// Record a response latency sample for a peer.
@@ -395,7 +402,10 @@ impl PeerManager {
                 .as_secs()
                 .saturating_sub(p.tracking_since)
                 .max(1) as f64;
-            (p.bytes_received as f64 / elapsed, p.bytes_sent as f64 / elapsed)
+            (
+                p.bytes_received as f64 / elapsed,
+                p.bytes_sent as f64 / elapsed,
+            )
         })
     }
 
@@ -705,12 +715,7 @@ impl PeerManager {
 
     /// P3-2: Route a message to the `count` closest peers by XOR distance
     /// to `target_id`. Falls back to all peers if the routing table is empty.
-    pub async fn route_to_closest(
-        &self,
-        target_id: &[u8; 32],
-        count: usize,
-        message: P2PMessage,
-    ) {
+    pub async fn route_to_closest(&self, target_id: &[u8; 32], count: usize, message: P2PMessage) {
         let closest = {
             let table = self.kademlia.lock().unwrap();
             table.closest(target_id, count)
@@ -982,13 +987,15 @@ impl PeerManager {
                             }
                             // Eclipse-attack resistance: limit peers per /24 subnet
                             {
-                                let subnet_count = peers.iter().filter(|e| {
-                                    same_subnet(&e.key().ip(), &peer_addr.ip())
-                                }).count();
+                                let subnet_count = peers
+                                    .iter()
+                                    .filter(|e| same_subnet(&e.key().ip(), &peer_addr.ip()))
+                                    .count();
                                 if subnet_count >= PeerManager::MAX_PEERS_PER_SUBNET {
                                     warn!(
                                         "P2P: Rejected inbound {} — subnet limit ({})",
-                                        peer_addr, PeerManager::MAX_PEERS_PER_SUBNET
+                                        peer_addr,
+                                        PeerManager::MAX_PEERS_PER_SUBNET
                                     );
                                     return;
                                 }
@@ -1197,8 +1204,8 @@ async fn handle_connection(
                 );
                 // H18 fix: disconnect after too many consecutive failures
                 // AUDIT-FIX H9: Also disconnect if failure ratio >50% over window
-                let ratio_exceeded = deser_total >= DESER_WINDOW
-                    && deser_failures > deser_total / 2;
+                let ratio_exceeded =
+                    deser_total >= DESER_WINDOW && deser_failures > deser_total / 2;
                 if deser_failures >= MAX_DESER_FAILURES || ratio_exceeded {
                     warn!(
                         "P2P: Disconnecting {} — too many deserialization failures",
@@ -1344,15 +1351,13 @@ impl PeerFingerprintStore {
 
         match store.get(&addr_str) {
             Some(known) if *known == hex_fp => Ok(false), // known, matches
-            Some(known) => {
-                Err(format!(
-                    "TOFU VIOLATION: Peer {} certificate fingerprint changed! \
+            Some(known) => Err(format!(
+                "TOFU VIOLATION: Peer {} certificate fingerprint changed! \
                      Known: {}..., Got: {}... — possible MITM or unauthorized identity change.",
-                    addr,
-                    &known[..16],
-                    &hex_fp[..16]
-                ))
-            }
+                addr,
+                &known[..16],
+                &hex_fp[..16]
+            )),
             None => {
                 store.insert(addr_str, hex_fp);
                 drop(store); // release lock before I/O
@@ -2105,24 +2110,18 @@ mod tests {
         }
 
         // Next peer in same /24 should be rejected
-        let result = mgr
-            .connect_peer("10.0.1.200:7001".parse().unwrap())
-            .await;
+        let result = mgr.connect_peer("10.0.1.200:7001".parse().unwrap()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Subnet limit"));
 
         // Peer from different /24 should be fine (will fail TLS but won't hit subnet check)
-        let result2 = mgr
-            .connect_peer("10.0.2.1:7001".parse().unwrap())
-            .await;
+        let result2 = mgr.connect_peer("10.0.2.1:7001".parse().unwrap()).await;
         // Won't succeed because there's no real server, but error should NOT be about subnet
-        assert!(
-            !result2
-                .as_ref()
-                .err()
-                .map(|e| e.contains("Subnet limit"))
-                .unwrap_or(false)
-        );
+        assert!(!result2
+            .as_ref()
+            .err()
+            .map(|e| e.contains("Subnet limit"))
+            .unwrap_or(false));
     }
 
     // ── Peer Scoring / Latency Tracking ──────────────────────────────
@@ -2144,7 +2143,11 @@ mod tests {
             peer.record_latency(50.0);
         }
         let avg = peer.avg_response_ms.unwrap();
-        assert!(avg > 49.5 && avg < 52.0, "EMA should converge to ~50, got {}", avg);
+        assert!(
+            avg > 49.5 && avg < 52.0,
+            "EMA should converge to ~50, got {}",
+            avg
+        );
     }
 
     #[tokio::test]
@@ -2215,8 +2218,16 @@ mod tests {
         assert!(stats.is_some());
         let (recv_bps, send_bps) = stats.unwrap();
         // With tracking_since ≈ now, elapsed rounds to 1s max, so bps ≈ bytes
-        assert!(recv_bps >= 1.0, "recv_bps should be positive, got {}", recv_bps);
-        assert!(send_bps >= 1.0, "send_bps should be positive, got {}", send_bps);
+        assert!(
+            recv_bps >= 1.0,
+            "recv_bps should be positive, got {}",
+            recv_bps
+        );
+        assert!(
+            send_bps >= 1.0,
+            "send_bps should be positive, got {}",
+            send_bps
+        );
     }
 
     #[tokio::test]

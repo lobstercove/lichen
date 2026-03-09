@@ -705,7 +705,10 @@ impl P2PNetwork {
             } => {
                 // AUDIT-FIX C6: Rate-limit expensive requests (max 30/min)
                 if !self.peer_manager.check_expensive_rate_limit(&peer_addr, 30) {
-                    warn!("P2P: Rate-limiting state snapshot request from {}", peer_addr);
+                    warn!(
+                        "P2P: Rate-limiting state snapshot request from {}",
+                        peer_addr
+                    );
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
@@ -835,7 +838,10 @@ impl P2PNetwork {
                 // AUDIT-FIX H11: Reject stale/replayed announcements.
                 // Only accept if current_slot >= the last announcement slot from this validator.
                 {
-                    let mut slots = self.last_announce_slot.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut slots = self
+                        .last_announce_slot
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     let last = slots.entry(pubkey.0).or_insert(0);
                     if current_slot < *last {
                         warn!(
@@ -894,7 +900,11 @@ impl P2PNetwork {
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
-                debug!("P2P: Received FindNode from {} for target {:?}", peer_addr, &target_id[..4]);
+                debug!(
+                    "P2P: Received FindNode from {} for target {:?}",
+                    peer_addr,
+                    &target_id[..4]
+                );
                 let closest = self.peer_manager.kademlia_closest(&target_id, 20);
                 let response = P2PMessage::new(
                     MessageType::FindNodeResponse { target_id, closest },
@@ -903,13 +913,23 @@ impl P2PNetwork {
                 let pm = self.peer_manager.clone();
                 tokio::spawn(async move {
                     if let Err(e) = pm.send_to_peer(&peer_addr, response).await {
-                        warn!("P2P: Failed to send FindNodeResponse to {}: {}", peer_addr, e);
+                        warn!(
+                            "P2P: Failed to send FindNodeResponse to {}: {}",
+                            peer_addr, e
+                        );
                     }
                 });
             }
 
-            MessageType::FindNodeResponse { target_id: _, closest } => {
-                debug!("P2P: Received FindNodeResponse from {} ({} entries)", peer_addr, closest.len());
+            MessageType::FindNodeResponse {
+                target_id: _,
+                closest,
+            } => {
+                debug!(
+                    "P2P: Received FindNodeResponse from {} ({} entries)",
+                    peer_addr,
+                    closest.len()
+                );
                 for (node_id, addr_str) in closest {
                     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
                         // AUDIT-FIX H13: Reject invalid/reserved IP addresses
@@ -919,7 +939,10 @@ impl P2PNetwork {
                             || ip.is_multicast()
                             || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast())
                         {
-                            warn!("P2P: Rejecting invalid address {} from FindNodeResponse by {}", addr, peer_addr);
+                            warn!(
+                                "P2P: Rejecting invalid address {} from FindNodeResponse by {}",
+                                addr, peer_addr
+                            );
                             continue;
                         }
                         self.peer_manager.update_kademlia(node_id, addr);
@@ -930,29 +953,48 @@ impl P2PNetwork {
             MessageType::CompactBlockMsg(compact_block) => {
                 debug!(
                     "P2P: Received compact block slot {} from {} ({} txs)",
-                    compact_block.header.slot, peer_addr, compact_block.short_ids.len()
+                    compact_block.header.slot,
+                    peer_addr,
+                    compact_block.short_ids.len()
                 );
-                let msg = CompactBlockMsg { compact_block, sender: peer_addr };
+                let msg = CompactBlockMsg {
+                    compact_block,
+                    sender: peer_addr,
+                };
                 if let Err(e) = self.compact_block_tx.try_send(msg) {
-                    warn!("P2P: Compact block channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: Compact block channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
             MessageType::GetBlockTxs { slot, missing_hashes } => {
                 debug!(
                     "P2P: Received GetBlockTxs for slot {} from {} ({} hashes)",
-                    slot, peer_addr, missing_hashes.len()
+                    slot,
+                    peer_addr,
+                    missing_hashes.len()
                 );
-                let msg = GetBlockTxsMsg { slot, missing_hashes, requester: peer_addr };
+                let msg = GetBlockTxsMsg {
+                    slot,
+                    missing_hashes,
+                    requester: peer_addr,
+                };
                 if let Err(e) = self.get_block_txs_tx.try_send(msg) {
-                    warn!("P2P: GetBlockTxs channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: GetBlockTxs channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
             MessageType::BlockTxs { slot, transactions } => {
                 debug!(
                     "P2P: Received BlockTxs for slot {} from {} ({} txs)",
-                    slot, peer_addr, transactions.len()
+                    slot,
+                    peer_addr,
+                    transactions.len()
                 );
                 // Forward individual transactions to the normal tx channel so the
                 // compact block reconstruction path in the validator can pick them up.
@@ -964,35 +1006,58 @@ impl P2PNetwork {
                 }
             }
 
-            MessageType::ErasureShardRequest { slot, shard_indices } => {
+            MessageType::ErasureShardRequest {
+                slot,
+                shard_indices,
+            } => {
                 // AUDIT-FIX M13: Cap shard indices to prevent amplification
                 const MAX_SHARD_INDICES: usize = 10;
                 if shard_indices.len() > MAX_SHARD_INDICES {
                     warn!(
                         "P2P: Rejecting ErasureShardRequest from {} — {} indices exceeds max {}",
-                        peer_addr, shard_indices.len(), MAX_SHARD_INDICES
+                        peer_addr,
+                        shard_indices.len(),
+                        MAX_SHARD_INDICES
                     );
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
                 }
                 debug!(
                     "P2P: Received ErasureShardRequest for slot {} from {} ({} indices)",
-                    slot, peer_addr, shard_indices.len()
+                    slot,
+                    peer_addr,
+                    shard_indices.len()
                 );
-                let msg = ErasureShardRequestMsg { slot, shard_indices, requester: peer_addr };
+                let msg = ErasureShardRequestMsg {
+                    slot,
+                    shard_indices,
+                    requester: peer_addr,
+                };
                 if let Err(e) = self.erasure_shard_request_tx.try_send(msg) {
-                    warn!("P2P: ErasureShardRequest channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: ErasureShardRequest channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 
             MessageType::ErasureShardResponse { slot, shards } => {
                 debug!(
                     "P2P: Received ErasureShardResponse for slot {} from {} ({} shards)",
-                    slot, peer_addr, shards.len()
+                    slot,
+                    peer_addr,
+                    shards.len()
                 );
-                let msg = ErasureShardResponseMsg { slot, shards, sender: peer_addr };
+                let msg = ErasureShardResponseMsg {
+                    slot,
+                    shards,
+                    sender: peer_addr,
+                };
                 if let Err(e) = self.erasure_shard_response_tx.try_send(msg) {
-                    warn!("P2P: ErasureShardResponse channel full, dropping from {} ({})", peer_addr, e);
+                    warn!(
+                        "P2P: ErasureShardResponse channel full, dropping from {} ({})",
+                        peer_addr, e
+                    );
                 }
             }
 

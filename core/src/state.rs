@@ -697,7 +697,10 @@ impl StateStore {
     /// - Prefix-scan CFs (account_txs, nft_*, program_calls): prefix bloom + prefix extractor
     /// - Small/singleton CFs (stats, validators, stake_pool): minimal config
     /// - Write-heavy CFs (events, token_transfers): larger write buffers
-    pub fn open_with_cache_mb<P: AsRef<Path>>(path: P, cache_mb: Option<usize>) -> Result<Self, String> {
+    pub fn open_with_cache_mb<P: AsRef<Path>>(
+        path: P,
+        cache_mb: Option<usize>,
+    ) -> Result<Self, String> {
         // ── Global DB options ────────────────────────────────────────
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
@@ -736,7 +739,7 @@ impl StateStore {
                     if let Ok(s) = String::from_utf8(output.stdout) {
                         if let Ok(bytes) = s.trim().parse::<usize>() {
                             let total_mb = bytes / (1024 * 1024);
-                            return (total_mb / 4).min(4096).max(256);
+                            return (total_mb / 4).clamp(256, 4096);
                         }
                     }
                 }
@@ -1303,10 +1306,7 @@ impl StateStore {
                                 })?
                             } else {
                                 serde_json::from_slice(&data).map_err(|e| {
-                                    format!(
-                                        "Failed to deserialize cold transaction (json): {}",
-                                        e
-                                    )
+                                    format!("Failed to deserialize cold transaction (json): {}", e)
                                 })?
                             };
                             return Ok(Some(tx));
@@ -6466,9 +6466,9 @@ impl StateStore {
             let block_hash: [u8; 32] = item.1[..32].try_into().unwrap();
 
             // Read the block from hot
-            if let Ok(Some(block_data)) = self.db.get_cf(&hot_blocks_cf, &block_hash) {
+            if let Ok(Some(block_data)) = self.db.get_cf(&hot_blocks_cf, block_hash) {
                 // Write to cold
-                cold.put_cf(&cold_blocks_cf, &block_hash, &block_data)
+                cold.put_cf(&cold_blocks_cf, block_hash, &block_data)
                     .map_err(|e| format!("Cold write error (block): {}", e))?;
 
                 // Deserialize block to get transaction signatures
@@ -6488,9 +6488,7 @@ impl StateStore {
                             hot_delete_batch.delete_cf(&hot_txs_cf, sig.0);
                         }
                         // Migrate tx_to_slot mapping
-                        if let Ok(Some(slot_data)) =
-                            self.db.get_cf(&hot_tx_to_slot_cf, sig.0)
-                        {
+                        if let Ok(Some(slot_data)) = self.db.get_cf(&hot_tx_to_slot_cf, sig.0) {
                             cold.put_cf(&cold_tx_to_slot_cf, sig.0, &slot_data)
                                 .map_err(|e| format!("Cold write error (tx_to_slot): {}", e))?;
                             hot_delete_batch.delete_cf(&hot_tx_to_slot_cf, sig.0);
@@ -6499,7 +6497,7 @@ impl StateStore {
                 }
 
                 // Delete block from hot
-                hot_delete_batch.delete_cf(&hot_blocks_cf, &block_hash);
+                hot_delete_batch.delete_cf(&hot_blocks_cf, block_hash);
                 migrated += 1;
             }
 

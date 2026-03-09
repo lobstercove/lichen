@@ -20,7 +20,11 @@ use tokio::sync::broadcast;
 
 /// DEX-specific events broadcast to WebSocket subscribers
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum DexEvent {
     /// Order book snapshot for a pair
     OrderBookUpdate {
@@ -813,10 +817,22 @@ mod tests {
         };
         let json = serde_json::to_value(&event).unwrap();
         // Fields must be camelCase to match the JS client expectations
-        assert!(json.get("lastPrice").is_some(), "lastPrice field must be camelCase");
-        assert!(json.get("pairId").is_some(), "pairId field must be camelCase");
-        assert!(json.get("volume24h").is_some(), "volume24h field must be camelCase");
-        assert!(json.get("change24h").is_some(), "change24h field must be camelCase");
+        assert!(
+            json.get("lastPrice").is_some(),
+            "lastPrice field must be camelCase"
+        );
+        assert!(
+            json.get("pairId").is_some(),
+            "pairId field must be camelCase"
+        );
+        assert!(
+            json.get("volume24h").is_some(),
+            "volume24h field must be camelCase"
+        );
+        assert!(
+            json.get("change24h").is_some(),
+            "change24h field must be camelCase"
+        );
         // Variant tag must also be camelCase
         assert_eq!(json["type"], "tickerUpdate");
     }
