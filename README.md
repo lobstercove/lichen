@@ -4,7 +4,7 @@
 
 Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDKs
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
 
 **Release-ready status (Feb 24, 2026):** main validated and published at commit `4059403`.
@@ -433,7 +433,14 @@ Report vulnerabilities to **hello@moltchain.network**
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MoltChain is currently dual-licensed.
+
+- Core blockchain/runtime code in `core/`, `validator/`, `p2p/`, and `rpc/` is under Apache 2.0.
+- SDKs, CLI, tools, and auxiliary packages are under MIT.
+
+See [LICENSE](LICENSE) for the current legal terms.
+
+Important: the current Apache/MIT licensing model is permissive. It allows third parties to run, fork, and deploy derived systems. If MoltChain wants to prohibit third-party blockchain deployments, that requires a real license change for the protected components, not just documentation wording.
 
 ---
 

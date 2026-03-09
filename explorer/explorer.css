@@ -2146,8 +2146,6 @@ ul {
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 2rem;
-    min-width: 0;
-    overflow: hidden;
 }
 
 .section-header-inline {
@@ -2177,17 +2175,12 @@ ul {
 
 /* Explorer Tables */
 .table-container {
-    width: 100%;
-    max-width: 100%;
     overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
     border-radius: 8px;
 }
 
 .explorer-table {
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
     min-width: 800px;
     border-collapse: collapse;
 }
@@ -2445,11 +2438,17 @@ ul {
 
     .table-container {
         margin: 0 -0.25rem;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
         padding-bottom: 0.25rem;
     }
     
     .explorer-table {
         font-size: 0.8rem;
+        width: max-content;
         min-width: 720px;
     }
     
