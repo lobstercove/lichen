@@ -20,10 +20,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot, get_timestamp,
-    get_caller, Address, CrossCall, call_contract, call_token_transfer,
-    get_contract_address,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -32,11 +30,13 @@ use moltchain_sdk::{
 
 const MAX_LEVERAGE_ISOLATED: u64 = 100;
 const MAX_LEVERAGE_CROSS: u64 = 3;
-const LIQUIDATOR_SHARE_BPS: u64 = 5000;   // 50% of penalty to liquidator
-const INSURANCE_SHARE_BPS: u64 = 5000;    // 50% of penalty to insurance
+const LIQUIDATOR_SHARE_BPS: u64 = 5000; // 50% of penalty to liquidator
+const INSURANCE_SHARE_BPS: u64 = 5000; // 50% of penalty to insurance
 const FUNDING_INTERVAL_SLOTS: u64 = 28_800; // ~8 hours
 const MAX_POSITIONS: u64 = 10_000;
-const MAX_FUNDING_RATE_BPS: u64 = 100;    // 1% max per interval
+const MAX_FUNDING_RATE_BPS: u64 = 100; // 1% max per interval
+                                       // AUDIT-FIX H-11: Cap total open interest to prevent system insolvency
+const MAX_TOTAL_OPEN_INTEREST: u64 = 100_000_000_000_000_000; // 100M MOLT notional
 
 // AUDIT-FIX M20: Mark price staleness guard — reject prices older than 30 minutes
 const MAX_PRICE_AGE_SECONDS: u64 = 1800;
@@ -66,6 +66,8 @@ const TOTAL_VOLUME_KEY: &[u8] = b"mrg_total_volume";
 const LIQUIDATION_COUNT_KEY: &[u8] = b"mrg_liq_count";
 const TOTAL_PNL_PROFIT_KEY: &[u8] = b"mrg_pnl_profit";
 const TOTAL_PNL_LOSS_KEY: &[u8] = b"mrg_pnl_loss";
+// AUDIT-FIX H-11: Track total open interest (notional) across all open positions
+const TOTAL_OPEN_INTEREST_KEY: &[u8] = b"mrg_total_oi";
 
 // ============================================================================
 // LEVERAGE TIER TABLE
@@ -74,20 +76,20 @@ const TOTAL_PNL_LOSS_KEY: &[u8] = b"mrg_pnl_loss";
 // funding_rate_mult_x10: 10 = 1.0x, 15 = 1.5x, 20 = 2.0x, etc.
 fn get_tier_params(leverage: u64) -> (u64, u64, u64, u64) {
     if leverage <= 2 {
-        (5000, 2500, 300, 10)       // 50% / 25% / 3% / 1.0x
+        (5000, 2500, 300, 10) // 50% / 25% / 3% / 1.0x
     } else if leverage <= 3 {
-        (3333, 1700, 300, 10)       // 33% / 17% / 3% / 1.0x
+        (3333, 1700, 300, 10) // 33% / 17% / 3% / 1.0x
     } else if leverage <= 5 {
-        (2000, 1000, 500, 15)       // 20% / 10% / 5% / 1.5x
+        (2000, 1000, 500, 15) // 20% / 10% / 5% / 1.5x
     } else if leverage <= 10 {
-        (1000, 500, 500, 20)        // 10% / 5%  / 5% / 2.0x
+        (1000, 500, 500, 20) // 10% / 5%  / 5% / 2.0x
     } else if leverage <= 25 {
-        (400, 200, 700, 30)         //  4% / 2%  / 7% / 3.0x
+        (400, 200, 700, 30) //  4% / 2%  / 7% / 3.0x
     } else if leverage <= 50 {
-        (200, 100, 1000, 50)        //  2% / 1%  / 10% / 5.0x
+        (200, 100, 1000, 50) //  2% / 1%  / 10% / 5.0x
     } else {
         // ≤100x
-        (100, 50, 1500, 100)        //  1% / 0.5% / 15% / 10.0x
+        (100, 50, 1500, 100) //  1% / 0.5% / 15% / 10.0x
     }
 }
 
@@ -96,69 +98,99 @@ fn get_tier_params(leverage: u64) -> (u64, u64, u64, u64) {
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
-fn save_u64(key: &[u8], val: u64) { storage_set(key, &u64_to_bytes(val)); }
+fn save_u64(key: &[u8], val: u64) {
+    storage_set(key, &u64_to_bytes(val));
+}
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero(addr: &[u8; 32]) -> bool { addr.iter().all(|&b| b == 0) }
+fn is_zero(addr: &[u8; 32]) -> bool {
+    addr.iter().all(|&b| b == 0)
+}
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
-    while n > 0 { buf.push(b'0' + (n % 10) as u8); n /= 10; }
-    buf.reverse(); buf
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    buf.reverse();
+    buf
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    for &b in bytes { out.push(hex_chars[(b >> 4) as usize]); out.push(hex_chars[(b & 0x0f) as usize]); }
+    for &b in bytes {
+        out.push(hex_chars[(b >> 4) as usize]);
+        out.push(hex_chars[(b & 0x0f) as usize]);
+    }
     out
 }
 
 fn position_key(pos_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_pos_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pos_id)); k
+    k.extend_from_slice(&u64_to_decimal(pos_id));
+    k
 }
 fn max_leverage_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_maxl_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn margin_enabled_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_ena_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn maintenance_margin_key_fn() -> Vec<u8> {
     Vec::from(&b"mrg_maint_bps"[..])
 }
 fn user_position_count_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_upc_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn user_position_key(addr: &[u8; 32], idx: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_up_"[..]);
     k.extend_from_slice(&hex_encode(addr));
     k.push(b'_');
-    k.extend_from_slice(&u64_to_decimal(idx)); k
+    k.extend_from_slice(&u64_to_decimal(idx));
+    k
 }
 fn mark_price_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_mark_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn index_price_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_idx_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn last_funding_pair_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_lfund_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn cumulative_funding_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_cfund_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 
 /// AUDIT-FIX M20: Load mark price with timestamp. Returns (price, timestamp).
@@ -175,7 +207,9 @@ fn load_mark_price(pair_id: u64) -> (u64, u64) {
 /// Returns the price if fresh, or 0 if missing/stale.
 fn fresh_mark_price(pair_id: u64) -> u64 {
     let (price, ts) = load_mark_price(pair_id);
-    if price == 0 { return 0; }
+    if price == 0 {
+        return 0;
+    }
     let now = get_timestamp();
     if ts == 0 || (now > ts && now - ts > MAX_PRICE_AGE_SECONDS) {
         log_info("DEX Margin: Mark price stale — rejecting");
@@ -189,14 +223,29 @@ fn fresh_mark_price(pair_id: u64) -> u64 {
 // ============================================================================
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) { return false; }
-    storage_set(REENTRANCY_KEY, &[1u8]); true
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    storage_set(REENTRANCY_KEY, &[1u8]);
+    true
 }
-fn reentrancy_exit() { storage_set(REENTRANCY_KEY, &[0u8]); }
-fn is_paused() -> bool { storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) }
-fn require_not_paused() -> bool { !is_paused() }
+fn reentrancy_exit() {
+    storage_set(REENTRANCY_KEY, &[0u8]);
+}
+fn is_paused() -> bool {
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+fn require_not_paused() -> bool {
+    !is_paused()
+}
 fn require_admin(caller: &[u8; 32]) -> bool {
-    let admin = load_addr(ADMIN_KEY); !is_zero(&admin) && *caller == admin
+    let admin = load_addr(ADMIN_KEY);
+    !is_zero(&admin) && *caller == admin
 }
 
 // ============================================================================
@@ -224,9 +273,18 @@ const POSITION_SIZE_V1: usize = 112;
 const POSITION_SIZE: usize = 128;
 
 fn encode_position(
-    trader: &[u8; 32], pos_id: u64, pair_id: u64, side: u8, status: u8,
-    size: u64, margin: u64, entry_price: u64, leverage: u64,
-    created_slot: u64, realized_pnl: u64, accumulated_funding: u64,
+    trader: &[u8; 32],
+    pos_id: u64,
+    pair_id: u64,
+    side: u8,
+    status: u8,
+    size: u64,
+    margin: u64,
+    entry_price: u64,
+    leverage: u64,
+    created_slot: u64,
+    realized_pnl: u64,
+    accumulated_funding: u64,
     margin_mode: u8,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(POSITION_SIZE);
@@ -246,62 +304,148 @@ fn encode_position(
     data.extend_from_slice(&u64_to_bytes(0)); // sl_price
     data.extend_from_slice(&u64_to_bytes(0)); // tp_price
     data.push(margin_mode);
-    while data.len() < POSITION_SIZE { data.push(0); }
+    while data.len() < POSITION_SIZE {
+        data.push(0);
+    }
     data
 }
 
 /// Decode stop-loss price from position data (0 if V1 record or not set)
 fn decode_pos_sl_price(data: &[u8]) -> u64 {
-    if data.len() >= 114 { bytes_to_u64(&data[106..114]) } else { 0 }
+    if data.len() >= 114 {
+        bytes_to_u64(&data[106..114])
+    } else {
+        0
+    }
 }
 
 /// Decode take-profit price from position data (0 if V1 record or not set)
 fn decode_pos_tp_price(data: &[u8]) -> u64 {
-    if data.len() >= 122 { bytes_to_u64(&data[114..122]) } else { 0 }
+    if data.len() >= 122 {
+        bytes_to_u64(&data[114..122])
+    } else {
+        0
+    }
 }
 
 /// Update stop-loss price on a position record. Grows V1 records to 128 bytes.
 fn update_pos_sl_price(data: &mut Vec<u8>, sl: u64) {
-    while data.len() < POSITION_SIZE { data.push(0); }
+    while data.len() < POSITION_SIZE {
+        data.push(0);
+    }
     data[106..114].copy_from_slice(&u64_to_bytes(sl));
 }
 
 /// Update take-profit price on a position record. Grows V1 records to 128 bytes.
 fn update_pos_tp_price(data: &mut Vec<u8>, tp: u64) {
-    while data.len() < POSITION_SIZE { data.push(0); }
+    while data.len() < POSITION_SIZE {
+        data.push(0);
+    }
     data[114..122].copy_from_slice(&u64_to_bytes(tp));
 }
 
 fn decode_pos_trader(data: &[u8]) -> [u8; 32] {
-    let mut t = [0u8; 32]; if data.len() >= 32 { t.copy_from_slice(&data[..32]); } t
+    let mut t = [0u8; 32];
+    if data.len() >= 32 {
+        t.copy_from_slice(&data[..32]);
+    }
+    t
 }
-fn decode_pos_id(data: &[u8]) -> u64 { if data.len() >= 40 { bytes_to_u64(&data[32..40]) } else { 0 } }
-fn decode_pos_pair_id(data: &[u8]) -> u64 { if data.len() >= 48 { bytes_to_u64(&data[40..48]) } else { 0 } }
-fn decode_pos_side(data: &[u8]) -> u8 { if data.len() > 48 { data[48] } else { 0 } }
-fn decode_pos_status(data: &[u8]) -> u8 { if data.len() > 49 { data[49] } else { 0 } }
-fn decode_pos_size(data: &[u8]) -> u64 { if data.len() >= 58 { bytes_to_u64(&data[50..58]) } else { 0 } }
-fn decode_pos_margin(data: &[u8]) -> u64 { if data.len() >= 66 { bytes_to_u64(&data[58..66]) } else { 0 } }
-fn decode_pos_entry_price(data: &[u8]) -> u64 { if data.len() >= 74 { bytes_to_u64(&data[66..74]) } else { 0 } }
-fn decode_pos_leverage(data: &[u8]) -> u64 { if data.len() >= 82 { bytes_to_u64(&data[74..82]) } else { 0 } }
-fn decode_pos_accumulated_funding(data: &[u8]) -> u64 { if data.len() >= 106 { bytes_to_u64(&data[98..106]) } else { 0 } }
+fn decode_pos_id(data: &[u8]) -> u64 {
+    if data.len() >= 40 {
+        bytes_to_u64(&data[32..40])
+    } else {
+        0
+    }
+}
+fn decode_pos_pair_id(data: &[u8]) -> u64 {
+    if data.len() >= 48 {
+        bytes_to_u64(&data[40..48])
+    } else {
+        0
+    }
+}
+fn decode_pos_side(data: &[u8]) -> u8 {
+    if data.len() > 48 {
+        data[48]
+    } else {
+        0
+    }
+}
+fn decode_pos_status(data: &[u8]) -> u8 {
+    if data.len() > 49 {
+        data[49]
+    } else {
+        0
+    }
+}
+fn decode_pos_size(data: &[u8]) -> u64 {
+    if data.len() >= 58 {
+        bytes_to_u64(&data[50..58])
+    } else {
+        0
+    }
+}
+fn decode_pos_margin(data: &[u8]) -> u64 {
+    if data.len() >= 66 {
+        bytes_to_u64(&data[58..66])
+    } else {
+        0
+    }
+}
+fn decode_pos_entry_price(data: &[u8]) -> u64 {
+    if data.len() >= 74 {
+        bytes_to_u64(&data[66..74])
+    } else {
+        0
+    }
+}
+fn decode_pos_leverage(data: &[u8]) -> u64 {
+    if data.len() >= 82 {
+        bytes_to_u64(&data[74..82])
+    } else {
+        0
+    }
+}
+fn decode_pos_accumulated_funding(data: &[u8]) -> u64 {
+    if data.len() >= 106 {
+        bytes_to_u64(&data[98..106])
+    } else {
+        0
+    }
+}
 fn decode_pos_margin_mode(data: &[u8]) -> u8 {
     if data.len() > 122 {
         let mode = data[122];
-        if mode == MARGIN_MODE_CROSS { MARGIN_MODE_CROSS } else { MARGIN_MODE_ISOLATED }
+        if mode == MARGIN_MODE_CROSS {
+            MARGIN_MODE_CROSS
+        } else {
+            MARGIN_MODE_ISOLATED
+        }
     } else {
         MARGIN_MODE_ISOLATED
     }
 }
 
-fn update_pos_status(data: &mut Vec<u8>, s: u8) { if data.len() > 49 { data[49] = s; } }
+fn update_pos_status(data: &mut Vec<u8>, s: u8) {
+    if data.len() > 49 {
+        data[49] = s;
+    }
+}
 fn update_pos_size(data: &mut Vec<u8>, s: u64) {
-    if data.len() >= 58 { data[50..58].copy_from_slice(&u64_to_bytes(s)); }
+    if data.len() >= 58 {
+        data[50..58].copy_from_slice(&u64_to_bytes(s));
+    }
 }
 fn update_pos_margin(data: &mut Vec<u8>, m: u64) {
-    if data.len() >= 66 { data[58..66].copy_from_slice(&u64_to_bytes(m)); }
+    if data.len() >= 66 {
+        data[58..66].copy_from_slice(&u64_to_bytes(m));
+    }
 }
 fn update_pos_accumulated_funding(data: &mut Vec<u8>, f: u64) {
-    while data.len() < POSITION_SIZE { data.push(0); }
+    while data.len() < POSITION_SIZE {
+        data.push(0);
+    }
     data[98..106].copy_from_slice(&u64_to_bytes(f));
 }
 
@@ -309,17 +453,31 @@ fn update_pos_accumulated_funding(data: &mut Vec<u8>, f: u64) {
 /// margin_ratio = margin / (size * mark_price / 1e9)
 fn calculate_margin_ratio(margin: u64, size: u64, mark_price: u64) -> u64 {
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
-    if notional == 0 { return 10_000; } // safe
+    if notional == 0 {
+        return 10_000;
+    } // safe
     (margin as u128 * 10_000 / notional as u128) as u64 // in bps
 }
 
 /// F10.2-A FIX: Calculate margin ratio accounting for unrealized PnL
 /// effective_margin = margin ± unrealized PnL, then ratio = effective / notional
-fn calculate_margin_ratio_with_pnl(margin: u64, size: u64, entry_price: u64, mark_price: u64, side: u8) -> u64 {
+fn calculate_margin_ratio_with_pnl(
+    margin: u64,
+    size: u64,
+    entry_price: u64,
+    mark_price: u64,
+    side: u8,
+) -> u64 {
     let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
-    let effective = if is_profit { margin.saturating_add(pnl) } else { margin.saturating_sub(pnl) };
+    let effective = if is_profit {
+        margin.saturating_add(pnl)
+    } else {
+        margin.saturating_sub(pnl)
+    };
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
-    if notional == 0 { return 10_000; }
+    if notional == 0 {
+        return 10_000;
+    }
     (effective as u128 * 10_000 / notional as u128) as u64
 }
 
@@ -351,9 +509,13 @@ fn calculate_pnl(side: u8, size: u64, entry_price: u64, mark_price: u64) -> (boo
 
 pub fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; }
+    if !is_zero(&existing) {
+        return 1;
+    }
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -373,7 +535,9 @@ pub fn initialize(admin: *const u8) -> u32 {
 /// Set mark price for a pair (called by oracle/analytics)
 pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -381,8 +545,12 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
-    if price == 0 { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if price == 0 {
+        return 2;
+    }
     // AUDIT-FIX M20: Store price + timestamp for freshness validation
     let mut data = Vec::with_capacity(16);
     data.extend_from_slice(&u64_to_bytes(price));
@@ -395,11 +563,19 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
 /// Used together with mark price to calculate funding rates.
 pub fn set_index_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     let real_caller = get_caller();
-    if real_caller.0 != c { return 200; }
-    if !require_admin(&c) { return 1; }
-    if price == 0 { return 2; }
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if price == 0 {
+        return 2;
+    }
     let mut data = Vec::with_capacity(16);
     data.extend_from_slice(&u64_to_bytes(price));
     data.extend_from_slice(&u64_to_bytes(get_timestamp()));
@@ -430,11 +606,15 @@ fn load_index_price(pair_id: u64) -> (u64, u64) {
 pub fn apply_funding(pair_id: u64) -> u32 {
     let current_slot = get_slot();
     let last_slot = load_u64(&last_funding_pair_key(pair_id));
-    if current_slot < last_slot + FUNDING_INTERVAL_SLOTS { return 1; }
+    if current_slot < last_slot + FUNDING_INTERVAL_SLOTS {
+        return 1;
+    }
 
     let (mark, _mark_ts) = load_mark_price(pair_id);
     let (index, _idx_ts) = load_index_price(pair_id);
-    if mark == 0 || index == 0 { return 2; }
+    if mark == 0 || index == 0 {
+        return 2;
+    }
 
     // Funding rate in BPS: (mark - index) / index * 10000 (signed via u64 bias)
     // Positive rate = longs pay shorts, negative = shorts pay longs
@@ -455,7 +635,11 @@ pub fn apply_funding(pair_id: u64) -> u32 {
     // Store cumulative funding rate for this pair (biased: 1<<63 = zero point)
     let cum_key = cumulative_funding_key(pair_id);
     let cum_funding = load_u64(&cum_key);
-    let cum_funding = if cum_funding == 0 { 1u64 << 63 } else { cum_funding }; // init bias
+    let cum_funding = if cum_funding == 0 {
+        1u64 << 63
+    } else {
+        cum_funding
+    }; // init bias
     let new_cum = if rate_positive {
         cum_funding.saturating_add(clamped_bps)
     } else {
@@ -464,7 +648,10 @@ pub fn apply_funding(pair_id: u64) -> u32 {
     save_u64(&cum_key, new_cum);
 
     let pos_count = load_u64(POSITION_COUNT_KEY);
-    if pos_count == 0 { save_u64(&last_funding_pair_key(pair_id), current_slot); return 3; }
+    if pos_count == 0 {
+        save_u64(&last_funding_pair_key(pair_id), current_slot);
+        return 3;
+    }
 
     let mut applied = 0u64;
     for pid in 1..=pos_count {
@@ -473,8 +660,12 @@ pub fn apply_funding(pair_id: u64) -> u32 {
             Some(d) if d.len() >= POSITION_SIZE_V1 => d,
             _ => continue,
         };
-        if decode_pos_status(&data) != POS_OPEN { continue; }
-        if decode_pos_pair_id(&data) != pair_id { continue; }
+        if decode_pos_status(&data) != POS_OPEN {
+            continue;
+        }
+        if decode_pos_pair_id(&data) != pair_id {
+            continue;
+        }
 
         let size = decode_pos_size(&data);
         let margin = decode_pos_margin(&data);
@@ -490,7 +681,9 @@ pub fn apply_funding(pair_id: u64) -> u32 {
         let payment = (notional as u128 * clamped_bps as u128 * fund_mult as u128
             / (10_000 * 10) as u128) as u64;
 
-        if payment == 0 { continue; }
+        if payment == 0 {
+            continue;
+        }
 
         // Determine direction: longs pay on positive rate, shorts pay on negative
         let pays = (side == SIDE_LONG && rate_positive) || (side == SIDE_SHORT && !rate_positive);
@@ -503,7 +696,11 @@ pub fn apply_funding(pair_id: u64) -> u32 {
 
         update_pos_margin(&mut data, new_margin);
         // Accumulate funding: biased u64 (1<<63 = zero)
-        let prev = if prev_funding == 0 { 1u64 << 63 } else { prev_funding };
+        let prev = if prev_funding == 0 {
+            1u64 << 63
+        } else {
+            prev_funding
+        };
         let new_funding = if pays {
             prev.saturating_sub(payment)
         } else {
@@ -524,10 +721,16 @@ pub fn apply_funding(pair_id: u64) -> u32 {
 /// Returns: 0=success, 1=not admin
 pub fn enable_margin_pair(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     let real_caller = get_caller();
-    if real_caller.0 != c { return 200; }
-    if !require_admin(&c) { return 1; }
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     save_u64(&margin_enabled_key(pair_id), 1);
     log_info("Margin pair enabled");
     0
@@ -537,10 +740,16 @@ pub fn enable_margin_pair(caller: *const u8, pair_id: u64) -> u32 {
 /// Returns: 0=success, 1=not admin
 pub fn disable_margin_pair(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     let real_caller = get_caller();
-    if real_caller.0 != c { return 200; }
-    if !require_admin(&c) { return 1; }
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     save_u64(&margin_enabled_key(pair_id), 0);
     log_info("Margin pair disabled");
     0
@@ -555,10 +764,22 @@ pub fn is_margin_enabled(pair_id: u64) -> u64 {
 /// Returns: 0=success, 1=paused, 2=invalid leverage, 3=insufficient margin,
 ///          4=max positions, 5=reentrancy, 6=no mark price, 7=pair not margin-enabled
 pub fn open_position(
-    trader: *const u8, pair_id: u64, side: u8, size: u64,
-    leverage: u64, margin_amount: u64,
+    trader: *const u8,
+    pair_id: u64,
+    side: u8,
+    size: u64,
+    leverage: u64,
+    margin_amount: u64,
 ) -> u32 {
-    open_position_with_mode(trader, pair_id, side, size, leverage, margin_amount, MARGIN_MODE_ISOLATED)
+    open_position_with_mode(
+        trader,
+        pair_id,
+        side,
+        size,
+        leverage,
+        margin_amount,
+        MARGIN_MODE_ISOLATED,
+    )
 }
 
 /// Open a new margin position with explicit margin mode.
@@ -566,14 +787,26 @@ pub fn open_position(
 ///          4=max positions, 5=reentrancy, 6=no mark price, 7=pair not margin-enabled,
 ///          8=collateral lock failed, 9=invalid margin mode
 pub fn open_position_with_mode(
-    trader: *const u8, pair_id: u64, side: u8, size: u64,
-    leverage: u64, margin_amount: u64, margin_mode: u8,
+    trader: *const u8,
+    pair_id: u64,
+    side: u8,
+    size: u64,
+    leverage: u64,
+    margin_amount: u64,
+    margin_mode: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 5; }
-    if !require_not_paused() { reentrancy_exit(); return 1; }
+    if !reentrancy_enter() {
+        return 5;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
 
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -583,7 +816,10 @@ pub fn open_position_with_mode(
     }
 
     // Check pair is enabled for margin
-    if load_u64(&margin_enabled_key(pair_id)) != 1 { reentrancy_exit(); return 7; }
+    if load_u64(&margin_enabled_key(pair_id)) != 1 {
+        reentrancy_exit();
+        return 7;
+    }
 
     if margin_mode != MARGIN_MODE_ISOLATED && margin_mode != MARGIN_MODE_CROSS {
         reentrancy_exit();
@@ -593,30 +829,58 @@ pub fn open_position_with_mode(
     // Validate leverage
     let max_lev = load_u64(&max_leverage_key(pair_id));
     let effective_max = if margin_mode == MARGIN_MODE_CROSS {
-        let pair_cap = if max_lev > 0 { max_lev } else { MAX_LEVERAGE_CROSS };
+        let pair_cap = if max_lev > 0 {
+            max_lev
+        } else {
+            MAX_LEVERAGE_CROSS
+        };
         core::cmp::min(pair_cap, MAX_LEVERAGE_CROSS)
     } else if max_lev > 0 {
         max_lev
     } else {
         MAX_LEVERAGE_ISOLATED
     };
-    if leverage == 0 || leverage > effective_max { reentrancy_exit(); return 2; }
-    if side > SIDE_SHORT { reentrancy_exit(); return 2; }
+    if leverage == 0 || leverage > effective_max {
+        reentrancy_exit();
+        return 2;
+    }
+    if side > SIDE_SHORT {
+        reentrancy_exit();
+        return 2;
+    }
 
     // AUDIT-FIX M20: Get mark price with freshness check
     let mark_price = fresh_mark_price(pair_id);
-    if mark_price == 0 { reentrancy_exit(); return 6; }
+    if mark_price == 0 {
+        reentrancy_exit();
+        return 6;
+    }
 
     // Check initial margin (tiered by leverage)
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
-    let (initial_margin_bps, _maint_bps, _liq_penalty_bps, _funding_mult) = get_tier_params(leverage);
+    let (initial_margin_bps, _maint_bps, _liq_penalty_bps, _funding_mult) =
+        get_tier_params(leverage);
     // AUDIT-FIX NEW-H2: initial_margin_bps already factors in leverage via the tier table
     // (e.g. 10x → 1000 bps = 10%). Do NOT divide by leverage again — that was double-discounting.
     let required_margin = (notional * initial_margin_bps / 10_000).max(1);
-    if margin_amount < required_margin { reentrancy_exit(); return 3; }
+    if margin_amount < required_margin {
+        reentrancy_exit();
+        return 3;
+    }
+
+    // AUDIT-FIX H-11: Reject if total open interest would exceed cap
+    let current_oi = load_u64(TOTAL_OPEN_INTEREST_KEY);
+    if current_oi.saturating_add(notional) > MAX_TOTAL_OPEN_INTEREST {
+        log_info("Total open interest cap exceeded");
+        reentrancy_exit();
+        return 9;
+    }
 
     let pos_count = load_u64(POSITION_COUNT_KEY);
-    if pos_count >= MAX_POSITIONS { reentrancy_exit(); return 4; }
+    if pos_count >= MAX_POSITIONS {
+        reentrancy_exit();
+        return 4;
+    }
 
     let pos_id = pos_count + 1;
     let slot = get_slot();
@@ -640,9 +904,19 @@ pub fn open_position_with_mode(
     }
 
     let data = encode_position(
-        &t, pos_id, pair_id, side, POS_OPEN,
-        size, margin_amount, mark_price, leverage,
-        slot, 0, 0, margin_mode,
+        &t,
+        pos_id,
+        pair_id,
+        side,
+        POS_OPEN,
+        size,
+        margin_amount,
+        mark_price,
+        leverage,
+        slot,
+        0,
+        0,
+        margin_mode,
     );
     storage_set(&position_key(pos_id), &data);
     save_u64(POSITION_COUNT_KEY, pos_id);
@@ -654,7 +928,16 @@ pub fn open_position_with_mode(
 
     // AUDIT-FIX G-7: Correct divisor to 1e9 (matches all other notional calcs)
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
-    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(notional));
+    save_u64(
+        TOTAL_VOLUME_KEY,
+        load_u64(TOTAL_VOLUME_KEY).saturating_add(notional),
+    );
+
+    // AUDIT-FIX H-11: Track total open interest
+    save_u64(
+        TOTAL_OPEN_INTEREST_KEY,
+        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_add(notional),
+    );
 
     log_info("Margin position opened");
     reentrancy_exit();
@@ -665,9 +948,13 @@ pub fn open_position_with_mode(
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
 ///          5=oracle unavailable (price stale or missing)
 pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -679,12 +966,21 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_pos_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let margin = decode_pos_margin(&data);
     let size = decode_pos_size(&data);
@@ -715,24 +1011,26 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     data[90..98].copy_from_slice(&pnl_biased.to_le_bytes());
     // Track cumulative PnL
     let unlock_amount = if is_profit {
-        save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
+        save_u64(
+            TOTAL_PNL_PROFIT_KEY,
+            load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl),
+        );
         margin.saturating_add(pnl)
     } else {
-        save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
+        save_u64(
+            TOTAL_PNL_LOSS_KEY,
+            load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl),
+        );
         margin.saturating_sub(pnl)
     };
 
     // Unlock collateral at host level (move from locked to spendable)
-    let unlock_call = CrossCall::new(
-        Address([0u8; 32]),
-        "unlock",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&trader);
-            args.extend_from_slice(&u64_to_bytes(unlock_amount));
-            args
-        },
-    );
+    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
+        let mut args = Vec::with_capacity(40);
+        args.extend_from_slice(&trader);
+        args.extend_from_slice(&u64_to_bytes(unlock_amount));
+        args
+    });
     // AUDIT-FIX G-3: Check unlock return — do NOT mark closed if unlock fails
     if call_contract(unlock_call).is_err() {
         log_info("close_position: collateral unlock failed");
@@ -742,6 +1040,14 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
 
     update_pos_status(&mut data, POS_CLOSED);
     storage_set(&pk, &data);
+
+    // AUDIT-FIX H-11: Decrement total open interest on close
+    let close_notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    save_u64(
+        TOTAL_OPEN_INTEREST_KEY,
+        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(close_notional),
+    );
+
     moltchain_sdk::set_return_data(&u64_to_bytes(unlock_amount));
     log_info("Margin position closed");
     reentrancy_exit();
@@ -754,9 +1060,13 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
 ///          5=oracle unavailable (price stale or missing), 6=limit condition not met/invalid.
 pub fn close_position_limit(caller: *const u8, position_id: u64, limit_price: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -773,12 +1083,21 @@ pub fn close_position_limit(caller: *const u8, position_id: u64, limit_price: u6
     let pk = position_key(position_id);
     let data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_pos_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let pair_id = decode_pos_pair_id(&data);
     let side = decode_pos_side(&data);
@@ -809,10 +1128,19 @@ pub fn close_position_limit(caller: *const u8, position_id: u64, limit_price: u6
 /// If close_amount >= current position size, delegates to full limit-close.
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
 ///          5=oracle unavailable (price stale or missing), 6=invalid input/limit condition not met.
-pub fn partial_close_limit(caller: *const u8, position_id: u64, close_amount: u64, limit_price: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+pub fn partial_close_limit(
+    caller: *const u8,
+    position_id: u64,
+    close_amount: u64,
+    limit_price: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != c {
@@ -828,12 +1156,21 @@ pub fn partial_close_limit(caller: *const u8, position_id: u64, close_amount: u6
     let pk = position_key(position_id);
     let data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_pos_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let pair_id = decode_pos_pair_id(&data);
     let side = decode_pos_side(&data);
@@ -865,9 +1202,13 @@ pub fn partial_close_limit(caller: *const u8, position_id: u64, close_amount: u6
 
 /// Add margin to a position
 pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -879,29 +1220,40 @@ pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
-    if decode_pos_trader(&data) != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
-    if amount == 0 { reentrancy_exit(); return 5; }
+    if decode_pos_trader(&data) != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 5;
+    }
 
     let current_margin = decode_pos_margin(&data);
     let new_margin = match current_margin.checked_add(amount) {
         Some(m) => m,
-        None => { reentrancy_exit(); return 6; } // overflow
+        None => {
+            reentrancy_exit();
+            return 6;
+        } // overflow
     };
 
     // AUDIT-FIX G6-01: Lock additional collateral at host level
-    let lock_call = CrossCall::new(
-        Address([0u8; 32]),
-        "lock",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&c);
-            args.extend_from_slice(&u64_to_bytes(amount));
-            args
-        },
-    );
+    let lock_call = CrossCall::new(Address([0u8; 32]), "lock", {
+        let mut args = Vec::with_capacity(40);
+        args.extend_from_slice(&c);
+        args.extend_from_slice(&u64_to_bytes(amount));
+        args
+    });
     if call_contract(lock_call).is_err() {
         log_info("Collateral lock failed on add_margin");
         reentrancy_exit();
@@ -916,9 +1268,13 @@ pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
 
 /// Remove margin from a position (if still healthy)
 pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -930,13 +1286,25 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
-    if decode_pos_trader(&data) != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if decode_pos_trader(&data) != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let current_margin = decode_pos_margin(&data);
-    if amount > current_margin { reentrancy_exit(); return 5; }
+    if amount > current_margin {
+        reentrancy_exit();
+        return 5;
+    }
     let new_margin = current_margin - amount;
 
     // Check if still above maintenance (tiered by leverage)
@@ -958,20 +1326,23 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     let (_init_bps, maint_bps, _liq_bps, _fund_mult) = get_tier_params(leverage);
     // Use admin-overridden maintenance if set and higher than tier
     let admin_maint = get_maintenance_margin_override();
-    let effective_maint = if admin_maint > maint_bps { admin_maint } else { maint_bps };
-    if ratio < effective_maint { reentrancy_exit(); return 6; } // would be unhealthy
+    let effective_maint = if admin_maint > maint_bps {
+        admin_maint
+    } else {
+        maint_bps
+    };
+    if ratio < effective_maint {
+        reentrancy_exit();
+        return 6;
+    } // would be unhealthy
 
     // AUDIT-FIX G6-01: Unlock removed collateral at host level
-    let unlock_call = CrossCall::new(
-        Address([0u8; 32]),
-        "unlock",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&c);
-            args.extend_from_slice(&u64_to_bytes(amount));
-            args
-        },
-    );
+    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
+        let mut args = Vec::with_capacity(40);
+        args.extend_from_slice(&c);
+        args.extend_from_slice(&u64_to_bytes(amount));
+        args
+    });
     if call_contract(unlock_call).is_err() {
         log_info("remove_margin: collateral unlock failed");
         reentrancy_exit();
@@ -987,10 +1358,14 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
 /// Liquidate an unhealthy position
 /// Returns: 0=success, 1=not found, 2=not liquidatable, 3=reentrancy
 pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
-    if !reentrancy_enter() { return 3; }
+    if !reentrancy_enter() {
+        return 3;
+    }
 
     let mut liq = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(_liquidator, liq.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(_liquidator, liq.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1002,10 +1377,16 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 2; }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 2;
+    }
 
     let margin = decode_pos_margin(&data);
     let size = decode_pos_size(&data);
@@ -1015,15 +1396,25 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let entry_price = decode_pos_entry_price(&data);
     // AUDIT-FIX M20: Freshness-checked mark price for liquidation
     let mark_price = fresh_mark_price(pair_id);
-    if mark_price == 0 { reentrancy_exit(); return 2; }
+    if mark_price == 0 {
+        reentrancy_exit();
+        return 2;
+    }
 
     // F10.2-A FIX: Use PnL-aware margin ratio for liquidation check
     let ratio = calculate_margin_ratio_with_pnl(margin, size, entry_price, mark_price, side);
     let (_init_bps, maint_bps, liq_penalty_bps, _fund_mult) = get_tier_params(leverage);
     // Use admin-overridden maintenance if set and higher than tier
     let admin_maint = get_maintenance_margin_override();
-    let effective_maint = if admin_maint > maint_bps { admin_maint } else { maint_bps };
-    if ratio >= effective_maint { reentrancy_exit(); return 2; } // still healthy
+    let effective_maint = if admin_maint > maint_bps {
+        admin_maint
+    } else {
+        maint_bps
+    };
+    if ratio >= effective_maint {
+        reentrancy_exit();
+        return 2;
+    } // still healthy
 
     // Calculate penalty (tiered by leverage)
     // AUDIT-FIX NEW-L1: Use u128 intermediates to prevent overflow; derive insurance_add
@@ -1050,16 +1441,12 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let trader = decode_pos_trader(&data);
     let remaining = margin.saturating_sub(penalty);
     if remaining > 0 {
-        let unlock_call = CrossCall::new(
-            Address([0u8; 32]),
-            "unlock",
-            {
-                let mut args = Vec::with_capacity(40);
-                args.extend_from_slice(&trader);
-                args.extend_from_slice(&u64_to_bytes(remaining));
-                args
-            },
-        );
+        let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
+            let mut args = Vec::with_capacity(40);
+            args.extend_from_slice(&trader);
+            args.extend_from_slice(&u64_to_bytes(remaining));
+            args
+        });
         // AUDIT-FIX G-3: Check unlock return — revert if host unlock fails
         if call_contract(unlock_call).is_err() {
             // Undo insurance fund credit before reverting
@@ -1071,16 +1458,12 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     }
 
     // Deduct penalty from locked balance
-    let deduct_call = CrossCall::new(
-        Address([0u8; 32]),
-        "deduct",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&trader);
-            args.extend_from_slice(&u64_to_bytes(penalty.min(margin)));
-            args
-        },
-    );
+    let deduct_call = CrossCall::new(Address([0u8; 32]), "deduct", {
+        let mut args = Vec::with_capacity(40);
+        args.extend_from_slice(&trader);
+        args.extend_from_slice(&u64_to_bytes(penalty.min(margin)));
+        args
+    });
     // AUDIT-FIX G-3: Check deduct return — revert if host deduct fails
     if call_contract(deduct_call).is_err() {
         save_u64(INSURANCE_FUND_KEY, insurance);
@@ -1097,15 +1480,28 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
             contract_addr,
             Address(liq),
             liquidator_reward,
-        ).is_err() {
+        )
+        .is_err()
+        {
             log_info("liquidate: reward transfer failed, crediting to insurance");
             // If transfer fails, add reward to insurance fund instead of losing it
-            save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add).saturating_add(liquidator_reward));
+            save_u64(
+                INSURANCE_FUND_KEY,
+                insurance
+                    .saturating_add(insurance_add)
+                    .saturating_add(liquidator_reward),
+            );
         }
     }
 
     update_pos_status(&mut data, POS_LIQUIDATED);
     storage_set(&pk, &data);
+
+    // AUDIT-FIX H-11: Decrement total open interest on liquidation
+    save_u64(
+        TOTAL_OPEN_INTEREST_KEY,
+        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(notional),
+    );
 
     // Track liquidation count
     save_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
@@ -1119,7 +1515,9 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
 /// Set max leverage for a pair (admin)
 pub fn set_max_leverage(caller: *const u8, pair_id: u64, max_leverage: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1127,8 +1525,12 @@ pub fn set_max_leverage(caller: *const u8, pair_id: u64, max_leverage: u64) -> u
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
-    if max_leverage == 0 || max_leverage > 100 { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if max_leverage == 0 || max_leverage > 100 {
+        return 2;
+    }
     save_u64(&max_leverage_key(pair_id), max_leverage);
     0
 }
@@ -1138,7 +1540,9 @@ pub fn set_max_leverage(caller: *const u8, pair_id: u64, max_leverage: u64) -> u
 /// Acts as a floor override that applies when higher than tier default.
 pub fn set_maintenance_margin(caller: *const u8, margin_bps: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1146,8 +1550,12 @@ pub fn set_maintenance_margin(caller: *const u8, margin_bps: u64) -> u32 {
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
-    if margin_bps < 200 || margin_bps > 5000 { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if margin_bps < 200 || margin_bps > 5000 {
+        return 2;
+    }
     save_u64(&maintenance_margin_key_fn(), margin_bps);
     0
 }
@@ -1167,8 +1575,12 @@ pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
-    if is_zero(&a) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
     storage_set(MOLTCOIN_ADDRESS_KEY, &a);
     0
 }
@@ -1190,23 +1602,26 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
-    if amount == 0 { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if amount == 0 {
+        return 2;
+    }
 
     let insurance = load_u64(INSURANCE_FUND_KEY);
-    if amount > insurance { return 3; }
+    if amount > insurance {
+        return 3;
+    }
 
     let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if is_zero(&molt_addr) { return 4; }
+    if is_zero(&molt_addr) {
+        return 4;
+    }
 
     // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
     let contract_addr = get_contract_address();
-    match call_token_transfer(
-        Address(molt_addr),
-        contract_addr,
-        Address(r),
-        amount,
-    ) {
+    match call_token_transfer(Address(molt_addr), contract_addr, Address(r), amount) {
         Ok(_) => {
             save_u64(INSURANCE_FUND_KEY, insurance - amount);
             log_info("Insurance fund withdrawal");
@@ -1240,7 +1655,11 @@ pub fn get_maintenance_margin_override() -> u64 {
 pub fn get_maintenance_margin(leverage: u64) -> u64 {
     let (_init_bps, tier_maint, _liq_bps, _fund_mult) = get_tier_params(leverage);
     let admin_override = get_maintenance_margin_override();
-    if admin_override > tier_maint { admin_override } else { tier_maint }
+    if admin_override > tier_maint {
+        admin_override
+    } else {
+        tier_maint
+    }
 }
 
 /// Get margin ratio for a position (in bps)
@@ -1257,13 +1676,19 @@ pub fn get_margin_ratio(position_id: u64) -> u64 {
     let entry_price = decode_pos_entry_price(&data);
     // AUDIT-FIX M20: Freshness-checked mark price for ratio query
     let mark_price = fresh_mark_price(pair_id);
-    if mark_price == 0 { return 0; }
+    if mark_price == 0 {
+        return 0;
+    }
     // F10.2-A FIX: Use PnL-aware ratio
     calculate_margin_ratio_with_pnl(margin, size, entry_price, mark_price, side)
 }
 
-pub fn get_position_count() -> u64 { load_u64(POSITION_COUNT_KEY) }
-pub fn get_insurance_fund() -> u64 { load_u64(INSURANCE_FUND_KEY) }
+pub fn get_position_count() -> u64 {
+    load_u64(POSITION_COUNT_KEY)
+}
+pub fn get_insurance_fund() -> u64 {
+    load_u64(INSURANCE_FUND_KEY)
+}
 
 pub fn get_position_info(position_id: u64) -> u64 {
     let pk = position_key(position_id);
@@ -1282,12 +1707,16 @@ pub fn get_position_info(position_id: u64) -> u64 {
 /// Used by dex_core for reduce-only order validation.
 pub fn query_user_open_position(trader: *const u8, pair_id: u64) -> u64 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, addr.as_mut_ptr(), 32);
+    }
 
     let count = load_u64(&user_position_count_key(&addr));
     for i in 1..=count {
         let pos_id = load_u64(&user_position_key(&addr, i));
-        if pos_id == 0 { continue; }
+        if pos_id == 0 {
+            continue;
+        }
         let pk = position_key(pos_id);
         if let Some(data) = storage_get(&pk) {
             if data.len() >= POSITION_SIZE_V1 {
@@ -1306,7 +1735,9 @@ pub fn query_user_open_position(trader: *const u8, pair_id: u64) -> u64 {
 
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1314,14 +1745,18 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Margin: EMERGENCY PAUSE");
     0
 }
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1329,7 +1764,9 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
         return 200;
     }
 
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     0
 }
@@ -1345,9 +1782,13 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
 /// Returns: 0=success, 1=not found, 2=not owner, 3=not open, 4=reentrancy,
 ///          5=zero close amount
 pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1364,12 +1805,21 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_pos_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let size = decode_pos_size(&data);
     let margin = decode_pos_margin(&data);
@@ -1415,29 +1865,33 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     } else {
         existing_pnl_biased.saturating_sub(pnl)
     };
-    while data.len() < POSITION_SIZE { data.push(0); }
+    while data.len() < POSITION_SIZE {
+        data.push(0);
+    }
     data[90..98].copy_from_slice(&new_pnl_biased.to_le_bytes());
 
     // Track cumulative PnL
     let unlock_amount = if is_profit {
-        save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
+        save_u64(
+            TOTAL_PNL_PROFIT_KEY,
+            load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl),
+        );
         proportional_margin.saturating_add(pnl)
     } else {
-        save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
+        save_u64(
+            TOTAL_PNL_LOSS_KEY,
+            load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl),
+        );
         proportional_margin.saturating_sub(pnl)
     };
 
     // Unlock proportional collateral
-    let unlock_call = CrossCall::new(
-        Address([0u8; 32]),
-        "unlock",
-        {
-            let mut args = Vec::with_capacity(40);
-            args.extend_from_slice(&trader);
-            args.extend_from_slice(&u64_to_bytes(unlock_amount));
-            args
-        },
-    );
+    let unlock_call = CrossCall::new(Address([0u8; 32]), "unlock", {
+        let mut args = Vec::with_capacity(40);
+        args.extend_from_slice(&trader);
+        args.extend_from_slice(&u64_to_bytes(unlock_amount));
+        args
+    });
     // AUDIT-FIX G-3: Check unlock return — do NOT mutate position if unlock fails
     if call_contract(unlock_call).is_err() {
         log_info("partial_close: collateral unlock failed");
@@ -1449,6 +1903,13 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     update_pos_size(&mut data, remaining_size);
     update_pos_margin(&mut data, remaining_margin);
     storage_set(&pk, &data);
+
+    // AUDIT-FIX H-11: Decrement OI for the closed portion
+    let closed_notional = (close_amount as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    save_u64(
+        TOTAL_OPEN_INTEREST_KEY,
+        load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(closed_notional),
+    );
 
     moltchain_sdk::set_return_data(&u64_to_bytes(unlock_amount));
     log_info("Margin position partially closed");
@@ -1483,12 +1944,21 @@ pub fn set_position_sl_tp(
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_pos_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
-    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
+    if decode_pos_status(&data) != POS_OPEN {
+        reentrancy_exit();
+        return 3;
+    }
 
     let side = decode_pos_side(&data);
     let entry_price = decode_pos_entry_price(&data);
@@ -1530,7 +2000,9 @@ pub fn set_position_sl_tp(
 #[no_mangle]
 pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
-    if args.is_empty() { return; }
+    if args.is_empty() {
+        return;
+    }
     match args[0] {
         // 0 = initialize(admin[32])
         0 => {
@@ -1556,8 +2028,20 @@ pub extern "C" fn call() {
                 let size = bytes_to_u64(&args[42..50]);
                 let leverage = bytes_to_u64(&args[50..58]);
                 let margin = bytes_to_u64(&args[58..66]);
-                let margin_mode = if args.len() >= 67 { args[66] } else { MARGIN_MODE_ISOLATED };
-                let r = open_position_with_mode(args[1..33].as_ptr(), pair_id, side, size, leverage, margin, margin_mode);
+                let margin_mode = if args.len() >= 67 {
+                    args[66]
+                } else {
+                    MARGIN_MODE_ISOLATED
+                };
+                let r = open_position_with_mode(
+                    args[1..33].as_ptr(),
+                    pair_id,
+                    side,
+                    size,
+                    leverage,
+                    margin,
+                    margin_mode,
+                );
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
@@ -1770,11 +2254,14 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let close_amount = bytes_to_u64(&args[41..49]);
                 let limit_price = bytes_to_u64(&args[49..57]);
-                let r = partial_close_limit(args[1..33].as_ptr(), pos_id, close_amount, limit_price);
+                let r =
+                    partial_close_limit(args[1..33].as_ptr(), pos_id, close_amount, limit_price);
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 
@@ -1839,10 +2326,10 @@ mod tests {
     #[test]
     fn test_tier_params_2x() {
         let (init, maint, liq, fund) = get_tier_params(2);
-        assert_eq!(init, 5000);  // 50%
+        assert_eq!(init, 5000); // 50%
         assert_eq!(maint, 2500); // 25%
-        assert_eq!(liq, 300);    // 3%
-        assert_eq!(fund, 10);    // 1.0x
+        assert_eq!(liq, 300); // 3%
+        assert_eq!(fund, 10); // 1.0x
     }
 
     #[test]
@@ -1928,7 +2415,10 @@ mod tests {
         test_mock::set_slot(100);
         // AUDIT-FIX NEW-H2: corrected formula — no /leverage.
         // 2x tier: initial_margin_bps=5000 → required = 1B * 5000/10000 = 500_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
         assert_eq!(get_position_count(), 1);
     }
 
@@ -1938,7 +2428,17 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_SHORT, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(
+                trader.as_ptr(),
+                1,
+                SIDE_SHORT,
+                1_000_000_000,
+                2,
+                500_000_000
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1948,7 +2448,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 5x tier: initial_margin_bps=2000 → required = 1B * 2000/10000 = 200_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000),
+            0
+        );
     }
 
     #[test]
@@ -1958,7 +2461,17 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 10x tier: initial_margin_bps=1000 → required = 1B * 1000/10000 = 100_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 10, 100_000_000), 0);
+        assert_eq!(
+            open_position(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                10,
+                100_000_000
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1968,7 +2481,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 25x tier: initial_margin_bps=400 → required = 1B * 400/10000 = 40_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 25, 40_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 25, 40_000_000),
+            0
+        );
     }
 
     #[test]
@@ -1978,7 +2494,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 20_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 20_000_000),
+            0
+        );
     }
 
     #[test]
@@ -1988,7 +2507,17 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 100x tier: initial_margin_bps=100 → required = 1B * 100/10000 = 10_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 100, 10_000_000), 0);
+        assert_eq!(
+            open_position(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                100,
+                10_000_000
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1997,7 +2526,15 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         assert_eq!(
-            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 4, 250_000_000, MARGIN_MODE_CROSS),
+            open_position_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                4,
+                250_000_000,
+                MARGIN_MODE_CROSS
+            ),
             2
         );
     }
@@ -2008,7 +2545,15 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         assert_eq!(
-            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 3, 333_300_000, MARGIN_MODE_CROSS),
+            open_position_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                3,
+                333_300_000,
+                MARGIN_MODE_CROSS
+            ),
             0
         );
         let data = storage_get(&position_key(1)).unwrap();
@@ -2021,7 +2566,15 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         assert_eq!(
-            open_position_with_mode(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000, 9),
+            open_position_with_mode(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                2,
+                500_000_000,
+                9
+            ),
             9
         );
     }
@@ -2032,7 +2585,10 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         // 101x exceeds MAX_LEVERAGE_ISOLATED=100
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1000, 101, 200), 2);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1000, 101, 200),
+            2
+        );
     }
 
     #[test]
@@ -2042,7 +2598,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 5x, notional=1B, required=200_000_000; give less
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 199_999_999), 3);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 199_999_999),
+            3
+        );
     }
 
     #[test]
@@ -2052,7 +2611,10 @@ mod tests {
         enable_margin_pair(admin.as_ptr(), 2);
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
-        assert_eq!(open_position(trader.as_ptr(), 2, SIDE_LONG, 1000, 2, 200), 6);
+        assert_eq!(
+            open_position(trader.as_ptr(), 2, SIDE_LONG, 1000, 2, 200),
+            6
+        );
     }
 
     #[test]
@@ -2061,7 +2623,10 @@ mod tests {
         emergency_pause(admin.as_ptr());
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1000, 2, 200), 1);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1000, 2, 200),
+            1
+        );
     }
 
     #[test]
@@ -2225,7 +2790,14 @@ mod tests {
         // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
         // notional=1B, required margin = 1B * 2000/10000 = 200M
         test_mock::set_caller(trader_a);
-        let r1 = open_position(trader_a.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000);
+        let r1 = open_position(
+            trader_a.as_ptr(),
+            1,
+            SIDE_LONG,
+            1_000_000_000,
+            5,
+            200_000_000,
+        );
         assert_eq!(r1, 0, "open_position 5x should succeed");
 
         let before = get_insurance_fund();
@@ -2249,7 +2821,14 @@ mod tests {
         // For 2x tier: initial=5000bps, maint=2500bps=25%, penalty=300bps
         // notional=1B, required = 500M
         test_mock::set_caller(trader_b);
-        let r2 = open_position(trader_b.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        let r2 = open_position(
+            trader_b.as_ptr(),
+            1,
+            SIDE_LONG,
+            1_000_000_000,
+            2,
+            500_000_000,
+        );
         assert_eq!(r2, 0, "open_position 2x should succeed");
         // Drop mark price to 0.6 → PnL=-400M, effective=100M, notional=600M
         // ratio = 100M/600M*10000 = 1666 bps < 2500 maint → liquidatable
@@ -2296,7 +2875,10 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 51, 200), 2);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 51, 200),
+            2
+        );
     }
 
     #[test]
@@ -2326,7 +2908,8 @@ mod tests {
 
     #[test]
     fn test_pnl_calculation_long_profit() {
-        let (is_profit, pnl) = calculate_pnl(SIDE_LONG, 1_000_000_000, 1_000_000_000, 1_500_000_000);
+        let (is_profit, pnl) =
+            calculate_pnl(SIDE_LONG, 1_000_000_000, 1_000_000_000, 1_500_000_000);
         assert!(is_profit);
         assert_eq!(pnl, 500_000_000);
     }
@@ -2347,7 +2930,8 @@ mod tests {
 
     #[test]
     fn test_pnl_calculation_short_loss() {
-        let (is_profit, pnl) = calculate_pnl(SIDE_SHORT, 1_000_000_000, 1_000_000_000, 1_500_000_000);
+        let (is_profit, pnl) =
+            calculate_pnl(SIDE_SHORT, 1_000_000_000, 1_000_000_000, 1_500_000_000);
         assert!(!is_profit);
         assert_eq!(pnl, 500_000_000);
     }
@@ -2416,7 +3000,10 @@ mod tests {
         // Seed insurance fund
         save_u64(INSURANCE_FUND_KEY, 1_000_000);
         let recipient = [5u8; 32];
-        assert_eq!(withdraw_insurance(admin.as_ptr(), 500_000, recipient.as_ptr()), 4);
+        assert_eq!(
+            withdraw_insurance(admin.as_ptr(), 500_000, recipient.as_ptr()),
+            4
+        );
     }
 
     #[test]
@@ -2427,7 +3014,10 @@ mod tests {
         set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
         let recipient = [5u8; 32];
         // In test mode, cross-contract call returns Ok(Vec::new()) → success path
-        assert_eq!(withdraw_insurance(admin.as_ptr(), 500_000, recipient.as_ptr()), 0);
+        assert_eq!(
+            withdraw_insurance(admin.as_ptr(), 500_000, recipient.as_ptr()),
+            0
+        );
         assert_eq!(get_insurance_fund(), 500_000);
     }
 
@@ -2438,7 +3028,10 @@ mod tests {
         let molt_addr = [10u8; 32];
         set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
         let recipient = [5u8; 32];
-        assert_eq!(withdraw_insurance(admin.as_ptr(), 200, recipient.as_ptr()), 3);
+        assert_eq!(
+            withdraw_insurance(admin.as_ptr(), 200, recipient.as_ptr()),
+            3
+        );
     }
 
     #[test]
@@ -2454,7 +3047,10 @@ mod tests {
         let rando = [99u8; 32];
         let recipient = [5u8; 32];
         test_mock::set_caller(rando);
-        assert_eq!(withdraw_insurance(rando.as_ptr(), 100, recipient.as_ptr()), 1);
+        assert_eq!(
+            withdraw_insurance(rando.as_ptr(), 100, recipient.as_ptr()),
+            1
+        );
     }
 
     #[test]
@@ -2488,10 +3084,10 @@ mod tests {
         assert_eq!(r, 25);
         let ret = test_mock::get_return_data();
         assert_eq!(ret.len(), 32);
-        assert_eq!(bytes_to_u64(&ret[0..8]), 400);   // init_margin
-        assert_eq!(bytes_to_u64(&ret[8..16]), 200);  // maint_margin
+        assert_eq!(bytes_to_u64(&ret[0..8]), 400); // init_margin
+        assert_eq!(bytes_to_u64(&ret[8..16]), 200); // maint_margin
         assert_eq!(bytes_to_u64(&ret[16..24]), 700); // liq_penalty
-        assert_eq!(bytes_to_u64(&ret[24..32]), 30);  // funding_mult
+        assert_eq!(bytes_to_u64(&ret[24..32]), 30); // funding_mult
     }
 
     #[test]
@@ -2542,7 +3138,10 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         // Pair 2 has no margin enabled — should return 7
-        assert_eq!(open_position(trader.as_ptr(), 2, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 7);
+        assert_eq!(
+            open_position(trader.as_ptr(), 2, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            7
+        );
     }
 
     #[test]
@@ -2553,7 +3152,10 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         // Should fail with error 7 (pair not margin-enabled)
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 7);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            7
+        );
     }
 
     // ---- COLLATERAL LOCKING TESTS (G6-01) ----
@@ -2567,7 +3169,10 @@ mod tests {
         test_mock::set_slot(100);
 
         // 1. Open position with 500M margin (locks 500M)
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_margin(&data), 500_000_000);
 
@@ -2729,7 +3334,10 @@ mod tests {
         // Open position at mark = 1.0 (matching setup)
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Now shift mark above index for funding
         test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
@@ -2748,7 +3356,10 @@ mod tests {
         let data = storage_get(&position_key(1)).unwrap();
         let new_margin = decode_pos_margin(&data);
         // Long pays: margin decreased
-        assert!(new_margin < 500_000_000, "Long margin should decrease when mark > index");
+        assert!(
+            new_margin < 500_000_000,
+            "Long margin should decrease when mark > index"
+        );
         assert_eq!(new_margin, 500_000_000 - 10_100_000); // 489_900_000
     }
 
@@ -2761,12 +3372,22 @@ mod tests {
         // Set mark to 0.99 (1% below index)
         test_mock::set_caller(admin);
         set_mark_price(admin.as_ptr(), 1, 990_000_000); // 0.99
-        // Index stays at 1.0
+                                                        // Index stays at 1.0
 
         // Open a short position
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_SHORT, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(
+                trader.as_ptr(),
+                1,
+                SIDE_SHORT,
+                1_000_000_000,
+                2,
+                500_000_000
+            ),
+            0
+        );
 
         // Advance past funding interval
         test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
@@ -2781,7 +3402,10 @@ mod tests {
         // payment = 990_000_000 * 100 / 10000 = 9_900_000
         let data = storage_get(&position_key(1)).unwrap();
         let new_margin = decode_pos_margin(&data);
-        assert!(new_margin < 500_000_000, "Short margin should decrease when mark < index");
+        assert!(
+            new_margin < 500_000_000,
+            "Short margin should decrease when mark < index"
+        );
         assert_eq!(new_margin, 500_000_000 - 9_900_000); // 490_100_000
     }
 
@@ -2793,11 +3417,14 @@ mod tests {
 
         test_mock::set_caller(admin);
         set_mark_price(admin.as_ptr(), 1, 990_000_000); // mark 0.99
-        // Index stays at 1.0
+                                                        // Index stays at 1.0
 
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
         test_mock::set_caller(admin);
@@ -2809,7 +3436,10 @@ mod tests {
         let data = storage_get(&position_key(1)).unwrap();
         let new_margin = decode_pos_margin(&data);
         // Long receives when mark < index
-        assert!(new_margin > 500_000_000, "Long margin should increase when mark < index");
+        assert!(
+            new_margin > 500_000_000,
+            "Long margin should increase when mark < index"
+        );
         assert_eq!(new_margin, 500_000_000 + 9_900_000); // 509_900_000
     }
 
@@ -2822,7 +3452,10 @@ mod tests {
         // Open position at mark = 1.0 (matching setup)
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Set mark to 1.50 (50% above index) — would be 5000 bps, capped to 100
         test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
@@ -2904,7 +3537,10 @@ mod tests {
         let acc = decode_pos_accumulated_funding(&data);
         // Long paid 10.1M, so accumulated = (1<<63) - 10_100_000
         let zero_point = 1u64 << 63;
-        assert!(acc < zero_point, "Long pays → accumulated funding below bias point");
+        assert!(
+            acc < zero_point,
+            "Long pays → accumulated funding below bias point"
+        );
         assert_eq!(zero_point - acc, 10_100_000);
     }
 
@@ -2918,7 +3554,17 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         // 10x: init = 10%, need 100M margin for 1B notional at price 1.0
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 10, 500_000_000), 0);
+        assert_eq!(
+            open_position(
+                trader.as_ptr(),
+                1,
+                SIDE_LONG,
+                1_000_000_000,
+                10,
+                500_000_000
+            ),
+            0
+        );
 
         // Now shift mark above index
         test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
@@ -2950,7 +3596,10 @@ mod tests {
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
         // Open position with fresh mark price
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Advance timestamp past MAX_PRICE_AGE_SECONDS (1800s) without updating oracle
         test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
@@ -2975,15 +3624,15 @@ mod tests {
         let pos_id = 1u64;
         save_u64(POSITION_COUNT_KEY, pos_id);
         let mut pos = alloc::vec![0u8; POSITION_SIZE];
-        pos[0..32].copy_from_slice(&trader);    // trader
+        pos[0..32].copy_from_slice(&trader); // trader
         pos[32..40].copy_from_slice(&u64_to_bytes(pos_id)); // id
-        pos[40] = POS_OPEN;                      // status
-        pos[41] = SIDE_LONG;                      // side
+        pos[40] = POS_OPEN; // status
+        pos[41] = SIDE_LONG; // side
         pos[42..50].copy_from_slice(&u64_to_bytes(1_000_000_000)); // size
         pos[50..58].copy_from_slice(&u64_to_bytes(1_000_000_000)); // entry_price
-        pos[58..66].copy_from_slice(&u64_to_bytes(500_000_000));   // margin
-        pos[66..74].copy_from_slice(&u64_to_bytes(99));            // pair_id
-        pos[74..82].copy_from_slice(&u64_to_bytes(2));             // leverage
+        pos[58..66].copy_from_slice(&u64_to_bytes(500_000_000)); // margin
+        pos[66..74].copy_from_slice(&u64_to_bytes(99)); // pair_id
+        pos[74..82].copy_from_slice(&u64_to_bytes(2)); // leverage
         storage_set(&position_key(pos_id), &pos);
 
         test_mock::set_caller(trader);
@@ -2999,7 +3648,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Refresh oracle within staleness window
         test_mock::set_timestamp(1500);
@@ -3018,7 +3670,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         test_mock::set_caller(admin);
         set_mark_price(admin.as_ptr(), 1, 1_020_000_000);
@@ -3036,7 +3691,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Current mark is 1.0, so requiring >= 1.1 should fail.
         assert_eq!(close_position_limit(trader.as_ptr(), 1, 1_100_000_000), 6);
@@ -3051,13 +3709,19 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         test_mock::set_caller(admin);
         set_mark_price(admin.as_ptr(), 1, 1_020_000_000);
 
         test_mock::set_caller(trader);
-        assert_eq!(partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_010_000_000), 0);
+        assert_eq!(
+            partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_010_000_000),
+            0
+        );
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_OPEN);
         assert_eq!(decode_pos_size(&data), 500_000_000);
@@ -3070,10 +3734,16 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Current mark is 1.0, so requiring >= 1.1 should fail.
-        assert_eq!(partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_100_000_000), 6);
+        assert_eq!(
+            partial_close_limit(trader.as_ptr(), 1, 500_000_000, 1_100_000_000),
+            6
+        );
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_OPEN);
         assert_eq!(decode_pos_size(&data), 1_000_000_000);
@@ -3087,7 +3757,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Advance past staleness window
         test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
@@ -3103,7 +3776,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
         test_mock::set_caller(trader);
@@ -3123,7 +3799,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Query should find the open position on pair 1
         let pos_id = query_user_open_position(trader.as_ptr(), 1);
@@ -3137,7 +3816,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Pair 2 doesn't exist for this trader — should return 0
         // (need to enable margin for pair 2 first, but query doesn't check that)
@@ -3152,7 +3834,10 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(100);
         test_mock::set_timestamp(1000);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        assert_eq!(
+            open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000),
+            0
+        );
 
         // Close the position
         test_mock::set_caller(trader);

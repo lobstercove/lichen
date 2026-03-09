@@ -669,6 +669,10 @@ pub struct StateBatch {
     symbol_overlay: std::collections::HashSet<String>,
     /// Track nullifiers marked spent inside this batch so reads are batch-consistent.
     spent_nullifier_overlay: std::collections::HashSet<[u8; 32]>,
+    /// AUDIT-FIX H-1: Governed proposal overlay so proposals participate in batch atomicity.
+    governed_proposal_overlay: std::collections::HashMap<u64, crate::multisig::GovernedProposal>,
+    /// AUDIT-FIX H-1: Governed proposal counter override (set on first alloc in this batch).
+    governed_proposal_counter: Option<u64>,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -3418,6 +3422,8 @@ impl StateStore {
             nft_token_id_overlay: std::collections::HashSet::new(),
             symbol_overlay: std::collections::HashSet::new(),
             spent_nullifier_overlay: std::collections::HashSet::new(),
+            governed_proposal_overlay: std::collections::HashMap::new(),
+            governed_proposal_counter: None,
             event_seq: 0,
             db: Arc::clone(&self.db),
         }
@@ -4149,6 +4155,75 @@ impl StateBatch {
         }
 
         Ok(())
+    }
+
+    // ─── AUDIT-FIX H-1: Governed proposal batch support ────────────
+
+    /// Allocate the next governed proposal ID through the batch.
+    /// Reads the current counter from disk (or batch override), increments it,
+    /// and writes the new value into the WriteBatch so it commits atomically.
+    pub fn next_governed_proposal_id(&mut self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let current = if let Some(c) = self.governed_proposal_counter {
+            c
+        } else {
+            match self.db.get_cf(&cf, b"governed_proposal_counter") {
+                Ok(Some(data)) if data.len() == 8 => {
+                    u64::from_le_bytes(data[..8].try_into().unwrap())
+                }
+                _ => 0,
+            }
+        };
+        let next = current + 1;
+        self.governed_proposal_counter = Some(next);
+        self.batch
+            .put_cf(&cf, b"governed_proposal_counter", next.to_le_bytes());
+        Ok(next)
+    }
+
+    /// Store a governed proposal into the batch overlay + WriteBatch.
+    pub fn set_governed_proposal(
+        &mut self,
+        proposal: &crate::multisig::GovernedProposal,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_proposal:{}", proposal.id);
+        let data = serde_json::to_vec(proposal)
+            .map_err(|e| format!("Failed to serialize governed proposal: {}", e))?;
+        self.batch.put_cf(&cf, key.as_bytes(), &data);
+        self.governed_proposal_overlay
+            .insert(proposal.id, proposal.clone());
+        Ok(())
+    }
+
+    /// Read a governed proposal, checking batch overlay first then disk.
+    pub fn get_governed_proposal(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::multisig::GovernedProposal>, String> {
+        if let Some(p) = self.governed_proposal_overlay.get(&id) {
+            return Ok(Some(p.clone()));
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_proposal:{}", id);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let proposal: crate::multisig::GovernedProposal = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize proposal: {}", e))?;
+                Ok(Some(proposal))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governed proposal: {}", e)),
+        }
     }
 
     /// Read-only: get last slot (falls through to disk since batches don't modify this).

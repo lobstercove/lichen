@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -873,6 +874,26 @@ async fn main() {
         .route("/ws/events", get(ws_events))
         // ── Audit event history endpoint ──
         .route("/events", get(list_events))
+        // AUDIT-FIX M-18: Restrict CORS to MoltChain domains
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list([
+                    "https://moltchain.network".parse().unwrap(),
+                    "https://wallet.moltchain.network".parse().unwrap(),
+                    "https://explorer.moltchain.network".parse().unwrap(),
+                    "https://dex.moltchain.network".parse().unwrap(),
+                    "http://localhost:3000".parse().unwrap(),
+                    "http://localhost:8080".parse().unwrap(),
+                ]))
+                .allow_methods([
+                    http::Method::GET,
+                    http::Method::POST,
+                    http::Method::PUT,
+                    http::Method::DELETE,
+                    http::Method::OPTIONS,
+                ])
+                .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION]),
+        )
         .with_state(state);
 
     let port = std::env::var("CUSTODY_LISTEN_PORT")

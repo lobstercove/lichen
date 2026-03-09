@@ -607,6 +607,41 @@ impl TxProcessor {
         }
     }
 
+    // ── AUDIT-FIX H-1: Governed proposal batch-aware accessors ──────
+
+    fn b_next_governed_proposal_id(&self) -> Result<u64, String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.next_governed_proposal_id()
+        } else {
+            self.state.next_governed_proposal_id()
+        }
+    }
+
+    fn b_set_governed_proposal(
+        &self,
+        proposal: &crate::multisig::GovernedProposal,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.set_governed_proposal(proposal)
+        } else {
+            self.state.set_governed_proposal(proposal)
+        }
+    }
+
+    fn b_get_governed_proposal(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::multisig::GovernedProposal>, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.get_governed_proposal(id)
+        } else {
+            self.state.get_governed_proposal(id)
+        }
+    }
+
     fn b_get_last_slot(&self) -> Result<u64, String> {
         let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_ref() {
@@ -1956,9 +1991,9 @@ impl TxProcessor {
         }
 
         // Create proposal
+        // AUDIT-FIX H-1: Route through batch for atomicity on rollback
         let proposal_id = self
-            .state
-            .next_governed_proposal_id()
+            .b_next_governed_proposal_id()
             .map_err(|e| format!("Failed to get proposal ID: {}", e))?;
 
         let proposal = crate::multisig::GovernedProposal {
@@ -1971,8 +2006,8 @@ impl TxProcessor {
             executed: false,
         };
 
-        self.state
-            .set_governed_proposal(&proposal)
+        // AUDIT-FIX H-1: Write through batch so proposal is reverted on rollback
+        self.b_set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to store proposal: {}", e))?;
 
         Ok(())
@@ -2003,9 +2038,9 @@ impl TxProcessor {
         );
 
         // Load proposal
+        // AUDIT-FIX H-1: Read through batch for consistency with pending writes
         let mut proposal = self
-            .state
-            .get_governed_proposal(proposal_id)
+            .b_get_governed_proposal(proposal_id)
             .map_err(|e| format!("Failed to load proposal: {}", e))?
             .ok_or_else(|| format!("Governed proposal {} not found", proposal_id))?;
 
@@ -2050,8 +2085,8 @@ impl TxProcessor {
         }
 
         // Save updated proposal
-        self.state
-            .set_governed_proposal(&proposal)
+        // AUDIT-FIX H-1: Write through batch so approval is reverted on rollback
+        self.b_set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to update proposal: {}", e))?;
 
         Ok(())

@@ -76,6 +76,8 @@ struct AirdropRecord {
 #[derive(Debug, Default)]
 struct RateLimiter {
     by_ip: HashMap<String, Vec<(u64, u64)>>,
+    // AUDIT-FIX M-24: Track per-recipient-address to prevent griefing a single address
+    by_address: HashMap<String, Vec<(u64, u64)>>,
 }
 
 impl RateLimiter {
@@ -85,11 +87,16 @@ impl RateLimiter {
             entries.retain(|(ts, _)| *ts >= cutoff);
             !entries.is_empty()
         });
+        self.by_address.retain(|_, entries| {
+            entries.retain(|(ts, _)| *ts >= cutoff);
+            !entries.is_empty()
+        });
     }
 
     fn check(
         &mut self,
         ip: &str,
+        address: &str,
         now_ms: u64,
         daily_limit_molt: u64,
         cooldown_seconds: u64,
@@ -109,12 +116,23 @@ impl RateLimiter {
             return Err("Daily faucet limit reached for this IP".to_string());
         }
 
+        // AUDIT-FIX M-24: Also check per-address daily limit
+        let addr_entries = self.by_address.entry(address.to_string()).or_default();
+        let addr_used: u64 = addr_entries.iter().map(|(_, amt)| *amt).sum();
+        if addr_used >= daily_limit_molt {
+            return Err("Daily faucet limit reached for this address".to_string());
+        }
+
         Ok(())
     }
 
-    fn record(&mut self, ip: &str, now_ms: u64, amount_molt: u64) {
+    fn record(&mut self, ip: &str, address: &str, now_ms: u64, amount_molt: u64) {
         self.by_ip
             .entry(ip.to_string())
+            .or_default()
+            .push((now_ms, amount_molt));
+        self.by_address
+            .entry(address.to_string())
             .or_default()
             .push((now_ms, amount_molt));
         self.prune(now_ms);
@@ -279,6 +297,7 @@ async fn request_airdrop(
         let mut limiter = state.rate_limiter.write().await;
         if let Err(err) = limiter.check(
             &client_ip,
+            request.address.trim(),
             now_ms,
             state.config.daily_limit_per_ip,
             state.config.cooldown_seconds,
@@ -312,7 +331,7 @@ async fn request_airdrop(
     };
 
     let mut limiter = state.rate_limiter.write().await;
-    limiter.record(&client_ip, now_ms, amount_molt);
+    limiter.record(&client_ip, request.address.trim(), now_ms, amount_molt);
     drop(limiter);
 
     let response = FaucetResponse {
