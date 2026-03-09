@@ -31,7 +31,13 @@ pub fn validator_announcement_signing_message(
         ));
     }
 
-    let mut message = Vec::with_capacity(80 + if version.is_some() { 2 + version_len } else { 0 });
+    let mut message = Vec::with_capacity(
+        80 + if version.is_some() {
+            2 + version_len
+        } else {
+            0
+        },
+    );
     message.extend_from_slice(&pubkey.0);
     message.extend_from_slice(&stake.to_le_bytes());
     message.extend_from_slice(&current_slot.to_le_bytes());
@@ -499,24 +505,14 @@ mod tests {
         let pubkey = keypair.pubkey();
         let fingerprint = [7u8; 32];
 
-        let payload = validator_announcement_signing_message(
-            &pubkey,
-            123,
-            456,
-            &fingerprint,
-            Some("0.1.0"),
-        )
-        .unwrap();
+        let payload =
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, Some("0.1.0"))
+                .unwrap();
         let signature = keypair.sign(&payload);
 
-        let tampered = validator_announcement_signing_message(
-            &pubkey,
-            123,
-            456,
-            &fingerprint,
-            Some("0.1.1"),
-        )
-        .unwrap();
+        let tampered =
+            validator_announcement_signing_message(&pubkey, 123, 456, &fingerprint, Some("0.1.1"))
+                .unwrap();
 
         assert!(Keypair::verify(&pubkey, &payload, &signature));
         assert!(!Keypair::verify(&pubkey, &tampered, &signature));
@@ -528,14 +524,9 @@ mod tests {
         let fingerprint = [3u8; 32];
         let legacy =
             validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, None).unwrap();
-        let versioned = validator_announcement_signing_message(
-            &pubkey,
-            1,
-            2,
-            &fingerprint,
-            Some("0.1.0"),
-        )
-        .unwrap();
+        let versioned =
+            validator_announcement_signing_message(&pubkey, 1, 2, &fingerprint, Some("0.1.0"))
+                .unwrap();
 
         assert_ne!(legacy, versioned);
     }
@@ -577,10 +568,7 @@ mod tests {
         let blocks: Vec<Block> = (0..20)
             .map(|i| Block::new(i, Hash::default(), Hash::default(), [0u8; 32], vec![]))
             .collect();
-        let msg = P2PMessage::new(
-            MessageType::BlockRangeResponse { blocks },
-            addr,
-        );
+        let msg = P2PMessage::new(MessageType::BlockRangeResponse { blocks }, addr);
         let bytes = msg.serialize().unwrap();
         // If compression was beneficial, first byte should be 0xFF
         if bytes[0] == 0xFF {
@@ -645,10 +633,9 @@ mod tests {
     #[test]
     fn test_short_tx_id() {
         let h = Hash([
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ]);
         let sid = short_tx_id(&h);
         assert_eq!(sid, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
@@ -686,13 +673,19 @@ mod tests {
         let addr = "127.0.0.1:9000".parse().unwrap();
         let hashes = vec![Hash([1u8; 32]), Hash([2u8; 32])];
         let msg = P2PMessage::new(
-            MessageType::GetBlockTxs { slot: 10, missing_hashes: hashes.clone() },
+            MessageType::GetBlockTxs {
+                slot: 10,
+                missing_hashes: hashes.clone(),
+            },
             addr,
         );
         let bytes = msg.serialize().unwrap();
         let decoded = P2PMessage::deserialize(&bytes).unwrap();
         match decoded.msg_type {
-            MessageType::GetBlockTxs { slot, missing_hashes } => {
+            MessageType::GetBlockTxs {
+                slot,
+                missing_hashes,
+            } => {
                 assert_eq!(slot, 10);
                 assert_eq!(missing_hashes.len(), 2);
                 assert_eq!(missing_hashes[0], Hash([1u8; 32]));
@@ -705,7 +698,10 @@ mod tests {
     fn test_block_txs_roundtrip() {
         let addr = "127.0.0.1:9000".parse().unwrap();
         let msg = P2PMessage::new(
-            MessageType::BlockTxs { slot: 5, transactions: vec![] },
+            MessageType::BlockTxs {
+                slot: 5,
+                transactions: vec![],
+            },
             addr,
         );
         let bytes = msg.serialize().unwrap();

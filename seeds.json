@@ -18,11 +18,20 @@
         "operator": "MoltChain Foundation",
         "rpc": "https://rpc.moltchain.network",
         "role": "seed"
+      },
+      {
+        "id": "seed-03",
+        "address": "seed-03.moltchain.network:7001",
+        "region": "ap-southeast",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
       }
     ],
     "bootstrap_peers": [
       "seed-01.moltchain.network:7001",
-      "seed-02.moltchain.network:7001"
+      "seed-02.moltchain.network:7001",
+      "seed-03.moltchain.network:7001"
     ],
     "rpc_endpoints": [
       "https://rpc.moltchain.network",
@@ -54,11 +63,20 @@
         "operator": "MoltChain Foundation",
         "rpc": "https://rpc.moltchain.network",
         "role": "seed"
+      },
+      {
+        "id": "seed-03",
+        "address": "seed-03.moltchain.network:8001",
+        "region": "ap-southeast",
+        "operator": "MoltChain Foundation",
+        "rpc": "https://rpc.moltchain.network",
+        "role": "seed"
       }
     ],
     "bootstrap_peers": [
       "seed-01.moltchain.network:8001",
-      "seed-02.moltchain.network:8001"
+      "seed-02.moltchain.network:8001",
+      "seed-03.moltchain.network:8001"
     ],
     "rpc_endpoints": [
       "https://rpc.moltchain.network"

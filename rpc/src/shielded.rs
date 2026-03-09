@@ -234,7 +234,9 @@ async fn rest_get_merkle_path(
     if pool.commitment_count > cache.0 {
         for i in cache.0..pool.commitment_count {
             match state.state.get_shielded_commitment(i) {
-                Ok(Some(comm)) => { cache.2.insert(comm); },
+                Ok(Some(comm)) => {
+                    cache.2.insert(comm);
+                }
                 Ok(None) => break,
                 Err(e) => return api_err(&format!("Failed to load commitment {}: {}", i, e)),
             }
@@ -515,12 +517,16 @@ pub(crate) async fn handle_get_shielded_merkle_path(
     if pool.commitment_count > cache.0 {
         for i in cache.0..pool.commitment_count {
             match state.state.get_shielded_commitment(i) {
-                Ok(Some(comm)) => { cache.2.insert(comm); },
+                Ok(Some(comm)) => {
+                    cache.2.insert(comm);
+                }
                 Ok(None) => break,
-                Err(e) => return Err(RpcError {
-                    code: -32000,
-                    message: format!("Failed to load commitment {}: {}", i, e),
-                }),
+                Err(e) => {
+                    return Err(RpcError {
+                        code: -32000,
+                        message: format!("Failed to load commitment {}: {}", i, e),
+                    })
+                }
             }
         }
         cache.0 = pool.commitment_count;

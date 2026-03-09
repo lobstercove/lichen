@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 
 /// Prediction market events pushed over WebSocket
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PredictionEvent {
     MarketCreated {
         market_id: u64,
@@ -782,7 +786,10 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
             msg_window_start = std::time::Instant::now();
         }
         if msg_count > MAX_MSGS_PER_SEC {
-            warn!("WS: Rate-limiting client — {} msgs/sec exceeded", MAX_MSGS_PER_SEC);
+            warn!(
+                "WS: Rate-limiting client — {} msgs/sec exceeded",
+                MAX_MSGS_PER_SEC
+            );
             break; // Disconnect abusive client
         }
 

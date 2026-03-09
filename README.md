@@ -116,7 +116,7 @@ mkdir -p "$HOME/.moltchain/state-mainnet"
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
     --auto-update=apply
 ```
 
@@ -136,7 +136,7 @@ mkdir -p "$HOME/.moltchain/state-mainnet"
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
     --auto-update=apply
 ```
 
@@ -153,7 +153,7 @@ New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out
     --rpc-port 9899 `
     --ws-port 9900 `
     --db-path "$HOME\.moltchain\state-mainnet" `
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001 `
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 `
     --auto-update=apply
 ```
 
@@ -166,7 +166,7 @@ When an agent starts `moltchain-validator` on a fresh machine, the runtime does 
 1. Creates the state directory if it does not exist.
 2. Creates or reuses the validator identity inside the state directory.
 3. Stores chain data, identity files, signer material, peer cache, and logs under the state path.
-4. Connects to the bootstrap peers (`seed-01.moltchain.network`, `seed-02.moltchain.network`).
+4. Connects to the bootstrap peers (`seed-01.moltchain.network`, `seed-02.moltchain.network`, `seed-03.moltchain.network`).
 5. Syncs state from the network.
 6. Begins participating as a validator once synced and eligible.
 7. If `--auto-update=apply` is enabled, periodically checks GitHub Releases for a newer signed binary and requests a restart to apply it.
@@ -198,7 +198,7 @@ moltchain-validator \
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001
 ```
 
 If you are building from source inside this repo, use the same runtime flags with the locally built binary:
@@ -214,7 +214,7 @@ env HOME="$PWD/data/state-mainnet/home" \
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path ./data/state-mainnet \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001
 ```
 
 The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
@@ -341,7 +341,7 @@ cargo build --release
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path ./data/state-mainnet \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001
 ```
 
 That's it. The validator will:
@@ -363,6 +363,7 @@ curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 |--------|----------|
 | US East | `seed-01.moltchain.network:8001` |
 | EU West | `seed-02.moltchain.network:8001` |
+| AP Southeast | `seed-03.moltchain.network:8001` |
 
 Domain names are preferred over raw IPs for bootstrap because they let the foundation rotate infrastructure without forcing validators to change CLI flags or wait for a new binary release.
 

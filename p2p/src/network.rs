@@ -578,7 +578,8 @@ impl P2PNetwork {
                 if blocks.len() > 500 {
                     warn!(
                         "P2P: Rejecting oversized BlockRangeResponse from {} ({} blocks > 500)",
-                        peer_addr, blocks.len()
+                        peer_addr,
+                        blocks.len()
                     );
                     self.peer_manager.record_violation(&peer_addr);
                     return Ok(());
@@ -969,7 +970,10 @@ impl P2PNetwork {
                 }
             }
 
-            MessageType::GetBlockTxs { slot, missing_hashes } => {
+            MessageType::GetBlockTxs {
+                slot,
+                missing_hashes,
+            } => {
                 debug!(
                     "P2P: Received GetBlockTxs for slot {} from {} ({} hashes)",
                     slot,

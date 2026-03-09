@@ -125,7 +125,10 @@ impl KademliaTable {
             }
         }
         all.sort_by(|a, b| a.0.cmp(&b.0));
-        all.into_iter().take(count).map(|(_, e)| e.clone()).collect()
+        all.into_iter()
+            .take(count)
+            .map(|(_, e)| e.clone())
+            .collect()
     }
 
     /// Total number of entries across all buckets.

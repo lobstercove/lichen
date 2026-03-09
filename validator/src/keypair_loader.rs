@@ -45,7 +45,10 @@ pub fn load_or_generate_keypair(
     if let Some(path) = config_path {
         let p = PathBuf::from(path);
         if p.exists() {
-            info!("📁 Loading validator keypair from CLI path: {}", p.display());
+            info!(
+                "📁 Loading validator keypair from CLI path: {}",
+                p.display()
+            );
             return load_keypair(&p);
         }
         warn!("⚠️  Specified keypair path does not exist: {}", p.display());
@@ -82,10 +85,7 @@ pub fn load_or_generate_keypair(
                             "📋 Copied keypair into data dir: {}",
                             data_dir_path.display()
                         ),
-                        Err(e) => warn!(
-                            "⚠️  Failed to copy keypair to data dir: {}",
-                            e
-                        ),
+                        Err(e) => warn!("⚠️  Failed to copy keypair to data dir: {}", e),
                     }
                 }
             }
@@ -278,8 +278,8 @@ mod tests {
         let original_keypair = Keypair::new();
         save_keypair(&original_keypair, &keypair_path).expect("save original keypair");
 
-        let loaded_original =
-            load_or_generate_keypair(Some(&keypair_path_string), 0, None, None).expect("load original");
+        let loaded_original = load_or_generate_keypair(Some(&keypair_path_string), 0, None, None)
+            .expect("load original");
         assert_eq!(loaded_original.pubkey(), original_keypair.pubkey());
 
         let mut rotated_keypair = Keypair::new();
@@ -288,8 +288,8 @@ mod tests {
         }
         save_keypair(&rotated_keypair, &keypair_path).expect("save rotated keypair");
 
-        let loaded_rotated =
-            load_or_generate_keypair(Some(&keypair_path_string), 0, None, None).expect("load rotated");
+        let loaded_rotated = load_or_generate_keypair(Some(&keypair_path_string), 0, None, None)
+            .expect("load rotated");
         assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
         assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
     }

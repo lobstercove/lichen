@@ -381,13 +381,7 @@ fn schedule_windows_update_swap(
     fs::write(&script_path, script).context("Failed to write Windows update helper script")?;
 
     Command::new("cmd")
-        .args([
-            "/C",
-            "start",
-            "",
-            "/B",
-            &script_path.to_string_lossy(),
-        ])
+        .args(["/C", "start", "", "/B", &script_path.to_string_lossy()])
         .spawn()
         .context("Failed to spawn Windows update helper")?;
 

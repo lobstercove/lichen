@@ -47,7 +47,9 @@ fn resolve_contracts_dir() -> Option<PathBuf> {
 }
 
 fn contract_wasm_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
-    contracts_dir.join(dir_name).join(format!("{}.wasm", dir_name))
+    contracts_dir
+        .join(dir_name)
+        .join(format!("{}.wasm", dir_name))
 }
 
 /// Fetch live prices from Binance REST API at genesis time.
@@ -60,7 +62,10 @@ pub fn fetch_live_prices() -> (f64, f64, f64) {
     ];
 
     for url in &endpoints {
-        match ureq::get(url).timeout(std::time::Duration::from_secs(5)).call() {
+        match ureq::get(url)
+            .timeout(std::time::Duration::from_secs(5))
+            .call()
+        {
             Ok(resp) => {
                 if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
                     let mut sol = 0.0_f64;
@@ -91,9 +96,18 @@ pub fn fetch_live_prices() -> (f64, f64, f64) {
     }
 
     // Fallback to env vars
-    let sol = std::env::var("GENESIS_SOL_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(145.0);
-    let eth = std::env::var("GENESIS_ETH_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(2600.0);
-    let bnb = std::env::var("GENESIS_BNB_USD").ok().and_then(|v| v.parse().ok()).unwrap_or(620.0);
+    let sol = std::env::var("GENESIS_SOL_USD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(145.0);
+    let eth = std::env::var("GENESIS_ETH_USD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2600.0);
+    let bnb = std::env::var("GENESIS_BNB_USD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(620.0);
     warn!(
         "  ⚠️  Using fallback prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
         sol, eth, bnb
