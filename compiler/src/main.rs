@@ -427,7 +427,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Add moltchain-sdk here if needed
+# Add moltchain-contract-sdk here if needed
 
 [profile.release]
 opt-level = {}

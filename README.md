@@ -263,7 +263,7 @@ print(f"Balance: {balance / 1e9:.9f} MOLT")
 ### Rust
 
 ```rust
-use moltchain_sdk::{Client, Pubkey};
+use moltchain_client_sdk::{Client, Pubkey};
 use std::str::FromStr;
 
 #[tokio::main]
@@ -281,6 +281,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```bash
 molt balance Mo1t...YourAddress
 # → Balance: 42.500000000 MOLT
+```
+
+---
+
+## Deploy Smart Contracts
+
+MoltChain smart contracts are Rust programs compiled to WASM. See `docs/guides/CONTRACT_DEVELOPMENT.md` for the full guide.
+
+```bash
+# Install WASM target
+rustup target add wasm32-unknown-unknown
+
+# Build your contract
+cargo build --target wasm32-unknown-unknown --release
+
+# Deploy (costs 25.001 MOLT)
+molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+
+# Call a contract function
+molt call <contract_address> <function_name> [args]
+```
+
+**Two SDKs — different purposes:**
+| Package | Purpose |
+|---------|---------|
+| `moltchain-contract-sdk` | Write on-chain WASM contracts (`#![no_std]`) |
+| `moltchain-client-sdk` | Call RPC from Rust apps (`tokio`/`reqwest`) |
+
+**Don't need custom logic?** Create a standard token without writing code:
+```bash
+molt token create "My Token" MYTOK --supply 1000000 --decimals 9
 ```
 
 ---

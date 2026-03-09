@@ -10,7 +10,7 @@ authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { path = "../../sdk" }
+moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 
 [profile.release]
 opt-level = "z"

@@ -8,7 +8,7 @@ description = "Shielded pool contract for zero-knowledge private transactions on
 [workspace]
 
 [dependencies]
-moltchain-sdk = { path = "../../sdk" }
+moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }

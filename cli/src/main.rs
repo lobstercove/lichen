@@ -1349,6 +1349,32 @@ async fn main() -> Result<()> {
             let wasm_code = std::fs::read(&contract)
                 .map_err(|e| anyhow::anyhow!("Failed to read contract file: {}", e))?;
 
+            // Pre-flight validation: WASM magic bytes
+            const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+            if wasm_code.len() < 8 || wasm_code[..4] != WASM_MAGIC {
+                anyhow::bail!(
+                    "Invalid WASM file: {} does not have valid WASM magic bytes (\\0asm).\n\
+                     Make sure you compiled with: cargo build --target wasm32-unknown-unknown --release\n\
+                     The WASM file is at: target/wasm32-unknown-unknown/release/<name>.wasm",
+                    contract.display()
+                );
+            }
+
+            // Pre-flight validation: size limit (512 KB, matching on-chain limit)
+            const MAX_CONTRACT_SIZE: usize = 512 * 1024;
+            if wasm_code.len() > MAX_CONTRACT_SIZE {
+                anyhow::bail!(
+                    "Contract too large: {} bytes (max {} bytes = 512 KB).\n\
+                     Tip: use wasm-opt or enable LTO in your Cargo.toml [profile.release]",
+                    wasm_code.len(),
+                    MAX_CONTRACT_SIZE
+                );
+            }
+
+            if wasm_code.is_empty() {
+                anyhow::bail!("Contract file is empty");
+            }
+
             // Generate contract address (deterministic from deployer + code hash)
             use moltchain_core::Hash;
             let code_hash = Hash::hash(&wasm_code);
@@ -1361,6 +1387,7 @@ async fn main() -> Result<()> {
             println!("📦 Size: {} KB", wasm_code.len() / 1024);
             println!("📍 Contract address: {}", contract_addr.to_base58());
             println!("👤 Deployer: {}", deployer.pubkey().to_base58());
+            println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
             println!();
 
             let signature = client

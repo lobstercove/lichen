@@ -673,6 +673,8 @@ pub struct StateBatch {
     governed_proposal_overlay: std::collections::HashMap<u64, crate::multisig::GovernedProposal>,
     /// AUDIT-FIX H-1: Governed proposal counter override (set on first alloc in this batch).
     governed_proposal_counter: Option<u64>,
+    /// Track newly indexed programs in this batch (applied on commit)
+    new_programs: i64,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -3424,6 +3426,7 @@ impl StateStore {
             spent_nullifier_overlay: std::collections::HashSet::new(),
             governed_proposal_overlay: std::collections::HashMap::new(),
             governed_proposal_counter: None,
+            new_programs: 0,
             event_seq: 0,
             db: Arc::clone(&self.db),
         }
@@ -3465,6 +3468,11 @@ impl StateStore {
         if batch.new_accounts != 0 {
             for _ in 0..batch.new_accounts {
                 self.metrics.increment_accounts();
+            }
+        }
+        if batch.new_programs > 0 {
+            for _ in 0..batch.new_programs {
+                self.metrics.increment_programs();
             }
         }
         if batch.active_account_delta > 0 {
@@ -4108,7 +4116,12 @@ impl StateBatch {
             .db
             .cf_handle(CF_PROGRAMS)
             .ok_or_else(|| "Programs CF not found".to_string())?;
+        // Only count as new if not already indexed on disk
+        let is_new = self.db.get_cf(&cf, program.0).ok().flatten().is_none();
         self.batch.put_cf(&cf, program.0, []);
+        if is_new {
+            self.new_programs += 1;
+        }
         Ok(())
     }
 

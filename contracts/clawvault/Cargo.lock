@@ -12,7 +12,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "clawvault"
 version = "0.1.0"
 dependencies = [
- "moltchain-sdk",
+ "moltchain-contract-sdk",
 ]
 
 [[package]]
@@ -28,12 +28,12 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.181"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "459427e2af2b9c839b132acb702a1c654d95e10f8c326bfc2ad11310e458b1c5"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
-name = "moltchain-sdk"
+name = "moltchain-contract-sdk"
 version = "0.1.0"
 dependencies = [
  "dlmalloc",

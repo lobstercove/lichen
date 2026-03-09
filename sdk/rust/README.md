@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-moltchain-sdk = { path = "../path/to/sdk/rust" }
+moltchain-client-sdk = { path = "../path/to/sdk/rust" }
 tokio = { version = "1.35", features = ["full"] }
 ```
 

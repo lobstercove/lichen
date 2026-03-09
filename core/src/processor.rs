@@ -899,7 +899,26 @@ impl TxProcessor {
         for instruction in &tx.message.instructions {
             if let Err(e) = self.execute_instruction(instruction) {
                 self.rollback_batch();
-                return self.make_result(false, total_fee, Some(format!("Execution error: {}", e)));
+
+                // Refund the deploy/upgrade premium on instruction failure.
+                // The base fee is kept (anti-DoS) but premium fees are returned
+                // so developers don't lose 25 MOLT on a failed deploy.
+                let premium = Self::compute_premium_fee(tx, &fee_config);
+                if premium > 0 {
+                    if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                        eprintln!("Failed to refund deploy premium: {}", refund_err);
+                    }
+                }
+
+                // Store the failed TX so developers can query what went wrong
+                let _ = self.state.put_transaction(tx);
+
+                let actual_fee = total_fee.saturating_sub(premium);
+                return self.make_result(
+                    false,
+                    actual_fee,
+                    Some(format!("Execution error: {}", e)),
+                );
             }
         }
 
@@ -1656,6 +1675,52 @@ impl TxProcessor {
         self.state.atomic_put_accounts(&accounts, burn_amount)?;
 
         Ok(())
+    }
+
+    /// Compute the premium portion of a transaction fee (deploy/upgrade fees).
+    /// Returns only the premium amount (excluding the base fee), which is
+    /// eligible for refund on instruction failure.
+    fn compute_premium_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
+        let mut premium = 0u64;
+        for ix in &tx.message.instructions {
+            if ix.program_id == SYSTEM_PROGRAM_ID {
+                if let Some(&kind) = ix.data.first() {
+                    match kind {
+                        6 => premium = premium.saturating_add(fee_config.nft_collection_fee),
+                        7 => premium = premium.saturating_add(fee_config.nft_mint_fee),
+                        17 => premium = premium.saturating_add(fee_config.contract_deploy_fee),
+                        _ => {}
+                    }
+                }
+            }
+            if ix.program_id == CONTRACT_PROGRAM_ID {
+                if let Ok(contract_ix) = ContractInstruction::deserialize(&ix.data) {
+                    match contract_ix {
+                        ContractInstruction::Deploy { .. } => {
+                            premium = premium.saturating_add(fee_config.contract_deploy_fee)
+                        }
+                        ContractInstruction::Upgrade { .. } => {
+                            premium = premium.saturating_add(fee_config.contract_upgrade_fee)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        premium
+    }
+
+    /// Refund a premium fee amount to the payer account.
+    /// Used when an instruction fails after fee was already charged — the
+    /// premium portion (deploy/upgrade fee) is returned while the base fee
+    /// is retained as anti-DoS measure.
+    fn refund_premium(&self, payer: &Pubkey, amount: u64) -> Result<(), String> {
+        let mut payer_account = self
+            .state
+            .get_account(payer)?
+            .ok_or_else(|| "Payer account not found for refund".to_string())?;
+        payer_account.add_spendable(amount)?;
+        self.state.put_account(payer, &payer_account)
     }
 
     /// Execute a single instruction
@@ -3109,9 +3174,7 @@ impl TxProcessor {
 
         // Index program
         // AUDIT-FIX 2.5: Route through batch to prevent phantom entries on rollback
-        if let Err(e) = self.b_index_program(&program_pubkey) {
-            eprintln!("system_deploy_contract: index_program failed: {}", e);
-        }
+        self.b_index_program(&program_pubkey)?;
 
         // Process init_data for symbol registry
         if !init_data_bytes.is_empty() {
@@ -3137,9 +3200,7 @@ impl TxProcessor {
                                 .map(|d| d as u8),
                         };
                         // AUDIT-FIX 2.5: Route through batch
-                        if let Err(e) = self.b_register_symbol(symbol, entry) {
-                            eprintln!("system_deploy_contract: register_symbol failed: {}", e);
-                        }
+                        self.b_register_symbol(symbol, entry)?;
                     }
                 }
             }
