@@ -140,6 +140,7 @@ DEPLOYMENT_STATUS.md
 VPS_CREDENTIALS.md
 
 # ── Frontends / proprietary UI (local only) ────────────────
+developers/
 dex/
 faucet/
 explorer/
