@@ -3,6 +3,12 @@
 // Week 3: Consensus, RPC, CLI
 // Week 4-5: Smart Contracts & WASM Runtime
 
+// Wasmer 4.x JIT references __rust_probestack on x86_64, removed in Rust 1.84+.
+// Provide a no-op stub so the linker resolves the symbol.
+#[cfg(target_arch = "x86_64")]
+#[no_mangle]
+pub extern "C" fn __rust_probestack() {}
+
 pub mod account;
 pub mod block;
 pub mod consensus;
