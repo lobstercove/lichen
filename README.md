@@ -5,9 +5,9 @@
 Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDKs
 
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
 
-**Release-ready status (Feb 24, 2026):** main validated and published at commit `4059403`.
+**Release-ready status:** main validated and published at tag `v0.2.2`.
 
 **Website:** https://moltchain.network  
 **Documentation:** https://developers.moltchain.network  
@@ -61,7 +61,7 @@ Four binaries ship from this repo:
 |---|---|---|
 | `moltchain-validator` | 8899 (RPC), 8900 (WS), 7001 (P2P) | Full node with built-in supervisor & watchdog |
 | `moltchain-custody` | 9105 | Threshold-signing custody with deposit tracking |
-| `moltchain-faucet` | 8901 | Testnet MOLT dispenser |
+| `moltchain-faucet` | 9100 | Testnet MOLT dispenser |
 | `molt` | — | CLI wallet, queries, contract deploys |
 
 ---
@@ -70,7 +70,7 @@ Four binaries ship from this repo:
 
 ### Prerequisites
 
-- **Rust 1.75+** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Rust 1.88+** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **Node 18+** *(optional, for JS SDK / wallet / explorer)*
 
 ### Build everything

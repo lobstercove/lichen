@@ -759,7 +759,7 @@ impl ContractRuntime {
         let initial_compute = ctx.compute_remaining;
 
         // PERF-FIX 2 + P9-CORE-04: Compiled-module cache with LRU eviction.
-        // Cranelift compilation takes 5-50ms per module. With 27 contracts and
+        // Cranelift compilation takes 5-50ms per module. With 29 contracts and
         // thousands of calls, this eliminates >99% of redundant compilations.
         // LRU cap at MODULE_CACHE_MAX_ENTRIES prevents unbounded memory growth.
         let code_hash = Hash::hash(&contract.code);

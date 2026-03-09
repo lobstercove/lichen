@@ -77,7 +77,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Building WASM Contracts
 
-MoltChain ships 27 on-chain contracts under `contracts/`. Each is its own crate:
+MoltChain ships 29 on-chain contracts under `contracts/`. Each is its own crate:
 
 ```bash
 # Build a single contract

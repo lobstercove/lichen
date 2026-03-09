@@ -29,7 +29,6 @@ state-*/
 # ── Security-sensitive runtime files ────────────────────────
 keypairs/
 genesis/target/
-tests/
 examples/
 genesis.json
 genesis-wallet.json
@@ -67,6 +66,7 @@ yarn-error.log*
 # ── Test artifacts / output ─────────────────────────────────
 tests/artifacts/
 tests/__pycache__/
+tests/dev_playground/
 *_test_output.txt
 
 # ── Python ─────────────────────────────────────────────────

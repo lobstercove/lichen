@@ -1543,20 +1543,21 @@ mod tests {
             4
         );
 
-        // Lower threshold to 1, add second validator, then remove first
-        test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
+        // Add two more validators so count=3, then remove first (3-1=2 >= required=2)
         let validator2 = [3u8; 32];
         test_mock::set_caller(owner);
         assert_eq!(add_bridge_validator(owner.as_ptr(), validator2.as_ptr()), 0);
-        // Now count=2, required=1 -> removing one leaves 1 >= 1 -> allowed
+        let validator3 = [4u8; 32];
+        test_mock::set_caller(owner);
+        assert_eq!(add_bridge_validator(owner.as_ptr(), validator3.as_ptr()), 0);
+        // Now count=3, required=2 -> removing one leaves 2 >= 2 -> allowed
         test_mock::set_caller(owner);
         assert_eq!(
             remove_bridge_validator(owner.as_ptr(), validator.as_ptr()),
             0
         );
         let count = test_mock::get_storage(b"bridge_validator_count").unwrap();
-        assert_eq!(bytes_to_u64(&count), 1);
+        assert_eq!(bytes_to_u64(&count), 2);
 
         // Remove again fails (already removed)
         test_mock::set_caller(owner);
@@ -1712,39 +1713,46 @@ mod tests {
     // =============================================
 
     #[test]
-    fn test_submit_mint_auto_completes_when_threshold_is_1() {
+    fn test_submit_mint_auto_completes_when_threshold_met() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
 
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
-        test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
 
-        let validator = [2u8; 32];
+        let validator1 = [2u8; 32];
+        let validator2 = [3u8; 32];
         test_mock::set_caller(owner);
-        add_bridge_validator(owner.as_ptr(), validator.as_ptr());
+        add_bridge_validator(owner.as_ptr(), validator1.as_ptr());
+        test_mock::set_caller(owner);
+        add_bridge_validator(owner.as_ptr(), validator2.as_ptr());
 
         let recipient = [4u8; 32];
         let source_chain = [0xCC; 32];
         let source_tx = [0xDD; 32];
 
-        test_mock::set_caller(validator);
+        // First validator submits — pending (1 < 2 threshold)
+        test_mock::set_caller(validator1);
         let result = submit_mint(
-            validator.as_ptr(),
+            validator1.as_ptr(),
             recipient.as_ptr(),
             500_000,
             source_chain.as_ptr(),
             source_tx.as_ptr(),
         );
         assert_eq!(result, 0);
+        let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
+        assert_eq!(tx_data[41], STATUS_PENDING);
 
-        // Verify immediately completed
+        // Second validator confirms — completes (2 >= 2 threshold)
+        test_mock::set_caller(validator2);
+        assert_eq!(confirm_mint(validator2.as_ptr(), 0), 0);
+
         let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
         assert_eq!(tx_data[40], 1); // direction = mint
         assert_eq!(tx_data[41], STATUS_COMPLETED);
-        assert_eq!(tx_data[50], 1); // 1 confirmation
+        assert_eq!(tx_data[50], 2); // 2 confirmations
     }
 
     #[test]
@@ -2271,14 +2279,15 @@ mod tests {
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
-        test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
 
         let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
         test_mock::set_caller(owner);
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
+        test_mock::set_caller(owner);
+        add_bridge_validator(owner.as_ptr(), val2.as_ptr());
 
-        // Auto-completes
+        // Submit + confirm to complete (threshold=2)
         test_mock::set_caller(val1);
         submit_mint(
             val1.as_ptr(),
@@ -2287,6 +2296,8 @@ mod tests {
             [0xCC; 32].as_ptr(),
             [0xDD; 32].as_ptr(),
         );
+        test_mock::set_caller(val2);
+        confirm_mint(val2.as_ptr(), 0);
 
         // Can't cancel a completed request
         test_mock::SLOT.with(|s| *s.borrow_mut() = 99999);
@@ -2965,23 +2976,27 @@ mod tests {
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
         test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
-        let val = [2u8; 32];
+        add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
-        add_bridge_validator(owner.as_ptr(), val.as_ptr());
-        // Auto-complete triggers transfer_out which needs moltcoin address
-        test_mock::set_caller(val);
+        add_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        // First submit is pending (1 < 2 threshold)
+        test_mock::set_caller(val1);
         assert_eq!(
             submit_mint(
-                val.as_ptr(),
+                val1.as_ptr(),
                 [4u8; 32].as_ptr(),
                 500_000,
                 [0xCC; 32].as_ptr(),
                 [0xDD; 32].as_ptr()
             ),
-            30
+            0
         );
+        // Confirm triggers transfer_out which needs moltcoin address
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 30);
     }
 
     #[test]
@@ -2991,11 +3006,12 @@ mod tests {
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
         test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
-        let val = [2u8; 32];
+        add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
-        add_bridge_validator(owner.as_ptr(), val.as_ptr());
+        add_bridge_validator(owner.as_ptr(), val2.as_ptr());
         // Lock tokens (lock itself doesn't need molt)
         let sender = [5u8; 32];
         test_mock::set_caller(sender);
@@ -3006,17 +3022,20 @@ mod tests {
             [0xAA; 32].as_ptr(),
             [0xBB; 32].as_ptr(),
         );
-        // Auto-complete triggers transfer_out which needs moltcoin address
-        test_mock::set_caller(val);
+        // First submit is pending (1 < 2 threshold); nonce=1 because lock_tokens took nonce=0
+        test_mock::set_caller(val1);
         assert_eq!(
             submit_unlock(
-                val.as_ptr(),
+                val1.as_ptr(),
                 [4u8; 32].as_ptr(),
                 500_000,
                 [0xEE; 32].as_ptr()
             ),
-            30
+            0
         );
+        // Confirm triggers transfer_out which needs moltcoin address
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_unlock(val2.as_ptr(), 1), 30);
     }
 
     #[test]
@@ -3060,23 +3079,26 @@ mod tests {
         let owner = [1u8; 32];
         test_mock::set_caller(owner);
         initialize(owner.as_ptr());
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
         test_mock::set_caller(owner);
-        set_required_confirmations(owner.as_ptr(), 1);
-        let val = [2u8; 32];
+        add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         test_mock::set_caller(owner);
-        add_bridge_validator(owner.as_ptr(), val.as_ptr());
-        // Mint auto-completes and triggers transfer_out
+        add_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        // Submit mint — pending (1 < 2 threshold)
         let recipient = [4u8; 32];
-        test_mock::set_caller(val);
+        test_mock::set_caller(val1);
         let result = submit_mint(
-            val.as_ptr(),
+            val1.as_ptr(),
             recipient.as_ptr(),
             500_000,
             [0xCC; 32].as_ptr(),
             [0xDD; 32].as_ptr(),
         );
         assert_eq!(result, 0);
-        // Verify tx completed (transfer_out returns 0 in test mock)
+        // Confirm completes the mint (transfer_out returns 0 in test mock)
+        test_mock::set_caller(val2);
+        assert_eq!(confirm_mint(val2.as_ptr(), 0), 0);
         let tx_data = test_mock::get_storage(&bridge_tx_key(0)).unwrap();
         assert_eq!(tx_data[41], STATUS_COMPLETED);
     }

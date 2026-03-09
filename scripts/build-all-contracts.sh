@@ -3,7 +3,7 @@
 # Build All MoltChain Smart Contracts to WASM
 # ============================================================================
 #
-# Compiles all 27 smart contracts (16 core + 8 DEX + 3 wrapped tokens) to
+# Compiles all 29 smart contracts to
 # WebAssembly using the wasm32-unknown-unknown target. Copies final .wasm
 # files to each contract's crate root for deploy_dex.py / deploy_contract.py
 # to find them.

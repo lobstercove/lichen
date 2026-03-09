@@ -274,14 +274,14 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
 /// (b) handled as a special case (e.g. moltauction's two-step init).
 ///
 /// This is a source-level regression test: it reads validator/src/main.rs and
-/// checks that all 27 contracts are initialized at genesis, preventing the
+/// checks that all 29 contracts are initialized at genesis, preventing the
 /// first-caller-wins admin vulnerability (G22-02).
 #[test]
 fn b1_02_all_contracts_initialized_at_genesis() {
     let source =
         std::fs::read_to_string("../genesis/src/lib.rs").expect("Cannot read genesis/src/lib.rs");
 
-    // All 27 contracts from GENESIS_CONTRACT_CATALOG
+    // All 29 contracts from GENESIS_CONTRACT_CATALOG
     let all_contracts = [
         "moltcoin",
         "musd_token",
