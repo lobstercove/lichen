@@ -5,7 +5,7 @@ members = [
     "rpc",
     "cli",
     "p2p",
-    "faucet",
+    "faucet-service",
     "custody",
     "genesis",
 ]
