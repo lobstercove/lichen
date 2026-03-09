@@ -2094,7 +2094,7 @@ mod tests {
     #[tokio::test]
     async fn test_subnet_limit_in_connect_peer() {
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
             .await
             .unwrap();
 
@@ -2150,7 +2150,7 @@ mod tests {
     #[tokio::test]
     async fn test_fastest_peers_sorting() {
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
             .await
             .unwrap();
 
@@ -2201,7 +2201,7 @@ mod tests {
     #[tokio::test]
     async fn test_bandwidth_stats() {
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
             .await
             .unwrap();
 
@@ -2222,7 +2222,7 @@ mod tests {
     #[tokio::test]
     async fn test_bandwidth_stats_unknown_peer() {
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, 50, vec![])
+        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
             .await
             .unwrap();
 

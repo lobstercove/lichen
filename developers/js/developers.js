@@ -732,9 +732,17 @@ window.generateTOC = generateTOC;
 
 function initMobileNav() {
     const navToggle = document.getElementById('navToggle');
-    if (!navToggle) return;
+    const navMenu = document.querySelector('.nav-menu');
+    const navActions = document.querySelector('.nav-actions');
+    const navContainer = document.querySelector('.nav-container');
+    if (!navToggle || !navMenu) return;
     navToggle.addEventListener('click', () => {
-        document.querySelector('.nav-menu')?.classList.toggle('active');
-        document.querySelector('.nav-actions')?.classList.toggle('active');
+        const isOpen = !navMenu.classList.contains('active');
+        navMenu.classList.toggle('active', isOpen);
+        navMenu.classList.toggle('open', isOpen);
+        navActions?.classList.toggle('active', isOpen);
+        navActions?.classList.toggle('open', isOpen);
+        navToggle.classList.toggle('active', isOpen);
+        navContainer?.style.setProperty('--nav-menu-height', isOpen ? `${navMenu.offsetHeight}px` : '0px');
     });
 }

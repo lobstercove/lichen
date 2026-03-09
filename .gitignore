@@ -28,6 +28,9 @@ state-*/
 
 # ── Security-sensitive runtime files ────────────────────────
 keypairs/
+genesis/
+tests/
+examples/
 genesis.json
 genesis-wallet.json
 genesis-keys/
