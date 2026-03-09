@@ -3196,7 +3196,7 @@ impl TxProcessor {
     /// H16 fix: Faucet airdrop through consensus (instruction type 19).
     /// Instruction data: [19 | amount_shells(8 LE)]
     /// Accounts: [treasury, recipient]
-    /// Treasury must be a signer. Amount capped at 100 MOLT.
+    /// Treasury must be a signer. Amount capped at 10 MOLT.
     fn system_faucet_airdrop(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("FaucetAirdrop requires [treasury, recipient] accounts".to_string());
@@ -3223,11 +3223,11 @@ impl TxProcessor {
                 .map_err(|_| "Invalid amount encoding".to_string())?,
         );
 
-        // Cap at 100 MOLT
-        let max_airdrop = 100u64 * 1_000_000_000;
+        // Cap at 10 MOLT (faucet per-request limit)
+        let max_airdrop = 10u64 * 1_000_000_000;
         if amount_shells == 0 || amount_shells > max_airdrop {
             return Err(format!(
-                "FaucetAirdrop: amount must be between 1 shell and {} shells (100 MOLT)",
+                "FaucetAirdrop: amount must be between 1 shell and {} shells (10 MOLT)",
                 max_airdrop
             ));
         }
@@ -5378,7 +5378,7 @@ mod tests {
         state.put_account(&treasury, &t).unwrap();
 
         let recipient = Pubkey([0xBB; 32]);
-        // 200 MOLT exceeds 100 MOLT cap
+        // 200 MOLT exceeds 10 MOLT cap
         let amount: u64 = 200u64 * 1_000_000_000;
 
         let mut data = vec![19u8];
@@ -5407,7 +5407,7 @@ mod tests {
         tx.signatures
             .push(treasury_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, &validator);
-        assert!(!result.success, "Airdrop > 100 MOLT should fail");
+        assert!(!result.success, "Airdrop > 10 MOLT should fail");
     }
 
     // ═════════════════════════════════════════════════════════════════════════

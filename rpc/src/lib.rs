@@ -51,9 +51,9 @@ use axum::{
     Json, Router,
 };
 use lru::LruCache;
+use moltchain_core::account::Keypair as TreasuryKeypair;
 use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
-use moltchain_core::account::Keypair as TreasuryKeypair;
 use moltchain_core::{
     decode_evm_transaction, shells_to_u256, simulate_evm_call, FinalityTracker, Hash, Instruction,
     MarketActivityKind, Message, Pubkey, StakePool, StateStore, SymbolRegistryEntry, Transaction,
@@ -11302,10 +11302,10 @@ async fn handle_request_airdrop(
         message: "amount must be an integer (MOLT)".to_string(),
     })?;
 
-    if amount_molt == 0 || amount_molt > 100 {
+    if amount_molt == 0 || amount_molt > 10 {
         return Err(RpcError {
             code: -32602,
-            message: "Amount must be between 1 and 100 MOLT".to_string(),
+            message: "Amount must be between 1 and 10 MOLT".to_string(),
         });
     }
 
@@ -12679,19 +12679,38 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
                 let quote_pk = moltchain_core::Pubkey(quote_bytes);
                 let base_str = base_pk.to_string();
                 let quote_str = quote_pk.to_string();
-                let base = symbol_for_addr.get(&base_str).cloned().unwrap_or_else(|| base_str[..8].to_string());
-                let quote = symbol_for_addr.get(&quote_str).cloned().unwrap_or_else(|| quote_str[..8].to_string());
+                let base = symbol_for_addr
+                    .get(&base_str)
+                    .cloned()
+                    .unwrap_or_else(|| base_str[..8].to_string());
+                let quote = symbol_for_addr
+                    .get(&quote_str)
+                    .cloned()
+                    .unwrap_or_else(|| quote_str[..8].to_string());
 
                 // Read last price from analytics
                 let lp_key = format!("ana_lp_{}", pair_id);
-                let lp_raw = state.state.get_program_storage_u64("ANALYTICS", lp_key.as_bytes());
+                let lp_raw = state
+                    .state
+                    .get_program_storage_u64("ANALYTICS", lp_key.as_bytes());
                 let price = if lp_raw > 0 {
                     lp_raw as f64 / 1_000_000_000.0
                 } else {
                     // Fallback: oracle price for base token
                     let oracle_key = format!("price_{}", base);
-                    state.state.get_program_storage("ORACLE", oracle_key.as_bytes())
-                        .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64 / 100_000_000.0) } else { None })
+                    state
+                        .state
+                        .get_program_storage("ORACLE", oracle_key.as_bytes())
+                        .and_then(|f| {
+                            if f.len() >= 8 {
+                                Some(
+                                    u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64
+                                        / 100_000_000.0,
+                                )
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or(0.0)
                 };
 
@@ -12714,11 +12733,18 @@ async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value,
     let mut prices = serde_json::Map::new();
     for asset in &assets {
         let key = format!("price_{}", asset);
-        let price = state.state.get_program_storage("ORACLE", key.as_bytes())
-            .and_then(|f| if f.len() >= 8 {
-                Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64 / 100_000_000.0)
-            } else {
-                None
+        let price = state
+            .state
+            .get_program_storage("ORACLE", key.as_bytes())
+            .and_then(|f| {
+                if f.len() >= 8 {
+                    Some(
+                        u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8])) as f64
+                            / 100_000_000.0,
+                    )
+                } else {
+                    None
+                }
             })
             .unwrap_or(0.0);
         prices.insert(asset.to_string(), serde_json::json!(price));
@@ -12731,10 +12757,9 @@ mod tests {
     use super::{
         classify_method, classify_solana_method_tier, encode_rpc_response,
         filter_signatures_for_address, parse_get_block_slot_param, parse_rpc_request,
-        parse_rpc_tier_probe, validate_incoming_transaction_limits,
-        validate_solana_encoding, validate_solana_transaction_details, AirdropCooldowns,
-        MethodTier, RpcError, RpcResponse, AIRDROP_COOLDOWN_MAX_ENTRIES,
-        AIRDROP_COOLDOWN_SECS,
+        parse_rpc_tier_probe, validate_incoming_transaction_limits, validate_solana_encoding,
+        validate_solana_transaction_details, AirdropCooldowns, MethodTier, RpcError, RpcResponse,
+        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
     };
     use axum::http::HeaderMap;
     use moltchain_core::Hash;

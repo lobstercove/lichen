@@ -201,10 +201,10 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE])
         .allow_origin([
-            "https://faucet.moltchain.io"
+            "https://faucet.moltchain.network"
                 .parse::<HeaderValue>()
                 .unwrap(),
-            "https://moltchain.io".parse::<HeaderValue>().unwrap(),
+            "https://moltchain.network".parse::<HeaderValue>().unwrap(),
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3003".parse::<HeaderValue>().unwrap(),
             "http://localhost:9100".parse::<HeaderValue>().unwrap(),
