@@ -99,8 +99,8 @@ console.log('\n── F-2: Mobile nav-actions visibility ──');
 // JS must toggle nav-actions
 assert(/navActions/.test(scriptJs), 'script.js references navActions element');
 assert(/querySelector\(['"]\.nav-actions['"]\)/.test(scriptJs), 'script.js selects .nav-actions');
-assert(/navActions\.classList\.toggle\(['"]active['"]\)/.test(scriptJs) || 
-       /navActions\)?\s*\.classList\.toggle\(['"]active['"]\)/.test(scriptJs),
+assert(/navActions\.classList\.toggle\(['"]active['"]\)/.test(scriptJs) ||
+    /navActions\)?\s*\.classList\.toggle\(['"]active['"]\)/.test(scriptJs),
     'script.js toggles active class on navActions');
 
 // CSS must show .nav-actions.active on mobile
@@ -137,7 +137,7 @@ assert(/data-molt-app=["']developers["']/.test(footerResources), 'footer resourc
 
 // Check that developer portal paths are used
 assert(/data-molt-path=["']\/architecture\.html["']/.test(footerResources) ||
-       /data-molt-path=["']\/getting-started\.html["']/.test(footerResources),
+    /data-molt-path=["']\/getting-started\.html["']/.test(footerResources),
     'footer resources link to developer portal pages');
 
 // Validator guide link in footer
@@ -202,7 +202,7 @@ assert(formatFn !== null && /isFinite/.test(formatFn), 'formatNumber checks isFi
 // Build and test the function
 if (formatFn) {
     const fn = new Function('return ' + formatFn)();
-    
+
     assert(fn(1234567) === '1.2M', 'formatNumber(1234567) => "1.2M"');
     assert(fn(45000) === '45.0K', 'formatNumber(45000) => "45.0K"');
     assert(fn(999) === '999', 'formatNumber(999) => "999"');
@@ -210,7 +210,7 @@ if (formatFn) {
     assert(fn(undefined) === '—', 'formatNumber(undefined) => "—"');
     assert(fn(null) === '—', 'formatNumber(null) => "—"');
     assert(fn('hello') === '—', 'formatNumber("hello") => "—"');
-    assert(fn({error: 'fail'}) === '—', 'formatNumber({error: "fail"}) => "—"');
+    assert(fn({ error: 'fail' }) === '—', 'formatNumber({error: "fail"}) => "—"');
     assert(fn(NaN) === '—', 'formatNumber(NaN) => "—"');
     assert(fn(Infinity) === '—', 'formatNumber(Infinity) => "—"');
     assert(fn(-Infinity) === '—', 'formatNumber(-Infinity) => "—"');
@@ -227,7 +227,7 @@ assert(/document\.hidden/.test(scriptJs), 'script.js checks document.hidden');
 
 // On hidden, should disconnect
 assert(/document\.hidden[\s\S]*?disconnectWebsiteWS/.test(scriptJs) ||
-       /if\s*\(\s*document\.hidden\s*\)\s*\{[\s\S]*?disconnectWebsiteWS/.test(scriptJs),
+    /if\s*\(\s*document\.hidden\s*\)\s*\{[\s\S]*?disconnectWebsiteWS/.test(scriptJs),
     'disconnects WebSocket when page is hidden');
 
 // On visible, should reconnect
