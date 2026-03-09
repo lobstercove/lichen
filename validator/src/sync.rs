@@ -337,8 +337,8 @@ impl SyncManager {
     pub async fn record_sync_failure(&self) {
         let mut failures = self.consecutive_failures.lock().await;
         *failures = failures.saturating_add(1);
-        let cooldown_secs = (SYNC_COOLDOWN_BASE_SECS << (*failures).min(4))
-            .min(SYNC_COOLDOWN_MAX_SECS);
+        let cooldown_secs =
+            (SYNC_COOLDOWN_BASE_SECS << (*failures).min(4)).min(SYNC_COOLDOWN_MAX_SECS);
         warn!(
             "⚠️  Sync failure #{} — cooldown increased to {}s",
             *failures, cooldown_secs
@@ -349,7 +349,10 @@ impl SyncManager {
     pub async fn record_sync_success(&self) {
         let mut failures = self.consecutive_failures.lock().await;
         if *failures > 0 {
-            info!("✅ Sync success — resetting failure backoff (was {})", *failures);
+            info!(
+                "✅ Sync success — resetting failure backoff (was {})",
+                *failures
+            );
             *failures = 0;
         }
     }
@@ -848,29 +851,23 @@ mod tests {
     /// P0-2: Verify cooldown calculation with backoff
     #[test]
     fn test_cooldown_calculation() {
+        // The actual formula: base << min(failures, 4), capped at max
+        let cooldown_for = |failures: u64| -> u64 {
+            (SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)
+        };
+
         // 0 failures → base (2s)
-        let cooldown_0 = SYNC_COOLDOWN_BASE_SECS;
-        assert_eq!(cooldown_0, 2);
-
+        assert_eq!(cooldown_for(0), 2);
         // 1 failure → 2 << 1 = 4s
-        let cooldown_1 = (SYNC_COOLDOWN_BASE_SECS << 1u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
-        assert_eq!(cooldown_1, 4);
-
+        assert_eq!(cooldown_for(1), 4);
         // 2 failures → 2 << 2 = 8s
-        let cooldown_2 = (SYNC_COOLDOWN_BASE_SECS << 2u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
-        assert_eq!(cooldown_2, 8);
-
+        assert_eq!(cooldown_for(2), 8);
         // 3 failures → 2 << 3 = 16s
-        let cooldown_3 = (SYNC_COOLDOWN_BASE_SECS << 3u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
-        assert_eq!(cooldown_3, 16);
-
+        assert_eq!(cooldown_for(3), 16);
         // 4 failures → 2 << 4 = 32 → capped to 30s
-        let cooldown_4 = (SYNC_COOLDOWN_BASE_SECS << 4u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
-        assert_eq!(cooldown_4, 30);
-
-        // 10 failures → still capped via .min(4) → same as 4 failures
-        let cooldown_10 = (SYNC_COOLDOWN_BASE_SECS << 10u32.min(4)).min(SYNC_COOLDOWN_MAX_SECS);
-        assert_eq!(cooldown_10, 30);
+        assert_eq!(cooldown_for(4), 30);
+        // 10 failures → 2 << min(10,4) = 2 << 4 = 32 → capped to 30s
+        assert_eq!(cooldown_for(10), 30);
     }
 
     /// P0-3: Batch sizes match expectations
@@ -964,6 +961,7 @@ mod tests {
 
     /// P3-1: Warp sync mode threshold constant
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_warp_sync_threshold() {
         assert_eq!(WARP_SYNC_THRESHOLD, 10_000);
         // Warp threshold must be greater than header-only full-execution window
@@ -999,6 +997,6 @@ mod tests {
 
         // gap > 200 and <= 10000 → HeaderOnly
         // gap > 10000 → Warp
-        assert!(WARP_SYNC_THRESHOLD > HEADER_SYNC_FULL_EXECUTION_WINDOW * 2);
+        assert!(gap_full < WARP_SYNC_THRESHOLD);
     }
 }

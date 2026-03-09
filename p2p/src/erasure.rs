@@ -95,11 +95,7 @@ pub fn decode_shards(shards: &[Option<ErasureShard>]) -> Result<Vec<u8>, String>
     }
 
     // Determine shard size and data_len from any present shard
-    let reference = shards
-        .iter()
-        .flatten()
-        .next()
-        .ok_or("No shards present")?;
+    let reference = shards.iter().flatten().next().ok_or("No shards present")?;
     let shard_size = reference.data.len();
     let data_len = reference.data_len;
 
@@ -193,8 +189,8 @@ mod tests {
 
         // Drop all parity shards (keep only data shards)
         let mut partial: Vec<Option<ErasureShard>> = shards.into_iter().map(Some).collect();
-        for i in DATA_SHARDS..TOTAL_SHARDS {
-            partial[i] = None;
+        for shard in &mut partial[DATA_SHARDS..TOTAL_SHARDS] {
+            *shard = None;
         }
 
         let recovered = decode_shards(&partial).unwrap();
