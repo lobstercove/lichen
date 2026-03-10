@@ -1522,7 +1522,7 @@ molt gov veto <id>                           # Veto proposal
 ### Tokens
 
 ```bash
-molt token create <name> <symbol>            # Create token
+molt token create <name> <symbol> --wasm <path>  # Deploy token WASM + register
 molt token info <token>                      # Token info
 molt token mint <token> <amount>             # Mint tokens
 molt token send <token> <to> <amount>        # Send tokens
@@ -1538,6 +1538,7 @@ molt account history <address> --limit N     # Transaction history
 molt contract info <address>                 # Contract details
 molt contract logs <address> --limit N       # Contract logs
 molt contract list                           # All contracts
+molt contract register <addr> --symbol X     # Register in symbol registry
 molt network status                          # Network status
 molt network peers                           # Connected peers
 molt validator info <address>                # Validator details
@@ -1889,12 +1890,14 @@ See `docs/guides/CONTRACT_DEVELOPMENT.md` for the complete guide.
 
 ### `molt deploy` vs `molt token create`
 
-| Command | What it does | WASM? | Fee |
-|---------|-------------|-------|-----|
-| `molt deploy contract.wasm` | Deploy custom WASM contract | Yes | 25.001 MOLT |
-| `molt token create "Name" SYM` | Create native MT-20 token | No | 0.001 MOLT |
+| Command | What it does | Fee |
+|---------|-------------|-----|
+| `molt deploy contract.wasm` | Deploy WASM contract (no symbol registration) | 25.001 MOLT |
+| `molt deploy wasm --symbol X --name Y --template token` | Deploy + auto-register in symbol registry | 25.001 MOLT |
+| `molt token create "Name" SYM --wasm token.wasm` | Deploy token WASM + register with template="token" | 25.001 MOLT |
+| `molt contract register <addr> --symbol X` | Retroactively register deployed contract in symbol registry | 0.001 MOLT |
 
-Use `molt deploy` when you need custom logic. Use `molt token create` for a standard fungible token.
+All tokens on MoltChain are WASM contracts. Use `molt deploy --symbol` or `molt token create --wasm` to deploy and register in one step. Use `molt contract register` to fix contracts deployed without symbol metadata.
 
 ### Contract Function Convention
 
@@ -1937,8 +1940,15 @@ cargo build --target wasm32-unknown-unknown --release
 # Test locally
 cargo test
 
-# Deploy (need 25.001 MOLT)
+# Deploy with symbol registration (need 25.001 MOLT)
+molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
+  --symbol MYTK --name "My Token" --template token --decimals 9
+
+# Or deploy without registration
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+
+# Retroactively register an already-deployed contract
+molt contract register <address> --symbol MYTK --name "My Token" --template token
 
 # Call a function
 molt call <address> <function_name> [args]

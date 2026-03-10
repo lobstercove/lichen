@@ -368,6 +368,7 @@ impl RpcClient {
         deployer: &Keypair,
         wasm_code: Vec<u8>,
         contract_address: &Pubkey,
+        init_data: Vec<u8>,
     ) -> Result<String> {
         use moltchain_core::ContractInstruction;
 
@@ -376,7 +377,7 @@ impl RpcClient {
         // Create deploy instruction
         let contract_ix = ContractInstruction::Deploy {
             code: wasm_code,
-            init_data: vec![],
+            init_data,
         };
 
         let instruction = Instruction {
@@ -432,6 +433,68 @@ impl RpcClient {
             data: contract_ix
                 .serialize()
                 .map_err(|e| anyhow::anyhow!("Serialization error: {}", e))?,
+        };
+
+        let message = Message {
+            instructions: vec![instruction],
+            recent_blockhash,
+        };
+
+        let signature = owner.sign(&message.serialize());
+
+        let transaction = Transaction {
+            signatures: vec![signature],
+            message,
+        };
+
+        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_base64 = base64_encode(&tx_bytes);
+
+        let params = json!([tx_base64]);
+        let result = self.call("sendTransaction", params).await?;
+
+        let signature_hex = result
+            .as_str()
+            .context("Invalid transaction response")?
+            .to_string();
+
+        Ok(signature_hex)
+    }
+
+    /// Register a deployed contract in the symbol registry (native instruction type 20)
+    pub async fn register_symbol(
+        &self,
+        owner: &Keypair,
+        contract_address: &Pubkey,
+        symbol: &str,
+        name: Option<&str>,
+        template: Option<&str>,
+        decimals: Option<u8>,
+    ) -> Result<String> {
+        let recent_blockhash = self.get_recent_blockhash().await?;
+
+        // Build JSON payload for native type 20 instruction
+        let mut payload = serde_json::Map::new();
+        payload.insert("symbol".to_string(), serde_json::json!(symbol));
+        if let Some(n) = name {
+            payload.insert("name".to_string(), serde_json::json!(n));
+        }
+        if let Some(t) = template {
+            payload.insert("template".to_string(), serde_json::json!(t));
+        }
+        if let Some(d) = decimals {
+            payload.insert("decimals".to_string(), serde_json::json!(d));
+        }
+        let json_bytes = serde_json::to_vec(&payload)?;
+
+        // Native type 20 = register_symbol: [0x14, json...]
+        let mut data = vec![20u8];
+        data.extend_from_slice(&json_bytes);
+
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![owner.pubkey(), *contract_address],
+            data,
         };
 
         let message = Message {
