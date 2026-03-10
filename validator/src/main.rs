@@ -445,77 +445,20 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
         }
     }
 
-    // Fallback: auto-generate ZK keys if still missing.  The Groth16 trusted
-    // setup for 3 circuits (TREE_DEPTH=20) takes ~5-10 minutes and peaks at
-    // ~500MB RAM per circuit.  This only runs when bundled keys are unavailable
-    // (e.g. building from source).  Keys are cached in ~/.moltchain/zk/.
+    // If keys are still missing after checking bundled directory, log a clear
+    // error.  We no longer auto-generate keys at runtime — the canonical
+    // ceremony keys are committed to the repo and shipped in every release.
     if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
-        info!(
-            "🔑 ZK verification keys not found at {} — running trusted setup (one-time, may take several minutes)...",
+        warn!(
+            "⚠️  ZK verification keys not found at {} — shielded transactions unavailable. \
+             Install from a release tarball or run `zk-setup --output {}` manually.",
+            shared_zk_dir.display(),
             shared_zk_dir.display()
         );
-        if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
-            warn!(
-                "⚠️  Failed creating ZK directory {}: {} — shielded transactions unavailable",
-                shared_zk_dir.display(),
-                e
-            );
-            return;
-        }
-        use moltchain_core::zk::setup::{
-            setup_shield, setup_transfer, setup_unshield, CeremonyOutput,
-        };
-        type ZkSetupFn = fn() -> Result<CeremonyOutput, String>;
-        let circuits: &[(&str, ZkSetupFn)] = &[
-            ("shield", setup_shield as ZkSetupFn),
-            ("unshield", setup_unshield as ZkSetupFn),
-            ("transfer", setup_transfer as ZkSetupFn),
-        ];
-        for (name, setup_fn) in circuits {
-            info!("  ⚙️  Generating {} circuit keys...", name);
-            match setup_fn() {
-                Ok(output) => {
-                    let vk_path = shared_zk_dir.join(format!("vk_{}.bin", output.circuit_name));
-                    let pk_path = shared_zk_dir.join(format!("pk_{}.bin", output.circuit_name));
-                    if let Err(e) = fs::write(&vk_path, &output.verification_key_bytes) {
-                        warn!(
-                            "⚠️  Failed writing {}: {} — shielded transactions unavailable",
-                            vk_path.display(),
-                            e
-                        );
-                        return;
-                    }
-                    if let Err(e) = fs::write(&pk_path, &output.proving_key_bytes) {
-                        warn!(
-                            "⚠️  Failed writing {}: {} — shielded transactions unavailable",
-                            pk_path.display(),
-                            e
-                        );
-                        return;
-                    }
-                    info!(
-                        "  ✓ {} — VK {} bytes, PK {} bytes",
-                        name,
-                        output.verification_key_bytes.len(),
-                        output.proving_key_bytes.len()
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "⚠️  {} ZK setup failed: {} — shielded transactions unavailable",
-                        name, e
-                    );
-                    return;
-                }
-            }
-        }
-        info!(
-            "✅ ZK trusted setup complete — keys cached at {}",
-            shared_zk_dir.display()
-        );
+        return;
     } else {
         info!(
-            "🔑 ZK verification keys found in cache ({})",
+            "🔑 ZK verification keys loaded from {}",
             shared_zk_dir.display()
         );
     }
