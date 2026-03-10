@@ -716,18 +716,27 @@ struct TreasuryKeyFile {
 
 fn resolve_treasury_keypair_path(
     genesis_wallet: Option<&GenesisWallet>,
+    data_dir: &Path,
     keys_dir: &Path,
     chain_id: &str,
 ) -> Option<PathBuf> {
+    // Check treasury_keypair_path from genesis-wallet.json, resolved relative to data_dir
     if let Some(wallet) = genesis_wallet {
         if let Some(path) = wallet.treasury_keypair_path.as_ref() {
             let candidate = PathBuf::from(path);
-            if candidate.exists() {
-                return Some(candidate);
+            // If absolute, use as-is; otherwise resolve relative to data_dir
+            let resolved = if candidate.is_absolute() {
+                candidate
+            } else {
+                data_dir.join(&candidate)
+            };
+            if resolved.exists() {
+                return Some(resolved);
             }
         }
     }
 
+    // Fallback: look directly in genesis-keys/
     let candidate = keys_dir.join(format!("treasury-{}.json", chain_id));
     if candidate.exists() {
         Some(candidate)
@@ -738,10 +747,11 @@ fn resolve_treasury_keypair_path(
 
 fn load_treasury_keypair(
     genesis_wallet: Option<&GenesisWallet>,
+    data_dir: &Path,
     keys_dir: &Path,
     chain_id: &str,
 ) -> Option<Keypair> {
-    let path = resolve_treasury_keypair_path(genesis_wallet, keys_dir, chain_id)?;
+    let path = resolve_treasury_keypair_path(genesis_wallet, data_dir, keys_dir, chain_id)?;
     let contents = match fs::read_to_string(&path) {
         Ok(data) => data,
         Err(e) => {
@@ -4388,7 +4398,21 @@ async fn run_validator() {
                 .unwrap_or(7001);
             format!("./data/state-{}", port)
         });
-    let log_dir = PathBuf::from(&pre_data_dir).join("logs");
+    // Canonicalize early so logs go to the same absolute path as the DB
+    let pre_data_dir = {
+        let p = PathBuf::from(&pre_data_dir);
+        let _ = fs::create_dir_all(&p);
+        std::fs::canonicalize(&p).unwrap_or_else(|_| {
+            if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(&p)
+            }
+        })
+    };
+    let log_dir = pre_data_dir.join("logs");
     let _ = fs::create_dir_all(&log_dir);
 
     // Rolling daily file appender — creates files like validator.2026-02-15.log
@@ -4684,8 +4708,9 @@ async fn run_validator() {
     let explicit_seed_peers = resolve_peer_list(&explicit_seed_peer_strings);
     // Search seeds.json in multiple locations
     let seeds_candidates = [
-        PathBuf::from("seeds.json"),
+        data_dir_path.join("seeds.json"),
         PathBuf::from("/etc/moltchain/seeds.json"),
+        PathBuf::from("seeds.json"),
     ];
     let seeds_path = seeds_candidates
         .iter()
@@ -5218,6 +5243,7 @@ async fn run_validator() {
     // Block rewards use protocol-level coinbase (no signing needed).
     let treasury_keypair = load_treasury_keypair(
         genesis_wallet.as_ref(),
+        data_dir_path,
         &genesis_keypairs_dir,
         &genesis_config.chain_id,
     );
