@@ -309,11 +309,20 @@ impl P2PNetwork {
             .map(|path| Arc::new(PeerStore::new(path, config.max_known_peers)));
 
         // Resolve reserved relay peer addresses to SocketAddr for eviction protection
-        let reserved_addrs: Vec<SocketAddr> = config
+        let mut reserved_addrs: Vec<SocketAddr> = config
             .reserved_relay_peers
             .iter()
             .filter_map(|s| s.parse().ok())
             .collect();
+
+        // Seed/bootstrap peers are implicitly reserved — their TOFU fingerprint
+        // rotations are auto-accepted so freshly joining validators can always
+        // reach the network even after seed nodes redeploy.
+        for addr in &config.seed_peers {
+            if !reserved_addrs.contains(addr) {
+                reserved_addrs.push(*addr);
+            }
+        }
 
         // Create peer manager with configurable max_peers and reserved peers
         let peer_manager = Arc::new(
