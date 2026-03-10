@@ -2,7 +2,7 @@
 name = "moltchain-validator"
 version = "0.2.5"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
+authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
 description = "MoltChain validator node"
 
 [dependencies]

@@ -2,7 +2,7 @@
 name = "moltchain-genesis"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
+authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
 description = "MoltChain genesis block creator — standalone tool for bootstrapping a new chain"
 
 [dependencies]

@@ -9,7 +9,7 @@
 # Usage:
 #   ./moltchain-start.sh testnet              # Start testnet validator
 #   ./moltchain-start.sh mainnet              # Start mainnet validator
-#   ./moltchain-start.sh testnet --bootstrap seed1.moltchain.io:7001
+#   ./moltchain-start.sh testnet --bootstrap seed1.moltchain.network:7001
 #   ./moltchain-start.sh testnet --no-deploy  # Skip first-boot deployment
 #   ./moltchain-start.sh testnet --custody    # Also start custody service
 #   ./moltchain-start.sh testnet --build      # Force rebuild before start

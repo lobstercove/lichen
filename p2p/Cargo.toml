@@ -2,7 +2,7 @@
 name = "moltchain-p2p"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
+authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
 description = "MoltChain P2P networking with QUIC"
 
 [dependencies]

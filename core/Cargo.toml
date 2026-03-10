@@ -2,7 +2,7 @@
 name = "moltchain-core"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
+authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
 description = "MoltChain core blockchain implementation"
 license = "Apache-2.0"
 
