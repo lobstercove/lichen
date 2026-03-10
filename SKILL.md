@@ -887,12 +887,12 @@ Achievements are auto-detected by `detect_and_award_achievements()` in the proce
 
 ### Boot-Time Setup
 
-On first boot, `zk-setup` binary generates 3 Groth16 verification keys (~10s each, ~300MB peak memory per circuit). Keys cached in `~/.moltchain/zk/` (survives blockchain resets):
-- `vk_shield.bin`
-- `vk_unshield.bin`
-- `vk_transfer.bin`
+Canonical Groth16 ceremony keys are committed to `zk-keys/` in the repo and shipped in every release tarball (inside `zk/`). On first boot, the validator copies bundled keys from the `zk/` directory next to the executable into `~/.moltchain/zk/`:
+- `vk_shield.bin`, `pk_shield.bin`
+- `vk_unshield.bin`, `pk_unshield.bin`
+- `vk_transfer.bin`, `pk_transfer.bin`
 
-Validator loads VKs at startup via `try_load_runtime_zk_verification_keys()`. If VK files are missing, shielded transactions are disabled but the validator still starts.
+All validators must use the same verification keys for cross-verifiable shielded proofs. Keys are never generated at runtime — if missing, the validator logs a warning and disables shielded transactions but still starts. To regenerate manually: `zk-setup --output ~/.moltchain/zk/`.
 
 ### Compute Costs
 
