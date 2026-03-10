@@ -141,7 +141,7 @@ VPS_CREDENTIALS.md
 
 # ── Frontends / proprietary UI (local only) ────────────────
 # Note: the open-source faucet backend lives in faucet-service/.
-developers/
+# developers/ — tracked so devs can run the portal locally after git clone
 dex/
 faucet/
 explorer/
@@ -152,6 +152,11 @@ shared/
 shared-base-styles.css
 shared-config.js
 shared-theme.css
+# Re-include shared files inside developers/ (tracked for devs to run locally)
+!developers/shared/
+!developers/shared-base-styles.css
+!developers/shared-config.js
+!developers/shared-theme.css
 
 # ── Internal infrastructure / ops (local only) ─────────────
 infra/

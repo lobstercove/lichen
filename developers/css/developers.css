@@ -1,0 +1,2599 @@
+/* ============================================================
+   MoltChain Developer Portal — Portal-Specific Styles
+   Layers on top of shared-base-styles.css and shared-theme.css
+   ============================================================ */
+
+/* ============================================================
+   0. NAV BAR OVERRIDES — widened grid layout matching Explorer
+   ============================================================ */
+
+.nav-container {
+    max-width: 1800px;
+    margin: 0 auto;
+    padding: 0.75rem 2rem;
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    column-gap: 1.5rem;
+    width: 100%;
+    min-width: 0;
+}
+
+.nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.35rem;
+    font-weight: 800;
+    justify-self: start;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.logo-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.logo-icon {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+    vertical-align: middle;
+}
+
+.nav-menu {
+    display: flex;
+    gap: 1.25rem;
+    align-items: center;
+    justify-self: center;
+    flex-wrap: nowrap;
+}
+
+.nav-menu a {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    transition: color 0.2s;
+}
+
+.nav-menu a:hover { color: var(--primary); }
+.nav-menu a.active { color: var(--primary); }
+
+.nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    justify-self: end;
+}
+
+.search-container { position: relative; }
+.search-input {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: #fff;
+    padding: 0.45rem 0.75rem 0.45rem 2rem;
+    font-size: 0.82rem;
+    width: 170px;
+    font-family: inherit;
+}
+.search-input:focus { outline: none; border-color: var(--primary); }
+.search-icon {
+    position: absolute;
+    left: 0.65rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    pointer-events: none;
+}
+
+.network-select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    padding: 0.45rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.network-select:focus { outline: none; border-color: var(--primary); }
+
+.nav-toggle {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.25rem;
+}
+.nav-toggle span {
+    width: 22px;
+    height: 2px;
+    background: var(--text-primary);
+    transition: all 0.3s;
+}
+
+/* ============================================================
+   1. DOCUMENTATION LAYOUT
+   Fixed sidebar + scrollable main content area
+   ============================================================ */
+
+.docs-layout {
+    display: flex;
+    min-height: 100vh;
+    padding-top: 60px;          /* match nav height */
+}
+
+.docs-sidebar {
+    width: 240px;
+    position: fixed;
+    top: 60px;
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    background: var(--bg-card, #141830);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 1.25rem 0;
+    z-index: 10;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+}
+
+.docs-sidebar::-webkit-scrollbar {
+    width: 4px;
+}
+
+.docs-sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.docs-sidebar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+}
+
+.docs-main {
+    margin-left: 240px;
+    flex: 1;
+    padding: 2rem 3rem;
+    max-width: 900px;
+}
+
+.docs-content-wrapper {
+    display: flex;
+    gap: 2rem;
+}
+
+/* Mobile sidebar toggle button */
+.sidebar-toggle {
+    display: none;
+    position: fixed;
+    top: 70px;
+    left: 1rem;
+    z-index: 101;
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 1.25rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.sidebar-toggle:hover {
+    background: rgba(255, 107, 53, 0.15);
+}
+
+/* Sidebar backdrop for mobile */
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 9;
+}
+
+.sidebar-backdrop.active {
+    display: block;
+}
+
+
+/* ============================================================
+   2. SIDEBAR NAVIGATION
+   Collapsible section groups with active link indicators
+   ============================================================ */
+
+.sidebar-section {
+    margin-bottom: 0.5rem;
+}
+
+.sidebar-heading {
+    padding: 0.5rem 1.5rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #718096;
+    user-select: none;
+}
+
+.sidebar-group-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.5rem 1.5rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #718096;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+}
+
+.sidebar-group-toggle:hover {
+    color: #A0AEC0;
+}
+
+.sidebar-group-toggle .chevron {
+    font-size: 0.65rem;
+    transition: transform 0.2s;
+}
+
+.sidebar-group-toggle.collapsed .chevron {
+    transform: rotate(-90deg);
+}
+
+.sidebar-links {
+    overflow: hidden;
+    transition: max-height 0.25s ease;
+}
+
+.sidebar-links.collapsed {
+    max-height: 0 !important;
+}
+
+.sidebar-link {
+    display: block;
+    padding: 0.4rem 1.5rem 0.4rem 2rem;
+    font-size: 0.875rem;
+    color: #A0AEC0;
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+}
+
+.sidebar-link:hover {
+    color: #fff;
+    background: rgba(255, 107, 53, 0.05);
+}
+
+.sidebar-link.active {
+    color: var(--primary, #FF6B35);
+    border-left-color: var(--primary, #FF6B35);
+    background: rgba(255, 107, 53, 0.08);
+}
+
+.sidebar-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.04);
+    margin: 0.75rem 1.5rem;
+}
+
+
+/* ============================================================
+   3. CODE BLOCKS
+   Dark background with copy button and language label pill
+   ============================================================ */
+
+.code-block {
+    position: relative;
+    background: var(--bg-dark, #0A0E27);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    margin: 1.5rem 0;
+    overflow: hidden;
+}
+
+.code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.code-lang {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--primary, #FF6B35);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.code-copy-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #A0AEC0;
+    padding: 0.25rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-family: inherit;
+    transition: all 0.15s;
+}
+
+.code-copy-btn:hover {
+    color: #fff;
+    border-color: var(--primary, #FF6B35);
+}
+
+.code-copy-btn.copied {
+    color: var(--success, #06D6A0);
+    border-color: var(--success, #06D6A0);
+}
+
+.code-block pre {
+    margin: 0;
+    padding: 1.25rem;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.06) transparent;
+}
+
+.code-block pre::-webkit-scrollbar {
+    height: 4px;
+}
+
+.code-block pre::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.code-block pre::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+}
+
+.code-block code {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 0.85rem;
+    line-height: 1.7;
+    color: #E2E8F0;
+}
+
+/* Inline code */
+.docs-main p code,
+.docs-main li code {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 0.82rem;
+    background: rgba(255, 107, 53, 0.08);
+    color: var(--primary, #FF6B35);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 107, 53, 0.12);
+}
+
+
+/* ============================================================
+   4. LANGUAGE TABS
+   Switch between JS / Python / Rust / CLI code examples
+   ============================================================ */
+
+.lang-tabs {
+    display: flex;
+    gap: 0;
+    margin: 1.5rem 0 0;
+}
+
+.lang-tab {
+    padding: 0.5rem 1.25rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: #718096;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    border-radius: 8px 8px 0 0;
+    position: relative;
+}
+
+.lang-tab:hover {
+    color: #A0AEC0;
+}
+
+.lang-tab.active {
+    color: var(--primary, #FF6B35);
+    background: var(--bg-dark, #0A0E27);
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Remove gap between active tab and code block below */
+.lang-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--bg-dark, #0A0E27);
+}
+
+.lang-tab-content {
+    display: none;
+}
+
+.lang-tab-content.active {
+    display: block;
+}
+
+/* Code block directly inside tabs loses top margin + top border-radius */
+.lang-tab-content .code-block {
+    margin-top: 0;
+    border-top-left-radius: 0;
+}
+
+
+/* ============================================================
+   5. METHOD / API CARDS
+   Document RPC methods, SDK methods, CLI commands
+   ============================================================ */
+
+.method-card {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    transition: border-color 0.2s;
+}
+
+.method-card:hover {
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.method-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+}
+
+.method-badge.get {
+    background: rgba(6, 214, 160, 0.15);
+    color: var(--success, #06D6A0);
+}
+
+.method-badge.post {
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary, #FF6B35);
+}
+
+.method-badge.put {
+    background: rgba(0, 78, 137, 0.2);
+    color: #4DA8DA;
+}
+
+.method-badge.delete {
+    background: rgba(255, 82, 82, 0.15);
+    color: #FF5252;
+}
+
+.method-name {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--primary, #FF6B35);
+    margin-bottom: 0.5rem;
+}
+
+.method-desc {
+    color: #A0AEC0;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    line-height: 1.6;
+}
+
+.method-section {
+    margin-bottom: 1rem;
+}
+
+.method-section-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #718096;
+    margin-bottom: 0.5rem;
+}
+
+.param-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    display: block;
+    overflow-x: auto;
+}
+
+.param-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    color: #718096;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.param-table td {
+    padding: 0.5rem 0.75rem;
+    color: #E2E8F0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.param-type {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    color: var(--success, #06D6A0);
+    font-size: 0.8rem;
+}
+
+.param-required {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--primary, #FF6B35);
+    text-transform: uppercase;
+}
+
+.param-optional {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #718096;
+    text-transform: uppercase;
+}
+
+
+/* ============================================================
+   6. SEARCH OVERLAY (Cmd+K)
+   Full-screen modal with search input and results
+   ============================================================ */
+
+.search-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    justify-content: center;
+    padding-top: 20vh;
+}
+
+.search-overlay.active {
+    display: flex;
+}
+
+.search-modal {
+    width: 560px;
+    max-height: 400px;
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+}
+
+.search-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 1.25rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.search-modal-icon {
+    color: #718096;
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.search-modal-input {
+    width: 100%;
+    padding: 1rem 0;
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 1rem;
+    font-family: inherit;
+    outline: none;
+}
+
+.search-modal-input::placeholder {
+    color: #4A5568;
+}
+
+.search-modal-kbd {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    color: #4A5568;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.search-results {
+    overflow-y: auto;
+    max-height: 320px;
+    padding: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.06) transparent;
+}
+
+.search-results::-webkit-scrollbar {
+    width: 4px;
+}
+
+.search-results::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+}
+
+.search-results-empty {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: #4A5568;
+    font-size: 0.9rem;
+}
+
+.search-result-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.1s;
+    text-decoration: none;
+}
+
+.search-result-item:hover,
+.search-result-item.selected {
+    background: rgba(255, 107, 53, 0.1);
+}
+
+.search-result-category {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #718096;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    margin-top: 0.15rem;
+}
+
+.search-result-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.search-result-title {
+    color: #fff;
+    font-weight: 500;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.search-result-desc {
+    color: #718096;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.search-footer {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.7rem;
+    color: #4A5568;
+}
+
+.search-footer kbd {
+    font-family: inherit;
+    font-size: 0.65rem;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #718096;
+}
+
+
+/* ============================================================
+   7. TABLE OF CONTENTS (right-side sticky)
+   Auto-generated from headings via JS
+   ============================================================ */
+
+.toc {
+    position: sticky;
+    top: 90px;
+    width: 200px;
+    flex-shrink: 0;
+    padding-left: 1.5rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+    align-self: flex-start;
+}
+
+.toc-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #718096;
+    margin-bottom: 0.75rem;
+}
+
+.toc-link {
+    display: block;
+    padding: 0.25rem 0;
+    font-size: 0.8rem;
+    color: #718096;
+    text-decoration: none;
+    transition: color 0.15s;
+    line-height: 1.4;
+}
+
+.toc-link:hover {
+    color: #E2E8F0;
+}
+
+.toc-link.active {
+    color: var(--primary, #FF6B35);
+}
+
+.toc-link.depth-3 {
+    padding-left: 0.75rem;
+    font-size: 0.75rem;
+}
+
+
+/* ============================================================
+   8. BREADCRUMBS
+   Hierarchical navigation trail
+   ============================================================ */
+
+.breadcrumbs {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.8rem;
+    color: #718096;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.breadcrumbs a {
+    color: #A0AEC0;
+    text-decoration: none;
+    transition: color 0.15s;
+}
+
+.breadcrumbs a:hover {
+    color: var(--primary, #FF6B35);
+}
+
+.breadcrumbs .separator {
+    color: #4A5568;
+    font-size: 0.7rem;
+}
+
+.breadcrumbs .current {
+    color: #E2E8F0;
+    font-weight: 500;
+}
+
+
+/* ============================================================
+   9. HUB PAGE CARDS
+   Larger cards for the developer portal landing page
+   ============================================================ */
+
+.hub-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.hub-card {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    padding: 2rem;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: block;
+}
+
+.hub-card:hover {
+    border-color: var(--primary, #FF6B35);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(255, 107, 53, 0.1);
+}
+
+.hub-card-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.hub-card-icon.primary {
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary, #FF6B35);
+}
+
+.hub-card-icon.blue {
+    background: rgba(0, 78, 137, 0.2);
+    color: #4DA8DA;
+}
+
+.hub-card-icon.green {
+    background: rgba(6, 214, 160, 0.15);
+    color: var(--success, #06D6A0);
+}
+
+.hub-card-icon.purple {
+    background: rgba(159, 122, 234, 0.15);
+    color: #9F7AEA;
+}
+
+.hub-card-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.5rem;
+}
+
+.hub-card-desc {
+    font-size: 0.85rem;
+    color: #A0AEC0;
+    line-height: 1.5;
+}
+
+/* Two-column variant */
+.hub-grid.two-col {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+
+/* ============================================================
+   10. CALLOUT BOXES
+   Info, warning, tip, and danger callouts
+   ============================================================ */
+
+.callout {
+    padding: 1rem 1.25rem;
+    border-radius: 10px;
+    margin: 1.5rem 0;
+    border-left: 3px solid;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.callout-info {
+    background: rgba(0, 78, 137, 0.1);
+    border-color: var(--secondary, #004E89);
+    color: #A0AEC0;
+}
+
+.callout-warning {
+    background: rgba(255, 165, 0, 0.08);
+    border-color: #FFA500;
+    color: #A0AEC0;
+}
+
+.callout-tip {
+    background: rgba(6, 214, 160, 0.08);
+    border-color: var(--success, #06D6A0);
+    color: #A0AEC0;
+}
+
+.callout-danger {
+    background: rgba(255, 82, 82, 0.08);
+    border-color: #FF5252;
+    color: #A0AEC0;
+}
+
+.callout-title {
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.25rem;
+    font-size: 0.85rem;
+}
+
+.callout a {
+    color: var(--primary, #FF6B35);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.callout a:hover {
+    color: #fff;
+}
+
+.callout code {
+    font-size: 0.82rem;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+
+/* ============================================================
+   10a. DATA TABLES
+   Shared table styles: .tier-table (MoltyID), .flags-table (CLI),
+   .reference-table (ZK Privacy / general reference)
+   ============================================================ */
+
+.tier-table,
+.flags-table,
+.reference-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.88rem;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.tier-table thead,
+.flags-table thead,
+.reference-table thead {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.tier-table th,
+.flags-table th,
+.reference-table th {
+    text-align: left;
+    padding: 0.65rem 1rem;
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--text-muted, #718096);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+}
+
+.tier-table td,
+.flags-table td,
+.reference-table td {
+    padding: 0.6rem 1rem;
+    color: var(--text-secondary, #A0AEC0);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    vertical-align: top;
+    line-height: 1.6;
+}
+
+.tier-table tbody tr:last-child td,
+.flags-table tbody tr:last-child td,
+.reference-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.tier-table tbody tr:hover,
+.flags-table tbody tr:hover,
+.reference-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tier-table td code,
+.flags-table td code,
+.reference-table td code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    color: var(--primary, #FF6B35);
+}
+
+.tier-table td strong,
+.flags-table td strong,
+.reference-table td strong {
+    color: #E2E8F0;
+}
+
+/* Responsive tables */
+@media (max-width: 768px) {
+    .tier-table,
+    .flags-table,
+    .reference-table {
+        display: block;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+
+/* ============================================================
+   10b. ARCHITECTURE DIAGRAMS (ASCII art)
+   Used in moltyid.html — monospace pre‑formatted diagrams
+   ============================================================ */
+
+.architecture-diagram {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    background: var(--bg-dark, #0A0E27);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-secondary, #A0AEC0);
+    -webkit-overflow-scrolling: touch;
+}
+
+.architecture-diagram::-webkit-scrollbar {
+    height: 6px;
+}
+
+.architecture-diagram::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.architecture-diagram::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+
+/* ============================================================
+   10c. TIER BADGES — Colored badge pills for trust tiers
+   ============================================================ */
+
+.tier-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.tier-badge.tier-0 {
+    background: rgba(113, 128, 150, 0.2);
+    color: #A0AEC0;
+}
+
+.tier-badge.tier-1 {
+    background: rgba(66, 153, 225, 0.18);
+    color: #63B3ED;
+}
+
+.tier-badge.tier-2 {
+    background: rgba(72, 187, 120, 0.18);
+    color: #68D391;
+}
+
+.tier-badge.tier-3 {
+    background: rgba(237, 137, 54, 0.18);
+    color: #F6AD55;
+}
+
+.tier-badge.tier-4 {
+    background: rgba(214, 158, 46, 0.2);
+    color: #ECC94B;
+}
+
+.tier-badge.tier-5 {
+    background: rgba(255, 107, 53, 0.2);
+    color: var(--primary, #FF6B35);
+}
+
+
+/* ============================================================
+   10d. GATE CARDS — Identity-gated integration cards
+   ============================================================ */
+
+.gate-card {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin: 0.75rem 0;
+    transition: border-color 0.2s;
+}
+
+.gate-card:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.gate-card h4 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 0 0 0.5rem 0;
+}
+
+.gate-card h4 i {
+    color: var(--primary, #FF6B35);
+    margin-right: 0.5rem;
+    width: 18px;
+    text-align: center;
+}
+
+.gate-card p {
+    margin: 0;
+    color: var(--text-secondary, #A0AEC0);
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+
+/* ============================================================
+   10e. SDK TABS — Language switcher tabs (JS / Python / Rust)
+   ============================================================ */
+
+.sdk-tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin: 1.5rem 0 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding-bottom: 0;
+}
+
+.sdk-tab {
+    padding: 0.5rem 1.25rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--text-muted, #718096);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-bottom: -1px;
+}
+
+.sdk-tab:hover {
+    color: var(--text-secondary, #A0AEC0);
+}
+
+.sdk-tab.active {
+    color: var(--primary, #FF6B35);
+    border-bottom-color: var(--primary, #FF6B35);
+}
+
+.sdk-panel {
+    display: none;
+    padding-top: 1rem;
+}
+
+.sdk-panel.active {
+    display: block;
+}
+
+.sdk-panel h3 {
+    margin-top: 1.5rem;
+}
+
+.sdk-panel .code-block {
+    margin-bottom: 0.5rem;
+}
+
+
+/* ============================================================
+   10f. CMD SECTION — CLI command reference sections
+   ============================================================ */
+
+.cmd-section {
+    margin: 2.5rem 0;
+    padding-top: 0.5rem;
+    scroll-margin-top: 80px;
+}
+
+.cmd-section h3 {
+    margin-top: 0;
+}
+
+.cmd-section h3 code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.05rem;
+    color: #fff;
+    background: rgba(255, 107, 53, 0.1);
+    padding: 0.25rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 107, 53, 0.15);
+}
+
+.cmd-section > p {
+    margin-top: 0.75rem;
+}
+
+
+/* ============================================================
+   10g. CODE HEADER — Alternate code-block header (used in MoltyID)
+   ============================================================ */
+
+.code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.78rem;
+    color: var(--text-muted, #718096);
+    font-weight: 600;
+}
+
+
+/* ============================================================
+   11. STEPS — Numbered step indicators for tutorials
+   ============================================================ */
+
+.step {
+    display: flex;
+    gap: 1.25rem;
+    margin: 2rem 0;
+}
+
+.step-number {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary, #FF6B35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.step-content {
+    flex: 1;
+    padding-top: 0.25rem;
+}
+
+.step-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.5rem;
+}
+
+.step-desc {
+    font-size: 0.9rem;
+    color: #A0AEC0;
+    line-height: 1.6;
+}
+
+/* Connector line between steps */
+.steps-list .step:not(:last-child) .step-number {
+    position: relative;
+}
+
+.steps-list .step:not(:last-child) .step-number::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: calc(100% + 1rem);
+    background: rgba(255, 107, 53, 0.15);
+}
+
+
+/* ============================================================
+   12. NETWORK SELECT - already defined in section 0
+   ============================================================ */
+
+.nav-network {
+    display: flex;
+    align-items: center;
+}
+
+/* ============================================================
+   12b. NETWORK SELECTOR (developer-specific)
+   ============================================================ */
+
+.network-selector-dev {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    font-size: 0.8rem;
+}
+
+.network-selector-dev .network-option {
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #718096;
+    transition: all 0.15s;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.network-selector-dev .network-option:hover {
+    color: #A0AEC0;
+}
+
+.network-selector-dev .network-option.active {
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary, #FF6B35);
+}
+
+.endpoint-display {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: #A0AEC0;
+    background: var(--bg-dark, #0A0E27);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+
+/* ============================================================
+   13. DOCUMENTATION CONTENT TYPOGRAPHY
+   Styles for prose inside .docs-main
+   ============================================================ */
+
+.docs-main h1 {
+    font-size: 2.25rem;
+    font-weight: 800;
+    margin-bottom: 0.75rem;
+    color: #fff;
+    line-height: 1.2;
+}
+
+.docs-main h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    color: #fff;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.docs-main h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+    color: #E2E8F0;
+}
+
+.docs-main h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: #E2E8F0;
+}
+
+.docs-main p {
+    color: #A0AEC0;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    margin-bottom: 1rem;
+}
+
+.docs-main ul,
+.docs-main ol {
+    margin-bottom: 1rem;
+    padding-left: 1.25rem;
+}
+
+.docs-main li {
+    color: #A0AEC0;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    margin-bottom: 0.35rem;
+    list-style: disc;
+}
+
+.docs-main ol li {
+    list-style: decimal;
+}
+
+.docs-main a {
+    color: var(--primary, #FF6B35);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(255, 107, 53, 0.3);
+    transition: text-decoration-color 0.15s;
+}
+
+.docs-main a:hover {
+    text-decoration-color: var(--primary, #FF6B35);
+}
+
+.docs-main hr {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin: 2.5rem 0;
+}
+
+.docs-main blockquote {
+    border-left: 3px solid var(--primary, #FF6B35);
+    padding: 0.75rem 1.25rem;
+    margin: 1.5rem 0;
+    color: #A0AEC0;
+    background: rgba(255, 107, 53, 0.04);
+    border-radius: 0 8px 8px 0;
+}
+
+
+/* ============================================================
+   14. RESPONSIVE BREAKPOINTS
+   ============================================================ */
+
+@media (max-width: 1200px) {
+    .toc {
+        display: none;
+    }
+
+    .docs-main {
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 1024px) {
+    .nav-container {
+        grid-template-columns: auto 1fr auto;
+        padding: 0.75rem 1.5rem;
+    }
+    .nav-menu {
+        gap: 0.75rem;
+    }
+    .nav-menu a {
+        font-size: 0.82rem;
+    }
+    .search-input {
+        width: 140px;
+    }
+}
+
+@media (max-width: 768px) {
+    .nav-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        min-width: 0;
+    }
+    .nav-logo {
+        max-width: calc(100% - 56px);
+    }
+    .logo-text {
+        font-size: 1.15rem;
+    }
+    .nav-menu {
+        display: none;
+        position: fixed;
+        top: 60px;
+        left: 0;
+        right: 0;
+        background: var(--bg-dark);
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        padding: 0.5rem 1rem;
+        border-bottom: 1px solid var(--border);
+        z-index: 999;
+    }
+    .nav-menu.open,
+    .nav-menu.active {
+        display: flex;
+    }
+    .nav-menu li {
+        width: 100%;
+    }
+    .nav-menu a {
+        display: block;
+        width: 100%;
+        padding: 0.85rem 0.5rem;
+        text-align: left;
+        font-size: 0.95rem;
+        border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .nav-actions {
+        display: none;
+        gap: 0.5rem;
+    }
+    .nav-actions.open,
+    .nav-actions.active {
+        display: flex;
+        position: fixed;
+        top: calc(60px + var(--nav-menu-height, 0px));
+        left: 0;
+        right: 0;
+        background: var(--bg-dark);
+        flex-direction: column;
+        padding: 0 1rem 1rem;
+        border-bottom: 1px solid var(--border);
+        z-index: 998;
+    }
+    .nav-actions.active .search-container,
+    .nav-actions.open .search-container {
+        width: 100%;
+    }
+    .search-input {
+        width: 120px;
+    }
+    .nav-actions.active .search-input,
+    .nav-actions.open .search-input,
+    .nav-actions.active .network-select,
+    .nav-actions.open .network-select {
+        width: 100%;
+    }
+    .nav-toggle {
+        display: flex;
+    }
+
+    .docs-sidebar {
+        transform: translateX(-100%);
+        position: fixed;
+        z-index: 100;
+        transition: transform 0.3s ease;
+    }
+
+    .docs-sidebar.open {
+        transform: translateX(0);
+    }
+
+    .sidebar-toggle {
+        display: flex;
+    }
+
+    .docs-main {
+        margin-left: 0;
+        padding: 1.5rem;
+    }
+
+    .hub-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .hub-grid.two-col {
+        grid-template-columns: 1fr;
+    }
+
+    .method-card {
+        padding: 1rem;
+    }
+
+    .docs-main h1 {
+        font-size: 1.75rem;
+    }
+
+    .docs-main h2 {
+        font-size: 1.25rem;
+    }
+
+    .search-modal {
+        width: calc(100% - 2rem);
+        margin: 0 1rem;
+    }
+
+    .lang-tabs {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .param-table {
+        display: block;
+        overflow-x: auto;
+    }
+
+    /* Changelog responsive */
+    .changelog-container {
+        padding: 1rem;
+    }
+    .changelog-filter {
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 480px) {
+    .docs-main {
+        padding: 1rem;
+    }
+
+    .code-block pre {
+        padding: 1rem;
+    }
+
+    .hub-card {
+        padding: 1.5rem;
+    }
+
+    .step {
+        gap: 1rem;
+    }
+
+    .step-number {
+        width: 30px;
+        height: 30px;
+        font-size: 0.8rem;
+    }
+}
+
+
+/* ============================================================
+   15. CHANGELOG STYLES
+   ============================================================ */
+
+.changelog-container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 2rem 4rem;
+    padding-top: calc(60px + 2rem);  /* nav height + spacing */
+}
+
+.changelog-container h1 {
+    font-size: 2.25rem;
+    font-weight: 800;
+    margin-bottom: 0.5rem;
+    color: #fff;
+}
+
+.changelog-lead {
+    color: var(--text-secondary, #A0AEC0);
+    font-size: 0.95rem;
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.changelog-filter {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+}
+
+.changelog-filter-btn {
+    padding: 0.35rem 0.85rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--text-muted, #718096);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.changelog-filter-btn:hover {
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.changelog-filter-btn.active {
+    background: rgba(255, 107, 53, 0.15);
+    color: var(--primary, #FF6B35);
+    border-color: rgba(255, 107, 53, 0.3);
+}
+
+.changelog-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+}
+
+.changelog-entry {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    transition: border-color 0.2s;
+}
+
+.changelog-entry:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.changelog-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.changelog-version {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--primary, #FF6B35);
+    background: rgba(255, 107, 53, 0.12);
+    padding: 0.2rem 0.6rem;
+    border-radius: 5px;
+}
+
+.changelog-date {
+    font-size: 0.82rem;
+    color: var(--text-muted, #718096);
+}
+
+.changelog-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 1rem;
+    line-height: 1.3;
+}
+
+.changelog-section {
+    margin-bottom: 1rem;
+}
+
+.changelog-section:last-child {
+    margin-bottom: 0;
+}
+
+.changelog-section h4 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.changelog-section h4 i {
+    font-size: 0.85rem;
+}
+
+.changelog-section ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0;
+}
+
+.changelog-section li {
+    color: var(--text-secondary, #A0AEC0);
+    font-size: 0.88rem;
+    line-height: 1.65;
+    margin-bottom: 0.3rem;
+}
+
+.changelog-section code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    background: rgba(255, 107, 53, 0.08);
+    color: var(--primary, #FF6B35);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 107, 53, 0.1);
+}
+
+
+/* ============================================================
+   16. ARCHITECTURE PAGE STYLES
+   ============================================================ */
+
+.arch-layer-diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 1.5rem 0 2rem;
+}
+
+.arch-layer {
+    padding: 1rem 1.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: transform 0.2s;
+}
+
+.arch-layer:first-child {
+    border-radius: 10px 10px 0 0;
+}
+
+.arch-layer:last-child {
+    border-radius: 0 0 10px 10px;
+}
+
+.arch-layer:hover {
+    transform: scale(1.01);
+    z-index: 1;
+}
+
+.layer-name {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.layer-name i {
+    font-size: 0.9rem;
+}
+
+.layer-desc {
+    font-size: 0.82rem;
+    color: var(--text-secondary, #A0AEC0);
+    line-height: 1.5;
+}
+
+.layer-state      { background: rgba(6, 214, 160, 0.08); border-color: rgba(6, 214, 160, 0.2); }
+.layer-state .layer-name i { color: var(--success, #06D6A0); }
+
+.layer-execution  { background: rgba(255, 107, 53, 0.08); border-color: rgba(255, 107, 53, 0.2); }
+.layer-execution .layer-name i { color: var(--primary, #FF6B35); }
+
+.layer-consensus  { background: rgba(0, 78, 137, 0.1); border-color: rgba(0, 78, 137, 0.25); }
+.layer-consensus .layer-name i { color: var(--info, #118AB2); }
+
+.layer-network    { background: rgba(159, 122, 234, 0.08); border-color: rgba(159, 122, 234, 0.2); }
+.layer-network .layer-name i { color: #9F7AEA; }
+
+.arch-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin: 1.5rem 0;
+}
+
+.arch-table th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    color: var(--text-muted, #718096);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.arch-table td {
+    padding: 0.55rem 0.8rem;
+    color: var(--text-secondary, #E2E8F0);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.arch-table td:first-child {
+    font-weight: 600;
+    color: #fff;
+}
+
+
+/* ============================================================
+   17. VALIDATOR PAGE — req-grid, req-card, config-table
+   ============================================================ */
+
+.req-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.req-card {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 1.25rem;
+    text-align: center;
+    transition: border-color 0.2s, transform 0.2s;
+}
+
+.req-card:hover {
+    border-color: rgba(255, 107, 53, 0.3);
+    transform: translateY(-2px);
+}
+
+.req-card-icon {
+    font-size: 1.5rem;
+    color: var(--primary, #FF6B35);
+    margin-bottom: 0.5rem;
+}
+
+.req-card-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.25rem;
+}
+
+.req-card-value {
+    font-size: 0.82rem;
+    color: var(--text-secondary, #A0AEC0);
+}
+
+.config-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin: 1rem 0 1.5rem;
+}
+
+.config-table th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    color: var(--text-muted, #718096);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.config-table td {
+    padding: 0.55rem 0.8rem;
+    color: var(--text-secondary, #E2E8F0);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.config-table code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    background: rgba(255, 107, 53, 0.08);
+    color: var(--primary, #FF6B35);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+.config-section-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #718096);
+    margin: 1.5rem 0 0.5rem;
+}
+
+
+/* ============================================================
+   18. INFO-BOX — used in contracts, moltyid, etc.
+   ============================================================ */
+
+.info-box {
+    display: flex;
+    gap: 1rem;
+    background: rgba(0, 78, 137, 0.1);
+    border: 1px solid rgba(0, 78, 137, 0.2);
+    border-left: 3px solid var(--info, #118AB2);
+    border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--text-secondary, #A0AEC0);
+}
+
+.info-box > i {
+    flex-shrink: 0;
+    font-size: 1.1rem;
+    color: var(--info, #118AB2);
+    margin-top: 0.15rem;
+}
+
+.info-box strong {
+    color: #fff;
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.info-box ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin-top: 0.5rem;
+}
+
+.info-box li {
+    margin-bottom: 0.25rem;
+    font-size: 0.88rem;
+}
+
+.info-box code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    background: rgba(255, 107, 53, 0.08);
+    color: var(--primary, #FF6B35);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+.info-box p {
+    margin-bottom: 0.5rem;
+}
+.info-box p:last-child {
+    margin-bottom: 0;
+}
+
+
+/* ============================================================
+   19. DEV HUB LANDING PAGE — hero, stats bar, footer
+   ============================================================ */
+
+.dev-hero {
+    padding: 9rem 0 4rem;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.dev-hero-bg {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+        radial-gradient(circle at 30% 40%, rgba(255,107,53,0.12) 0%, transparent 50%),
+        radial-gradient(circle at 70% 60%, rgba(6,214,160,0.08) 0%, transparent 50%),
+        radial-gradient(circle at 50% 80%, rgba(0,78,137,0.1) 0%, transparent 50%);
+}
+
+.dev-hero-content {
+    position: relative;
+    z-index: 1;
+}
+
+.dev-hero h1 {
+    font-size: 3.5rem;
+    font-weight: 900;
+    margin-bottom: 1rem;
+    line-height: 1.1;
+}
+
+.dev-hero p {
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    max-width: 640px;
+    margin: 0 auto 2.5rem;
+    line-height: 1.7;
+}
+
+.dev-hero-cta {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.stats-bar {
+    padding: 3rem 0;
+    background: var(--bg-darker, #060812);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.5rem;
+}
+
+.stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    text-align: center;
+    transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+    border-color: var(--primary);
+    transform: translateY(-2px);
+}
+
+.stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--primary, #FF6B35);
+    margin-bottom: 0.25rem;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.stat-card .stat-label {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+}
+
+.hub-section {
+    padding: 4rem 0;
+}
+
+.hub-section-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    color: #fff;
+}
+
+.quick-code {
+    padding: 4rem 0;
+    background: var(--bg-darker, #060812);
+}
+
+.quick-code h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: #fff;
+}
+
+.quick-code .subtitle {
+    color: var(--text-muted);
+    margin-bottom: 1.5rem;
+    font-size: 0.95rem;
+}
+
+.dev-footer {
+    padding: 3rem 0;
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+
+.dev-footer-links {
+    display: flex;
+    gap: 2rem;
+    justify-content: center;
+    margin-bottom: 1rem;
+}
+
+.dev-footer-links a {
+    color: var(--text-secondary);
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.dev-footer-links a:hover {
+    color: var(--primary);
+}
+
+.dev-footer-copy {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+@media (max-width: 768px) {
+    .dev-hero h1 { font-size: 2.5rem; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .dev-hero-cta { flex-direction: column; align-items: center; }
+    .dev-footer-links { flex-wrap: wrap; gap: 1rem; }
+}
+
+@media (max-width: 1024px) {
+    .hub-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+
+/* ============================================================
+   20. CONTRACT-REFERENCE PAGE — moved from inline <style>
+   ============================================================ */
+
+.doc-header {
+    text-align: center;
+    padding: 3rem 0 2rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 3rem;
+}
+
+.doc-header h1 {
+    font-size: 2.25rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--primary, #FF6B35), var(--accent, #F77F00));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.5rem;
+}
+
+.doc-header h1 i {
+    -webkit-text-fill-color: initial;
+    color: var(--primary, #FF6B35);
+    margin-right: 0.5rem;
+}
+
+.doc-header p {
+    color: var(--text-secondary, #A0AEC0);
+    font-size: 1.05rem;
+}
+
+.doc-stats {
+    display: flex;
+    justify-content: center;
+    gap: 2.5rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.doc-stat {
+    text-align: center;
+}
+
+.doc-stat .num {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--primary, #FF6B35);
+}
+
+.doc-stat .label {
+    font-size: 0.78rem;
+    color: var(--text-muted, #718096);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* TOC override for contract-reference —
+   Reset the sticky sidebar rules so the TOC sits inline */
+.contract-ref-body .toc {
+    position: static;
+    width: 100%;
+    padding-left: 0;
+    border-left: none;
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 3rem;
+}
+
+.contract-ref-body .toc h2 {
+    font-size: 1.3rem;
+    margin-bottom: 1rem;
+    color: var(--text-primary, #E2E8F0);
+}
+
+.toc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 0.4rem 0.8rem;
+}
+
+.toc-grid a {
+    color: var(--text-secondary, #A0AEC0);
+    text-decoration: none;
+    font-size: 0.85rem;
+    padding: 0.3rem 0;
+    transition: color 0.15s;
+}
+
+.toc-grid a:hover {
+    color: var(--primary, #FF6B35);
+}
+
+.toc .toc-num {
+    color: var(--text-muted, #718096);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    min-width: 1.6rem;
+}
+
+.contract-section {
+    margin-bottom: 3rem;
+    scroll-margin-top: 5rem;
+}
+
+.contract-card {
+    background: var(--bg-card, #141830);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.contract-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.25rem 2rem;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.contract-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+/* Section wrappers that replace inline margin/padding styles */
+.cr-section {
+    margin-bottom: 3rem;
+}
+
+.cr-section-bordered {
+    margin-top: 3rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border, rgba(255,255,255,0.06));
+}
+
+.cr-section h2 {
+    font-size: 1.3rem;
+    margin-bottom: 0.5rem;
+}
+
+.cr-section h3,
+.cr-section-bordered h3 {
+    font-size: 1.1rem;
+    margin-top: 2rem;
+    margin-bottom: 0.6rem;
+}
+
+.cr-section > p,
+.cr-section-bordered > p {
+    color: var(--text-secondary, #A0AEC0);
+    margin-bottom: 1rem;
+    line-height: 1.8;
+    font-size: 0.9rem;
+}
+
+.cr-section-bordered h2 {
+    font-size: 1.4rem;
+    margin-bottom: 1rem;
+}
+
+.cr-section-bordered > p:first-of-type {
+    margin-bottom: 1.2rem;
+}
+
+.cr-section .const-table,
+.cr-section-bordered .const-table {
+    max-width: 100%;
+}
+
+.cr-section-bordered .const-table.narrow {
+    max-width: 800px;
+}
+
+.cr-section-bordered .const-table.narrower {
+    max-width: 600px;
+}
+
+.cr-note {
+    font-size: 0.8rem;
+    color: var(--text-muted, #718096);
+    margin-top: 0.5rem;
+}
+
+.contract-header-text h3 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #fff;
+}
+
+.contract-header-text .subtitle {
+    color: var(--text-secondary, #A0AEC0);
+    font-size: 0.85rem;
+}
+
+.contract-meta {
+    display: flex;
+    gap: 0.75rem;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.meta-chip {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary, #A0AEC0);
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+}
+
+.contract-body {
+    padding: 1.5rem 2rem;
+}
+
+.contract-body p {
+    color: var(--text-secondary, #A0AEC0);
+    margin-bottom: 1rem;
+    line-height: 1.8;
+    font-size: 0.9rem;
+}
+
+.sub-heading {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-muted, #718096);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 1.5rem 0 0.6rem;
+}
+
+.const-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+.const-table th {
+    text-align: left;
+    padding: 0.5rem 0.8rem;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-muted, #718096);
+    font-weight: 600;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.const-table td {
+    padding: 0.45rem 0.8rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    color: var(--text-secondary, #A0AEC0);
+}
+
+.const-table td:first-child {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--info, #118AB2);
+    font-size: 0.8rem;
+}
+
+.fn-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.fn-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    background: rgba(0, 78, 137, 0.12);
+    color: var(--info, #118AB2);
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 78, 137, 0.2);
+}
+
+.badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.badge {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 5px;
+    font-weight: 600;
+}
+
+.badge-identity { background: rgba(159,122,234,0.15); color: #9F7AEA; border: 1px solid rgba(159,122,234,0.2); }
+.badge-defi     { background: rgba(6,214,160,0.12); color: var(--success, #06D6A0); border: 1px solid rgba(6,214,160,0.2); }
+.badge-nft      { background: rgba(255,107,53,0.12); color: var(--primary, #FF6B35); border: 1px solid rgba(255,107,53,0.2); }
+.badge-infra    { background: rgba(17,138,178,0.12); color: var(--info, #118AB2); border: 1px solid rgba(17,138,178,0.2); }
+.badge-dex      { background: rgba(247,127,0,0.12); color: var(--accent, #F77F00); border: 1px solid rgba(247,127,0,0.2); }
+
+.icon-defi     { background: linear-gradient(135deg, #166534, #22c55e); color: #fff; }
+.icon-nft      { background: linear-gradient(135deg, #9a3412, #f97316); color: #fff; }
+.icon-identity { background: linear-gradient(135deg, #6b21a8, #a855f7); color: #fff; }
+.icon-infra    { background: linear-gradient(135deg, #155e75, #06b6d4); color: #fff; }
+.icon-gov      { background: linear-gradient(135deg, #854d0e, #eab308); color: #fff; }
+.icon-token    { background: linear-gradient(135deg, #1e40af, #3b82f6); color: #fff; }
+.icon-dex      { background: linear-gradient(135deg, #92400e, #f59e0b); color: #fff; }
+
+/* contract-reference container uses .container but needs top padding for nav */
+.contract-ref-body > .container {
+    padding-top: calc(60px + 2rem);
+}
+
+.arch-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.arch-box {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+}
+
+.arch-box i {
+    font-size: 1.3rem;
+    margin-bottom: 0.5rem;
+    display: block;
+}
+
+.arch-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #fff;
+    margin-bottom: 0.3rem;
+}
+
+.arch-desc {
+    font-size: 0.78rem;
+    color: var(--text-muted, #718096);
+}
+
+/* Architecture grid icon colors */
+.arch-icon-defi     { color: var(--green, #22c55e); }
+.arch-icon-dex      { color: #f59e0b; }
+.arch-icon-nft      { color: var(--accent, #F77F00); }
+.arch-icon-identity { color: var(--purple, #a855f7); }
+.arch-icon-infra    { color: var(--cyan, #06b6d4); }
+.arch-icon-gov      { color: var(--yellow, #eab308); }
+
+/* =========== SECTION 21 — Live method / channel sections =========== */
+.rpc-live-methods,
+.ws-live-channels { margin-top: 2rem; }

@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <!-- SIDEBAR TOGGLE (mobile) -->
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Architecture</div>
+                <a href="#overview" class="sidebar-link">Overview</a>
+                <a href="#consensus" class="sidebar-link">Proof of Contribution</a>
+                <a href="#tx-lifecycle" class="sidebar-link">Transaction Lifecycle</a>
+                <a href="#state" class="sidebar-link">State Model</a>
+                <a href="#wasm" class="sidebar-link">WASM Execution</a>
+                <a href="#moltyid-integration" class="sidebar-link">MoltyID Integration</a>
+                <a href="#privacy" class="sidebar-link">Privacy &amp; Security</a>
+                <a href="#benchmarks" class="sidebar-link">Benchmarks</a>
+                <a href="#network" class="sidebar-link">Network Topology</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Related</div>
+                <a href="getting-started.html" class="sidebar-link">Getting Started</a>
+                <a href="contracts.html" class="sidebar-link">Smart Contracts</a>
+                <a href="validator.html" class="sidebar-link">Validator Guide</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <!-- BREADCRUMBS -->
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">Architecture</span>
+            </div>
+
+            <h1>MoltChain Architecture</h1>
+            <p>A technical deep-dive into how MoltChain is designed — from network gossip to state commitment. MoltChain
+                is an agent-first, high-performance Layer-1 blockchain with WASM smart contracts, on-chain reputation,
+                and a novel Proof of Contribution consensus mechanism.</p>
+
+            <!-- ========== 1. OVERVIEW ========== -->
+            <h2 id="overview">Overview</h2>
+
+            <p>MoltChain is structured as four distinct layers, each with a clear responsibility boundary. From bottom
+                to top:</p>
+
+            <div class="arch-layer-diagram">
+                <div class="arch-layer layer-network">
+                    <div class="layer-name"><i class="fas fa-network-wired"></i> Network Layer (P2P)</div>
+                    <div class="layer-desc">Gossip protocol, peer discovery, block propagation, and RPC/WebSocket
+                        endpoints</div>
+                </div>
+                <div class="arch-layer layer-consensus">
+                    <div class="layer-name"><i class="fas fa-handshake"></i> Consensus Layer (Proof of Contribution)
+                    </div>
+                    <div class="layer-desc">Leader selection, 400ms slot production, PBFT finality, validator scoring
+                    </div>
+                </div>
+                <div class="arch-layer layer-execution">
+                    <div class="layer-name"><i class="fas fa-microchip"></i> Execution Layer (WASM)</div>
+                    <div class="layer-desc">Wasmer runtime, contract execution, gas metering, host function interface
+                    </div>
+                </div>
+                <div class="arch-layer layer-state">
+                    <div class="layer-name"><i class="fas fa-database"></i> State Layer (RocksDB)</div>
+                    <div class="layer-desc">Account storage, contract data, block history, Merkle state roots</div>
+                </div>
+            </div>
+
+            <p>Each transaction flows downward through these layers: the Network layer receives it via RPC, Consensus
+                orders it into a block, Execution runs the logic, and State persists the result. This separation allows
+                each layer to be optimized independently.</p>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Design Philosophy</div>
+                MoltChain is designed for <strong>agent-first</strong> applications. The reputation system (MoltyID) is
+                integrated at every layer — influencing mempool priority, gas pricing, rate limits, and validator
+                selection. This makes the chain uniquely suited for autonomous agent economies.
+            </div>
+
+            <!-- ========== 2. PROOF OF CONTRIBUTION ========== -->
+            <h2 id="consensus">Proof of Contribution</h2>
+
+            <p>MoltChain uses <strong>Proof of Contribution (PoC)</strong>, a leader-based consensus that combines
+                economic stake with validator behavior scoring to select block producers.</p>
+
+            <h3>Slot Production</h3>
+            <p>Time is divided into <strong>400ms slots</strong>. Each slot has a single designated leader responsible
+                for producing a block. If the leader fails to produce within the window, the slot is skipped and the
+                next leader takes over.</p>
+
+            <h3>Leader Selection</h3>
+            <p>Leaders are selected via weighted random sampling where the weight is:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Formula</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>weight = stake_amount × contribution_score
+
+contribution_score = (
+    0.4 × uptime_ratio +        // % of slots online (trailing 1000 epochs)
+    0.3 × attestation_ratio +   // % of votes cast correctly
+    0.2 × block_success_ratio + // % of assigned blocks produced
+    0.1 × community_score       // governance participation, bug reports, tooling
+)</code></pre>
+            </div>
+
+            <p>This means a validator with less stake but excellent uptime and contributions can compete with a larger,
+                less-reliable validator.</p>
+
+            <h3>PBFT Finality</h3>
+            <p>After a leader proposes a block, it enters a 3-phase PBFT (Practical Byzantine Fault Tolerance) voting
+                round:</p>
+
+            <ol>
+                <li><strong>Pre-prepare</strong> — Leader broadcasts the proposed block to all validators</li>
+                <li><strong>Prepare</strong> — Validators validate the block and broadcast a prepare vote</li>
+                <li><strong>Commit</strong> — Upon receiving 2/3+ prepare votes, validators broadcast a commit vote</li>
+            </ol>
+
+            <p>A block is considered <strong>finalized</strong> once 2/3+ of validators (by stake weight) submit commit
+                votes. Typical finality time is 800ms–1.2 seconds.</p>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Fast Finality</div>
+                Unlike probabilistic finality chains (Bitcoin, Ethereum PoW), MoltChain blocks are deterministically
+                final once committed. There are no reorgs after finalization.
+            </div>
+
+            <!-- ========== 3. TRANSACTION LIFECYCLE ========== -->
+            <h2 id="tx-lifecycle">Transaction Lifecycle</h2>
+
+            <p>Every transaction follows a defined path from submission to state commitment:</p>
+
+            <div class="steps-list">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <div class="step-title">Submit</div>
+                        <div class="step-desc">Client sends a signed transaction to any RPC node via
+                            <code>sendTransaction</code>. The node validates the signature, checks the nonce, and
+                            verifies the sender has sufficient balance for fees.</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <div class="step-title">Mempool</div>
+                        <div class="step-desc">Valid transactions enter the mempool, a priority queue ordered by fee and
+                            sender reputation. Transactions from MoltyID Tier 4+ accounts enter the <strong>express
+                                lane</strong> with higher priority weighting (up to 3× multiplier).</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <div class="step-title">Block Assembly</div>
+                        <div class="step-desc">The current slot leader collects transactions from the mempool. Express
+                            lane transactions are included first, then regular queue, up to the block gas limit (50M
+                            gas). The leader orders transactions, computes a state root preview, and constructs the
+                            block header.</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <div class="step-title">Sign &amp; Broadcast</div>
+                        <div class="step-desc">The leader signs the block with their validator key and broadcasts it to
+                            all peers via gossip.</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">5</div>
+                    <div class="step-content">
+                        <div class="step-title">PBFT Vote</div>
+                        <div class="step-desc">Validators independently execute all transactions in the block, verify
+                            the state root matches, and participate in the 3-phase PBFT voting round.</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">6</div>
+                    <div class="step-content">
+                        <div class="step-title">Finalize</div>
+                        <div class="step-desc">Once 2/3+ commit votes are received, the block is marked as finalized.
+                            The finalized block header is gossiped to all nodes.</div>
+                    </div>
+                </div>
+
+                <div class="step">
+                    <div class="step-number">7</div>
+                    <div class="step-content">
+                        <div class="step-title">State Commit</div>
+                        <div class="step-desc">Each node writes the finalized state changes to RocksDB, updates account
+                            balances, contract storage, and validator records. The Merkle state root is sealed into the
+                            block.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== 4. STATE MODEL ========== -->
+            <h2 id="state">State Model</h2>
+
+            <p>MoltChain uses an account-based state model (not UTXO). All state is stored in <strong>RocksDB</strong>,
+                organized into column families for efficient access patterns.</p>
+
+            <h3>Column Families</h3>
+
+            <table class="arch-table">
+                <thead>
+                    <tr>
+                        <th>Column Family</th>
+                        <th>Key</th>
+                        <th>Value</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>accounts</code></td>
+                        <td>Address (32 bytes)</td>
+                        <td>Account struct</td>
+                        <td>All user and program accounts</td>
+                    </tr>
+                    <tr>
+                        <td><code>blocks</code></td>
+                        <td>Slot number (u64)</td>
+                        <td>Block struct</td>
+                        <td>Block headers and transaction lists</td>
+                    </tr>
+                    <tr>
+                        <td><code>transactions</code></td>
+                        <td>Tx hash (32 bytes)</td>
+                        <td>Transaction + Receipt</td>
+                        <td>Full transaction data with execution results</td>
+                    </tr>
+                    <tr>
+                        <td><code>contract_storage</code></td>
+                        <td>Program ID + key</td>
+                        <td>Arbitrary bytes</td>
+                        <td>Per-contract key-value storage</td>
+                    </tr>
+                    <tr>
+                        <td><code>validators</code></td>
+                        <td>Validator pubkey</td>
+                        <td>ValidatorInfo struct</td>
+                        <td>Stake, score, vote history</td>
+                    </tr>
+                    <tr>
+                        <td><code>metadata</code></td>
+                        <td>String key</td>
+                        <td>Varies</td>
+                        <td>Chain config, genesis hash, epoch info</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Account Structure</h3>
+
+            <p>Every account on MoltChain has the following fields:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Rust</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>pub struct Account {
+    /// Native MOLT balance in shells (1 MOLT = 1e9 shells)
+    pub balance: u64,
+
+    /// Transaction sequence number (prevents replay attacks)
+    pub nonce: u64,
+
+    /// MoltyID reputation score (0.0 – 100.0, stored as u32 * 100)
+    pub reputation: u32,
+
+    /// Amount of MOLT staked in validator or delegation
+    pub staked: u64,
+
+    /// MoltyID trust tier (0 = unverified, 1–6 = tier levels)
+    pub trust_tier: u8,
+
+    /// If this is a program account, the WASM bytecode hash
+    pub program_hash: Option&lt;[u8; 32]&gt;,
+
+    /// Arbitrary account data (up to 10 MB for program accounts)
+    pub data: Vec&lt;u8&gt;,
+
+    /// Account owner (system program or deploying program)
+    pub owner: Pubkey,
+}</code></pre>
+            </div>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Rent Exemption</div>
+                Accounts must maintain a minimum balance proportional to their data size to remain rent-exempt. The
+                formula is: <code>min_balance = data_size × 6960 + 890880</code> shells. Accounts that fall below this
+                threshold are garbage-collected after 2 epochs.
+            </div>
+
+            <!-- ========== 5. WASM EXECUTION ========== -->
+            <h2 id="wasm">WASM Execution</h2>
+
+            <p>MoltChain executes smart contracts using the <strong>Wasmer</strong> WebAssembly runtime with
+                ahead-of-time (AOT) compilation for near-native performance. Contracts are compiled from Rust to
+                <code>wasm32-unknown-unknown</code> and deployed as program accounts.</p>
+
+            <h3>Host Functions</h3>
+
+            <p>Contracts interact with the chain through a set of host functions injected into the WASM environment at
+                runtime:</p>
+
+            <table class="arch-table">
+                <thead>
+                    <tr>
+                        <th>Function</th>
+                        <th>Signature</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>storage_get</code></td>
+                        <td><code>(key_ptr, key_len) → (val_ptr, val_len)</code></td>
+                        <td>Read a value from contract storage</td>
+                    </tr>
+                    <tr>
+                        <td><code>storage_set</code></td>
+                        <td><code>(key_ptr, key_len, val_ptr, val_len)</code></td>
+                        <td>Write a value to contract storage</td>
+                    </tr>
+                    <tr>
+                        <td><code>storage_delete</code></td>
+                        <td><code>(key_ptr, key_len)</code></td>
+                        <td>Remove a key from contract storage</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_caller</code></td>
+                        <td><code>() → (addr_ptr)</code></td>
+                        <td>Get the address of the transaction sender</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_block_slot</code></td>
+                        <td><code>() → u64</code></td>
+                        <td>Current block slot number</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_block_timestamp</code></td>
+                        <td><code>() → u64</code></td>
+                        <td>Current block Unix timestamp</td>
+                    </tr>
+                    <tr>
+                        <td><code>emit_event</code></td>
+                        <td><code>(topic_ptr, topic_len, data_ptr, data_len)</code></td>
+                        <td>Emit an indexed event/log</td>
+                    </tr>
+                    <tr>
+                        <td><code>transfer</code></td>
+                        <td><code>(to_ptr, amount: u64) → i32</code></td>
+                        <td>Transfer MOLT from contract to address</td>
+                    </tr>
+                    <tr>
+                        <td><code>cross_call</code></td>
+                        <td><code>(program_ptr, method_ptr, args_ptr, args_len) → (ret_ptr, ret_len)</code></td>
+                        <td>Call another deployed contract</td>
+                    </tr>
+                    <tr>
+                        <td><code>get_balance</code></td>
+                        <td><code>(addr_ptr) → u64</code></td>
+                        <td>Read the balance of any account</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Gas Metering</h3>
+
+            <p>Every WASM instruction consumes gas. The runtime injects metering checkpoints at basic block boundaries
+                during AOT compilation. Base costs:</p>
+
+            <ul>
+                <li><strong>Arithmetic/logic ops:</strong> 1 gas per instruction</li>
+                <li><strong>Memory load/store:</strong> 3 gas per instruction</li>
+                <li><strong>storage_get:</strong> 200 gas + 1 gas per byte read</li>
+                <li><strong>storage_set:</strong> 5,000 gas + 5 gas per byte written (new key) or 200 gas (update)</li>
+                <li><strong>emit_event:</strong> 375 gas + 8 gas per byte of event data</li>
+                <li><strong>cross_call:</strong> 2,500 gas base + callee gas</li>
+                <li><strong>transfer:</strong> 5,000 gas</li>
+            </ul>
+
+            <p>The per-transaction gas limit is 200,000 by default. The per-block gas limit is 50,000,000.</p>
+
+            <h3>Memory Model</h3>
+            <p>Each contract execution gets an isolated linear memory space starting at 1 page (64 KB) and expandable to
+                256 pages (16 MB) via <code>memory.grow</code>. Memory is reset between calls — contracts cannot persist
+                state in WASM memory across transactions. Use <code>storage_get</code>/<code>storage_set</code> for
+                persistence.</p>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Stack Depth Limit</div>
+                WASM call stack depth is limited to 1024 frames to prevent stack overflow attacks. Cross-contract call
+                depth is limited to 8 levels. Exceeding either limit aborts the transaction and consumes all gas.
+            </div>
+
+            <!-- ========== 6. MOLTYID INTEGRATION ========== -->
+            <h2 id="moltyid-integration">MoltyID Integration</h2>
+
+            <p>MoltyID is MoltChain's on-chain identity and reputation layer. It is deeply integrated into the protocol
+                — not just an application-level feature. Trust tiers directly affect transaction processing, fees, and
+                rate limits at the consensus and mempool layers.</p>
+
+            <h3>Trust Tiers</h3>
+
+            <table class="arch-table">
+                <thead>
+                    <tr>
+                        <th>Tier</th>
+                        <th>Name</th>
+                        <th>Score Range</th>
+                        <th>Mempool Priority</th>
+                        <th>Fee Discount</th>
+                        <th>Rate Limit (tx/epoch)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>0</strong></td>
+                        <td>Newcomer</td>
+                        <td>0 – 99</td>
+                        <td>1.0×</td>
+                        <td>0%</td>
+                        <td>100</td>
+                    </tr>
+                    <tr>
+                        <td><strong>1</strong></td>
+                        <td>Verified</td>
+                        <td>100 – 499</td>
+                        <td>1.1×</td>
+                        <td>0%</td>
+                        <td>100</td>
+                    </tr>
+                    <tr>
+                        <td><strong>2</strong></td>
+                        <td>Trusted</td>
+                        <td>500 – 999</td>
+                        <td>1.25×</td>
+                        <td>500–749: 5% · 750–999: 7.5%</td>
+                        <td>200</td>
+                    </tr>
+                    <tr>
+                        <td><strong>3</strong></td>
+                        <td>Established</td>
+                        <td>1,000 – 4,999</td>
+                        <td>1.5×</td>
+                        <td>10%</td>
+                        <td>500</td>
+                    </tr>
+                    <tr>
+                        <td><strong>4</strong></td>
+                        <td>Elite</td>
+                        <td>5,000 – 9,999</td>
+                        <td>2.0×</td>
+                        <td>10%</td>
+                        <td>500</td>
+                    </tr>
+                    <tr>
+                        <td><strong>5</strong></td>
+                        <td>Legendary</td>
+                        <td>10,000+</td>
+                        <td>3.0×</td>
+                        <td>10%</td>
+                        <td>500</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>How Reputation Affects the Stack</h3>
+
+            <ul>
+                <li><strong>Mempool:</strong> Transaction priority = <code>fee × tier_multiplier</code>. Tier 4+
+                    transactions enter the express lane, which the block leader processes before the regular queue.</li>
+                <li><strong>Gas Pricing:</strong> Higher-tier accounts receive fee discounts applied at the protocol
+                    level. A Tier 5 account paying a 0.001 MOLT fee effectively pays 0.0009 MOLT.</li>
+                <li><strong>Rate Limiting:</strong> Each account is allowed a maximum number of transactions per epoch
+                    (432 slots ≈ ~173 seconds). Exceeding the limit results in mempool rejection until the next epoch.
+                </li>
+                <li><strong>Validator Selection:</strong> For validators, MoltyID score contributes to the
+                    <code>community_score</code> component (10% weight) in leader selection.</li>
+            </ul>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Building Reputation</div>
+                Reputation increases through consistent on-chain activity: successful transactions, contract
+                deployments, governance voting, staking, and validator operation. It decays slowly during inactivity
+                (–0.1 per epoch of zero activity).
+            </div>
+
+            <!-- ========== 7. PRIVACY & SECURITY ========== -->
+            <h2 id="privacy">Privacy &amp; Security</h2>
+
+            <p>MoltChain's privacy architecture is centered on shielded transactions, nullifier-based double-spend
+                prevention, and ZK proofs for note validity. The current implementation uses Groth16-based verification
+                for shielded flows in production deployments.</p>
+
+            <h3>Implementation Status (Current)</h3>
+            <table class="arch-table">
+                <thead>
+                    <tr>
+                        <th>Area</th>
+                        <th>Status</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Core ZK modules (<code>core/src/zk/*</code>)</td>
+                        <td>Scaffolded</td>
+                        <td>Pedersen, Merkle, note/key types, circuits, prover/verifier plumbing</td>
+                    </tr>
+                    <tr>
+                        <td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td>
+                        <td>Production</td>
+                        <td>Shielded state and transaction flows run with Groth16 proof verification</td>
+                    </tr>
+                    <tr>
+                        <td>Runtime/RPC wiring</td>
+                        <td>Partial</td>
+                        <td>Explorer/Wallet-facing methods are expected, with staged backend integration in progress
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Deployment/boot scripts</td>
+                        <td>In progress</td>
+                        <td>First-boot and deploy manifest integration for shielded pool is being completed</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Target ZK Architecture</h3>
+            <ul>
+                <li><strong>Proving system:</strong> Groth16 with trusted setup and succinct on-chain verification</li>
+                <li><strong>Curve:</strong> BN254 for broad tooling compatibility and efficient pairing checks</li>
+                <li><strong>Commitments:</strong> Pedersen commitments for note value hiding + binding</li>
+                <li><strong>Merkle tree:</strong> Poseidon-based tree and inclusion paths for shielded notes</li>
+                <li><strong>Nullifiers:</strong> Deterministic nullifier derivation to prevent double spends without
+                    revealing note contents</li>
+            </ul>
+
+            <h3>Shielded Transaction Flows</h3>
+            <ul>
+                <li><strong>Shield (transparent → shielded):</strong> Creates a new note commitment from public funds
+                </li>
+                <li><strong>Unshield (shielded → transparent):</strong> Spends a note and reveals only the necessary
+                    public outputs</li>
+                <li><strong>Transfer (shielded → shielded):</strong> Consumes note inputs, emits new commitments,
+                    preserves value in-circuit</li>
+            </ul>
+
+            <h3>Security Properties</h3>
+            <ul>
+                <li><strong>Zero-knowledge:</strong> Proofs validate correctness without exposing note secrets</li>
+                <li><strong>Soundness:</strong> Invalid witness data cannot satisfy circuit constraints</li>
+                <li><strong>Double-spend resistance:</strong> One-time nullifier publication prevents note replay</li>
+                <li><strong>Value conservation:</strong> Circuit constraints enforce that spent and created value
+                    balances</li>
+            </ul>
+
+            <h3>Explorer and Docs Separation</h3>
+            <p>Explorer pages are being kept telemetry-first (stats, transactions, nullifier checks). Architecture
+                education and implementation details live in the Website and Developer Portal so chain observability
+                stays cleanly separated from protocol documentation.</p>
+
+            <h3>Keypair Encryption at Rest</h3>
+            <p>CLI-managed keypairs are encrypted with <strong>AES-256-GCM</strong> (authenticated encryption with
+                12-byte random nonce). An <code>encryption_version</code> field in the keypair JSON enables backwards
+                compatibility: <code>v1</code> = legacy XOR cipher, <code>v2</code> = AES-GCM. Legacy keypairs are
+                auto-upgraded on next use.</p>
+
+            <h3>Faucet CORS Policy</h3>
+            <p>The testnet faucet enforces an explicit origin allowlist (localhost dev ports + production domains) with
+                restricted HTTP methods (GET/POST/OPTIONS) — replacing the previous permissive policy.</p>
+
+            <!-- ========== 8. PERFORMANCE BENCHMARKS ========== -->
+            <div id="performance"></div>
+            <h2 id="benchmarks">Performance Benchmarks</h2>
+
+            <p>Benchmarks measured with <strong>Criterion.rs</strong> on the reference hardware (Apple M-series,
+                single-threaded). Source: <code>core/benches/processor_bench.rs</code>.</p>
+
+            <table class="arch-table">
+                <thead>
+                    <tr>
+                        <th>Benchmark</th>
+                        <th>Result</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Single transaction processing</td>
+                        <td>~28 µs</td>
+                        <td>~35,000 tx/s single-threaded</td>
+                    </tr>
+                    <tr>
+                        <td>10-tx batch</td>
+                        <td>~280 µs</td>
+                        <td>Linear scaling</td>
+                    </tr>
+                    <tr>
+                        <td>50-tx batch</td>
+                        <td>~1.4 ms</td>
+                        <td>No contention overhead</td>
+                    </tr>
+                    <tr>
+                        <td>Block creation (100 tx)</td>
+                        <td>~3 ms</td>
+                        <td>Includes Merkle root computation</td>
+                    </tr>
+                    <tr>
+                        <td>Block creation (500 tx)</td>
+                        <td>~15 ms</td>
+                        <td>Well within 400ms slot target</td>
+                    </tr>
+                    <tr>
+                        <td>Ed25519 signature verify</td>
+                        <td>~21 µs</td>
+                        <td>~47,000 verifies/s</td>
+                    </tr>
+                    <tr>
+                        <td>Batch verify (100 sigs)</td>
+                        <td>~2.1 ms</td>
+                        <td>Linear, no batching optimization yet</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Running Benchmarks</div>
+                Run <code>cargo bench --bench processor_bench</code> from the workspace root. Results are saved to
+                <code>target/criterion/</code> with HTML reports.
+            </div>
+
+            <!-- ========== 9. NETWORK TOPOLOGY ========== -->
+            <h2 id="network">Network Topology</h2>
+
+            <p>MoltChain's network layer handles peer discovery, data propagation, and client connections.</p>
+
+            <h3>Gossip Protocol</h3>
+            <p>Nodes communicate over a structured gossip protocol built on libp2p. Every node maintains connections to
+                8–12 peers. Data propagation uses <strong>eager push with lazy pull fallback</strong>:</p>
+
+            <ul>
+                <li><strong>Eager push:</strong> Blocks and high-priority transactions are immediately forwarded to all
+                    connected peers</li>
+                <li><strong>Lazy pull:</strong> Nodes periodically exchange inventory hashes with peers and request any
+                    missing data</li>
+            </ul>
+
+            <p>Average block propagation reaches 95% of nodes within 200ms (for a 1,000-node network).</p>
+
+            <h3>Peer Discovery</h3>
+            <p>New nodes discover peers through three mechanisms:</p>
+
+            <ol>
+                <li><strong>Bootstrap nodes:</strong> Hardcoded seed nodes for initial connection (configurable per
+                    network)</li>
+                <li><strong>Peer exchange (PEX):</strong> Connected nodes periodically share their known peer lists</li>
+                <li><strong>DHT:</strong> A Kademlia-based distributed hash table for decentralized peer lookup</li>
+            </ol>
+
+            <h3>Bootstrap Nodes</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Config</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Mainnet bootstrap nodes (QUIC/UDP)
+bootstrap_peers = [
+    "seed-01.moltchain.network:8001",
+    "seed-02.moltchain.network:8001",
+    "seed-03.moltchain.network:8001",
+]
+
+# Testnet bootstrap nodes (QUIC/UDP)
+bootstrap_peers = [
+    "seed-01.moltchain.network:7001",
+    "seed-02.moltchain.network:7001",
+    "seed-03.moltchain.network:7001",
+]</code></pre>
+            </div>
+
+            <h3>Block Sync</h3>
+            <p>When a node falls behind (e.g., after restart or joining late), it uses <strong>snapshot sync</strong> to
+                catch up efficiently:</p>
+
+            <ol>
+                <li>Download the latest finalized state snapshot (compressed RocksDB checkpoint) from a trusted peer
+                </li>
+                <li>Verify the snapshot against the Merkle state root in the last finalized block header</li>
+                <li>Apply any remaining blocks since the snapshot was created</li>
+                <li>Switch to normal gossip-based block following</li>
+            </ol>
+
+            <p>Full state snapshots are generated every 1,000 slots (~6.7 minutes) by archive nodes. Typical sync time
+                for a new node is under 2 minutes for testnet.</p>
+
+            <h3>RPC &amp; WebSocket Endpoints</h3>
+            <p>Every full node exposes two client-facing interfaces:</p>
+
+            <ul>
+                <li><strong>JSON-RPC</strong> (HTTP POST, default port 8899) — Request/response queries and transaction
+                    submission. See <a href="rpc-reference.html">API Reference</a>.</li>
+                <li><strong>WebSocket</strong> (default port 8900) — Persistent subscriptions for real-time block,
+                    transaction, and log events. See <a href="ws-reference.html">WebSocket Reference</a>.</li>
+            </ul>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Rate Limiting</div>
+                Public RPC endpoints enforce rate limits of 100 requests/second per IP. For higher throughput, run your
+                own node or use MoltyID-authenticated endpoints which allow up to 1,000 req/s for Tier 4+ accounts.
+            </div>
+
+        </main>
+
+        <div class="toc"></div>
+    </div>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+    <script>
+        (function () {
+            const navInput = document.getElementById('searchInput');
+            if (navInput) {
+                navInput.addEventListener('focus', () => {
+                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                    navInput.blur();
+                });
+            }
+        })();
+    </script>
+</body>
+
+</html>

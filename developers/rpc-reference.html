@@ -1,0 +1,1908 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON-RPC Reference - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html" class="active">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle"
+                aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Overview</h3>
+                <a href="#introduction" class="sidebar-link active">Introduction</a>
+                <a href="#endpoint" class="sidebar-link">Endpoint &amp; Format</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Chain</h3>
+                <a href="#getSlot" class="sidebar-link">getSlot</a>
+                <a href="#getLatestBlock" class="sidebar-link">getLatestBlock</a>
+                <a href="#getRecentBlockhash" class="sidebar-link">getRecentBlockhash</a>
+                <a href="#health" class="sidebar-link">health</a>
+                <a href="#getMetrics" class="sidebar-link">getMetrics</a>
+                <a href="#getChainStatus" class="sidebar-link">getChainStatus</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Account</h3>
+                <a href="#getBalance" class="sidebar-link">getBalance</a>
+                <a href="#getAccount" class="sidebar-link">getAccount</a>
+                <a href="#getAccountInfo" class="sidebar-link">getAccountInfo</a>
+                <a href="#getAccountTxCount" class="sidebar-link">getAccountTxCount</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Block</h3>
+                <a href="#getBlock" class="sidebar-link">getBlock</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Transaction</h3>
+                <a href="#getTransaction" class="sidebar-link">getTransaction</a>
+                <a href="#sendTransaction" class="sidebar-link">sendTransaction</a>
+                <a href="#simulateTransaction" class="sidebar-link">simulateTransaction</a>
+                <a href="#getTransactionsByAddress" class="sidebar-link">getTransactionsByAddress</a>
+                <a href="#getTransactionHistory" class="sidebar-link">getTransactionHistory</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Validator</h3>
+                <a href="#getValidators" class="sidebar-link">getValidators</a>
+                <a href="#getValidatorInfo" class="sidebar-link">getValidatorInfo</a>
+                <a href="#getValidatorPerformance" class="sidebar-link">getValidatorPerformance</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Staking</h3>
+                <a href="#getStakingStatus" class="sidebar-link">getStakingStatus</a>
+                <a href="#getStakingRewards" class="sidebar-link">getStakingRewards</a>
+                <a href="#stake" class="sidebar-link">stake</a>
+                <a href="#unstake" class="sidebar-link">unstake</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Network</h3>
+                <a href="#getNetworkInfo" class="sidebar-link">getNetworkInfo</a>
+                <a href="#getPeers" class="sidebar-link">getPeers</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Contract</h3>
+                <a href="#getContractInfo" class="sidebar-link">getContractInfo</a>
+                <a href="#getAllContracts" class="sidebar-link">getAllContracts</a>
+                <a href="#getContractLogs" class="sidebar-link">getContractLogs</a>
+                <a href="#getContractAbi" class="sidebar-link">getContractAbi</a>
+                <a href="#callContract" class="sidebar-link">callContract</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Program</h3>
+                <a href="#getProgram" class="sidebar-link">getProgram</a>
+                <a href="#getPrograms" class="sidebar-link">getPrograms</a>
+                <a href="#getProgramStats" class="sidebar-link">getProgramStats</a>
+                <a href="#getProgramCalls" class="sidebar-link">getProgramCalls</a>
+                <a href="#getProgramStorage" class="sidebar-link">getProgramStorage</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Token</h3>
+                <a href="#getTokenBalance" class="sidebar-link">getTokenBalance</a>
+                <a href="#getTokenHolders" class="sidebar-link">getTokenHolders</a>
+                <a href="#getTokenTransfers" class="sidebar-link">getTokenTransfers</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">NFT &amp; Marketplace</h3>
+                <a href="#getCollection" class="sidebar-link">getCollection</a>
+                <a href="#getNFT" class="sidebar-link">getNFT</a>
+                <a href="#getNFTsByOwner" class="sidebar-link">getNFTsByOwner</a>
+                <a href="#getMarketListings" class="sidebar-link">getMarketListings</a>
+                <a href="#getMarketSales" class="sidebar-link">getMarketSales</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Burn</h3>
+                <a href="#getTotalBurned" class="sidebar-link">getTotalBurned</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Fee &amp; Rent</h3>
+                <a href="#getFeeConfig" class="sidebar-link">getFeeConfig</a>
+                <a href="#getRentParams" class="sidebar-link">getRentParams</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Live Additions</h3>
+                <a href="#live-methods" class="sidebar-link">Implemented Methods</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Developers</a>
+                <span class="separator">›</span>
+                <span>API Reference</span>
+            </div>
+
+            <h1>JSON-RPC Reference</h1>
+
+            <!-- Introduction -->
+            <section id="introduction">
+                <p>MoltChain exposes a <strong>JSON-RPC 2.0</strong> API for querying blockchain state and submitting
+                    transactions. Every validator node runs the RPC server, typically on port <code>8899</code>.
+                    Requests are rate-limited per IP (configurable, default 100 req/s). A companion <a
+                        href="ws-reference.html">WebSocket API</a> provides real-time event subscriptions on port
+                    <code>8900</code>.
+                </p>
+            </section>
+
+            <!-- Endpoint & Format -->
+            <section id="endpoint">
+                <h2>Endpoint &amp; Format</h2>
+                <div class="callout callout-info">
+                    <p><strong>Default endpoint:</strong> <code>http://localhost:8899</code></p>
+                    <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">JSON</span>
+                    </div>
+                    <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "METHOD_NAME",
+  "params": [...]
+}</code></pre>
+                </div>
+                <p>Successful responses contain a <code>result</code> field. Errors contain an <code>error</code> object
+                    with <code>code</code> and <code>message</code>.</p>
+                <div class="callout callout-warning">
+                    <p><strong>Units:</strong> All MOLT amounts are returned in <strong>shells</strong> (1 MOLT =
+                        1,000,000,000 shells) unless a separate <code>molt</code> field is provided.</p>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- CHAIN -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Chain Methods</h2>
+
+            <!-- getSlot -->
+            <div class="method-card" id="getSlot">
+                <h3 class="method-name">getSlot</h3>
+                <p class="method-desc">Returns the current slot number of the chain tip.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>u64</code> — Current slot number.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":42}</code></pre>
+                </div>
+            </div>
+
+            <!-- getLatestBlock -->
+            <div class="method-card" id="getLatestBlock">
+                <h3 class="method-name">getLatestBlock</h3>
+                <p class="method-desc">Returns the most recently produced block.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ slot, hash, parentHash, transactions, timestamp, validator, stateRoot }</code>
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getLatestBlock","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{
+  "slot":42,"hash":"a1b2c3...","parentHash":"d4e5f6...",
+  "transactions":5,"timestamp":1738800000,"validator":"7xK...","stateRoot":"abc..."
+}}</code></pre>
+                </div>
+            </div>
+
+            <!-- getRecentBlockhash -->
+            <div class="method-card" id="getRecentBlockhash">
+                <h3 class="method-name">getRecentBlockhash</h3>
+                <p class="method-desc">Returns a recent blockhash required for signing transactions. The blockhash is
+                    valid for a limited number of slots.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>string</code> — Hex-encoded recent blockhash, or object <code>{ blockhash }</code>.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getRecentBlockhash","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</code></pre>
+                </div>
+            </div>
+
+            <!-- health -->
+            <div class="method-card" id="health">
+                <h3 class="method-name">health</h3>
+                <p class="method-desc">Returns node health status. Use this as a liveness probe.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ "status": "ok" }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}</code></pre>
+                </div>
+            </div>
+
+            <!-- getMetrics -->
+            <div class="method-card" id="getMetrics">
+                <h3 class="method-name">getMetrics</h3>
+                <p class="method-desc">Returns current chain performance metrics including TPS, total transactions,
+                    total blocks, and average block time.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getMetrics","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{
+  "tps":120,"totalTransactions":500000,"totalBlocks":42000,"averageBlockTime":400
+}}</code></pre>
+                </div>
+            </div>
+
+            <!-- getChainStatus -->
+            <div class="method-card" id="getChainStatus">
+                <h3 class="method-name">getChainStatus</h3>
+                <p class="method-desc">Returns comprehensive chain status including current slot, validator count, total
+                    stake, TPS, transaction &amp; block counts, average block time, and health flag.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object —
+                        <code>{ currentSlot, validatorCount, totalStake, tps, totalTransactions, totalBlocks, averageBlockTime, isHealthy }</code>
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- ACCOUNT -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Account Methods</h2>
+
+            <!-- getBalance -->
+            <div class="method-card" id="getBalance">
+                <h3 class="method-name">getBalance</h3>
+                <p class="method-desc">Returns the MOLT balance for the given public key, in both shells (raw) and MOLT.
+                </p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ shells: u64, molt: f64 }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{"shells":5000000000,"molt":5.0}}</code></pre>
+                </div>
+            </div>
+
+            <!-- getAccount -->
+            <div class="method-card" id="getAccount">
+                <h3 class="method-name">getAccount</h3>
+                <p class="method-desc">Returns raw account data including balance, owner, executable flag, and data
+                    field.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ shells, owner, executable, data }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getAccountInfo -->
+            <div class="method-card" id="getAccountInfo">
+                <h3 class="method-name">getAccountInfo</h3>
+                <p class="method-desc">Returns enhanced account information including balance, transaction count, and
+                    additional metadata.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Enhanced account details with balance, owner, executable flag, transaction history
+                        summary.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getAccountTxCount -->
+            <div class="method-card" id="getAccountTxCount">
+                <h3 class="method-name">getAccountTxCount</h3>
+                <p class="method-desc">Returns the number of transactions involving the given account.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>u64</code> — Transaction count.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- BLOCK -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Block Methods</h2>
+
+            <!-- getBlock -->
+            <div class="method-card" id="getBlock">
+                <h3 class="method-name">getBlock</h3>
+                <p class="method-desc">Returns a block by its slot number, including header fields and transaction list.
+                </p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>slot</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>Yes</td>
+                                <td>Slot number of the block</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ slot, hash, parentHash, transactions, timestamp, validator, stateRoot }</code>
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{
+  "slot":42,"hash":"a1b2...","parentHash":"d4e5...",
+  "transactions":[...],"timestamp":1738800000
+}}</code></pre>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- TRANSACTION -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Transaction Methods</h2>
+
+            <!-- getTransaction -->
+            <div class="method-card" id="getTransaction">
+                <h3 class="method-name">getTransaction</h3>
+                <p class="method-desc">Returns detailed transaction information by its signature hash.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>signature</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Hex-encoded transaction signature</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Transaction details including signatures, instructions, slot, timestamp, fee, and
+                        status.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":["a1b2c3d4..."]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- sendTransaction -->
+            <div class="method-card" id="sendTransaction">
+                <h3 class="method-name">sendTransaction</h3>
+                <p class="method-desc">Submits a signed, serialized transaction to the mempool. The transaction must be
+                    base64-encoded bincode.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>transaction</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base64-encoded serialized transaction</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>string</code> — Hex-encoded transaction signature.</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["BASE64_ENCODED_TX"]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":"a1b2c3d4e5f6..."}</code></pre>
+                </div>
+            </div>
+
+            <!-- simulateTransaction -->
+            <div class="method-card" id="simulateTransaction">
+                <h3 class="method-name">simulateTransaction</h3>
+                <p class="method-desc">Dry-runs a transaction without committing it to the chain. Useful for estimating
+                    fees and checking validity.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>transaction</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base64-encoded serialized transaction</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Simulation result with logs, runtime error messages, and <code>returnCode</code> for
+                        contract-level result inspection.</p>
+                    <p><strong>Debugging tip:</strong> A transaction can be structurally valid but contract-semantically
+                        rejected; inspect <code>returnCode</code> to detect these cases.</p>
+                </div>
+            </div>
+
+            <!-- getTransactionsByAddress -->
+            <div class="method-card" id="getTransactionsByAddress">
+                <h3 class="method-name">getTransactionsByAddress</h3>
+                <p class="method-desc">Returns a list of transactions involving the given address.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                            <tr>
+                                <td>limit</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>No</td>
+                                <td>Max number of results (default 10)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — List of transaction objects.</p>
+                </div>
+            </div>
+
+            <!-- getTransactionHistory -->
+            <div class="method-card" id="getTransactionHistory">
+                <h3 class="method-name">getTransactionHistory</h3>
+                <p class="method-desc">Returns paginated transaction history for an account with detailed metadata.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                            <tr>
+                                <td>limit</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>No</td>
+                                <td>Max results (default 10)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Paginated transaction history.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- VALIDATOR -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Validator Methods</h2>
+
+            <!-- getValidators -->
+            <div class="method-card" id="getValidators">
+                <h3 class="method-name">getValidators</h3>
+                <p class="method-desc">Returns the list of all registered validators with their stake, reputation,
+                    blocks proposed, votes cast, and last active slot.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object —
+                        <code>{ validators: [ { pubkey, stake, reputation, blocksProposed, votesCast, correctVotes, lastActiveSlot } ] }</code>
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getValidators","params":[]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getValidatorInfo -->
+            <div class="method-card" id="getValidatorInfo">
+                <h3 class="method-name">getValidatorInfo</h3>
+                <p class="method-desc">Returns detailed information for a specific validator by its public key.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Validator's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Validator details including stake, reputation, and performance counters.</p>
+                </div>
+            </div>
+
+            <!-- getValidatorPerformance -->
+            <div class="method-card" id="getValidatorPerformance">
+                <h3 class="method-name">getValidatorPerformance</h3>
+                <p class="method-desc">Returns performance metrics for a validator including block production rate, vote
+                    accuracy, and uptime.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Validator's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Performance metrics.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- STAKING -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Staking Methods</h2>
+
+            <!-- getStakingStatus -->
+            <div class="method-card" id="getStakingStatus">
+                <h3 class="method-name">getStakingStatus</h3>
+                <p class="method-desc">Returns staking status for an account — active stake, delegated validator,
+                    rewards earned.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Staker's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Staking status details.</p>
+                </div>
+            </div>
+
+            <!-- getStakingRewards -->
+            <div class="method-card" id="getStakingRewards">
+                <h3 class="method-name">getStakingRewards</h3>
+                <p class="method-desc">Returns accumulated staking rewards for the given account.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Staker's base58-encoded public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Reward details.</p>
+                </div>
+            </div>
+
+            <!-- stake -->
+            <div class="method-card" id="stake">
+                <h3 class="method-name">stake</h3>
+                <p class="method-desc">Submits a signed stake transaction (system instruction opcode 9).</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>transaction_base64</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base64-encoded signed transaction payload. Call shape:
+                                    <code>stake([transaction_base64])</code>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>string</code> — Transaction signature.</p>
+                </div>
+            </div>
+
+            <!-- unstake -->
+            <div class="method-card" id="unstake">
+                <h3 class="method-name">unstake</h3>
+                <p class="method-desc">Submits a signed unstake transaction (system instruction opcode 10).</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>transaction_base64</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base64-encoded signed transaction payload. Call shape:
+                                    <code>unstake([transaction_base64])</code>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p><code>string</code> — Transaction signature.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- NETWORK -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Network Methods</h2>
+
+            <!-- getNetworkInfo -->
+            <div class="method-card" id="getNetworkInfo">
+                <h3 class="method-name">getNetworkInfo</h3>
+                <p class="method-desc">Returns network-level information including chain ID, network ID, version,
+                    current slot, validator count, and peer count.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getNetworkInfo","params":[]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getPeers -->
+            <div class="method-card" id="getPeers">
+                <h3 class="method-name">getPeers</h3>
+                <p class="method-desc">Returns a list of connected P2P peers.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ peers: [ address strings ] }</code></p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- CONTRACT -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Contract Methods</h2>
+
+            <!-- getContractInfo -->
+            <div class="method-card" id="getContractInfo">
+                <h3 class="method-name">getContractInfo</h3>
+                <p class="method-desc">Returns information about a deployed smart contract including owner, code size,
+                    storage, call count, and token metadata. For tokens registered in the symbol registry, includes
+                    <code>total_supply</code> resolved from on-chain storage with a fallback to registry metadata.
+                </p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>contractId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded contract public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object &mdash; Contract metadata including: <code>contract_id</code>, <code>owner</code>,
+                        <code>code_size</code>, <code>is_executable</code>, <code>has_abi</code>,
+                        <code>abi_functions</code>, <code>code_hash</code>, <code>version</code>.
+                    </p>
+                    <p>For tokens registered in the symbol registry, also includes a <code>token_metadata</code> object:
+                    </p>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Field</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>total_supply</td>
+                                <td>number</td>
+                                <td>Total supply in base units (resolved from on-chain storage, fallback to registry)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>decimals</td>
+                                <td>number</td>
+                                <td>Decimal precision (e.g. 9)</td>
+                            </tr>
+                            <tr>
+                                <td>token_symbol</td>
+                                <td>string</td>
+                                <td>Registry symbol (e.g. &quot;MOLT&quot;)</td>
+                            </tr>
+                            <tr>
+                                <td>token_name</td>
+                                <td>string</td>
+                                <td>Display name from registry metadata</td>
+                            </tr>
+                            <tr>
+                                <td>mintable</td>
+                                <td>boolean</td>
+                                <td>Whether the contract has a <code>mint</code> function</td>
+                            </tr>
+                            <tr>
+                                <td>burnable</td>
+                                <td>boolean</td>
+                                <td>Whether the contract has a <code>burn</code> function</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>The registry <code>metadata</code> JSON (set via <code>--metadata</code> at deploy) can contain
+                        arbitrary fields.
+                        Common fields: <code>description</code>, <code>website</code>, <code>logo_url</code>,
+                        <code>twitter</code>, <code>telegram</code>, <code>discord</code>.
+                    </p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getContractInfo","params":["ContractPubkey..."]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getAllContracts -->
+            <div class="method-card" id="getAllContracts">
+                <h3 class="method-name">getAllContracts</h3>
+                <p class="method-desc">Returns a list of all deployed contracts on the chain.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — List of contract info objects.</p>
+                </div>
+            </div>
+
+            <!-- getContractLogs -->
+            <div class="method-card" id="getContractLogs">
+                <h3 class="method-name">getContractLogs</h3>
+                <p class="method-desc">Returns execution logs emitted by a contract.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>contractId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded contract public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Log entries.</p>
+                </div>
+            </div>
+
+            <!-- getContractAbi -->
+            <div class="method-card" id="getContractAbi">
+                <h3 class="method-name">getContractAbi</h3>
+                <p class="method-desc">Returns the ABI/IDL (machine-readable interface definition) for a contract, if
+                    one has been registered.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>contractId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded contract public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — ABI JSON, or null if not set.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- PROGRAM -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Program Methods</h2>
+
+            <div class="method-card" id="getProgram">
+                <h3 class="method-name">getProgram</h3>
+                <p class="method-desc">Returns detailed information about a deployed program.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>programId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded program public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Program info including owner, code size, deploy slot.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getPrograms">
+                <h3 class="method-name">getPrograms</h3>
+                <p class="method-desc">Returns a list of all deployed programs.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None (optional limit param).</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — List of program summaries.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getProgramStats">
+                <h3 class="method-name">getProgramStats</h3>
+                <p class="method-desc">Returns execution statistics for a program — call count, unique callers, storage
+                    used.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>programId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded program public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Program stats.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getProgramCalls">
+                <h3 class="method-name">getProgramCalls</h3>
+                <p class="method-desc">Returns recent call history for a program.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>programId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded program public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Call records.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getProgramStorage">
+                <h3 class="method-name">getProgramStorage</h3>
+                <p class="method-desc">Returns on-chain storage summary for a program.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>programId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded program public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Storage summary.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- TOKEN -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Token Methods</h2>
+
+            <div class="method-card" id="getTokenBalance">
+                <h3 class="method-name">getTokenBalance</h3>
+                <p class="method-desc">Returns the balance of a specific token for an account.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>owner</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded owner public key</td>
+                            </tr>
+                            <tr>
+                                <td>tokenMint</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded token mint address</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Token balance details.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getTokenHolders">
+                <h3 class="method-name">getTokenHolders</h3>
+                <p class="method-desc">Returns a list of holders for a given token.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>tokenMint</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded token mint address</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Token holder entries.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getTokenTransfers">
+                <h3 class="method-name">getTokenTransfers</h3>
+                <p class="method-desc">Returns recent transfer events for a token.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>tokenMint</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded token mint address</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Transfer event records.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- NFT & MARKETPLACE -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>NFT &amp; Marketplace Methods</h2>
+
+            <div class="method-card" id="getCollection">
+                <h3 class="method-name">getCollection</h3>
+                <p class="method-desc">Returns metadata for an NFT collection.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded collection public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Collection metadata (name, symbol, total supply, etc.).</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getNFT">
+                <h3 class="method-name">getNFT</h3>
+                <p class="method-desc">Returns a specific NFT by collection and token ID.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Collection public key</td>
+                            </tr>
+                            <tr>
+                                <td>tokenId</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>Yes</td>
+                                <td>Token ID within the collection</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — NFT details (owner, metadata URI, attributes).</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getNFTsByOwner">
+                <h3 class="method-name">getNFTsByOwner</h3>
+                <p class="method-desc">Returns all NFTs owned by a given address.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>owner</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded owner public key</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — List of NFT objects.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketListings">
+                <h3 class="method-name">getMarketListings</h3>
+                <p class="method-desc">Returns active marketplace listings with price, seller, and collection info.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Filter by collection (optional)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Active listings.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketSales">
+                <h3 class="method-name">getMarketSales</h3>
+                <p class="method-desc">Returns recent marketplace sales history.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Filter by collection (optional)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Completed sale records.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketOffers">
+                <h3 class="method-name">getMarketOffers</h3>
+                <p class="method-desc">Returns active marketplace offers (bids) optionally filtered by collection or
+                    token.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Filter by collection public key</td>
+                            </tr>
+                            <tr>
+                                <td>tokenId</td>
+                                <td><span class="param-type">u64</span></td>
+                                <td>No</td>
+                                <td>Filter by specific token ID</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Active offer records.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getMarketAuctions">
+                <h3 class="method-name">getMarketAuctions</h3>
+                <p class="method-desc">Returns active and recent marketplace auctions with current bid state.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Filter by collection public key</td>
+                            </tr>
+                            <tr>
+                                <td>status</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Filter by auction status (`active`, `ended`, `cancelled`)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Array — Auction records including reserve, leading bid, and end slot/time.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- BURN -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Burn Methods</h2>
+
+            <div class="method-card" id="getTotalBurned">
+                <h3 class="method-name">getTotalBurned</h3>
+                <p class="method-desc">Returns the total amount of MOLT that has been permanently burned (removed from
+                    circulation).</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ shells: u64, molt: f64 }</code></p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTotalBurned","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{"shells":1500000000000,"molt":1500.0}}</code></pre>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- FEE & RENT -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <h2>Fee &amp; Rent Methods</h2>
+
+            <div class="method-card" id="getFeeConfig">
+                <h3 class="method-name">getFeeConfig</h3>
+                <p class="method-desc">Returns the current fee configuration for the chain (base fee, priority fee
+                    multiplier).</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Fee configuration.</p>
+                </div>
+            </div>
+
+            <div class="method-card" id="getRentParams">
+                <h3 class="method-name">getRentParams</h3>
+                <p class="method-desc">Returns the current rent parameters (rent per byte per epoch, rent-exempt
+                    minimum).</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — Rent parameters.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- LIVE ADDITIONS -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <section id="live-methods" class="rpc-live-methods">
+                <h2>Additional Implemented Methods</h2>
+                <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`) and may not yet
+                    have individual method cards on this page.</p>
+
+                <div class="callout callout-info">
+                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana</code> and <code>POST /evm</code>
+                        are also supported in addition to <code>POST /</code>.</p>
+                </div>
+
+                <h3>Chain / Account / Tx</h3>
+                <ul>
+                    <li><code>confirmTransaction</code></li>
+                    <li><code>getRecentTransactions</code></li>
+                    <li><code>getTokenAccounts</code></li>
+                    <li><code>getTreasuryInfo</code></li>
+                    <li><code>getGenesisAccounts</code></li>
+                </ul>
+
+                <h3>Fee / Network / Validator</h3>
+                <ul>
+                    <li><code>setFeeConfig</code></li>
+                    <li><code>setRentParams</code></li>
+                    <li><code>getClusterInfo</code></li>
+                </ul>
+
+                <h3>Staking (ReefStake)</h3>
+                <ul>
+                    <li><code>stakeToReefStake</code></li>
+                    <li><code>unstakeFromReefStake</code></li>
+                    <li><code>claimUnstakedTokens</code></li>
+                    <li><code>getStakingPosition</code></li>
+                    <li><code>getReefStakePoolInfo</code></li>
+                    <li><code>getUnstakingQueue</code></li>
+                    <li><code>getRewardAdjustmentInfo</code></li>
+                </ul>
+
+                <h3>Contracts / Registry / Program</h3>
+                <ul>
+                    <li><code>setContractAbi</code></li>
+                    <li><code>deployContract</code></li>
+                    <li><code>upgradeContract</code></li>
+                    <li><code>getContractEvents</code></li>
+                    <li><code>getSymbolRegistry</code></li>
+                    <li><code>getSymbolRegistryByProgram</code></li>
+                    <li><code>getAllSymbolRegistry</code></li>
+                </ul>
+
+                <h3>MoltyID / Names / Identity</h3>
+                <ul>
+                    <li><code>getMoltyIdIdentity</code>, <code>getMoltyIdReputation</code>,
+                        <code>getMoltyIdSkills</code>, <code>getMoltyIdVouches</code>,
+                        <code>getMoltyIdAchievements</code>, <code>getMoltyIdProfile</code>
+                    </li>
+                    <li><code>resolveMoltName</code>, <code>reverseMoltName</code>, <code>batchReverseMoltNames</code>,
+                        <code>searchMoltNames</code>
+                    </li>
+                    <li><code>getMoltyIdAgentDirectory</code>, <code>getMoltyIdStats</code></li>
+                    <li><code>getEvmRegistration</code>, <code>lookupEvmAddress</code></li>
+                </ul>
+
+                <h3>NFT / Market / Prediction / Platform Stats</h3>
+                <ul>
+                    <li><code>getNFTsByCollection</code></li>
+                    <li><code>getNFTActivity</code></li>
+                    <li><code>getPredictionMarketStats</code>, <code>getPredictionMarkets</code>,
+                        <code>getPredictionMarket</code>, <code>getPredictionPositions</code>,
+                        <code>getPredictionTraderStats</code>, <code>getPredictionLeaderboard</code>,
+                        <code>getPredictionTrending</code>, <code>getPredictionMarketAnalytics</code>
+                    </li>
+                    <li><code>getDexCoreStats</code>, <code>getDexAmmStats</code>, <code>getDexMarginStats</code>,
+                        <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>,
+                        <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code>
+                    </li>
+                    <li><code>getMoltswapStats</code>, <code>getLobsterLendStats</code>, <code>getClawPayStats</code>,
+                        <code>getClawVaultStats</code>, <code>getBountyBoardStats</code>,
+                        <code>getComputeMarketStats</code>, <code>getReefStorageStats</code>,
+                        <code>getMoltMarketStats</code>, <code>getMoltAuctionStats</code>,
+                        <code>getMoltPunksStats</code>
+                    </li>
+                    <li><code>getMusdStats</code>, <code>getWethStats</code>, <code>getWsolStats</code>,
+                        <code>getMoltBridgeStats</code>, <code>getMoltDaoStats</code>, <code>getMoltOracleStats</code>
+                    </li>
+                    <li><code>requestAirdrop</code> (testnet utility)</li>
+                </ul>
+
+                <h3>Bridge</h3>
+                <ul>
+                    <li><code>createBridgeDeposit</code> — initiate a cross-chain bridge deposit</li>
+                    <li><code>getBridgeDeposit</code> — query a bridge deposit by ID</li>
+                    <li><code>getBridgeDepositsByRecipient</code> — list deposits for a recipient address</li>
+                </ul>
+
+                <h3>Shielded Pool (Privacy)</h3>
+                <ul>
+                    <li><code>getShieldedPoolState</code> — query shielded pool state (tree size, root, nullifier count)
+                    </li>
+                    <li><code>getShieldedPoolStats</code> — aggregated pool statistics</li>
+                    <li><code>getShieldedMerkleRoot</code> — current Merkle tree root</li>
+                    <li><code>getShieldedMerklePath</code> — Merkle proof for a leaf index</li>
+                    <li><code>isNullifierSpent</code> — check if a nullifier has been spent</li>
+                    <li><code>checkNullifier</code> — alias for <code>isNullifierSpent</code></li>
+                    <li><code>getShieldedCommitments</code> — list commitments in the tree</li>
+                    <li><code>computeShieldCommitment</code> — compute commitment hash for shield operation</li>
+                    <li><code>generateShieldProof</code> — generate ZK proof for shield (deposit)</li>
+                    <li><code>generateUnshieldProof</code> — generate ZK proof for unshield (withdraw)</li>
+                    <li><code>generateTransferProof</code> — generate ZK proof for private transfer</li>
+                </ul>
+
+                <h3>Contract Execution</h3>
+                <ul>
+                    <li><code>callContract</code> — execute a read-only contract call (no state change)</li>
+                    <li><code>getNameAuction</code> — query MoltyID .molt name auction by name</li>
+                </ul>
+
+                <h3>Solana-Compatible Endpoint (<code>/solana</code>)</h3>
+                <ul>
+                    <li><code>getLatestBlockhash</code>, <code>getRecentBlockhash</code>, <code>getBalance</code>,
+                        <code>getAccountInfo</code>, <code>getBlock</code>, <code>getBlockHeight</code>,
+                        <code>getSignaturesForAddress</code>, <code>getSignatureStatuses</code>, <code>getSlot</code>,
+                        <code>getTransaction</code>, <code>sendTransaction</code>, <code>getHealth</code>,
+                        <code>getVersion</code>
+                    </li>
+                </ul>
+
+                <h3>EVM-Compatible Endpoint (<code>/evm</code>)</h3>
+                <ul>
+                    <li><code>eth_getBalance</code>, <code>eth_sendRawTransaction</code>, <code>eth_call</code>,
+                        <code>eth_chainId</code>, <code>eth_blockNumber</code>, <code>eth_getTransactionReceipt</code>,
+                        <code>eth_getTransactionByHash</code>, <code>eth_accounts</code>, <code>net_version</code>
+                    </li>
+                    <li><code>eth_gasPrice</code>, <code>eth_maxPriorityFeePerGas</code>, <code>eth_estimateGas</code>,
+                        <code>eth_getCode</code>, <code>eth_getTransactionCount</code>
+                    </li>
+                    <li><code>eth_getBlockByNumber</code>, <code>eth_getBlockByHash</code>, <code>eth_getLogs</code>,
+                        <code>eth_getStorageAt</code>
+                    </li>
+                    <li><code>net_listening</code>, <code>web3_clientVersion</code></li>
+                </ul>
+            </section>
+
+            <div class="callout callout-tip rpc-live-methods">
+                <p><strong>Looking for real-time events?</strong> Check out the <a href="ws-reference.html">WebSocket
+                        Reference</a> for subscription-based streaming of blocks, transactions, and account changes.</p>
+            </div>
+        </main>
+    </div>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="dev-footer">
+        <div class="container">
+            <div class="dev-footer-links">
+                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                    GitHub</a>
+                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+            </div>
+            <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
+        </div>
+    </footer>
+
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+</body>
+
+</html>
