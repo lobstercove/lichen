@@ -357,6 +357,18 @@ curl -s http://localhost:9899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 # → {"status":"ok","slot":12345}
 ```
 
+### 4. Run as a Service (Optional)
+
+For unattended operation, install the validator as a persistent OS service:
+
+| Platform | Method | Guide |
+|----------|--------|-------|
+| **Linux** | systemd | `sudo bash deploy/setup.sh mainnet` — creates unit, user, env file |
+| **macOS** | LaunchAgent | See [Validator Guide — macOS LaunchAgent](https://developers.moltchain.network/validator.html#macos-service) |
+| **Windows** | NSSM | See [Validator Guide — Windows Service](https://developers.moltchain.network/validator.html#windows-service) |
+
+Full platform-specific instructions: [developers.moltchain.network/validator.html](https://developers.moltchain.network/validator.html)
+
 ### Seed Nodes (Mainnet)
 
 | Region | Endpoint |
