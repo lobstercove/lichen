@@ -1,0 +1,137 @@
+# MoltChain Validator Configuration
+# Production configuration template
+
+[validator]
+# Validator identity keypair path
+# Generate with: molt init --output ~/.moltchain/validator-keypair.json
+keypair_path = "~/.moltchain/validator-keypair.json"
+
+# Data directory for blockchain state
+data_dir = "~/.moltchain/data"
+
+# Enable validator mode (vs. full node observer mode)
+enable_validation = true
+
+[network]
+# P2P listening port (testnet: 7001, mainnet: 8001)
+p2p_port = 7001
+
+# RPC server port (testnet: 8899, mainnet: 9899)
+rpc_port = 8899
+
+# Bootstrap seed nodes (comma-separated)
+# Override this with actual seed addresses for your network.
+# Testnet: seed-01.moltchain.network:7001,seed-02.moltchain.network:7001,seed-03.moltchain.network:7001
+# Mainnet: seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001
+# When empty, the validator uses compile-time embedded seeds from core/src/network.rs.
+seed_nodes = []
+
+# Enable P2P networking
+enable_p2p = true
+
+# Gossip interval in seconds
+gossip_interval = 10
+
+# Connection cleanup timeout in seconds
+cleanup_timeout = 300
+
+# Node role: "validator" (default), "relay", or "seed"
+# Validators connect to a few relays + peers (max 20 by default)
+# Relays accept many connections and re-broadcast gossip (max 500)
+# Seeds maintain large address books and share peer lists (max 1000)
+# role = "validator"
+
+# Maximum peer connections (auto-set by role if not specified)
+# Validator: 20, Relay: 500, Seed: 1000
+# max_peers = 20
+
+# Reserved relay/seed addresses (never evicted during peer cleanup)
+# reserved_peers = ["relay1.moltchain.io:9900", "relay2.moltchain.io:9900"]
+
+[consensus]
+# Minimum stake required to validate (in shells)
+# Testnet: 75 MOLT (bootstrap grants are 100 MOLT), Mainnet: 1000 MOLT
+min_validator_stake = 75000000000
+
+# Slot duration in milliseconds
+slot_duration_ms = 400
+
+# Enable slashing for malicious behavior
+enable_slashing = true
+
+[rpc]
+# Enable RPC server
+enable_rpc = true
+
+# Bind address (0.0.0.0 for all interfaces, 127.0.0.1 for localhost only)
+bind_address = "0.0.0.0"
+
+# Enable CORS
+enable_cors = true
+
+# D1-01: Allowed CORS origins (comma-separated hostnames).
+# Override via env var: MOLTCHAIN_CORS_ORIGINS="localhost,127.0.0.1,app.moltchain.io"
+# Default: localhost, 127.0.0.1, moltchain.io, app/rpc/api/explorer.moltchain.io
+# cors_origins = "localhost,127.0.0.1,moltchain.io,app.moltchain.io,rpc.moltchain.io,api.moltchain.io,explorer.moltchain.io"
+
+# Maximum concurrent connections
+max_connections = 10000
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+
+# Log to file
+log_to_file = false
+log_file_path = "~/.moltchain/validator.log"
+
+# Log format: json, text
+log_format = "text"
+
+[monitoring]
+# Enable Prometheus metrics export
+enable_metrics = true
+
+# Metrics server port
+metrics_port = 9100
+
+# Health check endpoint
+enable_health_check = true
+
+[genesis]
+# Path to genesis.json file
+# Required for first-time setup
+genesis_path = "./genesis.json"
+
+# Chain ID (must match genesis)
+chain_id = "moltchain-testnet-1"
+
+[performance]
+# Number of worker threads (0 = auto-detect CPU cores)
+worker_threads = 0
+
+# Enable block production optimization
+optimize_block_production = true
+
+# Transaction batch size
+tx_batch_size = 1000
+
+[security]
+# Enable firewall rules check
+check_firewall = true
+
+# Require encrypted connections
+require_encryption = true
+
+# Allowed RPC methods (empty = all)
+allowed_rpc_methods = []
+
+# Rate limiting (requests per second)
+rpc_rate_limit = 100
+
+# Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
+# Generate a strong random token before production:  openssl rand -hex 32
+# SECURITY: If empty, ALL admin endpoints are disabled (return error).
+#           For production, set a unique 64-char hex token and keep it secret.
+#           Can also be set via MOLTCHAIN_ADMIN_TOKEN env var or --admin-token CLI flag.
+admin_token = ""
