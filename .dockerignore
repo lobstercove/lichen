@@ -1,0 +1,67 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Data and state
+data/
+logs/
+
+# Node.js
+node_modules/
+
+# Documentation (keep README for reference)
+*.md
+!README.md
+docs/
+internal-docs/
+
+# Media assets
+media/
+
+# Environment files
+.env
+.env.*
+
+# Backup files
+*.json.bak*
+
+# Fuzz testing artifacts
+fuzz/corpus/
+fuzz/artifacts/
+
+# Tests
+tests/
+
+# Static frontend sites (not part of the Rust build)
+dex/
+explorer/
+faucet/
+marketplace/
+monitoring/
+programs/
+wallet/
+website/
+developers/
+
+# Shared frontend assets
+shared/
+
+# Skills / tools / examples
+skills/
+tools/
+examples/
+
+# Deployment configs (handled by Dockerfile itself)
+deploy/
+infra/
+scripts/
+
+# Keypairs (sensitive)
+keypairs/
+
+# GitHub CI
+.github/

@@ -427,7 +427,9 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
             );
             return;
         }
-        use moltchain_core::zk::setup::{setup_shield, setup_transfer, setup_unshield, CeremonyOutput};
+        use moltchain_core::zk::setup::{
+            setup_shield, setup_transfer, setup_unshield, CeremonyOutput,
+        };
         type ZkSetupFn = fn() -> Result<CeremonyOutput, String>;
         let circuits: &[(&str, ZkSetupFn)] = &[
             ("shield", setup_shield as ZkSetupFn),
