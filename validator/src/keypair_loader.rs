@@ -168,20 +168,33 @@ pub fn load_or_generate_keypair(
 /// Get legacy HOME-based validator keypair path.
 /// Prefer data-directory-local path via `load_or_generate_keypair`.
 pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+    let home = std::env::var("MOLTCHAIN_REAL_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".moltchain")
         .join("validators")
         .join(format!("validator-{}.json", p2p_port))
 }
 
 /// Shared HOME-based path keyed by network name (e.g. "testnet", "mainnet").
 /// Lives OUTSIDE the state directory so it survives `rm -rf state-*` resets.
-/// Path: `~/.moltchain/validators/validator-{network}.json`
+///
+/// Uses `MOLTCHAIN_REAL_HOME` (exported by `moltchain-start.sh`) to resolve
+/// the operator's actual home directory, because the start script overrides
+/// `HOME` to the data-dir for P2P identity isolation.  Without this, the
+/// "shared" path lands inside the state directory and gets wiped on flush,
+/// causing a new keypair to be generated → ghost validator.
+///
+/// Path: `$MOLTCHAIN_REAL_HOME/.moltchain/validators/validator-{network}.json`
 fn shared_validator_keypair_path(network: &str) -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+    let home = std::env::var("MOLTCHAIN_REAL_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".moltchain")
         .join("validators")
         .join(format!("validator-{}.json", network))
 }

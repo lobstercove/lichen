@@ -7,7 +7,7 @@ Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDK
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated and published at tag `v0.2.17`.
+**Release-ready status:** main validated and published at tag `v0.2.18`.
 
 **Website:** https://moltchain.network  
 **Documentation:** https://developers.moltchain.network  

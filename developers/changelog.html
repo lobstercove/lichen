@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Changelog - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="shared-base-styles.css">
+    <link rel="stylesheet" href="shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <div class="changelog-container">
+        <!-- BREADCRUMBS -->
+        <div class="breadcrumbs">
+            <a href="index.html">Dev Hub</a>
+            <span class="separator">›</span>
+            <span class="current">Changelog</span>
+        </div>
+
+        <h1>Changelog</h1>
+        <p class="changelog-lead">A complete history of every MoltChain release — new features, improvements, breaking
+            changes, and fixes.</p>
+
+        <!-- Filters -->
+        <div class="changelog-filter">
+            <button class="changelog-filter-btn active" data-filter="all">All</button>
+            <button class="changelog-filter-btn" data-filter="new">New Features</button>
+            <button class="changelog-filter-btn" data-filter="improved">Improvements</button>
+            <button class="changelog-filter-btn" data-filter="fixed">Fixes</button>
+            <button class="changelog-filter-btn" data-filter="breaking">Breaking</button>
+        </div>
+
+        <!-- Timeline -->
+        <div class="changelog-timeline">
+
+            <!-- ============ v0.2.18 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.2.18</span>
+                    <span class="changelog-date">March 11, 2026</span>
+                </div>
+                <h3 class="changelog-title">Keypair Path Stability &amp; Full Chain Reset</h3>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>Keypair path stability: validator keypairs now resolve via <code>MOLTCHAIN_REAL_HOME</code>
+                            env var, preventing keypair loss when <code>HOME</code> is overridden by the start script
+                        </li>
+                        <li>Shared keypair path (<code>~/.moltchain/validators/</code>) now survives state flushes
+                            &mdash; no more ghost validators from keypair regeneration</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li>Start script exports <code>MOLTCHAIN_REAL_HOME</code> before HOME override so the
+                            validator binary can locate the operator&rsquo;s true home directory</li>
+                        <li>Three-layer ghost prevention: path stability (MOLTCHAIN_REAL_HOME) + fingerprint
+                            pre-check + startup purge</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New</h4>
+                    <ul>
+                        <li>Contract Features &amp; Optimizations Brainstorm document added to
+                            <code>docs/strategy/</code> &mdash; 26 proposed features across 5 tiers with priority
+                            rankings
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.2.17 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.2.17</span>
+                    <span class="changelog-date">March 10, 2026</span>
+                </div>
+                <h3 class="changelog-title">Ghost Validator Fix, CLI Deploy Flags, Poseidon Hash &amp; Token Supply</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>CLI: <code>--supply &lt;amount&gt;</code> flag sets initial total supply on deploy
+                            (auto-converted to shells via decimals)</li>
+                        <li>CLI: <code>--metadata &lt;json&gt;</code> flag attaches custom metadata to the symbol
+                            registry entry</li>
+                        <li>CLI: On-chain verification after deploy &mdash; polls <code>getAccountInfo</code> to confirm
+                            contract is live</li>
+                        <li>WASM runtime: <code>host_poseidon_hash</code> host function &mdash; BN254 Poseidon hash for
+                            Merkle trees and ZK circuits (2,000 CU)</li>
+                        <li>Contract SDK: <code>poseidon_hash(left, right) &rarr; [u8; 32]</code> wrapper in
+                            <code>moltchain-contract-sdk</code>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li>RPC: <code>getContractInfo</code> now falls back to registry metadata for
+                            <code>total_supply</code> when on-chain storage key is empty
+                        </li>
+                        <li>Explorer: Token supply page uses <code>callContract</code> fallback for
+                            <code>total_supply</code> view function
+                        </li>
+                        <li>Validator: Two-tier stale cleanup &mdash; never-active ghost validators cleaned after 500
+                            slots, previously-active after 50 epochs</li>
+                        <li>Validator: P2P machine fingerprint pre-check rejects new validator announcements from
+                            machines that already have a registered identity</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>Ghost validator purge on startup &mdash; removes validators with 0 blocks and 0 activity,
+                            returns bootstrap grants to treasury</li>
+                        <li>Website: WS connection indicator no longer blinks on every 5-second stats poll (uses
+                            <code>statsInitialLoad</code> flag)
+                        </li>
+                        <li>Website: <code>resolveValidatorCount()</code> filters ghost validators (last_active_slot=0
+                            AND blocks_produced=0)</li>
+                        <li>EU VPS crash loop resolved &mdash; RocksDB LOCK held by zombie supervisor process</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.12.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.12.0</span>
+                    <span class="changelog-date">February 18, 2026</span>
+                </div>
+                <h3 class="changelog-title">DEX Hardening, Governance Execution &amp; Prediction Market Fixes</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>Governance execution dispatch — <code>dex-governance execute_proposal</code> now performs
+                            real cross-contract calls (create_pair, update_pair_fees, pause_pair) with full audit trail
+                        </li>
+                        <li>Reduce-only order flag — <code>order_type | 0x80</code> in dex-core validates against open
+                            margin positions via cross-contract call to dex-margin opcode 26</li>
+                        <li>New dex-core opcode 30: <code>set_margin_address</code> — links dex-core to dex-margin for
+                            reduce-only validation</li>
+                        <li>New dex-margin opcode 26: <code>query_user_open_position</code> — queries open position for
+                            a trader on a specific pair</li>
+                        <li>MoltyID integration in DEX wallet — <code>.molt</code> name resolution and reputation badge
+                            display on connect</li>
+                        <li>Batch <code>.molt</code> name resolution for saved wallets via
+                            <code>batchReverseMoltNames</code> RPC
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li>Tokenomics rebalance — reward pool reduced to 100K MOLT/month with epoch cap enforcement;
+                            listing liquidity threshold lowered to 10K MOLT</li>
+                        <li>Prediction market sell math rewritten — binary search over <code>total_a_for_sets()</code>
+                            replaces broken equal-partition heuristic for multi-outcome markets</li>
+                        <li>Prediction market return data — <code>create_market</code>, <code>add_liquidity</code>,
+                            <code>buy_shares</code>, <code>sell_shares</code>, <code>withdraw_liquidity</code> now write
+                            full u64 via <code>set_return_data()</code>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>Oracle safety — <code>close_position</code>, <code>partial_close</code>,
+                            <code>remove_margin</code> now reject (codes 5/7) when oracle price is unavailable instead
+                            of allowing zero-PnL exits
+                        </li>
+                        <li>Prediction u32 truncation — <code>call()</code> dispatcher no longer overwrites
+                            function-level return_data on success for opcodes 1,3,4,5,13-15</li>
+                        <li>CI: all cargo fmt (610+ diffs) and clippy warnings (47 warnings) resolved — CI pipeline
+                            fully green</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="breaking">
+                    <h4><i class="fas fa-exclamation-triangle" style="color: #f39c12"></i> Breaking Changes</h4>
+                    <ul>
+                        <li><code>dex-margin</code>: <code>close_position</code> and <code>partial_close</code> now
+                            return error code 5 (previously returned full margin) when oracle is unavailable — agents
+                            must handle this new error</li>
+                        <li><code>dex-margin</code>: <code>remove_margin</code> now returns error code 7 when oracle is
+                            unavailable — previously skipped health check entirely</li>
+                        <li><code>dex-core</code>: <code>place_order</code> with reduce-only flag (0x80) returns new
+                            error code 12 when validation fails</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.11.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.11.0</span>
+                    <span class="changelog-date">February 10, 2026</span>
+                </div>
+                <h3 class="changelog-title">Production Hardening &amp; Full WASM Build</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>AES-256-GCM authenticated encryption for CLI keypairs — replaces legacy XOR cipher with
+                            backwards-compatible version field</li>
+                        <li>ZK proof verification via HMAC-SHA256 — 81-byte minimum proof structure with constant-time
+                            comparison</li>
+                        <li>All 16/16 WASM smart contracts now compile and build successfully</li>
+                        <li>Criterion benchmarks — 10 benchmarks across 3 groups (tx processing, block creation,
+                            signature verification); ~35K tx/s measured</li>
+                        <li>CI: integration test job (validator + comprehensive test scripts) and WASM contract build
+                            job with caching</li>
+                        <li>CONTRIBUTING.md — full developer guide with setup, testing, code quality, WASM builds, and
+                            PR process</li>
+                        <li>Centralized frontend URL config (shared-config.js) — auto-detects dev vs production,
+                            replaces 15 hardcoded localhost URLs</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li>Faucet CORS: explicit origin allowlist replaces permissive policy — restricted to localhost
+                            dev ports + production domains</li>
+                        <li>Wallet: fixed 4 async function declarations that caused SyntaxError breaking all wallet JS
+                        </li>
+                        <li>Wallet CSS: added display:none/block for create-step and import-method (wizard step
+                            visibility)</li>
+                        <li>Generated favicons and PWA icons for all 5 frontend apps</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>Dockerfile binary name corrected to match Cargo.toml output</li>
+                        <li>.dockerignore added to prevent 600MB+ context bloat</li>
+                        <li>README.md: removed false GraphQL/gRPC claims</li>
+                        <li>MIT LICENSE file added</li>
+                        <li>cargo fmt applied project-wide</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.10.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.10.0</span>
+                    <span class="changelog-date">February 10, 2026</span>
+                </div>
+                <h3 class="changelog-title">MoltyID Universal Identity</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>.molt naming system — register, resolve, transfer, renew, and release human-readable names
+                        </li>
+                        <li>Agent Discovery Registry with endpoints, metadata, availability signalling, and rate-limit
+                            config</li>
+                        <li>Trust tiers (0–5) integrated into mempool priority lanes</li>
+                        <li>Identity-gated access on MoltBridge, Compute Market, BountyBoard, ClawPay, and MoltSwap</li>
+                        <li>Express lane in mempool for Tier 4+ agents — lower latency, higher throughput</li>
+                        <li>113 tests added across 7 previously-untested contracts</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li>8 new fuzz targets covering consensus, block, mempool, account, hash, and RPC subsystems
+                        </li>
+                        <li>Whitepaper updated with full MoltyID specification</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>134 clippy warnings resolved — project now compiles with zero warnings</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.9.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.9.0</span>
+                    <span class="changelog-date">February 9, 2026</span>
+                </div>
+                <h3 class="changelog-title">Production Readiness</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>98/98 fix plan items completed — full production hardening pass</li>
+                        <li>5 vision contracts: reef_storage, moltbridge, compute_market, clawpay, bountyboard</li>
+                        <li>SDK test_mock framework for contract testing without a running node</li>
+                        <li>Parallel transaction processing scaffold for future throughput scaling</li>
+                        <li>Privacy layer scaffold — encrypted memo fields and stealth address generation</li>
+                        <li>Event streaming via WebSocket subscriptions</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li>WriteBatch atomicity enforced for all state mutations — no partial writes</li>
+                        <li>Bootstrap sybil protection prevents address flooding during peer discovery</li>
+                        <li>ReefStake RPC authentication — endpoints now require valid signatures</li>
+                        <li>P2P TLS enforcement — plaintext connections rejected</li>
+                        <li>EVM balance commit correctness — balances now round-trip through EVM without drift</li>
+                        <li>ForkChoice with proper chain scoring — heaviest-chain rule replaces naive longest-chain</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.8.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.8.0</span>
+                    <span class="changelog-date">February 5, 2026</span>
+                </div>
+                <h3 class="changelog-title">Ecosystem Launch</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>Explorer (Reef Explorer) — full blockchain explorer with block, transaction, and account
+                            views</li>
+                        <li>Marketplace (Molt Market) — NFT marketplace with listing, bidding, and royalties</li>
+                        <li>Wallet (Molt Wallet) — browser wallet with BIP39 seed phrase and hardware key support</li>
+                        <li>Website landing page with live on-chain stats</li>
+                        <li>Programs Playground — web-based contract IDE with compile, deploy, and interact</li>
+                        <li>JS/TS, Python, and Rust SDKs for full-stack application development</li>
+                        <li>WASM compiler service — compile contracts server-side without local toolchain</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ v0.7.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.7.0</span>
+                    <span class="changelog-date">January 2026</span>
+                </div>
+                <h3 class="changelog-title">Core Protocol</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li>Initial blockchain with Proof of Contribution consensus mechanism</li>
+                        <li>11 smart contracts: moltcoin, moltdao, moltswap, moltyid, moltoracle, moltauction,
+                            moltmarket, moltpunks, clawpump, clawvault, lobsterlend</li>
+                        <li>CLI with wallet, validator, and query commands</li>
+                        <li>P2P networking with gossip protocol for block and transaction propagation</li>
+                        <li>RPC server with JSON-RPC 2.0 compliant API</li>
+                        <li>Docker deployment support for single-command node setup</li>
+                    </ul>
+                </div>
+            </div>
+
+        </div><!-- /changelog-timeline -->
+    </div><!-- /changelog-container -->
+    <script src="shared/utils.js"></script>
+    <script src="shared/env.js"></script>
+    <script src="shared-config.js"></script>
+    <script src="js/developers.js"></script>
+    <script>
+        (function () {
+            // Wire up nav search input to open ⌘K overlay
+            const navInput = document.getElementById('searchInput');
+            if (navInput) {
+                navInput.addEventListener('focus', () => {
+                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                    navInput.blur();
+                });
+            }
+
+            // Filter buttons
+            const filterBtns = document.querySelectorAll('.changelog-filter-btn');
+            const entries = document.querySelectorAll('.changelog-entry');
+
+            filterBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    filterBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const filter = btn.dataset.filter;
+
+                    entries.forEach(entry => {
+                        if (filter === 'all') {
+                            entry.style.display = '';
+                            entry.querySelectorAll('.changelog-section').forEach(s => s.style.display = '');
+                            return;
+                        }
+                        const sections = entry.querySelectorAll('.changelog-section');
+                        let hasMatch = false;
+                        sections.forEach(s => {
+                            if (s.dataset.type === filter) {
+                                s.style.display = '';
+                                hasMatch = true;
+                            } else {
+                                s.style.display = 'none';
+                            }
+                        });
+                        entry.style.display = hasMatch ? '' : 'none';
+                    });
+                });
+            });
+        })();
+    </script>
+</body>
+
+</html>

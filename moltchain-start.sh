@@ -161,6 +161,10 @@ mkdir -p "$VALIDATOR_HOME"
 # Keep node identity/fingerprint state isolated per validator data directory.
 export HOME="$VALIDATOR_HOME"
 
+# Preserve the real home so the validator binary can store keypairs there
+# (outside the state directory — survives `rm -rf data/state-*` flushes).
+export MOLTCHAIN_REAL_HOME="$REAL_HOME"
+
 # Preserve ZK verification key paths from the real home directory so the
 # validator can find them even though HOME was overridden above.
 export MOLTCHAIN_ZK_SHIELD_VK_PATH="${MOLTCHAIN_ZK_SHIELD_VK_PATH:-${REAL_HOME}/.moltchain/zk/vk_shield.bin}"
