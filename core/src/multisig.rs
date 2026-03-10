@@ -221,9 +221,9 @@ impl GenesisWallet {
 
         let wallet = GenesisWallet {
             pubkey,
-            keypair_path: format!(".moltchain/genesis-wallet-{}.json", chain_id),
+            keypair_path: format!("genesis-keys/genesis-primary-{}.json", chain_id),
             treasury_pubkey: Some(treasury_pubkey),
-            treasury_keypair_path: Some(format!(".moltchain/treasury-wallet-{}.json", chain_id)),
+            treasury_keypair_path: Some(format!("genesis-keys/treasury-{}.json", chain_id)),
             multisig,
             distribution_wallets: Some(distribution_wallets),
             created_at: chrono::Utc::now().to_rfc3339(),

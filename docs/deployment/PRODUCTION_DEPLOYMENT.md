@@ -1512,6 +1512,156 @@ curl http://localhost:9105/status
 curl -s http://<OTHER_VPS_IP>:9200/health
 ```
 
+### Faucet: "Treasury keypair not configured — cannot sign airdrop transactions"
+
+**Cause:** The faucet HTTP service itself does NOT sign transactions. It calls the validator's `requestAirdrop` RPC method, which signs using the treasury keypair loaded at validator startup. If the validator can't find the treasury keypair file, `treasury_keypair` is `None` in the RPC state, and every airdrop request fails with this error.
+
+**How treasury keypair loading works:**
+
+The validator loads the treasury keypair at boot via `load_treasury_keypair()`, which checks two locations in order:
+
+1. **`genesis-wallet.json` → `treasury_keypair_path`** — the path stored in the genesis wallet JSON, resolved **relative to the data directory** (e.g., `data/state-testnet/genesis-keys/treasury-moltchain-testnet-1.json`)
+2. **Fallback:** `{data_dir}/genesis-keys/treasury-{chain_id}.json` — direct lookup in the genesis-keys directory
+
+If neither file exists, the validator starts without a treasury keypair and all airdrop requests fail.
+
+**Diagnosis:**
+
+```bash
+# Check if the treasury keypair file exists
+ls -la ~/moltchain/data/state-testnet/genesis-keys/treasury-moltchain-testnet-1.json
+
+# Check if the validator loaded the treasury keypair (should show a pubkey, not null)
+curl -s http://localhost:8899 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTreasuryInfo","params":[]}' | python3 -m json.tool
+
+# Test airdrop directly via RPC (amount is in MOLT, 1-10 range, address is base58)
+curl -s http://localhost:8899 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"requestAirdrop","params":["<BASE58_ADDRESS>",5]}'
+
+# Test faucet service
+curl -s http://localhost:9100/faucet/request -H 'Content-Type: application/json' \
+  -d '{"address":"<BASE58_ADDRESS>"}'
+```
+
+**Fix:**
+
+1. **If `getTreasuryInfo` returns a pubkey** — the RPC has the treasury loaded. The faucet service itself may have a connection issue (check `RPC_URL` env var, ensure it points to `http://127.0.0.1:8899`).
+
+2. **If `getTreasuryInfo` fails or returns no pubkey** — the treasury keypair file is missing or the validator can't find it:
+   ```bash
+   # Verify the genesis-keys directory exists with the treasury file
+   ls -la ~/moltchain/data/state-testnet/genesis-keys/treasury-*.json
+
+   # For joining VPSes (EU/SEA), copy the treasury key from the genesis VPS (US):
+   ssh -p 2222 ubuntu@15.204.229.189 "cat ~/moltchain/data/state-testnet/genesis-keys/treasury-moltchain-testnet-1.json" \
+     | ssh -p 2222 ubuntu@<JOINING_VPS> "mkdir -p ~/moltchain/data/state-testnet/genesis-keys && cat > ~/moltchain/data/state-testnet/genesis-keys/treasury-moltchain-testnet-1.json"
+
+   # Restart the validator to reload the treasury keypair
+   # (kill existing process, then re-run moltchain-start.sh)
+   ```
+
+3. **If the file exists but the validator still doesn't load it** — check the validator logs for warnings about treasury keypair parsing:
+   ```bash
+   grep -i treasury /tmp/moltchain-testnet/validator.log | tail -20
+   ```
+
+**Key facts:**
+- `requestAirdrop` RPC params are `[base58_address, amount_in_molt]` where amount is 1-10 (whole MOLT, not shells)
+- Faucet runs on port 9100 (testnet only — panics if `NETWORK=mainnet`)
+- The faucet keypair (`faucet-moltchain-testnet-1.json`) is used for identity/logging, NOT for signing transactions
+- Only the genesis VPS (US) has genesis-keys after initial creation — EU/SEA must have treasury keys copied over before the validator can sign airdrops
+
+### Faucet: stale manual process blocking port 9100
+
+**Cause:** A previously manually-started faucet process (`nohup ./target/release/moltchain-faucet`) is still running and holds port 9100. Systemd or a new faucet instance can't bind to the port.
+
+**Diagnosis:**
+
+```bash
+# Check what's on port 9100
+sudo ss -tlnp | grep 9100
+
+# Check for stale faucet processes
+pgrep -af moltchain-faucet
+```
+
+**Fix:**
+
+```bash
+# Kill the stale process
+kill <PID>
+
+# Start fresh using the documented method (not systemd — use nohup with proper env vars)
+cd ~/moltchain
+PORT=9100 RPC_URL=http://127.0.0.1:8899 NETWORK=testnet \
+  nohup ./target/release/moltchain-faucet > /tmp/moltchain-testnet/faucet.log 2>&1 &
+```
+
+---
+
+## Data Directory Architecture
+
+> **v0.2.19+** — All paths are resolved from a single canonical data directory. No CWD-dependent relative paths, no HOME overrides for key resolution.
+
+### Single Source of Truth: `--db-path`
+
+Every validator instance has exactly ONE data directory, set by `--db-path` (aliases: `--db`, `--data-dir`). All state, keys, logs, and configs live under this directory:
+
+```
+{data_dir}/                              # e.g., ~/moltchain/data/state-testnet/
+├── CURRENT, MANIFEST-*, *.sst           # RocksDB state files
+├── genesis-wallet.json                  # Genesis wallet config (pubkeys + key paths)
+├── genesis-keys/                        # All keypairs generated at genesis
+│   ├── genesis-primary-{chain_id}.json  # Genesis primary signer
+│   ├── genesis-signer-{n}-{chain_id}.json  # Additional multi-sig signers
+│   ├── treasury-{chain_id}.json         # Treasury keypair (used by RPC for airdrops)
+│   ├── faucet-{chain_id}.json           # Faucet identity keypair
+│   ├── validator_rewards-{chain_id}.json
+│   ├── community_treasury-{chain_id}.json
+│   ├── builder_grants-{chain_id}.json
+│   ├── founding_moltys-{chain_id}.json
+│   ├── ecosystem_partnerships-{chain_id}.json
+│   └── reserve_pool-{chain_id}.json
+├── validator-keypair.json               # This validator's identity keypair
+├── known-peers.json                     # Cached P2P peer list
+├── home/                                # Validator runtime home (P2P identity isolation)
+│   └── .moltchain/                      # P2P certs, TOFU fingerprints
+├── logs/                                # Rolling daily log files
+│   └── validator.YYYY-MM-DD.log
+└── seeds.json                           # (optional) Seed peers override
+```
+
+### Path Resolution Rules
+
+1. **`genesis-wallet.json` paths** — The `treasury_keypair_path` and `keypair_path` fields are stored as paths relative to the data directory. At load time, the validator resolves them as `{data_dir}/{path}`. Example: `genesis-keys/treasury-moltchain-testnet-1.json` resolves to `{data_dir}/genesis-keys/treasury-moltchain-testnet-1.json`.
+
+2. **Validator identity keypair** — Resolved by `keypair_loader` with a 5-tier search:
+   1. Explicit `--keypair` CLI argument
+   2. `{data_dir}/validator-keypair.json`
+   3. `$MOLTCHAIN_REAL_HOME/.moltchain/validators/validator-{network}.json`
+   4. Legacy: `$MOLTCHAIN_REAL_HOME/.moltchain/validators/validator-{port}.json`
+   5. Auto-generate new keypair (saved to both data_dir and shared HOME)
+
+3. **Seeds** — Searched in order: `{data_dir}/seeds.json`, `/etc/moltchain/seeds.json`, `./seeds.json` (CWD)
+
+4. **ZK verification keys** — Searched in order:
+   1. `MOLTCHAIN_ZK_*_VK_PATH` env vars (explicit absolute paths)
+   2. `$HOME/.moltchain/zk/vk_*.bin` (HOME-based, set by start script)
+   3. `{exe_dir}/zk/` or `{exe_dir}/zk-keys/` (bundled with binary)
+   4. `./zk-keys/` (CWD fallback)
+
+5. **Log directory** — Always `{data_dir}/logs/` (canonicalized at startup)
+
+### Environment Variables
+
+| Variable | Set By | Purpose |
+|---|---|---|
+| `HOME` | `moltchain-start.sh` | Overridden to `{data_dir}/home` for P2P identity isolation |
+| `MOLTCHAIN_REAL_HOME` | `moltchain-start.sh` | Preserves actual user home for shared keypair lookup |
+| `MOLTCHAIN_HOME` | systemd / scripts | Explicit P2P identity home override |
+| `MOLTCHAIN_ZK_*_VK_PATH` | `moltchain-start.sh` | Absolute paths to ZK verification keys |
+
 ---
 
 ## Full Startup Checklist
