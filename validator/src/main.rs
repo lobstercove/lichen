@@ -485,6 +485,40 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
     }
 }
 
+/// Discover companion binaries (faucet, custody, cli) installed alongside
+/// the validator.  Only returns entries for binaries that actually exist on
+/// disk — this way an agent running just the validator won't try to update
+/// services it doesn't have.
+fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let exe_dir = match exe_path.parent() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
+    let companions = [
+        ("moltchain-faucet", "moltchain-faucet"),
+        ("moltchain-custody", "moltchain-custody"),
+        ("molt-cli", "molt-cli"),
+    ];
+
+    let mut found = Vec::new();
+    for (name, filename) in &companions {
+        let path = exe_dir.join(filename);
+        if path.exists() {
+            info!(
+                "🔄 Auto-updater: companion binary found — {}",
+                path.display()
+            );
+            found.push((name.to_string(), path));
+        }
+    }
+    found
+}
+
 fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
     let moltchain_dir = runtime_home.join(".moltchain");
     moltchain_dir.join("node_cert.der").exists() && moltchain_dir.join("node_key.der").exists()
@@ -492,23 +526,39 @@ fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
 
 fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
     if let Ok(explicit_home) = env::var("MOLTCHAIN_HOME") {
-        let explicit_path = PathBuf::from(explicit_home);
+        let explicit_path = PathBuf::from(&explicit_home);
         if !explicit_path.as_os_str().is_empty() {
+            info!(
+                "🏠 Runtime home: {} (from MOLTCHAIN_HOME env)",
+                explicit_path.display()
+            );
             return explicit_path;
         }
     }
 
     let state_home = data_dir.join("home");
     if has_persistent_p2p_identity(&state_home) {
+        info!(
+            "🏠 Runtime home: {} (existing P2P identity in data dir)",
+            state_home.display()
+        );
         return state_home;
     }
 
     if let Some(user_home) = dirs::home_dir() {
         if has_persistent_p2p_identity(&user_home) {
+            info!(
+                "🏠 Runtime home: {} (existing P2P identity in user home)",
+                user_home.display()
+            );
             return user_home;
         }
     }
 
+    info!(
+        "🏠 Runtime home: {} (default — new node, no existing identity)",
+        state_home.display()
+    );
     state_home
 }
 
@@ -4548,6 +4598,8 @@ async fn run_validator() {
         channel: update_channel,
         no_auto_restart,
         jitter_max_secs: 60,
+        target_binary: "moltchain-validator".to_string(),
+        companion_binaries: discover_companion_binaries(),
     };
 
     // Spawn auto-updater background task
@@ -8109,6 +8161,7 @@ async fn run_validator() {
         let data_dir_for_snapshot_apply = data_dir.clone();
         let peer_mgr_for_snapshot_apply = p2p_pm.clone();
         let local_addr_for_snap_apply = local_addr;
+        let sync_mgr_for_snapshot = sync_manager.clone();
         tokio::spawn(async move {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
@@ -8153,7 +8206,21 @@ async fn run_validator() {
                             }
                         }
                     } else {
-                        info!("📋 Peer {} has no checkpoint available", response.requester);
+                        warn!(
+                            "📋 Peer {} has no checkpoint available — falling back to block-range sync",
+                            response.requester
+                        );
+                        // Warp sync is impossible without a checkpoint.  Complete the
+                        // current sync batch and switch to HeaderOnly so the next
+                        // should_sync() call can re-trigger with block-range requests.
+                        let current_mode = sync_mgr_for_snapshot.get_sync_mode().await;
+                        if current_mode == crate::sync::SyncMode::Warp {
+                            sync_mgr_for_snapshot
+                                .set_sync_mode(crate::sync::SyncMode::HeaderOnly)
+                                .await;
+                            sync_mgr_for_snapshot.complete_sync().await;
+                            sync_mgr_for_snapshot.record_sync_failure().await;
+                        }
                     }
                     continue;
                 }

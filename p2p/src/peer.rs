@@ -515,9 +515,18 @@ impl PeerManager {
                         ),
                         Ok(false) => info!("P2P TOFU: Peer {} identity verified", peer_addr),
                         Err(e) => {
-                            warn!("{}", e);
-                            connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
-                            return Err(e);
+                            if self.reserved_peers.contains(&peer_addr) {
+                                warn!(
+                                    "P2P TOFU: Reserved peer {} rotated certificate — auto-accepting new fingerprint",
+                                    peer_addr
+                                );
+                                self.fingerprint_store.update_fingerprint(&peer_addr, &fp);
+                            } else {
+                                warn!("{}", e);
+                                connection
+                                    .close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
+                                return Err(e);
+                            }
                         }
                     }
                     // P3-2: Register peer in Kademlia routing table using certificate fingerprint
@@ -711,6 +720,26 @@ impl PeerManager {
     /// Get all peer addresses
     pub fn get_peers(&self) -> Vec<SocketAddr> {
         self.peers.iter().map(|entry| *entry.key()).collect()
+    }
+
+    /// Clear the stored TOFU fingerprint for a specific peer, allowing it
+    /// to reconnect with a new certificate. Returns true if a fingerprint
+    /// was removed.
+    pub fn clear_peer_fingerprint(&self, addr: &SocketAddr) -> bool {
+        let removed = self.fingerprint_store.remove_fingerprint(addr);
+        if removed {
+            info!(
+                "P2P TOFU: Cleared fingerprint for {} — will re-trust on next connection",
+                addr
+            );
+        }
+        removed
+    }
+
+    /// Clear all stored TOFU fingerprints (used during network-wide reset).
+    pub fn clear_all_fingerprints(&self) {
+        self.fingerprint_store.clear_all();
+        info!("P2P TOFU: Cleared ALL fingerprints — will re-trust all peers on next connection");
     }
 
     /// P3-2: Route a message to the `count` closest peers by XOR distance
@@ -949,6 +978,7 @@ impl PeerManager {
         let max_peers = self.max_peers;
         let local_addr = self.local_addr;
         let local_fingerprint = self.local_fingerprint;
+        let reserved_peers_for_listener = self.reserved_peers.clone();
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -959,6 +989,7 @@ impl PeerManager {
                 let fingerprint_store = fingerprint_store.clone();
                 let seen_messages = seen_messages.clone();
                 let kademlia = kademlia.clone();
+                let reserved_peers_for_inbound = reserved_peers_for_listener.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -1030,9 +1061,17 @@ impl PeerManager {
                                                 peer_addr, NodeIdentity::fingerprint_hex(&fp)),
                                             Ok(false) => {},
                                             Err(e) => {
-                                                warn!("{}", e);
-                                                connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
-                                                return;
+                                                if reserved_peers_for_inbound.contains(&peer_addr) {
+                                                    warn!(
+                                                        "P2P TOFU: Reserved inbound peer {} rotated certificate — auto-accepting",
+                                                        peer_addr
+                                                    );
+                                                    fingerprint_store.update_fingerprint(&peer_addr, &fp);
+                                                } else {
+                                                    warn!("{}", e);
+                                                    connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
+                                                    return;
+                                                }
                                             }
                                         }
                                         // P3-2: Register inbound peer in Kademlia routing table
@@ -1369,7 +1408,6 @@ impl PeerFingerprintStore {
 
     /// Remove a peer's stored fingerprint to allow reconnection after legitimate
     /// certificate rotation. Returns true if the peer had a stored fingerprint.
-    #[allow(dead_code)]
     pub fn remove_fingerprint(&self, addr: &SocketAddr) -> bool {
         let addr_str = addr.to_string();
         let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
@@ -1379,6 +1417,25 @@ impl PeerFingerprintStore {
             self.save();
         }
         removed
+    }
+
+    /// Replace a peer's stored fingerprint with a new one.
+    /// Used when a reserved/seed peer legitimately rotated its certificate.
+    pub fn update_fingerprint(&self, addr: &SocketAddr, fingerprint: &[u8; 32]) {
+        let hex_fp = NodeIdentity::fingerprint_hex(fingerprint);
+        let addr_str = addr.to_string();
+        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        store.insert(addr_str, hex_fp);
+        drop(store);
+        self.save();
+    }
+
+    /// Remove all stored fingerprints (used during full network reset).
+    pub fn clear_all(&self) {
+        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        store.clear();
+        drop(store);
+        self.save();
     }
 
     fn save(&self) {

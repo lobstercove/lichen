@@ -107,6 +107,17 @@ pub struct UpdateConfig {
     pub no_auto_restart: bool,
     /// Maximum random jitter added to check interval (seconds)
     pub jitter_max_secs: u64,
+    /// Which binary to extract from the release archive.
+    /// Defaults to "moltchain-validator".  Set to "moltchain-faucet",
+    /// "molt-cli", or "moltchain-custody" for other services.
+    pub target_binary: String,
+    /// Optional list of companion binaries to also update from the same
+    /// release archive.  Each entry is a (binary_name, install_path) pair.
+    /// Example: `("moltchain-faucet", "/usr/local/bin/moltchain-faucet")`
+    /// Only updated when mode == Apply and the primary binary updates
+    /// successfully. Companion update failures are logged but don't block
+    /// the primary update.
+    pub companion_binaries: Vec<(String, PathBuf)>,
 }
 
 impl Default for UpdateConfig {
@@ -117,6 +128,8 @@ impl Default for UpdateConfig {
             channel: "stable".to_string(),
             no_auto_restart: false,
             jitter_max_secs: 60,
+            target_binary: "moltchain-validator".to_string(),
+            companion_binaries: Vec::new(),
         }
     }
 }
@@ -284,8 +297,12 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
     info!("✅ SHA256 verified for {}", platform_name);
 
     // 9. Extract binary from archive
-    extract_binary_from_archive(&archive_data, &staging_path)?;
-    info!("📦 Extracted binary to {}", staging_path.display());
+    extract_binary_from_archive(&archive_data, &staging_path, &config.target_binary)?;
+    info!(
+        "📦 Extracted {} to {}",
+        config.target_binary,
+        staging_path.display()
+    );
 
     // 10. Make executable
     #[cfg(unix)]
@@ -349,6 +366,52 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
         VERSION,
         remote_version.to_string()
     );
+
+    // 12. Update companion binaries (faucet, custody, cli) from the same archive
+    for (companion_name, install_path) in &config.companion_binaries {
+        let companion_staging = install_path.with_extension("staging");
+        match extract_binary_from_archive(&archive_data, &companion_staging, companion_name) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    if let Ok(meta) = fs::metadata(&companion_staging) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o755);
+                        let _ = fs::set_permissions(&companion_staging, perms);
+                    }
+                }
+                // Back up existing binary if present
+                if install_path.exists() {
+                    let companion_rollback = install_path.with_extension("rollback");
+                    if let Err(e) = fs::copy(install_path, &companion_rollback) {
+                        warn!(
+                            "⚠️  Failed to back up {} — skipping update: {}",
+                            companion_name, e
+                        );
+                        let _ = fs::remove_file(&companion_staging);
+                        continue;
+                    }
+                }
+                match fs::rename(&companion_staging, install_path) {
+                    Ok(()) => info!(
+                        "✅ Companion binary updated: {} at {}",
+                        companion_name,
+                        install_path.display()
+                    ),
+                    Err(e) => warn!(
+                        "⚠️  Failed to swap companion binary {}: {}",
+                        companion_name, e
+                    ),
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️  Failed to extract companion binary {} from archive: {}",
+                    companion_name, e
+                );
+            }
+        }
+    }
 
     Ok(Some(remote_version.to_string()))
 }
@@ -575,15 +638,19 @@ fn sha256_hex(data: &[u8]) -> String {
 
 // ── Archive Extraction ──────────────────────────────────────────────────────
 
-/// Extract the validator binary from a .tar.gz archive
-fn extract_binary_from_archive(archive_data: &[u8], output_path: &Path) -> Result<()> {
+/// Extract a named binary from a .tar.gz archive
+fn extract_binary_from_archive(
+    archive_data: &[u8],
+    output_path: &Path,
+    target_binary: &str,
+) -> Result<()> {
     let decoder = flate2::read::GzDecoder::new(archive_data);
     let mut archive = tar::Archive::new(decoder);
 
     let binary_name = if cfg!(target_os = "windows") {
-        "moltchain-validator.exe"
+        format!("{}.exe", target_binary)
     } else {
-        "moltchain-validator"
+        target_binary.to_string()
     };
 
     for entry_result in archive.entries()? {

@@ -159,7 +159,6 @@ deploy/
 tools/
 monitoring/
 docker-compose.yml
-Dockerfile
 .dockerignore
 
 # ── Internal docs (audits, strategy, deployment, etc.) ─────
