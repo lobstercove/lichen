@@ -45,22 +45,6 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Generate a new keypair (deprecated, use 'identity new')
-    #[command(name = "generate-keypair")]
-    GenerateKeypair {
-        /// Output file path (default: ~/.moltchain/keypairs/id.json)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Show public key from keypair file (deprecated, use 'identity show')
-    #[command(name = "pubkey")]
-    Pubkey {
-        /// Keypair file path (default: ~/.moltchain/keypairs/id.json)
-        #[arg(short, long)]
-        keypair: Option<PathBuf>,
-    },
-
     /// Check account balance
     Balance {
         /// Account address (Base58 or hex)
@@ -626,30 +610,6 @@ async fn main() -> Result<()> {
             println!("🦞 Validator keypair initialized!");
             println!("📍 Pubkey: {}", pubkey.to_base58());
             println!("💾 Saved to: {}", path.display());
-        }
-
-        Commands::GenerateKeypair { output } => {
-            let keypair = Keypair::new();
-            let pubkey = keypair.pubkey();
-
-            let path = output.unwrap_or_else(|| keypair_mgr.default_keypair_path());
-            keypair_mgr.save_keypair(&keypair, &path)?;
-
-            println!("🦞 Generated new keypair!");
-            println!("📍 Pubkey: {}", pubkey.to_base58());
-            println!("🔐 EVM Address: {}", pubkey.to_evm());
-            println!("💾 Saved to: {}", path.display());
-            println!();
-            println!("⚠️  Deprecated: Use 'molt identity new' instead");
-        }
-
-        Commands::Pubkey { keypair } => {
-            let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
-            let kp = keypair_mgr.load_keypair(&path)?;
-            let pubkey = kp.pubkey();
-
-            println!("📍 Pubkey: {}", pubkey.to_base58());
-            println!("🔐 EVM Address: {}", pubkey.to_evm());
         }
 
         Commands::Balance { address, keypair } => {
