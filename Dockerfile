@@ -61,7 +61,8 @@ RUN groupadd -r moltchain && useradd -r -g moltchain -d /home/moltchain -m moltc
 
 # Copy binaries
 COPY --from=builder /build/target/release/moltchain-validator /usr/local/bin/
-COPY --from=builder /build/target/release/molt-cli /usr/local/bin/
+COPY --from=builder /build/target/release/moltchain-genesis /usr/local/bin/
+COPY --from=builder /build/target/release/molt /usr/local/bin/
 COPY --from=builder /build/target/release/moltchain-faucet /usr/local/bin/
 COPY --from=builder /build/target/release/moltchain-custody /usr/local/bin/
 
