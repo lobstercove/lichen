@@ -107,6 +107,14 @@ enum Commands {
         /// Token decimals (e.g. 9 for MOLT-style tokens)
         #[arg(long)]
         decimals: Option<u8>,
+
+        /// Total token supply (e.g. 1000000000 for 1B tokens)
+        #[arg(long)]
+        supply: Option<u64>,
+
+        /// Additional metadata as JSON (e.g. '{"website":"https://example.com"}')
+        #[arg(long)]
+        metadata: Option<String>,
     },
 
     /// Upgrade an existing smart contract
@@ -1393,6 +1401,8 @@ async fn main() -> Result<()> {
             name,
             template,
             decimals,
+            supply,
+            metadata,
         } => {
             let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
             let deployer = keypair_mgr.load_keypair(&path)?;
@@ -1437,7 +1447,7 @@ async fn main() -> Result<()> {
 
             // Build init_data for symbol registry if any metadata flags provided
             let init_data =
-                if symbol.is_some() || name.is_some() || template.is_some() || decimals.is_some() {
+                if symbol.is_some() || name.is_some() || template.is_some() || decimals.is_some() || supply.is_some() || metadata.is_some() {
                     let mut registry = serde_json::Map::new();
                     if let Some(ref s) = symbol {
                         registry.insert("symbol".to_string(), serde_json::json!(s));
@@ -1451,6 +1461,26 @@ async fn main() -> Result<()> {
                     if let Some(d) = decimals {
                         registry.insert("decimals".to_string(), serde_json::json!(d));
                     }
+
+                    // Build metadata object — merge --supply and --metadata
+                    let mut meta = if let Some(ref m) = metadata {
+                        serde_json::from_str::<serde_json::Value>(m)
+                            .map_err(|e| anyhow::anyhow!("Invalid --metadata JSON: {}", e))?
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        serde_json::Map::new()
+                    };
+                    if let Some(s) = supply {
+                        let decs = decimals.unwrap_or(9) as u32;
+                        let total_shells = (s as u128) * 10u128.pow(decs);
+                        meta.insert("total_supply".to_string(), serde_json::json!(total_shells.to_string()));
+                    }
+                    if !meta.is_empty() {
+                        registry.insert("metadata".to_string(), serde_json::json!(meta));
+                    }
+
                     serde_json::to_vec(&registry).unwrap_or_default()
                 } else {
                     vec![]
@@ -1466,6 +1496,9 @@ async fn main() -> Result<()> {
             if let Some(ref t) = template {
                 println!("📂 Template: {}", t);
             }
+            if let Some(s) = supply {
+                println!("💎 Total supply: {} (decimals: {})", s, decimals.unwrap_or(9));
+            }
             println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
             println!();
 
@@ -1473,8 +1506,32 @@ async fn main() -> Result<()> {
                 .deploy_contract(&deployer, wasm_code, &contract_addr, init_data)
                 .await?;
 
-            println!("✅ Contract deployed!");
             println!("📝 Signature: {}", signature);
+
+            // On-chain verification: confirm the contract actually landed
+            let mut verified = false;
+            for attempt in 1..=5 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                match client.get_account_info(&contract_addr.to_base58()).await {
+                    Ok(info) => {
+                        if info.is_executable {
+                            verified = true;
+                            break;
+                        }
+                    }
+                    Err(_) if attempt < 5 => continue,
+                    Err(_) => break,
+                }
+            }
+
+            if verified {
+                println!("✅ Contract deployed and verified on-chain!");
+            } else {
+                println!("⚠️  Transaction submitted but contract not yet confirmed on-chain.");
+                println!("   The transaction may still be processing. Check with:");
+                println!("   molt balance --keypair <keypair> (to see if deploy fee was deducted)");
+                println!("   Or check the explorer: https://explorer.moltchain.network/address/{}", contract_addr.to_base58());
+            }
             println!("🔗 Address: {}", contract_addr.to_base58());
             if symbol.is_some() {
                 println!("🏷️  Symbol registered in symbol registry");

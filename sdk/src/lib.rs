@@ -438,6 +438,39 @@ pub use alloc::string::String;
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
+/// Compute Poseidon hash of two 32-byte field elements.
+/// Returns the 32-byte hash result (BN254 Fr, little-endian).
+/// Uses the same Poseidon config as the on-chain ZK circuits.
+pub fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn host_poseidon_hash(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32;
+        }
+        let mut out = [0u8; 32];
+        let rc = unsafe {
+            host_poseidon_hash(
+                left.as_ptr() as u32,
+                right.as_ptr() as u32,
+                out.as_mut_ptr() as u32,
+            )
+        };
+        if rc != 0 {
+            core::arch::wasm32::unreachable();
+        }
+        out
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Off-chain stub: return simple XOR hash for testing
+        let mut out = [0u8; 32];
+        for i in 0..32 {
+            out[i] = left[i] ^ right[i];
+        }
+        out
+    }
+}
+
 // Function re-exports
 pub use contract::{args as get_args, set_return as set_return_data};
 pub use event::emit as emit_event;

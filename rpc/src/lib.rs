@@ -6383,6 +6383,21 @@ async fn handle_get_contract_info(
                         tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                     }
                 }
+                // Fallback: if supply not found in storage, check registry metadata
+                if !tmeta.contains_key("total_supply") {
+                    if let Some(ref meta) = entry.metadata {
+                        if let Some(v) = meta.get("total_supply") {
+                            // Accept both number and string representation
+                            if let Some(n) = v.as_u64() {
+                                tmeta.insert("total_supply".to_string(), serde_json::json!(n));
+                            } else if let Some(s) = v.as_str() {
+                                if let Ok(n) = s.parse::<u64>() {
+                                    tmeta.insert("total_supply".to_string(), serde_json::json!(n));
+                                }
+                            }
+                        }
+                    }
+                }
                 // Pull name/symbol/decimals from registry metadata
                 if let Some(ref meta) = entry.metadata {
                     if let Some(v) = meta.get("decimals") {
