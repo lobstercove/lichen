@@ -53,7 +53,7 @@ USAGE:
 OPTIONS:
     --network <testnet|mainnet>    Network (default: testnet)
     --home <PATH>                  Seed node home directory (default: ~/.moltchain-seed)
-    --domain <DOMAIN>              Public domain name (e.g., seed1.moltchain.io)
+    --domain <DOMAIN>              Public domain name (e.g., seed1.moltchain.network)
     --public-ip <IP>               Public IP address (auto-detected if not provided)
     --p2p-port <PORT>              P2P port (default: 7001)
     --rpc-port <PORT>              RPC port (default: 8899)
@@ -64,10 +64,10 @@ OPTIONS:
 
 EXAMPLES:
     # Basic seed node
-    $0 --network testnet --domain seed1.testnet.moltchain.io
+    $0 --network testnet --domain seed1.testnet.moltchain.network
 
     # Production seed with monitoring
-    $0 --network mainnet --domain seed1.moltchain.io --enable-public-rpc --install-service
+    $0 --network mainnet --domain seed1.moltchain.network --enable-public-rpc --install-service
 
 EOF
     exit 0

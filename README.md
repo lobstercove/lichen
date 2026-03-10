@@ -7,7 +7,7 @@ Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDK
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated and published at tag `v0.2.2`.
+**Release-ready status:** main validated and published at tag `v0.2.5`.
 
 **Website:** https://moltchain.network  
 **Documentation:** https://developers.moltchain.network  
@@ -399,7 +399,7 @@ molt deploy --program ./target/wasm32-unknown-unknown/release/counter.wasm
 - **ReefStake** — Liquid staking
 
 ### Multi-Chain Bridges
-Native bridge support for Solana and Ethereum assets (wSOL, wETH, wUSDC). Dual address format — Base58 *and* 0x hex on the same account.
+Native bridge support for Solana, Ethereum and BNB Chain assets (wSOL, wETH, wBNB). Dual address format — Base58 *and* 0x hex on the same account.
 
 ---
 

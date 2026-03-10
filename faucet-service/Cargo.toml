@@ -3,7 +3,7 @@ name = "moltchain-faucet"
 version = "1.0.0"
 edition = "2021"
 
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
+authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
 description = "MoltChain faucet service"
 
 [dependencies]
