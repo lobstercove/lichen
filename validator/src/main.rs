@@ -387,12 +387,12 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
 
 fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Path) {
     // ZK keys are cached in a shared location (~/.moltchain/zk/) so they
-    // survive blockchain resets.  The Groth16 trusted setup for 3 circuits
-    // (shield, unshield, transfer with TREE_DEPTH=20) completes in ~10s on
-    // first run via the standalone `zk-setup` binary, then is skipped on
-    // all subsequent starts.
+    // survive blockchain resets.  Release tarballs ship pre-generated keys
+    // in a `zk/` directory next to the binary — those are copied into the
+    // shared cache on first run so the expensive Groth16 setup never needs
+    // to happen on the operator's machine.
     //
-    // Priority: env vars > ~/.moltchain/zk/ (shared cache)
+    // Priority: env vars > ~/.moltchain/zk/ (shared cache) > bundled (next to exe) > auto-generate
     let shared_zk_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".moltchain")
@@ -411,12 +411,47 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
         .map(PathBuf::from)
         .unwrap_or_else(|| shared_zk_dir.join("vk_transfer.bin"));
 
-    // Auto-generate ZK keys if missing.  The Groth16 trusted setup for 3
-    // circuits completes in ~30s total (~300MB peak per circuit) and only
-    // runs once — keys are cached in ~/.moltchain/zk/ across restarts/resets.
+    // If keys are missing from the shared cache, check for bundled keys
+    // shipped alongside the binary in the release tarball (zk/ subdirectory
+    // next to the executable).  Copy them into the shared cache so all
+    // future starts find them immediately.
+    if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
+        if let Ok(exe_path) = env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let bundled_zk = exe_dir.join("zk");
+                if bundled_zk.is_dir() {
+                    info!(
+                        "🔑 Installing bundled ZK keys from {} → {}",
+                        bundled_zk.display(),
+                        shared_zk_dir.display()
+                    );
+                    if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
+                        warn!(
+                            "⚠️  Failed creating ZK directory {}: {}",
+                            shared_zk_dir.display(),
+                            e
+                        );
+                    } else if let Ok(entries) = fs::read_dir(&bundled_zk) {
+                        for entry in entries.flatten() {
+                            let dest = shared_zk_dir.join(entry.file_name());
+                            if let Err(e) = fs::copy(entry.path(), &dest) {
+                                warn!("⚠️  Failed copying {}: {}", entry.path().display(), e);
+                            }
+                        }
+                        info!("✅ ZK keys installed to {}", shared_zk_dir.display());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: auto-generate ZK keys if still missing.  The Groth16 trusted
+    // setup for 3 circuits (TREE_DEPTH=20) takes ~5-10 minutes and peaks at
+    // ~500MB RAM per circuit.  This only runs when bundled keys are unavailable
+    // (e.g. building from source).  Keys are cached in ~/.moltchain/zk/.
     if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
         info!(
-            "🔑 ZK verification keys not found at {} — running trusted setup (one-time, ~30s)...",
+            "🔑 ZK verification keys not found at {} — running trusted setup (one-time, may take several minutes)...",
             shared_zk_dir.display()
         );
         if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
