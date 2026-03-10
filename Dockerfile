@@ -65,6 +65,7 @@ COPY --from=builder /build/target/release/moltchain-genesis /usr/local/bin/
 COPY --from=builder /build/target/release/molt /usr/local/bin/
 COPY --from=builder /build/target/release/moltchain-faucet /usr/local/bin/
 COPY --from=builder /build/target/release/moltchain-custody /usr/local/bin/
+COPY --from=builder /build/target/release/zk-setup /usr/local/bin/
 
 # Copy default config
 COPY config.toml /etc/moltchain/config.toml
