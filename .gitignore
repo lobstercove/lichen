@@ -37,7 +37,7 @@ validator-*.json
 signer-keypair.json
 known-peers.json
 # NOTE: seeds.json is TRACKED — it contains only public IPs needed for bootstrap
-config.toml
+# NOTE: config.toml is TRACKED — it's a default template (no secrets), needed by Docker build
 airdrops.json
 release-signing-keypair.json
 faucet-keypair.json
