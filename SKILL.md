@@ -1468,6 +1468,8 @@ Binary: **`molt`**. Global: `--rpc-url` (default `http://localhost:8899`).
 molt balance [address]                       # Check balance
 molt transfer <to> <amount>                  # Transfer MOLT
 molt deploy <contract.wasm>                  # Deploy WASM contract
+                                                 # flags: --symbol, --name, --template,
+                                                 #   --decimals, --supply, --metadata (JSON)
 molt upgrade <address> <contract.wasm>       # Upgrade contract
 molt call <contract> <function> --args '[...]'  # Call contract function
 molt block <slot>                            # Get block info
@@ -2041,10 +2043,14 @@ See `docs/guides/CONTRACT_DEVELOPMENT.md` for the complete guide.
 |---------|-------------|-----|
 | `molt deploy contract.wasm` | Deploy WASM contract (no symbol registration) | 25.001 MOLT |
 | `molt deploy wasm --symbol X --name Y --template token` | Deploy + auto-register in symbol registry | 25.001 MOLT |
+| `molt deploy wasm --symbol X --supply 1000000 --decimals 9` | Deploy + register with initial total supply | 25.001 MOLT |
+| `molt deploy wasm --metadata '{"website":"...","logo":"..."}'` | Deploy with custom metadata JSON | 25.001 MOLT |
 | `molt token create "Name" SYM --wasm token.wasm` | Deploy token WASM + register with template="token" | 25.001 MOLT |
 | `molt contract register <addr> --symbol X` | Retroactively register deployed contract in symbol registry | 0.001 MOLT |
 
 All tokens on MoltChain are WASM contracts. Use `molt deploy --symbol` or `molt token create --wasm` to deploy and register in one step. Use `molt contract register` to fix contracts deployed without symbol metadata.
+
+`--supply <amount>` sets initial total supply (in whole tokens, auto-converted to shells via decimals). `--metadata <json>` attaches arbitrary metadata to the symbol registry entry. After deploy, the CLI automatically verifies the contract is live on-chain by polling `getAccountInfo`.
 
 ### Contract Function Convention
 
@@ -2073,6 +2079,7 @@ If deployment fails (invalid WASM, duplicate address, etc.), the 25 MOLT deploy 
 | `nft` | `NFT::new(name, symbol)` — MT-721 |
 | `crosscall` | `CrossCall::new(target, fn, args)`, `call_contract(call)` |
 | `dex` | `Pool::new(token_a, token_b)` — AMM |
+| `crypto` | `poseidon_hash(left: &[u8;32], right: &[u8;32]) -> [u8;32]` — BN254 Poseidon |
 | `test_mock` | Thread-local mocks for native testing |
 
 ### Quick Start
@@ -2089,7 +2096,8 @@ cargo test
 
 # Deploy with symbol registration (need 25.001 MOLT)
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
-  --symbol MYTK --name "My Token" --template token --decimals 9
+  --symbol MYTK --name "My Token" --template token --decimals 9 \
+  --supply 1000000 --metadata '{"website":"https://example.com"}'
 
 # Or deploy without registration
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm

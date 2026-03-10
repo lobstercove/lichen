@@ -1446,45 +1446,53 @@ async fn main() -> Result<()> {
             let contract_addr = moltchain_core::Pubkey(addr_bytes);
 
             // Build init_data for symbol registry if any metadata flags provided
-            let init_data =
-                if symbol.is_some() || name.is_some() || template.is_some() || decimals.is_some() || supply.is_some() || metadata.is_some() {
-                    let mut registry = serde_json::Map::new();
-                    if let Some(ref s) = symbol {
-                        registry.insert("symbol".to_string(), serde_json::json!(s));
-                    }
-                    if let Some(ref n) = name {
-                        registry.insert("name".to_string(), serde_json::json!(n));
-                    }
-                    if let Some(ref t) = template {
-                        registry.insert("template".to_string(), serde_json::json!(t));
-                    }
-                    if let Some(d) = decimals {
-                        registry.insert("decimals".to_string(), serde_json::json!(d));
-                    }
+            let init_data = if symbol.is_some()
+                || name.is_some()
+                || template.is_some()
+                || decimals.is_some()
+                || supply.is_some()
+                || metadata.is_some()
+            {
+                let mut registry = serde_json::Map::new();
+                if let Some(ref s) = symbol {
+                    registry.insert("symbol".to_string(), serde_json::json!(s));
+                }
+                if let Some(ref n) = name {
+                    registry.insert("name".to_string(), serde_json::json!(n));
+                }
+                if let Some(ref t) = template {
+                    registry.insert("template".to_string(), serde_json::json!(t));
+                }
+                if let Some(d) = decimals {
+                    registry.insert("decimals".to_string(), serde_json::json!(d));
+                }
 
-                    // Build metadata object — merge --supply and --metadata
-                    let mut meta = if let Some(ref m) = metadata {
-                        serde_json::from_str::<serde_json::Value>(m)
-                            .map_err(|e| anyhow::anyhow!("Invalid --metadata JSON: {}", e))?
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default()
-                    } else {
-                        serde_json::Map::new()
-                    };
-                    if let Some(s) = supply {
-                        let decs = decimals.unwrap_or(9) as u32;
-                        let total_shells = (s as u128) * 10u128.pow(decs);
-                        meta.insert("total_supply".to_string(), serde_json::json!(total_shells.to_string()));
-                    }
-                    if !meta.is_empty() {
-                        registry.insert("metadata".to_string(), serde_json::json!(meta));
-                    }
-
-                    serde_json::to_vec(&registry).unwrap_or_default()
+                // Build metadata object — merge --supply and --metadata
+                let mut meta = if let Some(ref m) = metadata {
+                    serde_json::from_str::<serde_json::Value>(m)
+                        .map_err(|e| anyhow::anyhow!("Invalid --metadata JSON: {}", e))?
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default()
                 } else {
-                    vec![]
+                    serde_json::Map::new()
                 };
+                if let Some(s) = supply {
+                    let decs = decimals.unwrap_or(9) as u32;
+                    let total_shells = (s as u128) * 10u128.pow(decs);
+                    meta.insert(
+                        "total_supply".to_string(),
+                        serde_json::json!(total_shells.to_string()),
+                    );
+                }
+                if !meta.is_empty() {
+                    registry.insert("metadata".to_string(), serde_json::json!(meta));
+                }
+
+                serde_json::to_vec(&registry).unwrap_or_default()
+            } else {
+                vec![]
+            };
 
             println!("🦞 Deploying contract: {}", contract.display());
             println!("📦 Size: {} KB", wasm_code.len() / 1024);
@@ -1497,7 +1505,11 @@ async fn main() -> Result<()> {
                 println!("📂 Template: {}", t);
             }
             if let Some(s) = supply {
-                println!("💎 Total supply: {} (decimals: {})", s, decimals.unwrap_or(9));
+                println!(
+                    "💎 Total supply: {} (decimals: {})",
+                    s,
+                    decimals.unwrap_or(9)
+                );
             }
             println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
             println!();
@@ -1530,7 +1542,10 @@ async fn main() -> Result<()> {
                 println!("⚠️  Transaction submitted but contract not yet confirmed on-chain.");
                 println!("   The transaction may still be processing. Check with:");
                 println!("   molt balance --keypair <keypair> (to see if deploy fee was deducted)");
-                println!("   Or check the explorer: https://explorer.moltchain.network/address/{}", contract_addr.to_base58());
+                println!(
+                    "   Or check the explorer: https://explorer.moltchain.network/address/{}",
+                    contract_addr.to_base58()
+                );
             }
             println!("🔗 Address: {}", contract_addr.to_base58());
             if symbol.is_some() {

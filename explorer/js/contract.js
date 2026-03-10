@@ -38,11 +38,11 @@ const TEMPLATE_FA_ICON = {
 };
 
 const CATEGORY_BADGE = {
-    token:   '<span class="badge-category success"><i class="fas fa-coins"></i> MT-20 Token</span>',
+    token: '<span class="badge-category success"><i class="fas fa-coins"></i> MT-20 Token</span>',
     wrapped: '<span class="badge-category warning"><i class="fas fa-link"></i> Wrapped Token</span>',
-    dex:     '<span class="badge-category info"><i class="fas fa-exchange-alt"></i> DEX</span>',
-    defi:    '<span class="badge-category warning"><i class="fas fa-chart-bar"></i> DeFi</span>',
-    infra:   '<span class="badge-category accent"><i class="fas fa-cogs"></i> Infrastructure</span>',
+    dex: '<span class="badge-category info"><i class="fas fa-exchange-alt"></i> DEX</span>',
+    defi: '<span class="badge-category warning"><i class="fas fa-chart-bar"></i> DeFi</span>',
+    infra: '<span class="badge-category accent"><i class="fas fa-cogs"></i> Infrastructure</span>',
 };
 
 const CATEGORY_ICON_CLASS = {
@@ -58,7 +58,7 @@ function copyAddress() {
     if (!contractAddress) return;
     navigator.clipboard.writeText(contractAddress).then(() => {
         if (typeof showToast === 'function') showToast('Address copied!');
-    }).catch(() => {});
+    }).catch(() => { });
 }
 
 // ── Tab switching ────────────────────────────────────────────────
@@ -169,13 +169,13 @@ async function loadContract() {
     // Determine template/category
     const template = registry?.template || (abi?.template && abi.template !== 'unknown' ? abi.template : '') || '';
     const category = TEMPLATE_CATEGORY[template] || 'infra';
-    const faIcon   = TEMPLATE_FA_ICON[template] || 'fa-file-code';
+    const faIcon = TEMPLATE_FA_ICON[template] || 'fa-file-code';
 
     // Header — registry name takes priority over ABI name (ABI defaults to "unknown")
     const abiName = (abi?.name && abi.name !== 'unknown') ? abi.name : '';
-    const name    = registry?.name || abiName || '';
-    const symbol  = registry?.symbol || '';
-    const title   = name ? name + (symbol ? ' (' + symbol + ')' : '') : (symbol || formatHash(contractAddress));
+    const name = registry?.name || abiName || '';
+    const symbol = registry?.symbol || '';
+    const title = name ? name + (symbol ? ' (' + symbol + ')' : '') : (symbol || formatHash(contractAddress));
 
     // Set icon (Font Awesome only)
     const iconBox = document.getElementById('contractIconBox');
@@ -253,7 +253,7 @@ async function loadContract() {
                 if (metrics?.total_accounts !== undefined) {
                     document.getElementById('tokenHolders').textContent = formatNumber(metrics.total_accounts);
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
 
         if (supply !== null && supply !== undefined) {
@@ -269,12 +269,12 @@ async function loadContract() {
 
         document.getElementById('tokenMintable').innerHTML =
             mintable === true ? '<span style="color:#4caf50;"><i class="fas fa-check"></i> Yes</span>'
-            : mintable === false ? '<span style="color:var(--text-muted);"><i class="fas fa-times"></i> No</span>'
-            : '<span style="color:var(--text-muted);">--</span>';
+                : mintable === false ? '<span style="color:var(--text-muted);"><i class="fas fa-times"></i> No</span>'
+                    : '<span style="color:var(--text-muted);">--</span>';
         document.getElementById('tokenBurnable').innerHTML =
             burnable === true ? '<span style="color:#4caf50;"><i class="fas fa-check"></i> Yes</span>'
-            : burnable === false ? '<span style="color:var(--text-muted);"><i class="fas fa-times"></i> No</span>'
-            : '<span style="color:var(--text-muted);">--</span>';
+                : burnable === false ? '<span style="color:var(--text-muted);"><i class="fas fa-times"></i> No</span>'
+                    : '<span style="color:var(--text-muted);">--</span>';
 
         // Token holders (non-native tokens: use getTokenHolders RPC)
         if (!isNative) {
@@ -283,7 +283,7 @@ async function loadContract() {
                 if (holders?.count !== undefined) {
                     document.getElementById('tokenHolders').textContent = formatNumber(holders.count);
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
     }
 
@@ -347,7 +347,7 @@ async function loadContract() {
                 return '<div class="token-stat">' +
                     '<div class="label">' + displayKey + '</div>' +
                     '<div class="value">' + displayVal + '</div>' +
-                '</div>';
+                    '</div>';
             }).join('');
         }
     }
@@ -370,8 +370,8 @@ function renderAbi(abi) {
     }
 
     // Heuristic: functions that are read-only (no state mutation)
-    const VIEW_FN = new Set(['balance_of','total_supply','allowance','name','symbol','decimals','owner','supply','uri','token_uri','metadata','nonce']);
-    const VIEW_PREFIX = ['get_','is_','has_','can_','check_','query_','view_','read_','count_','list_'];
+    const VIEW_FN = new Set(['balance_of', 'total_supply', 'allowance', 'name', 'symbol', 'decimals', 'owner', 'supply', 'uri', 'token_uri', 'metadata', 'nonce']);
+    const VIEW_PREFIX = ['get_', 'is_', 'has_', 'can_', 'check_', 'query_', 'view_', 'read_', 'count_', 'list_'];
     function isViewFn(name) {
         if (VIEW_FN.has(name)) return true;
         return VIEW_PREFIX.some(p => name.startsWith(p));
@@ -396,14 +396,14 @@ function renderAbi(abi) {
             '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + params + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + returns + '</td>' +
             '<td>' + readOnly + '</td>' +
-        '</tr>';
+            '</tr>';
     }).join('');
 
     if (abi.events && abi.events.length > 0) {
         const evtRow = '<tr style="border-top:2px solid var(--border);"><td colspan="4" style="color:var(--text-muted);font-size:0.85rem;padding-top:1rem;">' +
             '<i class="fas fa-bell" style="color:var(--accent);"></i> ' + abi.events.length + ' event' + (abi.events.length > 1 ? 's' : '') + ' defined: ' +
             abi.events.map(e => '<span style="color:var(--text-primary);font-weight:500;">' + escapeHtml(e.name) + '</span>').join(', ') +
-        '</td></tr>';
+            '</td></tr>';
         tbody.innerHTML += evtRow;
     }
 }
@@ -455,7 +455,7 @@ async function loadStoragePage(offset) {
                 '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + keyDisplay + '</td>' +
                 '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;" title="' + escapeHtml(entry.value_hex || entry.value || '') + '">' + escapeHtml(valPreview) + '</td>' +
                 '<td>' + size + '</td>' +
-            '</tr>';
+                '</tr>';
         }).join('');
 
         updateStoragePagination();
@@ -488,8 +488,8 @@ function updateStoragePagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + currentPage + ' of ' + totalPages + ' (' + storageTotal + ' entries)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" data-page-action="prev" data-offset="' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + '"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" data-page-action="next" data-offset="' + (storageOffset + STORAGE_PAGE_SIZE) + '"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="prev" data-offset="' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + '"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="next" data-offset="' + (storageOffset + STORAGE_PAGE_SIZE) + '"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
 
     if (!paginationEl.dataset.bound) {
@@ -551,7 +551,7 @@ function renderCallsPage() {
             '<td style="font-family:\'JetBrains Mono\',monospace;font-weight:600;">' + fn_name + '</td>' +
             '<td>' + fee + '</td>' +
             '<td>' + status + '</td>' +
-        '</tr>';
+            '</tr>';
     }).join('');
 
     updateCallsPagination();
@@ -579,8 +579,8 @@ function updateCallsPagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + callsPage + ' of ' + totalPages + ' (' + allCalls.length + ' calls)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (callsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" data-page-action="next"' + (callsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (callsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="next"' + (callsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
 
     if (!paginationEl.dataset.bound) {
@@ -632,7 +632,7 @@ function renderEventsPage() {
             '<td>' + slot + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-weight:600;color:var(--text-primary);">' + name + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(dataDisplay) + '</td>' +
-        '</tr>';
+            '</tr>';
     }).join('');
 
     updateEventsPagination();
@@ -660,8 +660,8 @@ function updateEventsPagination() {
     paginationEl.innerHTML =
         '<span class="pagination-info">Page ' + eventsPage + ' of ' + totalPages + ' (' + allEvents.length + ' events)</span>' +
         '<div class="pagination-btns">' +
-            '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (eventsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
-            '<button class="btn btn-secondary btn-small" data-page-action="next"' + (eventsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="prev"' + (eventsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+        '<button class="btn btn-secondary btn-small" data-page-action="next"' + (eventsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
         '</div>';
 
     if (!paginationEl.dataset.bound) {
