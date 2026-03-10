@@ -2112,10 +2112,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_subnet_limit_in_connect_peer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-subnet-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
-            .await
-            .unwrap();
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
 
         // Manually insert MAX_PEERS_PER_SUBNET peers from the same /24
         for i in 0..PeerManager::MAX_PEERS_PER_SUBNET {
@@ -2166,10 +2180,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_fastest_peers_sorting() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-fastest-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
-            .await
-            .unwrap();
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
 
         let fast: SocketAddr = "10.0.0.1:7001".parse().unwrap();
         let medium: SocketAddr = "10.0.1.1:7001".parse().unwrap();
@@ -2217,10 +2245,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_bandwidth_stats() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-bw-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
-            .await
-            .unwrap();
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
 
         let addr: SocketAddr = "10.0.0.1:7001".parse().unwrap();
         mgr.peers.insert(addr, PeerInfo::new(addr));
@@ -2246,10 +2288,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_bandwidth_stats_unknown_peer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-bw-unk-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let (tx, _rx) = mpsc::channel(100);
-        let mgr = PeerManager::new("127.0.0.1:0".parse().unwrap(), tx, None, None, 50, vec![])
-            .await
-            .unwrap();
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
 
         let stats = mgr.bandwidth_stats(&"10.0.0.1:7001".parse().unwrap());
         assert!(stats.is_none());
