@@ -106,12 +106,12 @@ class MoltChainRPC {
     constructor(url) {
         this.url = url;
     }
-    
+
     async call(method, params = []) {
         try {
             const response = await fetch(this.url, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     jsonrpc: '2.0',
                     id: 1,
@@ -130,7 +130,7 @@ class MoltChainRPC {
             return null;
         }
     }
-    
+
     async getValidators() { return this.call('getValidators'); }
     async getSlot() { return this.call('getSlot'); }
     async getMetrics() { return this.call('getMetrics'); }
@@ -240,7 +240,7 @@ function getWsEndpoint() {
 
 function connectWebsiteWS() {
     if (websiteWs) {
-        try { websiteWs.close(); } catch(e) {}
+        try { websiteWs.close(); } catch (e) { }
     }
     clearTimeout(websiteWsReconnectTimer);
 
@@ -264,7 +264,7 @@ function connectWebsiteWS() {
                     const blockEl = document.getElementById('stat-block');
                     if (blockEl) blockEl.textContent = formatNumber(slot);
                 }
-            } catch(e) {}
+            } catch (e) { }
         };
 
         websiteWs.onclose = () => {
@@ -275,7 +275,7 @@ function connectWebsiteWS() {
         websiteWs.onerror = () => {
             websiteWs.close();
         };
-    } catch(e) {
+    } catch (e) {
         console.error('[WS] Connection failed:', e);
         websiteWsReconnectTimer = setTimeout(connectWebsiteWS, 5000);
     }
@@ -299,7 +299,7 @@ function extractSlotFromWsMessage(data) {
 function disconnectWebsiteWS() {
     clearTimeout(websiteWsReconnectTimer);
     if (websiteWs) {
-        try { websiteWs.close(); } catch(e) {}
+        try { websiteWs.close(); } catch (e) { }
         websiteWs = null;
     }
 }
@@ -371,7 +371,7 @@ document.querySelectorAll('.section, .feature-card, .vision-card, .comparison-ca
 function setupApiTabs() {
     const apiTabs = document.querySelectorAll('.api-tab');
     const apiCategories = document.querySelectorAll('.api-category');
-    
+
     if (apiTabs.length === 0) return;
 
     apiTabs.forEach(tab => {
@@ -383,11 +383,11 @@ function setupApiTabs() {
     apiCategories.forEach(panel => {
         panel.hidden = !panel.classList.contains('active');
     });
-    
+
     apiTabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const category = tab.dataset.category;
-            
+
             // Remove active from all tabs and categories
             apiTabs.forEach(t => {
                 t.classList.remove('active');
@@ -398,12 +398,12 @@ function setupApiTabs() {
                 c.classList.remove('active');
                 c.hidden = true;
             });
-            
+
             // Add active to clicked tab
             tab.classList.add('active');
             tab.setAttribute('aria-selected', 'true');
             tab.tabIndex = 0;
-            
+
             // Show corresponding category
             const targetCategory = document.querySelector(`.api-category[data-category="${category}"]`);
             if (targetCategory) {
@@ -418,20 +418,20 @@ function setupApiTabs() {
 function setupWizardTabs() {
     const wizardTabs = document.querySelectorAll('.wizard-tab');
     const wizardSteps = document.querySelectorAll('.wizard-step');
-    
+
     if (wizardTabs.length === 0) return;
-    
+
     wizardTabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const step = tab.dataset.step;
-            
+
             // Remove active from all tabs and steps
             wizardTabs.forEach(t => t.classList.remove('active'));
             wizardSteps.forEach(s => s.classList.remove('active'));
-            
+
             // Add active to clicked tab
             tab.classList.add('active');
-            
+
             // Show corresponding step
             const targetStep = document.querySelector(`.wizard-step[data-step="${step}"]`);
             if (targetStep) {
@@ -447,16 +447,16 @@ document.addEventListener('DOMContentLoaded', () => {
     MOLT_CONFIG.initNetworkSelector('websiteNetworkSelect', 'moltchain_website_network', (network) => {
         switchNetwork(network);
     });
-    
+
     // Initial stats update
     updateStats();
-    
+
     // Update stats every 5 seconds (polling fallback)
     setInterval(updateStats, 5000);
 
     // Connect WebSocket for live block updates
     connectWebsiteWS();
-    
+
     // Add fade-in animation to hero
     setTimeout(() => {
         const heroContent = document.querySelector('.hero-content');
@@ -464,10 +464,10 @@ document.addEventListener('DOMContentLoaded', () => {
             heroContent.classList.add('visible');
         }
     }, 100);
-    
+
     // Setup API tabs
     setupApiTabs();
-    
+
     // Setup Wizard tabs
     setupWizardTabs();
 });
@@ -478,12 +478,12 @@ let ticking = false;
 function updateParallax() {
     const scrolled = window.pageYOffset;
     const parallax = document.querySelector('.hero-background');
-    
+
     if (parallax) {
         const yPos = -(scrolled * 0.5);
         parallax.style.transform = `translate3d(0, ${yPos}px, 0)`;
     }
-    
+
     ticking = false;
 }
 

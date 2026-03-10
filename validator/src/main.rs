@@ -5447,6 +5447,66 @@ async fn run_validator() {
         }
     }
 
+    // ── Ghost validator purge ──
+    // Remove validators that have NEVER produced a block and were never active.
+    // These are artifacts from keypair changes, duplicate identities, or stale
+    // bootstrap entries. Return their bootstrap grants to the treasury.
+    {
+        let current_slot = state.get_last_slot().unwrap_or(0);
+        // Only purge after the initial bootstrap window (first 100 slots)
+        if current_slot > 100 {
+            let mut vs = validator_set.write().await;
+            let ghost_pubkeys: Vec<Pubkey> = vs
+                .validators()
+                .iter()
+                .filter(|v| {
+                    v.pubkey != validator_pubkey
+                        && v.blocks_proposed == 0
+                        && v.last_active_slot == 0
+                })
+                .map(|v| v.pubkey)
+                .collect();
+
+            for ghost_pk in &ghost_pubkeys {
+                vs.remove_validator(ghost_pk);
+                info!(
+                    "🧹 Purged ghost validator {} (never active, 0 blocks)",
+                    ghost_pk.to_base58()
+                );
+
+                // Return bootstrap grant to treasury if the ghost received one
+                if let Ok(Some(ghost_account)) = state.get_account(ghost_pk) {
+                    if ghost_account.staked > 0 {
+                        if let Ok(Some(tpk)) = state.get_treasury_pubkey() {
+                            if let Ok(Some(mut treasury)) = state.get_account(&tpk) {
+                                treasury.add_spendable(ghost_account.staked).ok();
+                                if let Err(e) = state.put_account(&tpk, &treasury) {
+                                    warn!("⚠️  Failed to return bootstrap grant to treasury: {e}");
+                                } else {
+                                    info!(
+                                        "💰 Returned {} MOLT bootstrap grant to treasury from ghost {}",
+                                        ghost_account.staked / 1_000_000_000,
+                                        ghost_pk.to_base58()
+                                    );
+                                }
+                            }
+                        }
+                        // Zero out the ghost's account
+                        let zeroed = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+                        state.put_account(ghost_pk, &zeroed).ok();
+                    }
+                }
+            }
+
+            if !ghost_pubkeys.is_empty() {
+                info!(
+                    "🧹 Purged {} ghost validator(s) on startup",
+                    ghost_pubkeys.len()
+                );
+            }
+        }
+    }
+
     // Save validator set to RocksDB on EVERY boot.
     // clear_all_validators() inside save_validator_set removes ghost entries from old
     // keypairs while preserving reputation/metrics for current validators via the
@@ -7363,6 +7423,27 @@ async fn run_validator() {
                         continue;
                     }
 
+                    // Pre-check: reject if machine fingerprint is already registered
+                    // to a different pubkey (prevents ghost creation from keypair changes)
+                    if announcement.machine_fingerprint != [0u8; 32] {
+                        let pool = stake_pool_for_announce.read().await;
+                        if let Some(existing_pk) =
+                            pool.fingerprint_owner(&announcement.machine_fingerprint)
+                        {
+                            if existing_pk != &announcement.pubkey {
+                                warn!(
+                                    "⚠️  Rejecting new validator {} — machine fingerprint already belongs to {}",
+                                    announcement.pubkey.to_base58(),
+                                    existing_pk.to_base58()
+                                );
+                                drop(pool);
+                                drop(vs);
+                                continue;
+                            }
+                        }
+                        drop(pool);
+                    }
+
                     // 1.5a: Defense-in-depth — re-verify announcement signature
                     //        New validator admissions require a version-bound signature.
                     if !verify_validator_announcement_signature(
@@ -9046,16 +9127,19 @@ async fn run_validator() {
     });
 
     // ── Stale validator cleanup ──
-    // Every 60 seconds, remove validators that haven't been active for 50+ epochs.
-    // This cleans up ghost validators from identity changes, crashed nodes, etc.
+    // Two-tier cleanup:
+    //   1. Never-active ghosts (0 blocks, 0 activity): removed after 500 slots
+    //   2. Previously-active validators: removed after 50 epochs of inactivity
     {
         let vs_for_cleanup = validator_set.clone();
         let state_for_vs_cleanup = state.clone();
         let own_pubkey = validator_pubkey;
         tokio::spawn(async move {
-            // Stale threshold: 50 epochs of inactivity (50 * SLOTS_PER_EPOCH slots)
+            // Tier 2: Long-term stale threshold (50 epochs)
             const STALE_EPOCH_THRESHOLD: u64 = 50;
             let stale_slot_threshold = STALE_EPOCH_THRESHOLD * SLOTS_PER_EPOCH;
+            // Tier 1: Never-active ghost threshold (500 slots ≈ 200 seconds)
+            const GHOST_SLOT_THRESHOLD: u64 = 500;
 
             let mut interval = time::interval(Duration::from_secs(60));
             loop {
@@ -9069,18 +9153,26 @@ async fn run_validator() {
 
                 let mut vs = vs_for_cleanup.write().await;
                 let stale_cutoff = current_slot.saturating_sub(stale_slot_threshold);
+                let ghost_cutoff = current_slot.saturating_sub(GHOST_SLOT_THRESHOLD);
 
                 // Find stale validators (never remove ourselves)
                 let stale: Vec<Pubkey> = vs
                     .validators()
                     .iter()
                     .filter(|v| {
-                        v.pubkey != own_pubkey
-                            && v.last_active_slot < stale_cutoff
-                            && v.blocks_proposed == 0  // never proposed a block
-                            // AUDIT-FIX M2: Don't prune validators that joined recently.
-                            // A validator that joined but hasn't been selected as leader
-                            // shouldn't be removed just because blocks_proposed == 0.
+                        if v.pubkey == own_pubkey {
+                            return false;
+                        }
+                        // Tier 1: Never-active ghost — fast cleanup
+                        if v.blocks_proposed == 0
+                            && v.last_active_slot == 0
+                            && v.joined_slot < ghost_cutoff
+                        {
+                            return true;
+                        }
+                        // Tier 2: Previously active but long-stale
+                        v.last_active_slot < stale_cutoff
+                            && v.blocks_proposed == 0
                             && v.joined_slot < stale_cutoff
                     })
                     .map(|v| v.pubkey)
