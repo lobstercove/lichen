@@ -91,6 +91,22 @@ enum Commands {
         /// Keypair file (default: ~/.moltchain/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
+
+        /// Register symbol in the symbol registry (e.g. VYRN)
+        #[arg(long)]
+        symbol: Option<String>,
+
+        /// Display name for the contract (e.g. "VYRN Token")
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Contract template category: token, wrapped, dex, defi, nft, governance, infra
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Token decimals (e.g. 9 for MOLT-style tokens)
+        #[arg(long)]
+        decimals: Option<u8>,
     },
 
     /// Upgrade an existing smart contract
@@ -333,6 +349,32 @@ enum ContractCommands {
 
     /// List all deployed contracts
     List,
+
+    /// Register a deployed contract in the symbol registry
+    Register {
+        /// Contract address (Base58)
+        address: String,
+
+        /// Symbol to register (e.g. VYRN)
+        #[arg(long)]
+        symbol: String,
+
+        /// Display name (e.g. "VYRN Token")
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Template category: token, wrapped, dex, defi, nft, governance, infra
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Decimals (e.g. 9)
+        #[arg(long)]
+        decimals: Option<u8>,
+
+        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -354,17 +396,17 @@ enum IdentityCommands {
 
 #[derive(Subcommand)]
 enum TokenCommands {
-    /// Create a new token
+    /// Create and deploy a new token contract
     Create {
-        /// Token name
+        /// Token name (e.g. "VYRN Token")
         name: String,
 
-        /// Token symbol (3-5 chars)
+        /// Token symbol (3-5 chars, e.g. VYRN)
         symbol: String,
 
-        /// Initial supply (in whole tokens)
-        #[arg(short, long, default_value = "1000000")]
-        supply: u64,
+        /// WASM contract file for the token
+        #[arg(long)]
+        wasm: PathBuf,
 
         /// Decimals (default: 9)
         #[arg(short, long, default_value = "9")]
@@ -1158,6 +1200,49 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+
+            ContractCommands::Register {
+                address,
+                symbol,
+                name,
+                template,
+                decimals,
+                keypair,
+            } => {
+                let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+                let owner = keypair_mgr.load_keypair(&path)?;
+                let contract_pubkey = moltchain_core::Pubkey::from_base58(&address)
+                    .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
+
+                println!("🏷️  Registering contract in symbol registry");
+                println!("📍 Contract: {}", address);
+                println!("🏷️  Symbol: {}", symbol);
+                if let Some(ref n) = name {
+                    println!("📛 Name: {}", n);
+                }
+                if let Some(ref t) = template {
+                    println!("📂 Template: {}", t);
+                }
+                if let Some(d) = decimals {
+                    println!("🔢 Decimals: {}", d);
+                }
+                println!("👤 Owner: {}", owner.pubkey().to_base58());
+                println!();
+
+                let signature = client
+                    .register_symbol(
+                        &owner,
+                        &contract_pubkey,
+                        &symbol,
+                        name.as_deref(),
+                        template.as_deref(),
+                        decimals,
+                    )
+                    .await?;
+
+                println!("✅ Symbol registered!");
+                println!("📝 Signature: {}", signature);
+            }
         },
 
         Commands::Status => {
@@ -1301,7 +1386,14 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Deploy { contract, keypair } => {
+        Commands::Deploy {
+            contract,
+            keypair,
+            symbol,
+            name,
+            template,
+            decimals,
+        } => {
             let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
             let deployer = keypair_mgr.load_keypair(&path)?;
 
@@ -1343,20 +1435,50 @@ async fn main() -> Result<()> {
             addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
             let contract_addr = moltchain_core::Pubkey(addr_bytes);
 
+            // Build init_data for symbol registry if any metadata flags provided
+            let init_data =
+                if symbol.is_some() || name.is_some() || template.is_some() || decimals.is_some() {
+                    let mut registry = serde_json::Map::new();
+                    if let Some(ref s) = symbol {
+                        registry.insert("symbol".to_string(), serde_json::json!(s));
+                    }
+                    if let Some(ref n) = name {
+                        registry.insert("name".to_string(), serde_json::json!(n));
+                    }
+                    if let Some(ref t) = template {
+                        registry.insert("template".to_string(), serde_json::json!(t));
+                    }
+                    if let Some(d) = decimals {
+                        registry.insert("decimals".to_string(), serde_json::json!(d));
+                    }
+                    serde_json::to_vec(&registry).unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
             println!("🦞 Deploying contract: {}", contract.display());
             println!("📦 Size: {} KB", wasm_code.len() / 1024);
             println!("📍 Contract address: {}", contract_addr.to_base58());
             println!("👤 Deployer: {}", deployer.pubkey().to_base58());
+            if let Some(ref s) = symbol {
+                println!("🏷️  Symbol: {}", s);
+            }
+            if let Some(ref t) = template {
+                println!("📂 Template: {}", t);
+            }
             println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
             println!();
 
             let signature = client
-                .deploy_contract(&deployer, wasm_code, &contract_addr)
+                .deploy_contract(&deployer, wasm_code, &contract_addr, init_data)
                 .await?;
 
             println!("✅ Contract deployed!");
             println!("📝 Signature: {}", signature);
             println!("🔗 Address: {}", contract_addr.to_base58());
+            if symbol.is_some() {
+                println!("🏷️  Symbol registered in symbol registry");
+            }
         }
 
         Commands::Upgrade {
@@ -1429,38 +1551,72 @@ async fn main() -> Result<()> {
             TokenCommands::Create {
                 name,
                 symbol,
-                supply,
+                wasm,
                 decimals,
                 keypair,
             } => {
                 let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
-                let creator = keypair_mgr.load_keypair(&path)?;
+                let deployer = keypair_mgr.load_keypair(&path)?;
 
-                println!("🪙 Creating token: {} ({})", name, symbol);
-                println!("📈 Supply: {} (decimals: {})", supply, decimals);
-                println!("👤 Creator: {}", creator.pubkey().to_base58());
+                // Read WASM file
+                let wasm_code = std::fs::read(&wasm)
+                    .map_err(|e| anyhow::anyhow!("Failed to read WASM file: {}", e))?;
+
+                const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+                if wasm_code.len() < 8 || wasm_code[..4] != WASM_MAGIC {
+                    anyhow::bail!(
+                        "Invalid WASM file: {} does not have valid WASM magic bytes.\n\
+                         Compile with: cargo build --target wasm32-unknown-unknown --release",
+                        wasm.display()
+                    );
+                }
+
+                const MAX_CONTRACT_SIZE: usize = 512 * 1024;
+                if wasm_code.len() > MAX_CONTRACT_SIZE {
+                    anyhow::bail!(
+                        "Contract too large: {} bytes (max {} bytes = 512 KB)",
+                        wasm_code.len(),
+                        MAX_CONTRACT_SIZE
+                    );
+                }
+
+                // Generate contract address
+                use moltchain_core::Hash;
+                let code_hash = Hash::hash(&wasm_code);
+                let mut addr_bytes = [0u8; 32];
+                addr_bytes[..16].copy_from_slice(&deployer.pubkey().0[..16]);
+                addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+                let contract_addr = moltchain_core::Pubkey(addr_bytes);
+
+                // Build init_data with token template metadata
+                let init_data = serde_json::json!({
+                    "symbol": symbol,
+                    "name": name,
+                    "template": "token",
+                    "decimals": decimals,
+                });
+                let init_data_bytes = serde_json::to_vec(&init_data).unwrap_or_default();
+
+                println!("🪙 Deploying token: {} ({})", name, symbol);
+                println!(
+                    "📦 WASM: {} ({} KB)",
+                    wasm.display(),
+                    wasm_code.len() / 1024
+                );
+                println!("📍 Contract address: {}", contract_addr.to_base58());
+                println!("👤 Creator: {}", deployer.pubkey().to_base58());
+                println!("🔢 Decimals: {}", decimals);
+                println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
                 println!();
 
-                // Build token creation instruction
-                let mut data = Vec::new();
-                data.push(10); // Token create instruction type
-                data.extend_from_slice(&supply.to_le_bytes());
-                data.push(decimals);
-                data.extend_from_slice(name.as_bytes());
-                data.push(0); // null terminator for name
-                data.extend_from_slice(symbol.as_bytes());
-
                 let signature = client
-                    .call_contract(
-                        &creator,
-                        &moltchain_core::Pubkey([0u8; 32]), // system program
-                        "create_token".to_string(),
-                        data,
-                        0,
-                    )
+                    .deploy_contract(&deployer, wasm_code, &contract_addr, init_data_bytes)
                     .await?;
-                println!("✅ Token created!");
+
+                println!("✅ Token deployed and registered!");
                 println!("📝 Signature: {}", signature);
+                println!("🔗 Address: {}", contract_addr.to_base58());
+                println!("🏷️  Symbol: {} registered in symbol registry", symbol);
             }
             TokenCommands::Info { token } => {
                 println!("🪙 Token Info: {}", token);
