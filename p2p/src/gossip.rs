@@ -328,8 +328,8 @@ impl GossipManager {
                 store.record_peer(peer_info.address);
             }
 
-            // Skip if already connected
-            if local_peers.contains(&peer_info.address) {
+            // Skip if already connected (match by IP, not full addr — ephemeral ports change)
+            if local_peers.iter().any(|p| p.ip() == peer_info.address.ip()) {
                 continue;
             }
 
