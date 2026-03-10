@@ -1863,9 +1863,156 @@ docker-compose up -d
 ### Systemd (VPS Deployment)
 
 ```bash
+sudo bash deploy/setup.sh testnet mainnet   # Creates moltchain user, env files, systemd units
+sudo systemctl enable moltchain-validator-testnet moltchain-validator-mainnet
+sudo systemctl start moltchain-validator-testnet moltchain-validator-mainnet
+```
+
+Or manually:
+```bash
 sudo cp deploy/moltchain-validator.service /etc/systemd/system/
 sudo systemctl enable moltchain-validator
 sudo systemctl start moltchain-validator
+```
+
+### macOS LaunchAgent
+
+Create wrapper script and LaunchAgent plist for an auto-starting background service. The wrapper downloads the latest release by semver (not GitHub "latest" publish date) and installs bundled ZK keys.
+
+```bash
+# 1. Create wrapper script
+mkdir -p ~/.moltchain/bin ~/.moltchain/state-mainnet ~/.moltchain/logs
+cat > ~/.moltchain/bin/moltchain-service.sh << 'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+INSTALL_DIR="$HOME/.moltchain/bin"
+BINARY="$INSTALL_DIR/moltchain-validator"
+REPO="lobstercove/moltchain"
+ARCH=$(uname -m)
+case "$ARCH" in
+    arm64|aarch64) ASSET="moltchain-validator-darwin-aarch64.tar.gz" ;;
+    x86_64)        ASSET="moltchain-validator-darwin-x86_64.tar.gz" ;;
+esac
+mkdir -p "$INSTALL_DIR" "$HOME/.moltchain/state-mainnet" "$HOME/.moltchain/logs"
+if [ ! -x "$BINARY" ]; then
+    TMPDIR=$(mktemp -d); trap 'rm -rf "$TMPDIR"' EXIT
+    VERSION=$(/usr/bin/curl -fsSL "https://api.github.com/repos/$REPO/releases" \
+        | /usr/bin/python3 -c "
+import sys, json
+releases = [r for r in json.load(sys.stdin) if not r['draft'] and not r['prerelease']]
+releases.sort(key=lambda r: [int(x) for x in r['tag_name'].lstrip('v').split('.')], reverse=True)
+print(releases[0]['tag_name'])")
+    /usr/bin/curl -fSL -o "$TMPDIR/$ASSET" "https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
+    /usr/bin/curl -fSL -o "$TMPDIR/SHA256SUMS" "https://github.com/$REPO/releases/download/${VERSION}/SHA256SUMS"
+    cd "$TMPDIR"; grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
+    tar xzf "$ASSET" --strip-components=1; mv moltchain-validator "$BINARY"; chmod +x "$BINARY"
+    if [ -d "zk" ]; then mkdir -p "$HOME/.moltchain/zk"; cp zk/*.bin "$HOME/.moltchain/zk/"; fi
+    trap - EXIT; rm -rf "$TMPDIR"
+fi
+exec "$BINARY" --network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 \
+    --db-path "$HOME/.moltchain/state-mainnet" \
+    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
+    --auto-update=apply
+SCRIPT
+chmod +x ~/.moltchain/bin/moltchain-service.sh
+
+# 2. Create LaunchAgent plist
+cat > ~/Library/LaunchAgents/network.moltchain.validator.plist << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>network.moltchain.validator</string>
+    <key>ProgramArguments</key><array><string>/bin/bash</string><string>$HOME/.moltchain/bin/moltchain-service.sh</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>15</integer>
+    <key>StandardOutPath</key><string>$HOME/.moltchain/logs/validator.log</string>
+    <key>StandardErrorPath</key><string>$HOME/.moltchain/logs/validator.log</string>
+    <key>EnvironmentVariables</key><dict><key>RUST_LOG</key><string>info</string></dict>
+</dict>
+</plist>
+EOF
+
+# 3. Load
+launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist
+```
+
+Service management:
+```bash
+launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist     # Start
+launchctl unload ~/Library/LaunchAgents/network.moltchain.validator.plist   # Stop
+tail -f ~/.moltchain/logs/validator.log                                     # Logs
+launchctl list | grep moltchain                                             # Status
+# Force re-download after new release:
+launchctl unload ~/Library/LaunchAgents/network.moltchain.validator.plist
+rm ~/.moltchain/bin/moltchain-validator
+launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist
+```
+
+macOS file layout:
+| Path | Purpose |
+|------|---------|
+| `~/.moltchain/bin/moltchain-validator` | Binary |
+| `~/.moltchain/bin/moltchain-service.sh` | Wrapper script |
+| `~/.moltchain/state-mainnet/` | Blockchain state DB |
+| `~/.moltchain/zk/` | ZK verification & proving keys |
+| `~/.moltchain/logs/validator.log` | Log file |
+| `~/Library/LaunchAgents/network.moltchain.validator.plist` | LaunchAgent plist |
+
+### Windows Service (NSSM)
+
+```powershell
+# 1. Download and extract
+$Version = "v0.2.14"
+$InstallDir = "$env:LOCALAPPDATA\MoltChain"
+New-Item -ItemType Directory -Force -Path "$InstallDir\bin","$InstallDir\state-mainnet","$InstallDir\logs","$InstallDir\zk"
+$Url = "https://github.com/lobstercove/moltchain/releases/download/$Version/moltchain-validator-windows-x86_64.tar.gz"
+Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\moltchain.tar.gz"
+tar -xzf "$env:TEMP\moltchain.tar.gz" -C "$InstallDir\bin" --strip-components=1
+if (Test-Path "$InstallDir\bin\zk") { Copy-Item "$InstallDir\bin\zk\*" "$InstallDir\zk\" }
+
+# 2. Install NSSM (https://nssm.cc/download) and create service
+nssm install MoltChainValidator "$InstallDir\bin\moltchain-validator.exe"
+nssm set MoltChainValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 --auto-update=apply"
+nssm set MoltChainValidator AppDirectory "$InstallDir"
+nssm set MoltChainValidator AppStdout "$InstallDir\logs\validator.log"
+nssm set MoltChainValidator AppStderr "$InstallDir\logs\validator.log"
+nssm set MoltChainValidator AppEnvironmentExtra "RUST_LOG=info" "USERPROFILE=$InstallDir"
+nssm set MoltChainValidator Start SERVICE_AUTO_START
+nssm set MoltChainValidator AppRestartDelay 10000
+
+# 3. Start
+nssm start MoltChainValidator
+```
+
+Windows service management:
+```powershell
+nssm status MoltChainValidator
+nssm start MoltChainValidator
+nssm stop MoltChainValidator
+nssm restart MoltChainValidator
+nssm remove MoltChainValidator confirm     # Uninstall
+Get-Content "$env:LOCALAPPDATA\MoltChain\logs\validator.log" -Tail 50 -Wait
+```
+
+### ZK Verification Keys
+
+All validators must use identical ceremony ZK keys. Keys are shipped in the release tarball under `zk/`. The validator loads them from (priority order):
+1. Env vars: `MOLTCHAIN_ZK_SHIELD_VK_PATH`, `MOLTCHAIN_ZK_UNSHIELD_VK_PATH`, `MOLTCHAIN_ZK_TRANSFER_VK_PATH`
+2. Shared cache: `~/.moltchain/zk/` (Linux/macOS) or `%LOCALAPPDATA%\MoltChain\zk\` (Windows)
+3. Bundled `zk/` next to binary (auto-copied to shared cache)
+
+If missing, shielded transactions are unavailable but the validator still functions.
+
+Manual install:
+```bash
+mkdir -p ~/.moltchain/zk
+cp /path/to/release/zk/*.bin ~/.moltchain/zk/
+sha256sum ~/.moltchain/zk/vk_*.bin
+# af980fb4...  vk_shield.bin
+# e368eeaf...  vk_transfer.bin
+# f39b6e2e...  vk_unshield.bin
 ```
 
 ### Health Check

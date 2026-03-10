@@ -411,36 +411,52 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
         .map(PathBuf::from)
         .unwrap_or_else(|| shared_zk_dir.join("vk_transfer.bin"));
 
-    // If keys are missing from the shared cache, check for bundled keys
-    // shipped alongside the binary in the release tarball (zk/ subdirectory
-    // next to the executable).  Copy them into the shared cache so all
-    // future starts find them immediately.
+    // If keys are missing from the shared cache, search well-known locations
+    // and copy them into the shared cache so all future starts find them.
+    //
+    // Search order:
+    //   1. zk/ next to the binary     (release tarball layout)
+    //   2. zk-keys/ in CWD            (source-build / repo root)
+    //   3. zk-keys/ next to binary    (uncommon but consistent)
     if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
+        let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(exe_path) = env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
-                let bundled_zk = exe_dir.join("zk");
-                if bundled_zk.is_dir() {
-                    info!(
-                        "🔑 Installing bundled ZK keys from {} → {}",
-                        bundled_zk.display(),
-                        shared_zk_dir.display()
+                candidates.push(exe_dir.join("zk"));
+                candidates.push(exe_dir.join("zk-keys"));
+            }
+        }
+        candidates.push(PathBuf::from("zk-keys"));
+
+        for candidate in &candidates {
+            if candidate.is_dir()
+                && candidate.join("vk_shield.bin").exists()
+                && candidate.join("vk_unshield.bin").exists()
+                && candidate.join("vk_transfer.bin").exists()
+            {
+                info!(
+                    "🔑 Installing ZK keys from {} → {}",
+                    candidate.display(),
+                    shared_zk_dir.display()
+                );
+                if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
+                    warn!(
+                        "⚠️  Failed creating ZK directory {}: {}",
+                        shared_zk_dir.display(),
+                        e
                     );
-                    if let Err(e) = fs::create_dir_all(&shared_zk_dir) {
-                        warn!(
-                            "⚠️  Failed creating ZK directory {}: {}",
-                            shared_zk_dir.display(),
-                            e
-                        );
-                    } else if let Ok(entries) = fs::read_dir(&bundled_zk) {
-                        for entry in entries.flatten() {
-                            let dest = shared_zk_dir.join(entry.file_name());
-                            if let Err(e) = fs::copy(entry.path(), &dest) {
-                                warn!("⚠️  Failed copying {}: {}", entry.path().display(), e);
-                            }
-                        }
-                        info!("✅ ZK keys installed to {}", shared_zk_dir.display());
-                    }
+                    break;
                 }
+                if let Ok(entries) = fs::read_dir(candidate) {
+                    for entry in entries.flatten() {
+                        let dest = shared_zk_dir.join(entry.file_name());
+                        if let Err(e) = fs::copy(entry.path(), &dest) {
+                            warn!("⚠️  Failed copying {}: {}", entry.path().display(), e);
+                        }
+                    }
+                    info!("✅ ZK keys installed to {}", shared_zk_dir.display());
+                }
+                break;
             }
         }
     }

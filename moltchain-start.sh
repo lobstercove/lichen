@@ -51,6 +51,7 @@ cd "$REPO_ROOT" || exit 1
 NETWORK=""
 BOOTSTRAP_PEERS=""
 NO_DEPLOY=false
+NO_FAUCET=false
 START_CUSTODY=false
 FORCE_BUILD=false
 FOREGROUND=false
@@ -71,6 +72,9 @@ while [[ $# -gt 0 ]]; do
         --no-deploy)
             NO_DEPLOY=true
             ;;
+        --no-faucet)
+            NO_FAUCET=true
+            ;;
         --custody)
             START_CUSTODY=true
             ;;
@@ -86,6 +90,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --bootstrap <host:port>  Bootstrap from existing validator"
             echo "  --no-deploy              Skip first-boot contract deployment"
+            echo "  --no-faucet              Skip faucet service (testnet only)"
             echo "  --custody                Also start the custody service"
             echo "  --build                  Force rebuild before starting"
             echo "  --foreground, -f         Run validator in foreground (default: background)"
@@ -198,7 +203,7 @@ fi
 GENESIS_BIN="./target/release/moltchain-genesis"
 if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ]; then
     echo -e "${CYAN}[1/4]${NC} Building moltchain binaries..."
-    cargo build --release --bin moltchain-validator --bin moltchain-genesis 2>&1 | tail -5
+    cargo build --release --bin moltchain-validator --bin moltchain-genesis --bin moltchain-faucet 2>&1 | tail -5
     echo -e "  ${GREEN}✅ Build complete${NC}"
 else
     echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN"
@@ -326,6 +331,35 @@ else
 fi
 echo ""
 
+# ── Faucet service (testnet only) ──
+FAUCET_PID=""
+FAUCET_BIN="${REPO_ROOT}/target/release/moltchain-faucet"
+FAUCET_KEYPAIR_PATH="${DB_PATH}/genesis-keys/faucet-${CHAIN_ID}.json"
+if [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET && [ -x "$FAUCET_BIN" ] && [ -f "$FAUCET_KEYPAIR_PATH" ]; then
+    FAUCET_PORT=9100
+    if ! lsof -i ":$FAUCET_PORT" >/dev/null 2>&1; then
+        echo -e "${CYAN}[faucet]${NC} Starting faucet service on port $FAUCET_PORT..."
+        FAUCET_KEYPAIR="$FAUCET_KEYPAIR_PATH" \
+        RPC_URL="http://127.0.0.1:${RPC_PORT}" \
+        NETWORK="$NETWORK" \
+        PORT="$FAUCET_PORT" \
+        RUST_LOG=info \
+            "$FAUCET_BIN" >"${LOG_DIR}/faucet.log" 2>&1 &
+        FAUCET_PID=$!
+        echo -e "  ${GREEN}✅ Faucet started (PID: $FAUCET_PID)${NC}"
+        echo -e "     Log: ${LOG_DIR}/faucet.log"
+    else
+        echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — port $FAUCET_PORT already in use"
+    fi
+elif [ "$NETWORK" = "testnet" ] && ! $NO_FAUCET; then
+    if [ ! -x "$FAUCET_BIN" ]; then
+        echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — faucet binary not found (run: cargo build --release --bin moltchain-faucet)"
+    elif [ ! -f "$FAUCET_KEYPAIR_PATH" ]; then
+        echo -e "${CYAN}[faucet]${NC} ${YELLOW}Skipped${NC} — faucet keypair not found at $FAUCET_KEYPAIR_PATH"
+    fi
+fi
+echo ""
+
 # ── Optional custody service ──
 if $START_CUSTODY; then
     echo -e "${CYAN}[4/4]${NC} Starting custody service..."
@@ -350,6 +384,7 @@ echo -e ""
 echo -e "  ${BOLD}Validator PID:${NC}  $VALIDATOR_PID"
 echo -e "  ${BOLD}Supervisor PID:${NC} $SUPERVISOR_PID"
 [ -n "${DEPLOY_PID:-}" ]  && echo -e "  ${BOLD}Deploy PID:${NC}     $DEPLOY_PID"
+[ -n "${FAUCET_PID:-}" ]  && echo -e "  ${BOLD}Faucet PID:${NC}     $FAUCET_PID"
 [ -n "${CUSTODY_PID:-}" ] && echo -e "  ${BOLD}Custody PID:${NC}    $CUSTODY_PID"
 echo -e ""
 echo -e "  ${BOLD}RPC endpoint:${NC}   http://localhost:$RPC_PORT"
@@ -359,6 +394,7 @@ echo -e ""
 echo -e "  ${BOLD}Follow logs:${NC}"
 echo -e "    tail -f ${LOG_DIR}/validator.log"
 [ -n "${DEPLOY_PID:-}" ]  && echo -e "    tail -f ${LOG_DIR}/first-boot-deploy.log"
+[ -n "${FAUCET_PID:-}" ]  && echo -e "    tail -f ${LOG_DIR}/faucet.log"
 [ -n "${CUSTODY_PID:-}" ] && echo -e "    tail -f ${LOG_DIR}/custody.log"
 echo -e ""
 echo -e "  ${BOLD}Stop:${NC}"
@@ -384,6 +420,7 @@ cat > "${LOG_DIR}/pids.env" <<EOF
 VALIDATOR_PID=$VALIDATOR_PID
 SUPERVISOR_PID=$SUPERVISOR_PID
 DEPLOY_PID=${DEPLOY_PID:-}
+FAUCET_PID=${FAUCET_PID:-}
 CUSTODY_PID=${CUSTODY_PID:-}
 NETWORK=$NETWORK
 RPC_PORT=$RPC_PORT
