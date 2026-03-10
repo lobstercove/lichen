@@ -730,7 +730,7 @@ impl StateStore {
                         if let Some(kb_str) = line.split_whitespace().nth(1) {
                             if let Ok(total_kb) = kb_str.parse::<usize>() {
                                 let total_mb = total_kb / 1024;
-                                return (total_mb / 4).min(4096).max(256);
+                                return (total_mb / 4).clamp(256, 4096);
                             }
                         }
                     }
