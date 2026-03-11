@@ -5746,9 +5746,17 @@ async fn run_validator() {
             // Safety: slot 0, 0 existing validators ⇒ no consensus to disagree with.
             // Guard: NEVER self-register on a joining node — joining nodes must
             // go through the consensus RegisterValidator path after sync.
+            //
+            // Belt-and-suspenders: explicit_seed_peers.is_empty() ensures that
+            // a node started with --bootstrap-peers can NEVER trigger genesis
+            // bootstrap, even if a supervisor restart sets is_joining_network=false
+            // (because has_genesis_block=true after syncing genesis from the network).
             let genesis_bootstrap = {
                 let last = state.get_last_slot().unwrap_or(0);
-                last == 0 && pool.bootstrap_grants_issued() == 0 && !is_joining_network
+                last == 0
+                    && pool.bootstrap_grants_issued() == 0
+                    && !is_joining_network
+                    && explicit_seed_peers.is_empty()
             };
 
             if genesis_bootstrap {
@@ -9875,16 +9883,8 @@ async fn run_validator() {
                     return;
                 }
 
-                // Get recent blockhash
+                // Get recent blockhash (slot 0 = genesis is valid for 300 blocks)
                 let tip_slot = state_for_register.get_last_slot().unwrap_or(0);
-                if tip_slot == 0 {
-                    info!(
-                        "⏳ No blocks yet — waiting for chain sync (attempt {}/30)",
-                        attempt
-                    );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
-                }
                 let blockhash = match state_for_register.get_block_by_slot(tip_slot) {
                     Ok(Some(block)) => block.hash(),
                     _ => {
