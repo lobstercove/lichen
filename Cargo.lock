@@ -3782,10 +3782,11 @@ dependencies = [
 
 [[package]]
 name = "moltchain-validator"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bincode",
  "dirs",
  "flate2",
