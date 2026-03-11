@@ -5612,7 +5612,7 @@ async fn run_validator() {
     //   4. All nodes process identically: treasury debited, account created, staked
     //
     // Genesis validators are created by the genesis tool — no registration needed.
-    let needs_on_chain_registration = {
+    let mut needs_on_chain_registration = {
         let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
             eprintln!("Failed to read validator account: {e}");
             None
@@ -5736,17 +5736,77 @@ async fn run_validator() {
                 }
             }
         } else if needs_on_chain_registration {
-            // ── CONSENSUS-ONLY PATH ──
-            // Do NOT add to in-memory stake pool here. The RegisterValidator
-            // transaction (opcode 26) will be submitted through consensus.
-            // When confirmed, apply_block_effects reloads the stake pool from
-            // RocksDB, giving all nodes identical state simultaneously.
-            // Until then, this validator has 0 stake: it syncs blocks but
-            // does not vote or produce (exactly like Ethereum/Solana).
-            info!(
-                "📋 Validator has no on-chain stake — waiting for RegisterValidator tx through consensus"
-            );
-            info!("   Will begin voting/producing after tx confirmed in a block");
+            // ── GENESIS BOOTSTRAP ──
+            // On a fresh chain (only genesis block exists, stake pool empty), the
+            // first validator must self-register directly — there's no block producer
+            // to include a RegisterValidator tx yet.  This is exactly how Ethereum
+            // and Cosmos handle genesis: the genesis state includes the initial
+            // validator set.  Here we do it lazily on first start.
+            //
+            // Safety: slot 0, 0 existing validators ⇒ no consensus to disagree with.
+            let genesis_bootstrap = {
+                let last = state.get_last_slot().unwrap_or(0);
+                last == 0 && pool.bootstrap_grants_issued() == 0
+            };
+
+            if genesis_bootstrap {
+                info!("🌱 GENESIS BOOTSTRAP: Fresh chain with 0 validators — self-registering as founding validator");
+                let treasury_pubkey = state.get_treasury_pubkey().ok().flatten();
+                let grant = BOOTSTRAP_GRANT_AMOUNT;
+                let mut funded = false;
+                if let Some(tpk) = treasury_pubkey {
+                    if let Ok(Some(mut treasury_acct)) = state.get_account(&tpk) {
+                        if treasury_acct.deduct_spendable(grant).is_ok() {
+                            let _ = state.put_account(&tpk, &treasury_acct);
+                            // Create/update validator account
+                            let mut acct = state.get_account(&validator_pubkey)
+                                .unwrap_or(None)
+                                .unwrap_or_else(|| Account {
+                                    shells: 0, spendable: 0, staked: 0, locked: 0,
+                                    data: Vec::new(), owner: Pubkey([0x01; 32]),
+                                    executable: false, rent_epoch: 0,
+                                });
+                            acct.shells = acct.shells.saturating_add(grant);
+                            acct.staked = acct.staked.saturating_add(grant);
+                            let _ = state.put_account(&validator_pubkey, &acct);
+                            // Add to stake pool
+                            match pool.try_bootstrap_with_fingerprint(
+                                validator_pubkey, grant, current_slot, machine_fingerprint,
+                            ) {
+                                Ok((idx, _)) => {
+                                    info!("  ✅ Founding validator registered: {} MOLT staked (bootstrap #{})",
+                                        grant / 1_000_000_000, idx);
+                                    funded = true;
+                                    needs_on_chain_registration = false;
+                                }
+                                Err(e) => warn!("  ⚠️  Stake pool bootstrap failed: {}", e),
+                            }
+                            if funded {
+                                if let Err(e) = state.put_stake_pool(&pool) {
+                                    warn!("  ⚠️  Failed to persist stake pool: {}", e);
+                                }
+                            }
+                        } else {
+                            warn!("  ⚠️  Treasury has insufficient funds for genesis bootstrap");
+                        }
+                    }
+                }
+                if !funded {
+                    warn!("🌱 Genesis bootstrap failed — chain will stall until manually resolved");
+                }
+            } else {
+                // ── CONSENSUS-ONLY PATH ──
+                // Do NOT add to in-memory stake pool here. The RegisterValidator
+                // transaction (opcode 26) will be submitted through consensus.
+                // When confirmed, apply_block_effects reloads the stake pool from
+                // RocksDB, giving all nodes identical state simultaneously.
+                // Until then, this validator has 0 stake: it syncs blocks but
+                // does not vote or produce (exactly like Ethereum/Solana).
+                info!(
+                    "📋 Validator has no on-chain stake — waiting for RegisterValidator tx through consensus"
+                );
+                info!("   Will begin voting/producing after tx confirmed in a block");
+            }
         } else {
             // Edge case: validator has on-chain account but the in-memory
             // stake pool lost its entry (e.g., pool corruption/reset).
@@ -6245,13 +6305,19 @@ async fn run_validator() {
                                     let mut ix_data = vec![27u8];
                                     ix_data.extend_from_slice(&evidence_bytes);
                                     let tip = state_for_blocks.get_last_slot().unwrap_or(0);
-                                    if let Ok(Some(tip_block)) = state_for_blocks.get_block_by_slot(tip) {
+                                    if let Ok(Some(tip_block)) =
+                                        state_for_blocks.get_block_by_slot(tip)
+                                    {
                                         let ix = moltchain_core::Instruction {
-                                            program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                                            program_id:
+                                                moltchain_core::processor::SYSTEM_PROGRAM_ID,
                                             accounts: vec![Pubkey(block.header.validator)],
                                             data: ix_data,
                                         };
-                                        let msg = moltchain_core::Message::new(vec![ix], tip_block.hash());
+                                        let msg = moltchain_core::Message::new(
+                                            vec![ix],
+                                            tip_block.hash(),
+                                        );
                                         let mut tx = Transaction::new(msg);
                                         let kp = Keypair::from_seed(&slash_keypair_seed_for_blocks);
                                         let sig = kp.sign(&tx.message.serialize());
@@ -6267,7 +6333,10 @@ async fn run_validator() {
                                             p2p_config_for_slash_blocks.listen_addr,
                                         );
                                         p2p_pm_for_slash_blocks.broadcast(slash_msg).await;
-                                        info!("📝 Submitted SlashValidator tx for DoubleBlock by {}", Pubkey(block.header.validator).to_base58());
+                                        info!(
+                                            "📝 Submitted SlashValidator tx for DoubleBlock by {}",
+                                            Pubkey(block.header.validator).to_base58()
+                                        );
                                     }
                                 }
                             }
@@ -7327,13 +7396,15 @@ async fn run_validator() {
                                 let mut ix_data = vec![27u8];
                                 ix_data.extend_from_slice(&evidence_bytes);
                                 let tip = state_for_votes.get_last_slot().unwrap_or(0);
-                                if let Ok(Some(tip_block)) = state_for_votes.get_block_by_slot(tip) {
+                                if let Ok(Some(tip_block)) = state_for_votes.get_block_by_slot(tip)
+                                {
                                     let ix = moltchain_core::Instruction {
                                         program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
                                         accounts: vec![vote.validator],
                                         data: ix_data,
                                     };
-                                    let msg = moltchain_core::Message::new(vec![ix], tip_block.hash());
+                                    let msg =
+                                        moltchain_core::Message::new(vec![ix], tip_block.hash());
                                     let mut tx = Transaction::new(msg);
                                     let kp = Keypair::from_seed(&slash_keypair_seed_for_votes);
                                     let sig = kp.sign(&tx.message.serialize());
@@ -7351,7 +7422,10 @@ async fn run_validator() {
                                         );
                                         peer_mgr.broadcast(slash_msg).await;
                                     }
-                                    info!("📝 Submitted SlashValidator tx for DoubleVote by {}", vote.validator.to_base58());
+                                    info!(
+                                        "📝 Submitted SlashValidator tx for DoubleVote by {}",
+                                        vote.validator.to_base58()
+                                    );
                                 }
                             }
                         }
