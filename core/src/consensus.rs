@@ -1649,20 +1649,32 @@ impl StakePool {
         current_slot: u64,
         fingerprint: [u8; 32],
     ) -> Result<(u64, bool), String> {
-        // If validator already exists, just update amount (no new bootstrap)
+        // If validator already exists, ensure idempotent bootstrap.
+        // A validator that already has >= the requested amount is fully
+        // bootstrapped — return early to prevent double-accounting.
+        // If below the target, top up to the requested amount (not accumulate).
         if let Some(stake_info) = self.stakes.get_mut(&validator) {
+            if stake_info.amount >= amount {
+                // Already at or above target — idempotent no-op
+                let existing_index = stake_info.bootstrap_index;
+                if fingerprint != [0u8; 32] {
+                    self.register_fingerprint(&validator, fingerprint)?;
+                }
+                return Ok((existing_index, false));
+            }
+            // Below target: bring up to the requested amount
+            let deficit = amount - stake_info.amount;
             // AUDIT-FIX A-2: Enforce MAX_VALIDATOR_STAKE cap
-            let new_total = stake_info.amount.saturating_add(amount);
-            if new_total > MAX_VALIDATOR_STAKE {
+            if amount > MAX_VALIDATOR_STAKE {
                 return Err(format!(
                     "Stake {} would exceed max {} per validator",
-                    new_total, MAX_VALIDATOR_STAKE
+                    amount, MAX_VALIDATOR_STAKE
                 ));
             }
-            stake_info.amount = new_total;
+            stake_info.amount = amount;
             stake_info.is_active = stake_info.meets_minimum();
             let existing_index = stake_info.bootstrap_index;
-            self.total_staked = self.total_staked.saturating_add(amount);
+            self.total_staked = self.total_staked.saturating_add(deficit);
             // Register fingerprint (idempotent for same validator)
             if fingerprint != [0u8; 32] {
                 self.register_fingerprint(&validator, fingerprint)?;
@@ -4134,8 +4146,8 @@ mod tests {
     }
 
     #[test]
-    fn test_try_bootstrap_existing_validator_restake() {
-        // Existing validator re-staking doesn't get a new bootstrap index
+    fn test_try_bootstrap_existing_validator_idempotent() {
+        // Duplicate bootstrap for same validator is idempotent (no accumulation)
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
         let fp = [0xDD; 32];
@@ -4147,7 +4159,7 @@ mod tests {
         assert_eq!(idx, 0);
         assert!(is_new);
 
-        // Re-stake same validator
+        // Second bootstrap attempt — idempotent, no accumulation
         let (idx2, is_new2) = pool
             .try_bootstrap_with_fingerprint(pk, BOOTSTRAP_GRANT_AMOUNT, 100, fp)
             .unwrap();
@@ -4157,9 +4169,9 @@ mod tests {
         // Counter should be 1 (only one grant)
         assert_eq!(pool.bootstrap_grants_issued(), 1);
 
-        // Total stake doubled
+        // Stake stays at BOOTSTRAP_GRANT_AMOUNT (not doubled)
         let stake = pool.get_stake(&pk).unwrap();
-        assert_eq!(stake.amount, BOOTSTRAP_GRANT_AMOUNT * 2);
+        assert_eq!(stake.amount, BOOTSTRAP_GRANT_AMOUNT);
     }
 
     #[test]

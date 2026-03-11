@@ -5744,9 +5744,11 @@ async fn run_validator() {
             // validator set.  Here we do it lazily on first start.
             //
             // Safety: slot 0, 0 existing validators ⇒ no consensus to disagree with.
+            // Guard: NEVER self-register on a joining node — joining nodes must
+            // go through the consensus RegisterValidator path after sync.
             let genesis_bootstrap = {
                 let last = state.get_last_slot().unwrap_or(0);
-                last == 0 && pool.bootstrap_grants_issued() == 0
+                last == 0 && pool.bootstrap_grants_issued() == 0 && !is_joining_network
             };
 
             if genesis_bootstrap {
@@ -5759,19 +5761,28 @@ async fn run_validator() {
                         if treasury_acct.deduct_spendable(grant).is_ok() {
                             let _ = state.put_account(&tpk, &treasury_acct);
                             // Create/update validator account
-                            let mut acct = state.get_account(&validator_pubkey)
+                            let mut acct = state
+                                .get_account(&validator_pubkey)
                                 .unwrap_or(None)
                                 .unwrap_or_else(|| Account {
-                                    shells: 0, spendable: 0, staked: 0, locked: 0,
-                                    data: Vec::new(), owner: Pubkey([0x01; 32]),
-                                    executable: false, rent_epoch: 0,
+                                    shells: 0,
+                                    spendable: 0,
+                                    staked: 0,
+                                    locked: 0,
+                                    data: Vec::new(),
+                                    owner: Pubkey([0x01; 32]),
+                                    executable: false,
+                                    rent_epoch: 0,
                                 });
                             acct.shells = acct.shells.saturating_add(grant);
                             acct.staked = acct.staked.saturating_add(grant);
                             let _ = state.put_account(&validator_pubkey, &acct);
                             // Add to stake pool
                             match pool.try_bootstrap_with_fingerprint(
-                                validator_pubkey, grant, current_slot, machine_fingerprint,
+                                validator_pubkey,
+                                grant,
+                                current_slot,
+                                machine_fingerprint,
                             ) {
                                 Ok((idx, _)) => {
                                     info!("  ✅ Founding validator registered: {} MOLT staked (bootstrap #{})",
