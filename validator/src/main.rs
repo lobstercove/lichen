@@ -9868,6 +9868,7 @@ async fn run_validator() {
         let register_fingerprint = machine_fingerprint;
         let bootstrap_peer_strings = explicit_seed_peer_strings.clone();
         let marker_path = std::path::PathBuf::from(&data_dir).join("registration-submitted.marker");
+        let sync_mgr_for_register = sync_manager.clone();
         tokio::spawn(async move {
             // ── Derive bootstrap peer's RPC URL from its P2P address ──
             let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
@@ -9893,8 +9894,57 @@ async fn run_validator() {
                 bootstrap_rpc_url
             );
 
-            // Brief wait for bootstrap peer to be reachable
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // ────────────────────────────────────────────────────────
+            // WAIT FOR SYNC — a validator MUST be fully synced before
+            // registering.  This is how every other blockchain works:
+            // Ethereum syncs beacon chain → then deposits 32 ETH.
+            // Cosmos syncs blocks → then sends MsgCreateValidator.
+            // Solana syncs snapshots → then creates vote account.
+            // We sync all blocks → then send RegisterValidator tx.
+            // ────────────────────────────────────────────────────────
+            info!("⏳ Waiting for chain sync to complete before registering...");
+            loop {
+                let current_slot = state_for_register.get_last_slot().unwrap_or(0);
+                let phase = sync_mgr_for_register.get_sync_phase().await;
+                if phase == sync::SyncPhase::LiveSync && current_slot > 0 {
+                    info!(
+                        "✅ Chain sync complete (slot {}, LiveSync) — proceeding with registration",
+                        current_slot
+                    );
+                    break;
+                }
+                // Also break if caught up (within 2 slots of network tip)
+                if sync_mgr_for_register.is_caught_up(current_slot).await && current_slot > 0 {
+                    info!(
+                        "✅ Chain caught up (slot {}) — proceeding with registration",
+                        current_slot
+                    );
+                    break;
+                }
+                // Log progress every 10s
+                let highest = sync_mgr_for_register.get_highest_seen().await;
+                if highest > 0 {
+                    info!(
+                        "⏳ Syncing before registration: slot {} / {} ({:?})",
+                        current_slot, highest, phase
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+
+            // Re-check local state — sync may have applied a block containing
+            // our registration from a previous run
+            if state_for_register
+                .get_account(&register_pubkey)
+                .unwrap_or(None)
+                .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
+                .unwrap_or(false)
+            {
+                info!(
+                    "✅ Validator already registered on-chain after sync — no registration needed"
+                );
+                return;
+            }
 
             let http_client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
