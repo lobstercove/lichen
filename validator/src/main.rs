@@ -9854,10 +9854,16 @@ async fn run_validator() {
     // AUTO-SUBMIT RegisterValidator TRANSACTION (if needed)
     // ========================================================================
     // If this validator doesn't have an on-chain account with sufficient stake,
-    // submit a RegisterValidator transaction to a bootstrap peer's RPC.
-    // Like Ethereum/Cosmos/Solana: joining validators submit registration to an
-    // EXISTING node's RPC over HTTP. No local sync required — the bootstrap peer
-    // already has blockchain state and will include the tx in a block.
+    // submit ONE RegisterValidator transaction to a bootstrap peer's RPC.
+    //
+    // Like Ethereum (deposit contract), Cosmos (MsgCreateValidator), and
+    // Solana (stake program): joining validators submit registration to an
+    // EXISTING node's RPC over HTTP. No local sync required.
+    //
+    // Two-phase design:
+    //   Phase 1 — SUBMIT: Send tx to bootstrap peer (max 3 retries for failures).
+    //   Phase 2 — WAIT:   Poll local state until registration appears in synced
+    //                      blocks. NEVER resubmit after a successful sendTransaction.
     if needs_on_chain_registration {
         let state_for_register = state.clone();
         let register_keypair_seed = validator_keypair.to_seed();
@@ -9865,11 +9871,8 @@ async fn run_validator() {
         let register_fingerprint = machine_fingerprint;
         let bootstrap_peer_strings = explicit_seed_peer_strings.clone();
         tokio::spawn(async move {
-            // Derive bootstrap peer RPC URL from its P2P address.
-            // The first bootstrap peer is the genesis validator — it has a running
-            // RPC server we can submit our registration tx to directly.
+            // ── Derive bootstrap peer's RPC URL from its P2P address ──
             let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
-                // peer_addr is "host:port" where port is the P2P port
                 let parts: Vec<&str> = peer_addr.rsplitn(2, ':').collect();
                 let (host, peer_p2p) = if parts.len() == 2 {
                     let port = parts[0].parse::<u16>().unwrap_or(7001);
@@ -9877,7 +9880,6 @@ async fn run_validator() {
                 } else {
                     (peer_addr.clone(), 7001u16)
                 };
-                // Port mapping: same formula as validator RPC port derivation
                 let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
                 let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
                 let offset = peer_p2p.saturating_sub(base_p2p);
@@ -9893,7 +9895,7 @@ async fn run_validator() {
                 bootstrap_rpc_url
             );
 
-            // Wait briefly for the bootstrap peer to be reachable
+            // Brief wait for bootstrap peer to be reachable
             tokio::time::sleep(Duration::from_secs(5)).await;
 
             let http_client = reqwest::Client::builder()
@@ -9902,19 +9904,26 @@ async fn run_validator() {
                 .expect("Failed to build HTTP client");
             let register_kp = Keypair::from_seed(&register_keypair_seed);
 
-            for attempt in 1..=30u32 {
-                // Check if already registered (local state may have synced)
-                let already_registered = state_for_register
-                    .get_account(&register_pubkey)
+            // Helper: check local state for registration
+            let is_registered = |st: &moltchain_core::StateStore| -> bool {
+                st.get_account(&register_pubkey)
                     .unwrap_or(None)
                     .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
-                    .unwrap_or(false);
-                if already_registered {
-                    info!("✅ Validator registered on-chain — RegisterValidator not needed");
+                    .unwrap_or(false)
+            };
+
+            // ────────────────────────────────────────────────────────
+            // PHASE 1: SUBMIT — send exactly one tx to bootstrap peer
+            // ────────────────────────────────────────────────────────
+            // Retry only if the submission itself fails (network error,
+            // RPC rejection). Max 3 attempts.
+            for attempt in 1..=3u32 {
+                if is_registered(&state_for_register) {
+                    info!("✅ Validator already registered on-chain");
                     return;
                 }
 
-                // Fetch recent blockhash from bootstrap peer's RPC
+                // Get blockhash from bootstrap peer
                 let blockhash = match http_client
                     .post(&bootstrap_rpc_url)
                     .json(&serde_json::json!({
@@ -9926,46 +9935,36 @@ async fn run_validator() {
                     .send()
                     .await
                 {
-                    Ok(resp) => {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(body) => {
-                                if let Some(hash_hex) = body["result"]["blockhash"].as_str() {
-                                    match moltchain_core::Hash::from_hex(hash_hex) {
-                                        Ok(h) => h,
-                                        Err(e) => {
-                                            warn!(
-                                                "⚠️  Invalid blockhash hex from RPC: {} — retrying (attempt {}/30)",
-                                                e, attempt
-                                            );
-                                            tokio::time::sleep(Duration::from_secs(5)).await;
-                                            continue;
-                                        }
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(body) => {
+                            if let Some(hex) = body["result"]["blockhash"].as_str() {
+                                match moltchain_core::Hash::from_hex(hex) {
+                                    Ok(h) => h,
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️  Bad blockhash from RPC: {} — retrying ({}/3)",
+                                            e, attempt
+                                        );
+                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                        continue;
                                     }
-                                } else {
-                                    let err_msg = body["error"]["message"]
-                                        .as_str()
-                                        .unwrap_or("unknown error");
-                                    info!(
-                                        "⏳ Bootstrap RPC getRecentBlockhash: {} — retrying (attempt {}/30)",
-                                        err_msg, attempt
-                                    );
-                                    tokio::time::sleep(Duration::from_secs(5)).await;
-                                    continue;
                                 }
-                            }
-                            Err(e) => {
-                                info!(
-                                    "⏳ Failed to parse RPC response: {} — retrying (attempt {}/30)",
-                                    e, attempt
-                                );
+                            } else {
+                                let err = body["error"]["message"].as_str().unwrap_or("unknown");
+                                info!("⏳ getRecentBlockhash: {} — retrying ({}/3)", err, attempt);
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                                 continue;
                             }
                         }
-                    }
+                        Err(e) => {
+                            info!("⏳ Bad RPC response: {} — retrying ({}/3)", e, attempt);
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         info!(
-                            "⏳ Bootstrap RPC unreachable: {} — retrying (attempt {}/30)",
+                            "⏳ Bootstrap RPC unreachable: {} — retrying ({}/3)",
                             e, attempt
                         );
                         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -9973,26 +9972,26 @@ async fn run_validator() {
                     }
                 };
 
-                // Build RegisterValidator instruction: [26 | fingerprint(32)]
+                // Build RegisterValidator tx: opcode 26 + fingerprint
                 let mut ix_data = vec![26u8];
                 ix_data.extend_from_slice(&register_fingerprint);
-
                 let ix = moltchain_core::Instruction {
                     program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
                     accounts: vec![register_pubkey],
                     data: ix_data,
                 };
-
                 let msg = moltchain_core::Message::new(vec![ix], blockhash);
                 let mut tx = Transaction::new(msg);
                 let sig = register_kp.sign(&tx.message.serialize());
                 tx.signatures.push(sig);
 
-                // Serialize → base64 for RPC transport
                 let tx_bytes = match bincode::serialize(&tx) {
                     Ok(b) => b,
                     Err(e) => {
-                        warn!("⚠️  Failed to serialize RegisterValidator tx: {}", e);
+                        warn!(
+                            "⚠️  Failed to serialize tx: {} — retrying ({}/3)",
+                            e, attempt
+                        );
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
                     }
@@ -10001,13 +10000,13 @@ async fn run_validator() {
                 let tx_b64 = general_purpose::STANDARD.encode(&tx_bytes);
 
                 info!(
-                    "📝 Submitting RegisterValidator tx via bootstrap RPC (attempt {}/30, blockhash={})",
+                    "📝 Submitting RegisterValidator tx ({}/3, blockhash={})",
                     attempt,
                     blockhash.to_hex()
                 );
 
-                // Submit to bootstrap peer's RPC via sendTransaction
-                match http_client
+                // Send to bootstrap peer
+                let submitted = match http_client
                     .post(&bootstrap_rpc_url)
                     .json(&serde_json::json!({
                         "jsonrpc": "2.0",
@@ -10018,67 +10017,76 @@ async fn run_validator() {
                     .send()
                     .await
                 {
-                    Ok(resp) => {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(body) => {
-                                if let Some(sig) = body["result"].as_str() {
-                                    info!(
-                                        "📡 RegisterValidator tx submitted — signature: {}",
-                                        sig
-                                    );
-                                } else {
-                                    let err_msg = body["error"]["message"]
-                                        .as_str()
-                                        .unwrap_or("unknown error");
-                                    warn!(
-                                        "⚠️  sendTransaction rejected: {} — retrying (attempt {}/30)",
-                                        err_msg, attempt
-                                    );
-                                    tokio::time::sleep(Duration::from_secs(5)).await;
-                                    continue;
-                                }
-                            }
-                            Err(e) => {
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(body) => {
+                            if let Some(sig) = body["result"].as_str() {
+                                info!("📡 RegisterValidator tx accepted — signature: {}", sig);
+                                true
+                            } else {
+                                let err = body["error"]["message"].as_str().unwrap_or("unknown");
                                 warn!(
-                                    "⚠️  Failed to parse sendTransaction response: {} — retrying (attempt {}/30)",
-                                    e, attempt
+                                    "⚠️  sendTransaction rejected: {} — retrying ({}/3)",
+                                    err, attempt
                                 );
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                continue;
+                                false
                             }
                         }
-                    }
+                        Err(e) => {
+                            warn!(
+                                "⚠️  Bad sendTransaction response: {} — retrying ({}/3)",
+                                e, attempt
+                            );
+                            false
+                        }
+                    },
                     Err(e) => {
                         warn!(
-                            "⚠️  sendTransaction request failed: {} — retrying (attempt {}/30)",
+                            "⚠️  sendTransaction failed: {} — retrying ({}/3)",
                             e, attempt
                         );
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
+                        false
                     }
+                };
+
+                if submitted {
+                    // ──────────────────────────────────────────────────────
+                    // PHASE 2: WAIT — tx is in the bootstrap peer's block.
+                    // DO NOT resubmit. Just wait for P2P sync to deliver
+                    // the block containing our tx to local state.
+                    // ──────────────────────────────────────────────────────
+                    info!("⏳ Tx accepted by bootstrap peer — waiting for block sync...");
+                    for wait in 1..=300u32 {
+                        // 300 × 2s = 10 minutes — more than enough for sync
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        if is_registered(&state_for_register) {
+                            info!(
+                                "✅ RegisterValidator confirmed — validator registered on-chain!"
+                            );
+                            return;
+                        }
+                        if wait % 30 == 0 {
+                            info!(
+                                "⏳ Still waiting for registration confirmation ({}s elapsed)",
+                                wait * 2
+                            );
+                        }
+                    }
+                    // If we get here after 10 minutes, something is very wrong.
+                    // But don't resubmit — the tx already landed on the bootstrap peer.
+                    warn!("⚠️  Registration not confirmed locally after 10 minutes — check bootstrap peer");
+                    return;
                 }
 
-                // Wait for block inclusion — poll local state (blocks arrive via P2P sync)
-                for _ in 0..15 {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    let registered = state_for_register
-                        .get_account(&register_pubkey)
-                        .unwrap_or(None)
-                        .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
-                        .unwrap_or(false);
-                    if registered {
-                        info!("✅ RegisterValidator tx confirmed — validator registered on-chain!");
-                        return;
-                    }
-                }
-
-                info!(
-                    "⏳ RegisterValidator tx not yet confirmed — will retry (attempt {}/30)",
-                    attempt
-                );
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
 
-            warn!("⚠️  RegisterValidator not confirmed after 30 attempts — validator may need manual registration");
+            // All 3 submission attempts failed (network errors / RPC rejections).
+            // Check one last time in case registration happened via another path.
+            if is_registered(&state_for_register) {
+                info!("✅ Validator registered on-chain");
+                return;
+            }
+            warn!("⚠️  RegisterValidator not submitted after 3 attempts — may need manual registration");
         });
     }
 
