@@ -5974,6 +5974,15 @@ async fn run_validator() {
 
     // Create sync manager
     let sync_manager = Arc::new(SyncManager::new());
+    // Genesis validators and nodes with existing state start in LiveSync —
+    // they don't need initial catch-up. Only joining nodes start in InitialSync.
+    if !is_joining_network {
+        // Use block_on-safe approach: spawn a task that transitions immediately
+        let sm_init = sync_manager.clone();
+        tokio::spawn(async move {
+            sm_init.transition_to_live().await;
+        });
+    }
     let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(is_joining_network)));
 
     // FIX-FORK-1: Shared set of slots where we received a valid block from the
@@ -6579,28 +6588,10 @@ async fn run_validator() {
                         }
 
                         // Try to apply any pending blocks now that we have genesis
-                        let pending = sync_mgr.try_apply_pending(0).await;
-                        let mut chain_broken = false;
+                        let genesis_hash = block.hash();
+                        let pending = sync_mgr.try_apply_pending(0, genesis_hash).await;
                         for pending_block in pending {
-                            if chain_broken {
-                                sync_mgr.add_pending_block(pending_block).await;
-                                continue;
-                            }
                             let pending_slot = pending_block.header.slot;
-                            let tip = state_for_blocks.get_last_slot().unwrap_or(0);
-                            let parent_ok = state_for_blocks
-                                .get_block_by_slot(tip)
-                                .ok()
-                                .flatten()
-                                .map(|tip_block| {
-                                    pending_block.header.parent_hash == tip_block.hash()
-                                })
-                                .unwrap_or(false);
-                            if !parent_ok {
-                                chain_broken = true;
-                                sync_mgr.add_pending_block(pending_block).await;
-                                continue;
-                            }
                             // P1-1: Header-first sync — skip TX replay for blocks
                             // outside the full-execution window during catch-up.
                             if sync_mgr.should_full_validate(pending_slot).await {
@@ -6621,6 +6612,10 @@ async fn run_validator() {
                                 *last_block_time_for_blocks.lock().await =
                                     std::time::Instant::now();
                                 info!("✅ Applied pending block {}", pending_slot);
+                                sync_mgr.record_progress(pending_slot).await;
+                                if sync_mgr.is_caught_up(pending_slot).await {
+                                    sync_mgr.transition_to_live().await;
+                                }
                                 apply_block_effects(
                                     &state_for_blocks,
                                     &validator_set_for_blocks,
@@ -6677,6 +6672,12 @@ async fn run_validator() {
                                 }
                             }
                             info!("✅ Applied block {} from network", block_slot);
+                            sync_mgr.record_progress(block_slot).await;
+
+                            // Transition to LiveSync once caught up
+                            if sync_mgr.is_caught_up(block_slot).await {
+                                sync_mgr.transition_to_live().await;
+                            }
 
                             // A5-02: Record this head in fork choice oracle with the
                             // proposer's stake weight so competing forks are compared
@@ -6782,30 +6783,14 @@ async fn run_validator() {
                             .await;
 
                             // Try to apply any pending blocks (gap-aware).
-                            // After each applied block the chain tip advances,
-                            // so check pending blocks against the UPDATED tip.
-                            let pending = sync_mgr.try_apply_pending(block_slot).await;
-                            let mut chain_broken = false;
+                            // try_apply_pending now verifies parent_hash internally,
+                            // returning only blocks that form a valid chain from the tip.
+                            let tip_hash_for_pending = block.hash();
+                            let pending = sync_mgr
+                                .try_apply_pending(block_slot, tip_hash_for_pending)
+                                .await;
                             for pending_block in pending {
-                                if chain_broken {
-                                    sync_mgr.add_pending_block(pending_block).await;
-                                    continue;
-                                }
                                 let pending_slot = pending_block.header.slot;
-                                let tip = state_for_blocks.get_last_slot().unwrap_or(0);
-                                let parent_ok = state_for_blocks
-                                    .get_block_by_slot(tip)
-                                    .ok()
-                                    .flatten()
-                                    .map(|tip_block| {
-                                        pending_block.header.parent_hash == tip_block.hash()
-                                    })
-                                    .unwrap_or(false);
-                                if !parent_ok {
-                                    chain_broken = true;
-                                    sync_mgr.add_pending_block(pending_block).await;
-                                    continue;
-                                }
                                 if sync_mgr
                                     .should_full_validate(pending_block.header.slot)
                                     .await
@@ -6830,6 +6815,7 @@ async fn run_validator() {
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     info!("✅ Applied pending block {}", pending_slot);
+                                    sync_mgr.record_progress(pending_slot).await;
                                     apply_block_effects(
                                         &state_for_blocks,
                                         &validator_set_for_blocks,
@@ -7001,34 +6987,54 @@ async fn run_validator() {
                             sync_mgr.mark_requested(slot).await;
                         }
 
-                        // Complete sync flag after a delay.
-                        // STABILITY-FIX: Wait 5s instead of 2s, then check if
-                        // we actually received some blocks before completing.
-                        // If still behind, re-trigger sync instead of silently
-                        // marking sync complete.
+                        // Progress-based sync completion.
+                        // Record the slot when sync started.  After a delay, check
+                        // if ANY progress was made (>= 1 block applied).  Only
+                        // record failure if zero blocks were applied.
+                        // InitialSync: 3s check (fast catch-up)
+                        // LiveSync: 5s check (stable operation)
                         let sync_mgr_complete = sync_mgr.clone();
                         let state_for_sync_check = state_for_blocks.clone();
+                        let sync_start_slot = current_slot;
                         let sync_end = end;
                         tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            let phase = sync_mgr_complete.get_sync_phase().await;
+                            let delay = if phase == sync::SyncPhase::InitialSync {
+                                3
+                            } else {
+                                5
+                            };
+                            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             let current = state_for_sync_check.get_last_slot().unwrap_or(0);
-                            let highest = sync_mgr_complete.get_highest_seen().await;
-                            if current < sync_end && highest > current + 2 {
+                            let progress = sync_mgr_complete.get_last_progress_slot().await;
+                            if progress > sync_start_slot {
+                                // Made progress — reset backoff even if not at target
+                                sync_mgr_complete.record_sync_success().await;
+                                if current < sync_end {
+                                    info!(
+                                        "🔄 Sync progress: {} → {} (target {}), continuing",
+                                        sync_start_slot, current, sync_end
+                                    );
+                                }
+                            } else {
+                                // Zero progress — something is wrong, backoff
                                 info!(
-                                    "🔄 Sync batch incomplete (at {}, target {}), will re-trigger",
+                                    "🔄 Sync batch: no progress (stuck at {}, target {})",
                                     current, sync_end
                                 );
-                                // Record failure for exponential backoff
                                 sync_mgr_complete.record_sync_failure().await;
-                            } else {
-                                // Successful sync progress — reset backoff
-                                sync_mgr_complete.record_sync_success().await;
                             }
                             // Always complete to allow re-trigger
                             sync_mgr_complete.complete_sync().await;
                         });
                     }
                 } else if block_slot <= current_slot {
+                    // During InitialSync, skip fork choice entirely — we trust
+                    // sequential blocks from the peer.  Fork choice only
+                    // activates during LiveSync for competing blocks at the tip.
+                    if sync_mgr.get_sync_phase().await == sync::SyncPhase::InitialSync {
+                        continue;
+                    }
                     // BUG #5 FIX: Never replace a block at a PAST slot.
                     // Blocks at slots < current_slot already have descendants
                     // (blocks slot+1..current_slot) that reference the existing
@@ -7198,28 +7204,11 @@ async fn run_validator() {
 
                                     // After replacing a block (fork adoption), try
                                     // applying pending blocks that now chain correctly.
-                                    let pending = sync_mgr.try_apply_pending(block_slot).await;
-                                    let mut chain_broken = false;
+                                    let fork_tip_hash = block.hash();
+                                    let pending =
+                                        sync_mgr.try_apply_pending(block_slot, fork_tip_hash).await;
                                     for pending_block in pending {
-                                        if chain_broken {
-                                            sync_mgr.add_pending_block(pending_block).await;
-                                            continue;
-                                        }
                                         let pending_slot = pending_block.header.slot;
-                                        let tip = state_for_blocks.get_last_slot().unwrap_or(0);
-                                        let parent_ok = state_for_blocks
-                                            .get_block_by_slot(tip)
-                                            .ok()
-                                            .flatten()
-                                            .map(|tip_block| {
-                                                pending_block.header.parent_hash == tip_block.hash()
-                                            })
-                                            .unwrap_or(false);
-                                        if !parent_ok {
-                                            chain_broken = true;
-                                            sync_mgr.add_pending_block(pending_block).await;
-                                            continue;
-                                        }
                                         if sync_mgr
                                             .should_full_validate(pending_block.header.slot)
                                             .await
@@ -7250,6 +7239,10 @@ async fn run_validator() {
                                                 "✅ Applied pending block {} (after fork adoption)",
                                                 pending_slot
                                             );
+                                            sync_mgr.record_progress(pending_slot).await;
+                                            if sync_mgr.is_caught_up(pending_slot).await {
+                                                sync_mgr.transition_to_live().await;
+                                            }
                                             apply_block_effects(
                                                 &state_for_blocks,
                                                 &validator_set_for_blocks,
@@ -9853,15 +9846,19 @@ async fn run_validator() {
     // ========================================================================
     // AUTO-SUBMIT RegisterValidator TRANSACTION (if needed)
     // ========================================================================
-    // If this validator doesn't have an on-chain account with sufficient stake,
-    // submit ONE RegisterValidator transaction to a bootstrap peer's RPC.
+    // Restart-safe registration: checks both local state AND bootstrap peer's
+    // RPC before submitting, and persists a marker file after successful
+    // submission to prevent duplicates across process restarts.
     //
-    // Like Ethereum (deposit contract), Cosmos (MsgCreateValidator), and
-    // Solana (stake program): joining validators submit registration to an
-    // EXISTING node's RPC over HTTP. No local sync required.
+    // Like Ethereum (deposit contract → check before deposit),
+    // Cosmos (MsgCreateValidator → query validator set first),
+    // Solana (CreateVoteAccount → check account exists via RPC).
     //
-    // Two-phase design:
+    // Three-phase design:
+    //   Phase 0 — CHECK: Query bootstrap peer's RPC for our account.
+    //                     If already registered, skip entirely.
     //   Phase 1 — SUBMIT: Send tx to bootstrap peer (max 3 retries for failures).
+    //                      Write marker file on success.
     //   Phase 2 — WAIT:   Poll local state until registration appears in synced
     //                      blocks. NEVER resubmit after a successful sendTransaction.
     if needs_on_chain_registration {
@@ -9870,6 +9867,7 @@ async fn run_validator() {
         let register_pubkey = validator_pubkey;
         let register_fingerprint = machine_fingerprint;
         let bootstrap_peer_strings = explicit_seed_peer_strings.clone();
+        let marker_path = std::path::PathBuf::from(&data_dir).join("registration-submitted.marker");
         tokio::spawn(async move {
             // ── Derive bootstrap peer's RPC URL from its P2P address ──
             let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
@@ -9912,11 +9910,96 @@ async fn run_validator() {
                     .unwrap_or(false)
             };
 
+            // Helper: check bootstrap peer's RPC for our account (network state)
+            let check_remote_registration = |client: &reqwest::Client, url: &str| {
+                let client = client.clone();
+                let url = url.to_string();
+                let pk_b58 = register_pubkey.to_base58();
+                async move {
+                    match client
+                        .post(&url)
+                        .json(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getAccountInfo",
+                            "params": [pk_b58]
+                        }))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => match resp.json::<serde_json::Value>().await {
+                            Ok(body) => {
+                                if let Some(acct) = body["result"]["value"].as_object() {
+                                    let staked =
+                                        acct.get("staked").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    staked >= BOOTSTRAP_GRANT_AMOUNT
+                                } else {
+                                    false
+                                }
+                            }
+                            Err(_) => false,
+                        },
+                        Err(_) => false,
+                    }
+                }
+            };
+
+            // ────────────────────────────────────────────────────────
+            // PHASE 0: CHECK — is this validator already registered?
+            // ────────────────────────────────────────────────────────
+            // Check local state first (fastest)
+            if is_registered(&state_for_register) {
+                info!("✅ Validator already registered on-chain (local state)");
+                return;
+            }
+
+            // Check marker file — a previous process already submitted
+            if marker_path.exists() {
+                info!("⏳ Registration marker found — previous process already submitted tx");
+                info!("   Waiting for block sync to confirm registration...");
+                for wait in 1..=300u32 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if is_registered(&state_for_register) {
+                        info!("✅ RegisterValidator confirmed — validator registered on-chain!");
+                        return;
+                    }
+                    if wait % 30 == 0 {
+                        info!(
+                            "⏳ Still waiting for registration confirmation ({}s elapsed)",
+                            wait * 2
+                        );
+                    }
+                }
+                warn!("⚠️  Registration not confirmed after 10 minutes — marker exists but tx may have been lost");
+                // Remove stale marker to allow fresh submission
+                let _ = std::fs::remove_file(&marker_path);
+            }
+
+            // Check bootstrap peer's RPC (catches restart after tx landed but before sync)
+            if check_remote_registration(&http_client, &bootstrap_rpc_url).await {
+                info!("✅ Validator already registered on bootstrap peer — waiting for sync");
+                // Write marker so next restart doesn't re-check
+                let _ = std::fs::write(&marker_path, "registered-remotely\n");
+                for wait in 1..=300u32 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if is_registered(&state_for_register) {
+                        info!("✅ RegisterValidator confirmed — validator registered on-chain!");
+                        return;
+                    }
+                    if wait % 30 == 0 {
+                        info!(
+                            "⏳ Still waiting for local sync to confirm registration ({}s elapsed)",
+                            wait * 2
+                        );
+                    }
+                }
+                warn!("⚠️  Registration confirmed on peer but not synced locally after 10 minutes");
+                return;
+            }
+
             // ────────────────────────────────────────────────────────
             // PHASE 1: SUBMIT — send exactly one tx to bootstrap peer
             // ────────────────────────────────────────────────────────
-            // Retry only if the submission itself fails (network error,
-            // RPC rejection). Max 3 attempts.
             for attempt in 1..=3u32 {
                 if is_registered(&state_for_register) {
                     info!("✅ Validator already registered on-chain");
@@ -10049,6 +10132,20 @@ async fn run_validator() {
                 };
 
                 if submitted {
+                    // Write marker file IMMEDIATELY so restarts don't resubmit
+                    let marker_content = format!(
+                        "submitted\nattempt={}\ntimestamp={}\nbootstrap={}\n",
+                        attempt,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        bootstrap_rpc_url
+                    );
+                    if let Err(e) = std::fs::write(&marker_path, marker_content) {
+                        warn!("⚠️  Failed to write registration marker: {}", e);
+                    }
+
                     // ──────────────────────────────────────────────────────
                     // PHASE 2: WAIT — tx is in the bootstrap peer's block.
                     // DO NOT resubmit. Just wait for P2P sync to deliver

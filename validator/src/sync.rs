@@ -7,6 +7,19 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+/// Sync phase: initial catch-up vs live block processing.
+/// During InitialSync, blocks are applied sequentially without fork choice.
+/// During LiveSync, fork choice activates for competing blocks at the tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPhase {
+    /// Catching up from genesis/checkpoint to near tip.
+    /// No fork choice evaluation — trust blocks from peers and apply in order.
+    InitialSync,
+    /// At or near the tip, processing new blocks as they arrive.
+    /// Fork choice evaluates competing blocks.
+    LiveSync,
+}
+
 /// Sync mode determines how blocks are validated during catch-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncMode {
@@ -91,6 +104,12 @@ pub struct SyncManager {
 
     /// Current sync mode (header-only vs full re-execution)
     sync_mode: Arc<Mutex<SyncMode>>,
+
+    /// Current sync phase (initial catch-up vs live)
+    sync_phase: Arc<Mutex<SyncPhase>>,
+
+    /// Last slot when sync made progress (for progress-based completion)
+    last_progress_slot: Arc<Mutex<u64>>,
 }
 
 impl SyncManager {
@@ -108,6 +127,8 @@ impl SyncManager {
             )),
             consecutive_failures: Arc::new(Mutex::new(0)),
             sync_mode: Arc::new(Mutex::new(SyncMode::Full)),
+            sync_phase: Arc::new(Mutex::new(SyncPhase::InitialSync)),
+            last_progress_slot: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -229,19 +250,21 @@ impl SyncManager {
         let highest = *self.highest_seen_slot.lock().await;
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = self.current_sync_batch.lock().await;
+        let phase = *self.sync_phase.lock().await;
 
         // Cooldown: don't re-trigger sync within the adaptive cooldown period.
-        // Base: 2s. On consecutive failures: 2s → 4s → 8s → 16s → 30s (capped).
-        // Without this, every incoming pending block fires another batch of
-        // range requests, flooding the responder and saturating QUIC.
+        // InitialSync uses a short fixed cooldown (500ms) for fast catch-up.
+        // LiveSync uses exponential backoff to avoid flooding peers.
         let last_triggered = *self.last_sync_triggered_at.lock().await;
         let failures = *self.consecutive_failures.lock().await;
-        let cooldown_secs = if failures == 0 {
-            SYNC_COOLDOWN_BASE_SECS
+        let cooldown_ms = if phase == SyncPhase::InitialSync {
+            500u64 // Fast catch-up: 500ms between retries
+        } else if failures == 0 {
+            SYNC_COOLDOWN_BASE_SECS * 1000
         } else {
-            (SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)
+            ((SYNC_COOLDOWN_BASE_SECS << failures.min(4)).min(SYNC_COOLDOWN_MAX_SECS)) * 1000
         };
-        if last_triggered.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
+        if last_triggered.elapsed() < std::time::Duration::from_millis(cooldown_ms) {
             return None;
         }
 
@@ -262,21 +285,22 @@ impl SyncManager {
         // If we're behind by more than 1 block and not already syncing
         // (FIX-FORK-2: lowered from +2 to +1 to catch forks earlier)
         if highest > current_slot + 1 {
-            // Determine start slot
-            // NOTE: We include current_slot in the range (not current_slot + 1)
-            // to receive the peer's version of our latest block. This enables
-            // fork resolution: if we have a different block at current_slot than
-            // the peer, the fork choice mechanism will replace ours with theirs,
-            // allowing subsequent blocks to chain correctly.
+            // Determine start slot.
+            // InitialSync: request current_slot + 1 (no overlap) to avoid
+            //   triggering fork choice on blocks we already have.
+            // LiveSync: include current_slot (overlap) for fork resolution —
+            //   the peer's version of our tip may replace ours if theirs has
+            //   more weight.
             let start_slot = if current_slot == 0 {
-                // Check if we have a checkpoint to start from
                 let checkpoint = *self.last_checkpoint.lock().await;
                 if checkpoint > 0 && CHECKPOINT_INTERVAL > 0 {
                     info!("🚀 Fast sync from checkpoint {}", checkpoint);
                     checkpoint
                 } else {
-                    0 // Start from genesis
+                    0
                 }
+            } else if phase == SyncPhase::InitialSync {
+                current_slot + 1 // No overlap — never trigger fork choice during catch-up
             } else {
                 current_slot // Include overlap for fork resolution
             };
@@ -372,6 +396,34 @@ impl SyncManager {
         *self.sync_mode.lock().await
     }
 
+    /// Get the current sync phase
+    pub async fn get_sync_phase(&self) -> SyncPhase {
+        *self.sync_phase.lock().await
+    }
+
+    /// Transition to LiveSync phase.  Called when the node is within 2
+    /// blocks of the tip and has finished initial catch-up.
+    pub async fn transition_to_live(&self) {
+        let mut phase = self.sync_phase.lock().await;
+        if *phase != SyncPhase::LiveSync {
+            info!("🟢 Sync phase: InitialSync → LiveSync (caught up with network)");
+            *phase = SyncPhase::LiveSync;
+        }
+    }
+
+    /// Record that sync made progress at a given slot (for completion tracking).
+    pub async fn record_progress(&self, slot: u64) {
+        let mut last = self.last_progress_slot.lock().await;
+        if slot > *last {
+            *last = slot;
+        }
+    }
+
+    /// Get the last slot at which sync made progress.
+    pub async fn get_last_progress_slot(&self) -> u64 {
+        *self.last_progress_slot.lock().await
+    }
+
     /// Determine whether a given block slot should use full or header-only
     /// validation based on distance from the chain tip.
     pub async fn should_full_validate(&self, block_slot: u64) -> bool {
@@ -454,10 +506,9 @@ impl SyncManager {
     }
 
     /// Try to apply pending blocks now that we have more of the chain.
-    /// Follows the parent-hash chain instead of requiring consecutive slot
-    /// numbers, so it works correctly when the chain has slot gaps (slots
-    /// where the assigned leader was offline and nobody produced).
-    pub async fn try_apply_pending(&self, current_slot: u64) -> Vec<Block> {
+    /// Returns only blocks that form a valid parent_hash chain from
+    /// `current_tip_hash`. Blocks that don't chain are left in pending.
+    pub async fn try_apply_pending(&self, current_slot: u64, current_tip_hash: Hash) -> Vec<Block> {
         let mut pending = self.pending_blocks.lock().await;
         let mut applicable = Vec::new();
 
@@ -465,31 +516,42 @@ impl SyncManager {
             return applicable;
         }
 
-        // Find blocks whose slot is > current_slot, sorted by slot ascending.
-        // Then greedily apply any block whose slot is the next expected one
-        // OR whose slot is ahead but the parent block exists (gap-aware).
-        // We repeatedly scan for the lowest-slot pending block that can chain.
+        // Walk the pending blocks in slot order.  For each candidate,
+        // verify that its parent_hash matches the running tip hash.
+        // Stop at the first break — don't return blocks past a gap.
         let mut tip_slot = current_slot;
+        let mut tip_hash = current_tip_hash;
         loop {
-            // Find the pending block with the smallest slot that is > tip_slot.
             let next_slot = pending.keys().filter(|&&s| s > tip_slot).min().copied();
 
             match next_slot {
                 Some(slot) => {
-                    // Remove and queue for application
+                    // Peek at the block's parent_hash before removing
+                    let chains = pending
+                        .get(&slot)
+                        .map(|b| b.header.parent_hash == tip_hash)
+                        .unwrap_or(false);
+                    if !chains {
+                        // Parent doesn't match — stop here.  Remaining blocks
+                        // stay in pending for a future sync cycle.
+                        break;
+                    }
                     if let Some(block) = pending.remove(&slot) {
+                        tip_hash = block.hash();
                         tip_slot = slot;
                         applicable.push(block);
                     }
                 }
-                None => break, // No more pending blocks ahead of tip
+                None => break,
             }
         }
 
         if !applicable.is_empty() {
             info!(
-                "📦 Found {} pending blocks that can now be applied",
-                applicable.len()
+                "📦 Found {} pending blocks that chain from tip (slot {} hash {})",
+                applicable.len(),
+                current_slot,
+                &current_tip_hash.to_hex()[..8]
             );
         }
 
@@ -561,6 +623,7 @@ mod tests {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         // Current slot 0, behind by 100 → should sync
+        // current_slot == 0: uses checkpoint branch (start = 0)
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
@@ -612,16 +675,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_should_sync_includes_overlap() {
+    async fn test_should_sync_no_overlap_initial_sync() {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
-        // Current slot 50, behind by 50 → should sync starting from 50 (overlap)
+        // InitialSync phase (default): start at current_slot + 1, no overlap
         let batch = sm.should_sync(50).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        // start_slot should be current_slot (50), NOT current_slot + 1
-        // This overlap enables fork resolution when chains diverge
-        assert_eq!(start, 50);
+        assert_eq!(start, 51); // No overlap during initial sync
+        assert!(end <= 100);
+    }
+
+    #[tokio::test]
+    async fn test_should_sync_overlap_live_sync() {
+        let sm = SyncManager::new();
+        sm.note_seen(100).await;
+        sm.transition_to_live().await;
+        // LiveSync: start at current_slot (overlap for fork resolution)
+        let batch = sm.should_sync(50).await;
+        assert!(batch.is_some());
+        let (start, end) = batch.unwrap();
+        assert_eq!(start, 50); // Overlap for fork resolution
         assert!(end <= 100);
     }
 
@@ -938,6 +1012,7 @@ mod tests {
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
+        // current_slot == 0: uses checkpoint branch (start = 0)
         assert_eq!(start, 0);
         // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH (6000) blocks
         let batch_size = end - start + 1;
@@ -953,7 +1028,8 @@ mod tests {
         let batch = sm.should_sync(10).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 10);
+        // InitialSync: start = current_slot + 1 = 11 (no overlap)
+        assert_eq!(start, 11);
         // Gap is 500, which is < SYNC_BATCH_SIZE(2000), so effective_batch = 2000
         // but we're capped at highest (510)
         assert_eq!(end, 510);
