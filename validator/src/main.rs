@@ -6305,17 +6305,11 @@ async fn run_validator() {
                 }
 
                 // FIX-FORK-1: Record that this slot has a valid network block.
-                // The production loop checks this set right before creating its
-                // own block, preventing the TOCTOU fork where a validator
-                // produces a conflicting block for a slot it already received.
-                {
-                    let mut rns = received_slots_for_rx.lock().await;
-                    rns.insert(block_slot);
-                    // Prune entries older than 200 slots to bound memory
-                    if block_slot > 200 {
-                        rns.retain(|&s| s + 200 >= block_slot);
-                    }
-                }
+                // MOVED: Insert into received_network_slots ONLY when the block
+                // is actually applied (chaining onto the tip), not on receipt.
+                // Previously, unchainable blocks from divergent peers poisoned
+                // the set, permanently blocking production for those slots.
+                // The insert now happens at each set_last_slot() call below.
                 let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
 
                 // Handle genesis block specially (slot 0 when current is also 0)
@@ -6563,6 +6557,14 @@ async fn run_validator() {
                         if state_for_blocks.put_block(&block).is_ok() {
                             state_for_blocks.set_last_slot(block_slot).ok();
                             *last_block_time_for_blocks.lock().await = std::time::Instant::now();
+                            // FIX-FORK-1: Record ONLY after successful application
+                            {
+                                let mut rns = received_slots_for_rx.lock().await;
+                                rns.insert(block_slot);
+                                if block_slot > 200 {
+                                    rns.retain(|&s| s + 200 >= block_slot);
+                                }
+                            }
                             info!("✅ Applied block {} from network", block_slot);
 
                             // A5-02: Record this head in fork choice oracle with the
@@ -7022,6 +7024,14 @@ async fn run_validator() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
+                                    // FIX-FORK-1: Record after fork adoption
+                                    {
+                                        let mut rns = received_slots_for_rx.lock().await;
+                                        rns.insert(block_slot);
+                                        if block_slot > 200 {
+                                            rns.retain(|&s| s + 200 >= block_slot);
+                                        }
+                                    }
                                     // A5-02: Update fork choice after successful replacement
                                     fork_choice.add_head(
                                         block_slot,
@@ -10049,7 +10059,7 @@ async fn run_validator() {
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot + 2 {
+            if network_highest > tip_slot + 10 {
                 // Check bounded freeze timeout
                 let now = std::time::Instant::now();
                 let freeze_start = freeze_started_at.get_or_insert(now);
@@ -10447,7 +10457,20 @@ async fn run_validator() {
                 .await
                 .contains(&slot);
             let already_stored = state.get_block_by_slot(slot).ok().flatten().is_some();
-            if already_received || already_stored {
+
+            // STALL-FIX: If the slot is in received_network_slots but no actual
+            // block exists in the DB, the entry is stale (e.g. from an unchainable
+            // block on a divergent fork that was received but never applied).
+            // Clear it and proceed with production to prevent permanent stalls.
+            if already_received && !already_stored {
+                let mut rns = received_network_slots_for_producer.lock().await;
+                rns.remove(&slot);
+                info!(
+                    "🔧 Cleared stale received_network_slots entry for slot {} (no block in DB)",
+                    slot
+                );
+                // Fall through to produce
+            } else if already_received || already_stored {
                 debug!(
                     "⏭️  Slot {} already has a network block, skipping production",
                     slot
