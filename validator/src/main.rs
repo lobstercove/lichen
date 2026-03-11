@@ -9854,25 +9854,56 @@ async fn run_validator() {
     // AUTO-SUBMIT RegisterValidator TRANSACTION (if needed)
     // ========================================================================
     // If this validator doesn't have an on-chain account with sufficient stake,
-    // create and submit a RegisterValidator transaction through consensus.
-    // This goes through the mempool → block producer → all nodes process identically.
+    // submit a RegisterValidator transaction to a bootstrap peer's RPC.
+    // Like Ethereum/Cosmos/Solana: joining validators submit registration to an
+    // EXISTING node's RPC over HTTP. No local sync required — the bootstrap peer
+    // already has blockchain state and will include the tx in a block.
     if needs_on_chain_registration {
         let state_for_register = state.clone();
-        let mempool_for_register = mempool.clone();
-        let p2p_pm_for_register = p2p_peer_manager.clone();
-        let p2p_config_for_register = p2p_config.clone();
         let register_keypair_seed = validator_keypair.to_seed();
         let register_pubkey = validator_pubkey;
         let register_fingerprint = machine_fingerprint;
+        let bootstrap_peer_strings = explicit_seed_peer_strings.clone();
         tokio::spawn(async move {
-            // Wait for chain sync and peer connections before submitting
-            info!("⏳ Waiting 10s for chain sync before submitting RegisterValidator tx...");
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            // Derive bootstrap peer RPC URL from its P2P address.
+            // The first bootstrap peer is the genesis validator — it has a running
+            // RPC server we can submit our registration tx to directly.
+            let bootstrap_rpc_url = if let Some(peer_addr) = bootstrap_peer_strings.first() {
+                // peer_addr is "host:port" where port is the P2P port
+                let parts: Vec<&str> = peer_addr.rsplitn(2, ':').collect();
+                let (host, peer_p2p) = if parts.len() == 2 {
+                    let port = parts[0].parse::<u16>().unwrap_or(7001);
+                    (parts[1].to_string(), port)
+                } else {
+                    (peer_addr.clone(), 7001u16)
+                };
+                // Port mapping: same formula as validator RPC port derivation
+                let base_p2p = if peer_p2p >= 8000 { 8001u16 } else { 7001u16 };
+                let base_rpc = if peer_p2p >= 8000 { 9899u16 } else { 8899u16 };
+                let offset = peer_p2p.saturating_sub(base_p2p);
+                let rpc_port = base_rpc.saturating_add(offset.saturating_mul(2));
+                format!("http://{}:{}", host, rpc_port)
+            } else {
+                warn!("⚠️  No bootstrap peers — cannot submit RegisterValidator via RPC");
+                return;
+            };
 
-            // Retry loop: keep trying until registered (tx included in a block)
+            info!(
+                "📡 Will submit RegisterValidator via bootstrap RPC: {}",
+                bootstrap_rpc_url
+            );
+
+            // Wait briefly for the bootstrap peer to be reachable
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            let http_client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("Failed to build HTTP client");
             let register_kp = Keypair::from_seed(&register_keypair_seed);
+
             for attempt in 1..=30u32 {
-                // Check if already registered (another path may have registered us)
+                // Check if already registered (local state may have synced)
                 let already_registered = state_for_register
                     .get_account(&register_pubkey)
                     .unwrap_or(None)
@@ -9883,14 +9914,59 @@ async fn run_validator() {
                     return;
                 }
 
-                // Get recent blockhash (slot 0 = genesis is valid for 300 blocks)
-                let tip_slot = state_for_register.get_last_slot().unwrap_or(0);
-                let blockhash = match state_for_register.get_block_by_slot(tip_slot) {
-                    Ok(Some(block)) => block.hash(),
-                    _ => {
+                // Fetch recent blockhash from bootstrap peer's RPC
+                let blockhash = match http_client
+                    .post(&bootstrap_rpc_url)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getRecentBlockhash",
+                        "params": []
+                    }))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(body) => {
+                                if let Some(hash_hex) = body["result"]["blockhash"].as_str() {
+                                    match moltchain_core::Hash::from_hex(hash_hex) {
+                                        Ok(h) => h,
+                                        Err(e) => {
+                                            warn!(
+                                                "⚠️  Invalid blockhash hex from RPC: {} — retrying (attempt {}/30)",
+                                                e, attempt
+                                            );
+                                            tokio::time::sleep(Duration::from_secs(5)).await;
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    let err_msg = body["error"]["message"]
+                                        .as_str()
+                                        .unwrap_or("unknown error");
+                                    info!(
+                                        "⏳ Bootstrap RPC getRecentBlockhash: {} — retrying (attempt {}/30)",
+                                        err_msg, attempt
+                                    );
+                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                info!(
+                                    "⏳ Failed to parse RPC response: {} — retrying (attempt {}/30)",
+                                    e, attempt
+                                );
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
                         info!(
-                            "⏳ Could not read tip block — retrying (attempt {}/30)",
-                            attempt
+                            "⏳ Bootstrap RPC unreachable: {} — retrying (attempt {}/30)",
+                            e, attempt
                         );
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
@@ -9912,32 +9988,78 @@ async fn run_validator() {
                 let sig = register_kp.sign(&tx.message.serialize());
                 tx.signatures.push(sig);
 
+                // Serialize → base64 for RPC transport
+                let tx_bytes = match bincode::serialize(&tx) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("⚠️  Failed to serialize RegisterValidator tx: {}", e);
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+                use base64::{engine::general_purpose, Engine as _};
+                let tx_b64 = general_purpose::STANDARD.encode(&tx_bytes);
+
                 info!(
-                    "📝 Submitting RegisterValidator tx (attempt {}/30, blockhash={})",
+                    "📝 Submitting RegisterValidator tx via bootstrap RPC (attempt {}/30, blockhash={})",
                     attempt,
                     blockhash.to_hex()
                 );
 
-                // Add to local mempool
+                // Submit to bootstrap peer's RPC via sendTransaction
+                match http_client
+                    .post(&bootstrap_rpc_url)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "sendTransaction",
+                        "params": [tx_b64]
+                    }))
+                    .send()
+                    .await
                 {
-                    let mut pool = mempool_for_register.lock().await;
-                    if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
-                        warn!("⚠️  Failed to add RegisterValidator tx to mempool: {}", e);
+                    Ok(resp) => {
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(body) => {
+                                if let Some(sig) = body["result"].as_str() {
+                                    info!(
+                                        "📡 RegisterValidator tx submitted — signature: {}",
+                                        sig
+                                    );
+                                } else {
+                                    let err_msg = body["error"]["message"]
+                                        .as_str()
+                                        .unwrap_or("unknown error");
+                                    warn!(
+                                        "⚠️  sendTransaction rejected: {} — retrying (attempt {}/30)",
+                                        err_msg, attempt
+                                    );
+                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️  Failed to parse sendTransaction response: {} — retrying (attempt {}/30)",
+                                    e, attempt
+                                );
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️  sendTransaction request failed: {} — retrying (attempt {}/30)",
+                            e, attempt
+                        );
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
                     }
                 }
 
-                // Broadcast to P2P network
-                if let Some(ref peer_mgr) = p2p_pm_for_register {
-                    let msg = moltchain_p2p::P2PMessage::new(
-                        moltchain_p2p::MessageType::Transaction(tx),
-                        p2p_config_for_register.listen_addr,
-                    );
-                    peer_mgr.broadcast(msg).await;
-                    info!("📡 Broadcasted RegisterValidator tx to network");
-                }
-
-                // Wait for block inclusion (check every 2 seconds)
-                for _ in 0..10 {
+                // Wait for block inclusion — poll local state (blocks arrive via P2P sync)
+                for _ in 0..15 {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let registered = state_for_register
                         .get_account(&register_pubkey)
@@ -9951,7 +10073,7 @@ async fn run_validator() {
                 }
 
                 info!(
-                    "⏳ RegisterValidator tx not yet included — will retry (attempt {}/30)",
+                    "⏳ RegisterValidator tx not yet confirmed — will retry (attempt {}/30)",
                     attempt
                 );
             }
