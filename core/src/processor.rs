@@ -191,7 +191,7 @@ impl TxProcessor {
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2..=5 | 19) {
+                    if matches!(kind, 2..=5 | 19 | 26) {
                         return 0;
                     }
                 }
@@ -1789,6 +1789,8 @@ impl TxProcessor {
             24 => self.system_unshield_withdraw(ix),
             #[cfg(feature = "zk")]
             25 => self.system_shielded_transfer(ix),
+            // On-chain validator registration (bootstrap grant through consensus)
+            26 => self.system_register_validator(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -3310,6 +3312,106 @@ impl TxProcessor {
             .add_spendable(amount_shells)
             .map_err(|e| format!("Recipient balance overflow: {}", e))?;
         self.b_put_account(&recipient, &recipient_account)?;
+
+        Ok(())
+    }
+
+    /// On-chain validator registration with bootstrap grant (instruction type 26).
+    /// Processes validator admission through consensus so ALL nodes see identical state.
+    ///
+    /// Instruction data: [26 | machine_fingerprint(32)]
+    /// Accounts: [new_validator_pubkey]
+    ///
+    /// This is fee-exempt because the new validator has no account yet.
+    /// The treasury funds the bootstrap grant (100K MOLT) which is immediately staked.
+    fn system_register_validator(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("RegisterValidator requires [validator] account".to_string());
+        }
+        if ix.data.len() < 33 {
+            return Err(
+                "RegisterValidator: missing machine_fingerprint (need 33 bytes)".to_string(),
+            );
+        }
+
+        let validator_pubkey = ix.accounts[0];
+        let mut fingerprint = [0u8; 32];
+        fingerprint.copy_from_slice(&ix.data[1..33]);
+
+        // Idempotent: if already registered with sufficient stake, return Ok
+        if let Some(existing) = self.b_get_account(&validator_pubkey)? {
+            if existing.staked >= crate::consensus::BOOTSTRAP_GRANT_AMOUNT {
+                return Ok(());
+            }
+        }
+
+        // Check bootstrap cap
+        let pool = self.b_get_stake_pool()?;
+        let grants_issued = pool.bootstrap_grants_issued();
+        if grants_issued >= crate::consensus::MAX_BOOTSTRAP_VALIDATORS {
+            return Err(format!(
+                "RegisterValidator: bootstrap phase complete ({} grants issued, max {})",
+                grants_issued,
+                crate::consensus::MAX_BOOTSTRAP_VALIDATORS
+            ));
+        }
+
+        // Check fingerprint uniqueness (prevents one machine from getting multiple grants)
+        if fingerprint != [0u8; 32] {
+            if let Some(existing_pk) = pool.fingerprint_owner(&fingerprint) {
+                if existing_pk != &validator_pubkey {
+                    return Err(format!(
+                        "RegisterValidator: machine fingerprint already registered to {}",
+                        existing_pk.to_base58()
+                    ));
+                }
+            }
+        }
+        drop(pool);
+
+        // Debit treasury
+        let treasury_pubkey = self
+            .state
+            .get_treasury_pubkey()?
+            .ok_or_else(|| "RegisterValidator: treasury pubkey not set".to_string())?;
+        let mut treasury = self
+            .b_get_account(&treasury_pubkey)?
+            .ok_or_else(|| "RegisterValidator: treasury account not found".to_string())?;
+
+        let grant_amount = crate::consensus::BOOTSTRAP_GRANT_AMOUNT;
+        treasury
+            .deduct_spendable(grant_amount)
+            .map_err(|e| format!("RegisterValidator: treasury insufficient: {}", e))?;
+        self.b_put_account(&treasury_pubkey, &treasury)?;
+
+        // Create or update validator account (all grant goes to staked)
+        let mut account = self
+            .b_get_account(&validator_pubkey)?
+            .unwrap_or_else(|| Account {
+                shells: 0,
+                spendable: 0,
+                staked: 0,
+                locked: 0,
+                data: Vec::new(),
+                owner: Pubkey([0x01; 32]), // SYSTEM_ACCOUNT_OWNER
+                executable: false,
+                rent_epoch: 0,
+            });
+        account.shells = account.shells.saturating_add(grant_amount);
+        account.staked = account.staked.saturating_add(grant_amount);
+        self.b_put_account(&validator_pubkey, &account)?;
+
+        // Add to on-chain stake pool
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let mut pool = self.b_get_stake_pool()?;
+        pool.try_bootstrap_with_fingerprint(
+            validator_pubkey,
+            grant_amount,
+            current_slot,
+            fingerprint,
+        )
+        .map_err(|e| format!("RegisterValidator: stake pool error: {}", e))?;
+        self.b_put_stake_pool(&pool)?;
 
         Ok(())
     }

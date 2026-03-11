@@ -3036,6 +3036,16 @@ async fn apply_block_effects(
         return;
     }
 
+    // Reload in-memory stake pool from on-chain state to pick up effects
+    // from consensus-processed transactions (e.g., RegisterValidator opcode 26,
+    // Stake, Unstake). Without this, the in-memory pool would miss changes
+    // applied by TxProcessor during block transaction processing.
+    if let Ok(fresh_pool) = state.get_stake_pool() {
+        let mut pool = stake_pool.write().await;
+        *pool = fresh_pool;
+        drop(pool);
+    }
+
     let producer = Pubkey(block.header.validator);
     let slot = block.header.slot;
     let has_user_transactions = block_has_user_transactions(block);
@@ -5416,6 +5426,14 @@ async fn run_validator() {
 
         // Add this validator if not already in genesis set
         // ⚠️ CRITICAL: Prevent genesis wallet from becoming a validator
+        // Use on-chain stake (from RegisterValidator tx) — NOT BOOTSTRAP_GRANT_AMOUNT.
+        // Validators must register through consensus; ValidatorSet is for peer routing only.
+        let on_chain_stake = state
+            .get_account(&validator_pubkey)
+            .unwrap_or(None)
+            .map(|a| a.staked)
+            .unwrap_or(0);
+
         if let Some(genesis_pubkey) = genesis_pubkey {
             if validator_pubkey != genesis_pubkey {
                 if !genesis_config
@@ -5423,10 +5441,11 @@ async fn run_validator() {
                     .iter()
                     .any(|v| v.pubkey == validator_pubkey.to_base58())
                 {
-                    info!("⚠️  This validator not in genesis set, adding dynamically");
+                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT)",
+                        on_chain_stake / 1_000_000_000);
                     set.add_validator(ValidatorInfo {
                         pubkey: validator_pubkey,
-                        stake: BOOTSTRAP_GRANT_AMOUNT, // 100K MOLT stake — matches V2/V3 join grant
+                        stake: on_chain_stake,
                         reputation: 100,
                         blocks_proposed: 0,
                         votes_cast: 0,
@@ -5445,10 +5464,11 @@ async fn run_validator() {
             .iter()
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
-            info!("⚠️  This validator not in genesis set, adding dynamically");
+            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT)",
+                on_chain_stake / 1_000_000_000);
             set.add_validator(ValidatorInfo {
                 pubkey: validator_pubkey,
-                stake: BOOTSTRAP_GRANT_AMOUNT, // 100K MOLT stake — matches V2/V3 join grant
+                stake: on_chain_stake,
                 reputation: 100,
                 blocks_proposed: 0,
                 votes_cast: 0,
@@ -5578,103 +5598,56 @@ async fn run_validator() {
         }
     }
 
-    // Check if this validator has an account, if not create with bootstrap grant
-    let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
-        eprintln!("Failed to read validator account: {e}");
-        None
-    });
-    if validator_account.is_none() {
-        // Check if we're still in the bootstrap phase (first 200 validators)
-        let bootstrap_grants_issued = {
-            let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-            persisted_pool.bootstrap_grants_issued()
-        };
-        let is_bootstrap_eligible =
-            bootstrap_grants_issued < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
-
-        if is_bootstrap_eligible {
-            // H13 fix: Bootstrap grant must come from treasury, not ex nihilo
-            let bootstrap_molt = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000; // 100K MOLT
-            let bootstrap_shells = BOOTSTRAP_GRANT_AMOUNT;
-            let treasury_pk = state.get_treasury_pubkey().ok().flatten();
-            let mut funded = false;
-
-            if let Some(ref tpk) = treasury_pk {
-                if let Ok(Some(mut treasury)) = state.get_account(tpk) {
-                    if treasury.spendable >= bootstrap_shells {
-                        treasury.deduct_spendable(bootstrap_shells).ok();
-                        state.put_account(tpk, &treasury).ok();
-                        funded = true;
-                        info!(
-                            "💰 Bootstrap grant #{}: {} MOLT deducted from treasury",
-                            bootstrap_grants_issued + 1,
-                            bootstrap_molt
-                        );
-                    } else {
-                        warn!(
-                            "⚠️  Treasury has insufficient funds for bootstrap grant ({} < {})",
-                            treasury.spendable, bootstrap_shells
-                        );
-                    }
-                }
+    // ============================================================================
+    // VALIDATOR REGISTRATION CHECK
+    // ============================================================================
+    // Validator accounts are NO LONGER created directly at startup.
+    // Instead, validators register through consensus via a RegisterValidator
+    // transaction (opcode 26). This ensures ALL nodes see identical state.
+    //
+    // Flow for joining validators:
+    //   1. Start, sync chain from peers
+    //   2. After sync, auto-submit RegisterValidator transaction
+    //   3. Current block producer includes it in a block
+    //   4. All nodes process identically: treasury debited, account created, staked
+    //
+    // Genesis validators are created by the genesis tool — no registration needed.
+    let needs_on_chain_registration = {
+        let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
+            eprintln!("Failed to read validator account: {e}");
+            None
+        });
+        match validator_account {
+            Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
+                info!(
+                    "✓ Validator account exists: {} MOLT",
+                    account.balance_molt()
+                );
+                info!(
+                    "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
+                    account.spendable as f64 / 1_000_000_000.0,
+                    account.staked as f64 / 1_000_000_000.0,
+                    account.locked as f64 / 1_000_000_000.0
+                );
+                false
             }
-
-            if !funded {
-                warn!("⚠️  No treasury available — bootstrap grant skipped. Validator needs manual funding.");
+            Some(account) => {
+                info!(
+                    "⚠️  Validator account exists but insufficient stake ({:.2} MOLT < {} MOLT required)",
+                    account.staked as f64 / 1_000_000_000.0,
+                    BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                );
+                info!("   Will auto-submit RegisterValidator transaction after sync");
+                true
             }
-
-            let bootstrap_account = if funded {
-                Account {
-                    shells: bootstrap_shells,
-                    spendable: 0,
-                    staked: bootstrap_shells,
-                    locked: 0,
-                    data: Vec::new(),
-                    owner: SYSTEM_ACCOUNT_OWNER,
-                    executable: false,
-                    rent_epoch: 0,
-                }
-            } else {
-                Account::new(0, SYSTEM_ACCOUNT_OWNER)
-            };
-
-            if let Err(e) = state.put_account(&validator_pubkey, &bootstrap_account) {
-                eprintln!("Failed to create validator account: {e}");
+            None => {
+                info!(
+                    "📋 No validator account found — will auto-submit RegisterValidator transaction after sync"
+                );
+                true
             }
-            info!(
-                "✓ Bootstrap validator account created (grant #{}/{}): {} MOLT total",
-                bootstrap_grants_issued + 1,
-                moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS,
-                bootstrap_account.balance_molt()
-            );
-        } else {
-            // Post-bootstrap phase: validator #201+ must bring their own stake
-            info!(
-                "📋 Bootstrap phase complete ({} grants issued). This validator must self-fund.",
-                bootstrap_grants_issued
-            );
-            // Create empty account — validator needs external funding of BOOTSTRAP_GRANT_AMOUNT
-            let empty_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-            if let Err(e) = state.put_account(&validator_pubkey, &empty_account) {
-                eprintln!("Failed to create validator account: {e}");
-            }
-            info!(
-                "✓ Validator account created (empty — requires {} MOLT deposit)",
-                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-            );
         }
-    } else if let Some(account) = validator_account {
-        info!(
-            "✓ Validator account exists: {} MOLT",
-            account.balance_molt()
-        );
-        info!(
-            "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
-            account.spendable as f64 / 1_000_000_000.0,
-            account.staked as f64 / 1_000_000_000.0,
-            account.locked as f64 / 1_000_000_000.0
-        );
-    }
+    };
 
     // Initialize vote aggregator for BFT consensus
     let vote_aggregator = Arc::new(RwLock::new(VoteAggregator::new()));
@@ -6304,12 +6277,17 @@ async fn run_validator() {
                         std::time::Instant::now();
                 }
 
-                // FIX-FORK-1: Record that this slot has a valid network block.
-                // MOVED: Insert into received_network_slots ONLY when the block
-                // is actually applied (chaining onto the tip), not on receipt.
-                // Previously, unchainable blocks from divergent peers poisoned
-                // the set, permanently blocking production for those slots.
-                // The insert now happens at each set_last_slot() call below.
+                // FIX-FORK-1: Record that this slot has a valid network block
+                // at RECEIPT time. This prevents the production loop from
+                // creating a conflicting block for a slot we've already seen
+                // from the network. The entry is pruned after 200 slots.
+                {
+                    let mut rns = received_slots_for_rx.lock().await;
+                    rns.insert(block_slot);
+                    if block_slot > 200 {
+                        rns.retain(|&s| s + 200 >= block_slot);
+                    }
+                }
                 let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
 
                 // Handle genesis block specially (slot 0 when current is also 0)
@@ -7344,9 +7322,7 @@ async fn run_validator() {
         let validator_pubkey_for_announce_handler = validator_pubkey;
         tokio::spawn(async move {
             info!("🔄 Validator announcement receiver started");
-            // 1.5c+d: Rate limiting — per-epoch bootstrap cap and per-minute announcement limit
-            let mut bootstrap_epoch: u64 = 0;
-            let mut bootstrap_count: u64 = 0;
+            // 1.5d: Per-minute announcement rate limiting
             let mut last_announce_times: std::collections::HashMap<
                 moltchain_core::account::Pubkey,
                 std::time::Instant,
@@ -7448,6 +7424,30 @@ async fn run_validator() {
                         drop(pool);
                     }
                 } else {
+                    // ── PHANTOM VALIDATOR GUARD ──
+                    // Reject new validators whose announced slot diverges too far
+                    // from our chain tip. A legitimate validator on the same network
+                    // will be within a few hundred slots. A node with stale/altered
+                    // state (e.g. a local dev validator that wasn't flushed) will
+                    // announce slot 0 or a completely different slot range, which
+                    // would contaminate our validator set and break leader election.
+                    let our_tip = state_for_validators.get_last_slot().unwrap_or(0);
+                    let their_slot = announcement.current_slot;
+                    let slot_drift = their_slot.abs_diff(our_tip);
+                    // Allow generous 500-slot window for sync lag
+                    const MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR: u64 = 500;
+                    if our_tip > 10 && slot_drift > MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR {
+                        warn!(
+                            "⚠️  Rejecting new validator {} — slot drift too large (ours={}, theirs={}, drift={}). Likely stale or altered state.",
+                            announcement.pubkey.to_base58(),
+                            our_tip,
+                            their_slot,
+                            slot_drift,
+                        );
+                        drop(vs);
+                        continue;
+                    }
+
                     // Reject if at capacity
                     if vs.validators().len() >= MAX_VALIDATORS {
                         warn!(
@@ -7499,44 +7499,23 @@ async fn run_validator() {
                         continue;
                     }
 
-                    // 1.5b: Check on-chain staked balance before granting bootstrap
-                    let existing_account = state_for_validators
+                    // ── DISCOVERY-ONLY: Add to ValidatorSet for peer routing ──
+                    // No bootstrap accounts, no treasury debits, no stake pool changes.
+                    // Validator must submit a RegisterValidator transaction (opcode 26)
+                    // through consensus to receive a bootstrap grant and enter the stake pool.
+                    let on_chain_stake = state_for_validators
                         .get_account(&announcement.pubkey)
-                        .unwrap_or(None);
-                    let already_staked = existing_account.as_ref().map(|a| a.staked).unwrap_or(0);
+                        .unwrap_or(None)
+                        .map(|a| a.staked)
+                        .unwrap_or(0);
 
-                    // 1.5c: Per-epoch cap on bootstrap grants (max 10 per epoch)
-                    const MAX_BOOTSTRAPS_PER_EPOCH: u64 = 10;
-                    let current_epoch = announcement.current_slot / SLOTS_PER_EPOCH;
-                    if current_epoch != bootstrap_epoch {
-                        bootstrap_epoch = current_epoch;
-                        bootstrap_count = 0;
-                    }
-
-                    let needs_bootstrap = already_staked < BOOTSTRAP_GRANT_AMOUNT;
-
-                    if needs_bootstrap && bootstrap_count >= MAX_BOOTSTRAPS_PER_EPOCH {
-                        warn!(
-                            "⚠️  Bootstrap cap reached for epoch {} — rejecting {}",
-                            current_epoch,
-                            announcement.pubkey.to_base58()
-                        );
-                        drop(vs);
-                        continue;
-                    }
-
-                    // Add new validator
                     let new_validator = ValidatorInfo {
                         pubkey: announcement.pubkey,
                         reputation: 100,
                         blocks_proposed: 0,
                         votes_cast: 0,
                         correct_votes: 0,
-                        stake: if already_staked >= BOOTSTRAP_GRANT_AMOUNT {
-                            already_staked
-                        } else {
-                            BOOTSTRAP_GRANT_AMOUNT
-                        },
+                        stake: on_chain_stake,
                         joined_slot: announcement.current_slot,
                         last_active_slot: announcement.current_slot,
                         commission_rate: 500,
@@ -7544,164 +7523,16 @@ async fn run_validator() {
                     };
                     vs.add_validator(new_validator);
 
-                    // Also stake in local pool so leader election can pick them
-                    // AUDIT-FIX C4/H13: For self-funded validators, stake immediately.
-                    // For bootstrap validators, defer stake pool entry until AFTER treasury
-                    // debit succeeds — prevents inflating active stake with unfunded entries.
-                    if !needs_bootstrap {
-                        // Self-funded: stake immediately in local pool
-                        let mut pool = stake_pool_for_announce.write().await;
-                        if pool.get_stake(&announcement.pubkey).is_none() {
-                            let fingerprint = announcement.machine_fingerprint;
-                            match pool.try_bootstrap_with_fingerprint(
-                                announcement.pubkey,
-                                already_staked,
-                                announcement.current_slot,
-                                fingerprint,
-                            ) {
-                                Ok(_) => {
-                                    info!(
-                                        "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
-                                        already_staked / 1_000_000_000
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "⚠️  Failed to stake joining validator {}: {}",
-                                        announcement.pubkey.to_base58(),
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Bootstrap account only if the validator doesn't already have sufficient stake
-                    // AND we're still in the bootstrap phase (first 200 validators)
-                    if needs_bootstrap {
-                        // Check bootstrap cap from stake pool
-                        let bootstrap_grants = {
-                            let pool = stake_pool_for_announce.read().await;
-                            pool.bootstrap_grants_issued()
-                        };
-                        let is_bootstrap_eligible =
-                            bootstrap_grants < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
-
-                        if !is_bootstrap_eligible {
-                            info!(
-                                "📋 Bootstrap phase complete ({} grants). Validator {} must self-fund.",
-                                bootstrap_grants,
-                                announcement.pubkey.to_base58()
-                            );
-                        } else {
-                            // AUDIT-FIX C4/H13: Deduct from treasury FIRST, only stake if funded
-                            let mut funded = false;
-                            if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
-                                if let Ok(Some(mut treasury)) =
-                                    state_for_validators.get_account(&tpk)
-                                {
-                                    if treasury.spendable >= BOOTSTRAP_GRANT_AMOUNT {
-                                        treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).ok();
-                                        if let Err(e) =
-                                            state_for_validators.put_account(&tpk, &treasury)
-                                        {
-                                            warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
-                                        } else {
-                                            funded = true;
-                                        }
-                                    } else {
-                                        warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
-                                            treasury.spendable, BOOTSTRAP_GRANT_AMOUNT);
-                                    }
-                                }
-                            }
-
-                            if funded {
-                                // Treasury debit succeeded — NOW credit stake pool
-                                {
-                                    let mut pool = stake_pool_for_announce.write().await;
-                                    if pool.get_stake(&announcement.pubkey).is_none() {
-                                        let fingerprint = announcement.machine_fingerprint;
-                                        match pool.try_bootstrap_with_fingerprint(
-                                            announcement.pubkey,
-                                            BOOTSTRAP_GRANT_AMOUNT,
-                                            announcement.current_slot,
-                                            fingerprint,
-                                        ) {
-                                            Ok((bootstrap_index, _)) => {
-                                                info!(
-                                                    "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
-                                                    bootstrap_index + 1,
-                                                    BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                                                );
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "⚠️  Failed to stake bootstrap validator {}: {}",
-                                                    announcement.pubkey.to_base58(),
-                                                    e
-                                                );
-                                                // Reverse treasury debit since stake failed
-                                                if let Ok(Some(tpk)) =
-                                                    state_for_validators.get_treasury_pubkey()
-                                                {
-                                                    if let Ok(Some(mut treasury)) =
-                                                        state_for_validators.get_account(&tpk)
-                                                    {
-                                                        treasury
-                                                            .add_spendable(BOOTSTRAP_GRANT_AMOUNT)
-                                                            .ok();
-                                                        let _ = state_for_validators
-                                                            .put_account(&tpk, &treasury);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let mut bootstrap_account = Account {
-                                    shells: BOOTSTRAP_GRANT_AMOUNT,
-                                    spendable: 0,
-                                    staked: BOOTSTRAP_GRANT_AMOUNT,
-                                    locked: 0,
-                                    data: Vec::new(),
-                                    owner: SYSTEM_ACCOUNT_OWNER,
-                                    executable: false,
-                                    rent_epoch: 0,
-                                };
-                                // Preserve any existing spendable balance (from block rewards)
-                                if let Some(existing) = &existing_account {
-                                    bootstrap_account.shells += existing.spendable;
-                                    bootstrap_account.spendable = existing.spendable;
-                                }
-                                if let Err(e) = state_for_validators
-                                    .put_account(&announcement.pubkey, &bootstrap_account)
-                                {
-                                    warn!(
-                                        "⚠️  Failed to create bootstrap account for {}: {}",
-                                        announcement.pubkey, e
-                                    );
-                                } else {
-                                    bootstrap_count += 1;
-                                    info!(
-                                        "💰 Created bootstrap account for validator {} ({} MOLT staked, treasury debited) [{}/{}]",
-                                        announcement.pubkey.to_base58(),
-                                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000,
-                                        bootstrap_count,
-                                        MAX_BOOTSTRAPS_PER_EPOCH,
-                                    );
-                                }
-                            } else {
-                                warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
-                                    announcement.pubkey.to_base58());
-                            }
-                        }
+                    if on_chain_stake == 0 {
+                        info!(
+                            "📋 New validator {} added for peer routing (no on-chain stake yet — must submit RegisterValidator tx)",
+                            announcement.pubkey.to_base58()
+                        );
                     } else {
                         info!(
-                            "✅ Validator {} already has sufficient on-chain stake ({}), skipping bootstrap",
+                            "✅ Validator {} added with on-chain stake {} MOLT",
                             announcement.pubkey.to_base58(),
-                            already_staked
+                            on_chain_stake / 1_000_000_000
                         );
                     }
                 }
@@ -8592,6 +8423,21 @@ async fn run_validator() {
                                             .unwrap_or(false);
 
                                         if has_verified_stake {
+                                            // PHANTOM GUARD: Also check slot plausibility
+                                            let our_tip = state_for_snapshot_apply
+                                                .get_last_slot()
+                                                .unwrap_or(0);
+                                            let their_slot = remote_val.last_active_slot;
+                                            let drift = their_slot.abs_diff(our_tip);
+                                            if our_tip > 10 && drift > 500 {
+                                                warn!(
+                                                    "⚠️  Snapshot: rejecting validator {} from {} — slot drift {} too large (ours={}, theirs={})",
+                                                    remote_val.pubkey.to_base58(),
+                                                    response.requester,
+                                                    drift, our_tip, their_slot
+                                                );
+                                                continue;
+                                            }
                                             // On-chain stake verified — safe to add
                                             let new_val = ValidatorInfo {
                                                 pubkey: remote_val.pubkey,
@@ -8676,76 +8522,30 @@ async fn run_validator() {
                                     }
                                 };
                                 if should_upsert {
+                                    // GUARD: Only upsert stake entries for validators
+                                    // that exist in our local validator set. This prevents
+                                    // phantom entries from contaminated peers from being
+                                    // injected into our stake pool and creating fake accounts.
+                                    let vs = validator_set_for_snapshot_apply.read().await;
+                                    let is_known_validator =
+                                        vs.get_validator(&entry_validator).is_some();
+                                    drop(vs);
+                                    if !is_known_validator {
+                                        warn!(
+                                            "⚠️  Snapshot: skipping stake entry for unknown validator {} from peer {} (not in local validator set)",
+                                            entry.validator.to_base58(),
+                                            response.requester
+                                        );
+                                        continue;
+                                    }
+
                                     pool.upsert_stake_full(entry.clone());
                                     merged_count += 1;
-
-                                    // Create bootstrap account for this validator if it doesn't exist locally
-                                    // This ensures V1 knows about V2/V3's staked accounts (and vice versa)
-                                    let existing_account = state_for_snapshot_apply
-                                        .get_account(&entry.validator)
-                                        .unwrap_or(None);
-                                    let needs_bootstrap = match &existing_account {
-                                        None => true,
-                                        Some(acct) => {
-                                            acct.staked == 0 && entry.amount >= MIN_VALIDATOR_STAKE
-                                        }
-                                    };
-                                    if needs_bootstrap {
-                                        // Deduct from treasury — same as announce handler
-                                        let mut funded = false;
-                                        if let Ok(Some(tpk)) =
-                                            state_for_snapshot_apply.get_treasury_pubkey()
-                                        {
-                                            if let Ok(Some(mut treasury)) =
-                                                state_for_snapshot_apply.get_account(&tpk)
-                                            {
-                                                if treasury.spendable >= entry.amount {
-                                                    treasury.deduct_spendable(entry.amount).ok();
-                                                    if let Err(e) = state_for_snapshot_apply
-                                                        .put_account(&tpk, &treasury)
-                                                    {
-                                                        warn!("⚠️  Failed to debit treasury for snapshot bootstrap: {}", e);
-                                                    } else {
-                                                        funded = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if funded {
-                                            // Construct account directly with staked amount in shells
-                                            // (avoids MOLT<->shells rounding issues)
-                                            let mut bootstrap_account = Account {
-                                                shells: entry.amount,
-                                                spendable: 0,
-                                                staked: entry.amount,
-                                                locked: 0,
-                                                data: Vec::new(),
-                                                owner: SYSTEM_ACCOUNT_OWNER,
-                                                executable: false,
-                                                rent_epoch: 0,
-                                            };
-                                            // Preserve any existing spendable balance (from block rewards)
-                                            if let Some(existing) = &existing_account {
-                                                bootstrap_account.shells += existing.spendable;
-                                                bootstrap_account.spendable = existing.spendable;
-                                            }
-                                            if let Err(e) = state_for_snapshot_apply
-                                                .put_account(&entry.validator, &bootstrap_account)
-                                            {
-                                                warn!("⚠️  Failed to create bootstrap account for {}: {}", entry.validator, e);
-                                            } else {
-                                                info!(
-                                                "💰 Created bootstrap account for validator {} ({:.4} MOLT staked, treasury debited)",
-                                                entry.validator,
-                                                entry.amount as f64 / 1_000_000_000.0
-                                            );
-                                            }
-                                        } else {
-                                            warn!("⚠️  Insufficient treasury to bootstrap validator {} from snapshot ({:.4} MOLT needed)",
-                                                entry.validator, entry.amount as f64 / 1_000_000_000.0);
-                                        }
-                                    }
+                                    // NOTE: No bootstrap account creation here.
+                                    // Validator accounts are created through consensus
+                                    // via the RegisterValidator instruction (opcode 26).
+                                    // Stake pool entries synced here reflect on-chain state
+                                    // that was already processed through block consensus.
                                 }
                             }
                             let merged_hash = hash_stake_pool(&pool);
@@ -9857,6 +9657,124 @@ async fn run_validator() {
         }
     });
 
+    // ========================================================================
+    // AUTO-SUBMIT RegisterValidator TRANSACTION (if needed)
+    // ========================================================================
+    // If this validator doesn't have an on-chain account with sufficient stake,
+    // create and submit a RegisterValidator transaction through consensus.
+    // This goes through the mempool → block producer → all nodes process identically.
+    if needs_on_chain_registration {
+        let state_for_register = state.clone();
+        let mempool_for_register = mempool.clone();
+        let p2p_pm_for_register = p2p_peer_manager.clone();
+        let p2p_config_for_register = p2p_config.clone();
+        let register_keypair_seed = validator_keypair.to_seed();
+        let register_pubkey = validator_pubkey;
+        let register_fingerprint = machine_fingerprint;
+        tokio::spawn(async move {
+            // Wait for chain sync and peer connections before submitting
+            info!("⏳ Waiting 10s for chain sync before submitting RegisterValidator tx...");
+            tokio::time::sleep(Duration::from_secs(10)).await;
+
+            // Retry loop: keep trying until registered (tx included in a block)
+            let register_kp = Keypair::from_seed(&register_keypair_seed);
+            for attempt in 1..=30u32 {
+                // Check if already registered (another path may have registered us)
+                let already_registered = state_for_register
+                    .get_account(&register_pubkey)
+                    .unwrap_or(None)
+                    .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
+                    .unwrap_or(false);
+                if already_registered {
+                    info!("✅ Validator registered on-chain — RegisterValidator not needed");
+                    return;
+                }
+
+                // Get recent blockhash
+                let tip_slot = state_for_register.get_last_slot().unwrap_or(0);
+                if tip_slot == 0 {
+                    info!(
+                        "⏳ No blocks yet — waiting for chain sync (attempt {}/30)",
+                        attempt
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+                let blockhash = match state_for_register.get_block_by_slot(tip_slot) {
+                    Ok(Some(block)) => block.hash(),
+                    _ => {
+                        info!(
+                            "⏳ Could not read tip block — retrying (attempt {}/30)",
+                            attempt
+                        );
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+
+                // Build RegisterValidator instruction: [26 | fingerprint(32)]
+                let mut ix_data = vec![26u8];
+                ix_data.extend_from_slice(&register_fingerprint);
+
+                let ix = moltchain_core::Instruction {
+                    program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                    accounts: vec![register_pubkey],
+                    data: ix_data,
+                };
+
+                let msg = moltchain_core::Message::new(vec![ix], blockhash);
+                let mut tx = Transaction::new(msg);
+                let sig = register_kp.sign(&tx.message.serialize());
+                tx.signatures.push(sig);
+
+                info!(
+                    "📝 Submitting RegisterValidator tx (attempt {}/30, blockhash={})",
+                    attempt,
+                    blockhash.to_hex()
+                );
+
+                // Add to local mempool
+                {
+                    let mut pool = mempool_for_register.lock().await;
+                    if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
+                        warn!("⚠️  Failed to add RegisterValidator tx to mempool: {}", e);
+                    }
+                }
+
+                // Broadcast to P2P network
+                if let Some(ref peer_mgr) = p2p_pm_for_register {
+                    let msg = moltchain_p2p::P2PMessage::new(
+                        moltchain_p2p::MessageType::Transaction(tx),
+                        p2p_config_for_register.listen_addr,
+                    );
+                    peer_mgr.broadcast(msg).await;
+                    info!("📡 Broadcasted RegisterValidator tx to network");
+                }
+
+                // Wait for block inclusion (check every 2 seconds)
+                for _ in 0..10 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let registered = state_for_register
+                        .get_account(&register_pubkey)
+                        .unwrap_or(None)
+                        .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
+                        .unwrap_or(false);
+                    if registered {
+                        info!("✅ RegisterValidator tx confirmed — validator registered on-chain!");
+                        return;
+                    }
+                }
+
+                info!(
+                    "⏳ RegisterValidator tx not yet included — will retry (attempt {}/30)",
+                    attempt
+                );
+            }
+
+            warn!("⚠️  RegisterValidator not confirmed after 30 attempts — validator may need manual registration");
+        });
+    }
+
     // Track when we first discovered other validators (for stabilization wait)
     let mut first_announcement_time: Option<std::time::Instant> = None;
     let validator_set_stabilization = if !explicit_seed_peers.is_empty()
@@ -10059,7 +9977,7 @@ async fn run_validator() {
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot + 10 {
+            if network_highest > tip_slot + 2 {
                 // Check bounded freeze timeout
                 let now = std::time::Instant::now();
                 let freeze_start = freeze_started_at.get_or_insert(now);
@@ -10458,19 +10376,7 @@ async fn run_validator() {
                 .contains(&slot);
             let already_stored = state.get_block_by_slot(slot).ok().flatten().is_some();
 
-            // STALL-FIX: If the slot is in received_network_slots but no actual
-            // block exists in the DB, the entry is stale (e.g. from an unchainable
-            // block on a divergent fork that was received but never applied).
-            // Clear it and proceed with production to prevent permanent stalls.
-            if already_received && !already_stored {
-                let mut rns = received_network_slots_for_producer.lock().await;
-                rns.remove(&slot);
-                info!(
-                    "🔧 Cleared stale received_network_slots entry for slot {} (no block in DB)",
-                    slot
-                );
-                // Fall through to produce
-            } else if already_received || already_stored {
+            if already_received || already_stored {
                 debug!(
                     "⏭️  Slot {} already has a network block, skipping production",
                     slot
