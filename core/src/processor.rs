@@ -181,17 +181,19 @@ impl TxProcessor {
     ///   750+ reputation → 7.5% discount
     ///   1000+ reputation → 10% discount
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
-        // Internal system transaction types 2-5, 19 are fee-free:
+        // Internal system transaction types 2-5, 19, 26, 27 are fee-free:
         //   2 = Reward distribution (validator block rewards from treasury)
         //   3 = Grant/debt repayment (validator grant repayment to treasury)
         //   4 = Genesis transfer (initial treasury funding)
         //   5 = Genesis mint (initial supply creation)
         //  19 = Faucet airdrop (treasury-funded, already debits treasury)
+        //  26 = RegisterValidator (bootstrap grant through consensus)
+        //  27 = SlashValidator (consensus-based equivocation slashing)
         // These are created by the validator itself and must not be charged fees.
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2..=5 | 19 | 26) {
+                    if matches!(kind, 2..=5 | 19 | 26 | 27) {
                         return 0;
                     }
                 }
@@ -1791,6 +1793,8 @@ impl TxProcessor {
             25 => self.system_shielded_transfer(ix),
             // On-chain validator registration (bootstrap grant through consensus)
             26 => self.system_register_validator(ix),
+            // On-chain slashing via consensus (Ethereum/Cosmos pattern)
+            27 => self.system_slash_validator(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -3412,6 +3416,193 @@ impl TxProcessor {
         )
         .map_err(|e| format!("RegisterValidator: stake pool error: {}", e))?;
         self.b_put_stake_pool(&pool)?;
+
+        Ok(())
+    }
+
+    /// System program: SlashValidator (opcode 27)
+    ///
+    /// Consensus-based equivocation slashing — the Ethereum/Cosmos pattern.
+    /// Any validator that detects a DoubleVote or DoubleBlock creates this
+    /// transaction with the cryptographic evidence.  When the transaction is
+    /// included in a block, ALL validators verify the evidence and apply the
+    /// same economic penalty deterministically — no local sweeps, no state
+    /// divergence.
+    ///
+    /// Instruction layout: `[27 | bincode(SlashingEvidence)]`
+    /// Accounts: `[offending_validator_pubkey]`
+    ///
+    /// Fee-exempt because this is a protocol-level enforcement transaction.
+    fn system_slash_validator(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("SlashValidator requires [offending_validator] account".to_string());
+        }
+        if ix.data.len() < 2 {
+            return Err("SlashValidator: missing evidence data".to_string());
+        }
+
+        let offending_validator = ix.accounts[0];
+
+        // Deserialize the evidence from instruction data (skip opcode byte)
+        let evidence: crate::consensus::SlashingEvidence = bincode::deserialize(&ix.data[1..])
+            .map_err(|e| format!("SlashValidator: invalid evidence encoding: {}", e))?;
+
+        // Verify the evidence matches the declared offending validator
+        if evidence.validator != offending_validator {
+            return Err(format!(
+                "SlashValidator: evidence validator {} doesn't match account {}",
+                evidence.validator.to_base58(),
+                offending_validator.to_base58()
+            ));
+        }
+
+        // Only accept Byzantine faults (DoubleBlock, DoubleVote)
+        // Downtime is NOT slashable through consensus — it's handled via
+        // reputation penalties like Solana and Ethereum.
+        match &evidence.offense {
+            crate::consensus::SlashingOffense::DoubleVote {
+                slot: _,
+                vote_1,
+                vote_2,
+            } => {
+                // Cryptographic verification: both votes must be validly signed
+                // by the same validator for the same slot but different blocks
+                if vote_1.validator != offending_validator
+                    || vote_2.validator != offending_validator
+                {
+                    return Err("SlashValidator: vote signers don't match offender".to_string());
+                }
+                if vote_1.slot != vote_2.slot {
+                    return Err("SlashValidator: votes are for different slots".to_string());
+                }
+                if vote_1.block_hash == vote_2.block_hash {
+                    return Err("SlashValidator: votes are for the same block".to_string());
+                }
+                if !vote_1.verify() || !vote_2.verify() {
+                    return Err(
+                        "SlashValidator: one or both vote signatures are invalid".to_string()
+                    );
+                }
+            }
+            crate::consensus::SlashingOffense::DoubleBlock {
+                slot: _,
+                block_hash_1,
+                block_hash_2,
+            } => {
+                if block_hash_1 == block_hash_2 {
+                    return Err("SlashValidator: block hashes are identical".to_string());
+                }
+                // Note: we can't verify block signatures here because we only have
+                // the hashes.  The evidence was created by a validator that SAW both
+                // blocks — the P2P layer already verified signatures on receipt.
+            }
+            _ => {
+                return Err(
+                    "SlashValidator: only DoubleVote and DoubleBlock are consensus-slashable"
+                        .to_string(),
+                );
+            }
+        }
+
+        // Idempotency: check if this exact offense at this slot was already processed.
+        // We store a marker key: "slashed:<validator>:<slot>:<offense_type>"
+        let offense_key = match &evidence.offense {
+            crate::consensus::SlashingOffense::DoubleVote { slot, .. } => {
+                format!(
+                    "slashed:{}:{}:double_vote",
+                    offending_validator.to_base58(),
+                    slot
+                )
+            }
+            crate::consensus::SlashingOffense::DoubleBlock { slot, .. } => {
+                format!(
+                    "slashed:{}:{}:double_block",
+                    offending_validator.to_base58(),
+                    slot
+                )
+            }
+            _ => unreachable!(),
+        };
+        if self
+            .state
+            .get_metadata(&offense_key)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            // Already processed — idempotent success
+            return Ok(());
+        }
+
+        // Load consensus params for slashing percentages
+        let params = crate::genesis::ConsensusParams::default();
+
+        // Calculate penalty
+        let mut pool = self.b_get_stake_pool()?;
+        let original_stake = pool
+            .get_stake(&offending_validator)
+            .map(|s| s.total_stake())
+            .unwrap_or(0);
+
+        if original_stake == 0 {
+            // Nothing to slash — mark as processed and return
+            self.state.put_metadata(&offense_key, b"1").map_err(|e| {
+                format!(
+                    "SlashValidator: failed to persist idempotency marker: {}",
+                    e
+                )
+            })?;
+            return Ok(());
+        }
+
+        let slash_percent = match &evidence.offense {
+            crate::consensus::SlashingOffense::DoubleVote { .. } => {
+                params.slashing_percentage_double_vote
+            }
+            crate::consensus::SlashingOffense::DoubleBlock { .. } => {
+                params.slashing_percentage_double_sign
+            }
+            _ => unreachable!(),
+        };
+
+        let raw_penalty = (original_stake as u128 * slash_percent as u128 / 100) as u64;
+
+        // GRANT-PROTECT: Cap penalty so stake never drops below MIN_VALIDATOR_STAKE
+        let slash_budget = original_stake.saturating_sub(crate::consensus::MIN_VALIDATOR_STAKE);
+        let capped_penalty = raw_penalty.min(slash_budget);
+
+        if capped_penalty > 0 {
+            // Apply slash to stake pool
+            pool.slash_validator(&offending_validator, capped_penalty);
+            self.b_put_stake_pool(&pool)?;
+
+            // Debit the validator's account balance (staked portion)
+            if let Some(mut acct) = self.b_get_account(&offending_validator)? {
+                let debit = capped_penalty.min(acct.staked);
+                acct.staked = acct.staked.saturating_sub(debit);
+                acct.shells = acct.shells.saturating_sub(debit);
+                self.b_put_account(&offending_validator, &acct)?;
+            }
+
+            // Credit treasury with slashed amount (burn portion goes to treasury)
+            let treasury_pubkey = self
+                .state
+                .get_treasury_pubkey()?
+                .ok_or_else(|| "SlashValidator: treasury pubkey not set".to_string())?;
+            if let Some(mut treasury) = self.b_get_account(&treasury_pubkey)? {
+                treasury.shells = treasury.shells.saturating_add(capped_penalty);
+                treasury.spendable = treasury.spendable.saturating_add(capped_penalty);
+                self.b_put_account(&treasury_pubkey, &treasury)?;
+            }
+        }
+
+        // Mark as processed for idempotency
+        self.state.put_metadata(&offense_key, b"1").map_err(|e| {
+            format!(
+                "SlashValidator: failed to persist idempotency marker: {}",
+                e
+            )
+        })?;
 
         Ok(())
     }

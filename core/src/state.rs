@@ -5071,6 +5071,30 @@ impl StateStore {
         }
     }
 
+    /// Generic metadata store/retrieve for consensus markers (e.g. slashing
+    /// idempotency keys).  Uses CF_STATS to avoid adding a new column family.
+    pub fn put_metadata(&self, key: &str, value: &[u8]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), value)
+            .map_err(|e| format!("put_metadata({}): {}", key, e))
+    }
+
+    /// Retrieve a generic metadata value.  Returns Ok(None) if the key
+    /// does not exist.
+    pub fn get_metadata(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .get_cf(&cf, key.as_bytes())
+            .map_err(|e| format!("get_metadata({}): {}", key, e))
+    }
+
     /// AUDIT-FIX M7: Persist slashing tracker to RocksDB for restart-proof evidence.
     pub fn put_slashing_tracker(
         &self,

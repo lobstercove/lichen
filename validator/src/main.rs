@@ -5735,37 +5735,45 @@ async fn run_validator() {
                     }
                 }
             }
+        } else if needs_on_chain_registration {
+            // ── CONSENSUS-ONLY PATH ──
+            // Do NOT add to in-memory stake pool here. The RegisterValidator
+            // transaction (opcode 26) will be submitted through consensus.
+            // When confirmed, apply_block_effects reloads the stake pool from
+            // RocksDB, giving all nodes identical state simultaneously.
+            // Until then, this validator has 0 stake: it syncs blocks but
+            // does not vote or produce (exactly like Ethereum/Solana).
+            info!(
+                "📋 Validator has no on-chain stake — waiting for RegisterValidator tx through consensus"
+            );
+            info!("   Will begin voting/producing after tx confirmed in a block");
         } else {
-            // New validator — atomic: validate fingerprint → allocate index → stake → register
-            match pool.try_bootstrap_with_fingerprint(
-                validator_pubkey,
-                BOOTSTRAP_GRANT_AMOUNT,
-                current_slot,
-                machine_fingerprint,
-            ) {
-                Ok((bootstrap_index, _is_new)) => {
-                    if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
+            // Edge case: validator has on-chain account but the in-memory
+            // stake pool lost its entry (e.g., pool corruption/reset).
+            // Re-add from the verified on-chain state.
+            let on_chain_stake = state
+                .get_account(&validator_pubkey)
+                .unwrap_or(None)
+                .map(|a| a.staked)
+                .unwrap_or(0);
+            if on_chain_stake >= moltchain_core::consensus::MIN_VALIDATOR_STAKE {
+                match pool.try_bootstrap_with_fingerprint(
+                    validator_pubkey,
+                    on_chain_stake,
+                    current_slot,
+                    machine_fingerprint,
+                ) {
+                    Ok(_) => {
                         info!(
-                            "🦞 Bootstrap validator #{} — debt-based stake with graduation",
-                            bootstrap_index + 1
+                            "🔄 Restored stake pool entry from on-chain state: {} MOLT",
+                            on_chain_stake / 1_000_000_000
                         );
-                    } else {
-                        info!("📋 Post-bootstrap validator — self-funded, no debt");
                     }
-                    info!(
-                        "💰 Staked {} MOLT (bootstrap grant)",
-                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                    );
-                    if machine_fingerprint != [0u8; 32] {
-                        info!("🔒 Machine fingerprint registered");
+                    Err(e) => {
+                        warn!("⚠️  Failed to restore stake pool entry: {}", e);
                     }
-                }
-                Err(e) => {
-                    warn!("⚠️  Failed to stake: {}", e);
                 }
             }
-
-            info!("💰 Validator is now economically secured");
         }
 
         // Migrate legacy validators that were staked before bootstrap system existed
@@ -6117,6 +6125,11 @@ async fn run_validator() {
         let data_dir_for_blocks = data_dir.clone();
         let finality_for_blocks = finality_tracker.clone();
         let vote_authority_for_rx = vote_authority.clone();
+        // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
+        let mempool_for_slash_blocks = mempool.clone();
+        let slash_keypair_seed_for_blocks = validator_keypair.to_seed();
+        let p2p_config_for_slash_blocks = p2p_config.clone();
+        let p2p_pm_for_slash_blocks = p2p_pm.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -6221,10 +6234,42 @@ async fn run_validator() {
                                 );
                                 // Broadcast evidence to network
                                 let evidence_msg = P2PMessage::new(
-                                    MessageType::SlashingEvidence(evidence),
+                                    MessageType::SlashingEvidence(evidence.clone()),
                                     local_addr,
                                 );
                                 peer_mgr_for_sync.broadcast(evidence_msg).await;
+
+                                // PHASE-3: Submit SlashValidator tx through consensus
+                                // (opcode 27) so all nodes apply the same penalty
+                                if let Ok(evidence_bytes) = bincode::serialize(&evidence) {
+                                    let mut ix_data = vec![27u8];
+                                    ix_data.extend_from_slice(&evidence_bytes);
+                                    let tip = state_for_blocks.get_last_slot().unwrap_or(0);
+                                    if let Ok(Some(tip_block)) = state_for_blocks.get_block_by_slot(tip) {
+                                        let ix = moltchain_core::Instruction {
+                                            program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                                            accounts: vec![Pubkey(block.header.validator)],
+                                            data: ix_data,
+                                        };
+                                        let msg = moltchain_core::Message::new(vec![ix], tip_block.hash());
+                                        let mut tx = Transaction::new(msg);
+                                        let kp = Keypair::from_seed(&slash_keypair_seed_for_blocks);
+                                        let sig = kp.sign(&tx.message.serialize());
+                                        tx.signatures.push(sig);
+                                        {
+                                            let mut pool = mempool_for_slash_blocks.lock().await;
+                                            if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
+                                                warn!("⚠️  Failed to add SlashValidator tx to mempool: {}", e);
+                                            }
+                                        }
+                                        let slash_msg = moltchain_p2p::P2PMessage::new(
+                                            moltchain_p2p::MessageType::Transaction(tx),
+                                            p2p_config_for_slash_blocks.listen_addr,
+                                        );
+                                        p2p_pm_for_slash_blocks.broadcast(slash_msg).await;
+                                        info!("📝 Submitted SlashValidator tx for DoubleBlock by {}", Pubkey(block.header.validator).to_base58());
+                                    }
+                                }
                             }
                             drop(slasher);
 
@@ -6964,6 +7009,23 @@ async fn run_validator() {
                             let longest_chain_rule =
                                 we_are_behind && has_pending && pending_chains_from_incoming;
 
+                            // PHASE-3: Finality-bound fork choice — NEVER revert a
+                            // finalized block.  This is how Ethereum, Cosmos and every
+                            // production PoS chain works: once a block passes the
+                            // finality threshold (confirmed + FINALITY_DEPTH) it is
+                            // irreversible.  Accepting a reorg past finality would
+                            // break the safety guarantee for all downstream consumers
+                            // (exchanges, bridges, wallets).
+                            let current_finalized = finality_for_blocks.finalized_slot();
+                            if block_slot <= current_finalized {
+                                warn!(
+                                    "🛡️  FINALITY GUARD: Rejecting reorg of slot {} — \
+                                     block is at or before finalized slot {}",
+                                    block_slot, current_finalized
+                                );
+                                continue;
+                            }
+
                             // P9-VAL-07 / AUDIT-FIX E-3: For equal-length forks, require
                             // BOTH vote weight AND oracle to agree.
                             // For provably-longer chains, adopt unconditionally.
@@ -7186,6 +7248,10 @@ async fn run_validator() {
         let local_addr_for_slash = p2p_config.listen_addr;
         let finality_for_votes = finality_tracker.clone();
         let state_for_votes = state.clone();
+        // PHASE-3: Clones needed for consensus-based slashing (opcode 27)
+        let mempool_for_slash_votes = mempool.clone();
+        let slash_keypair_seed_for_votes = validator_keypair.to_seed();
+        let p2p_config_for_slash_votes = p2p_config.clone();
 
         tokio::spawn(async move {
             info!("🔄 Vote receiver started");
@@ -7249,10 +7315,44 @@ async fn run_validator() {
                             // Broadcast evidence to network
                             if let Some(ref peer_mgr) = peer_mgr_for_slash {
                                 let evidence_msg = P2PMessage::new(
-                                    MessageType::SlashingEvidence(evidence),
+                                    MessageType::SlashingEvidence(evidence.clone()),
                                     local_addr_for_slash,
                                 );
                                 peer_mgr.broadcast(evidence_msg).await;
+                            }
+
+                            // PHASE-3: Submit SlashValidator tx through consensus
+                            // (opcode 27) so all nodes apply the same penalty
+                            if let Ok(evidence_bytes) = bincode::serialize(&evidence) {
+                                let mut ix_data = vec![27u8];
+                                ix_data.extend_from_slice(&evidence_bytes);
+                                let tip = state_for_votes.get_last_slot().unwrap_or(0);
+                                if let Ok(Some(tip_block)) = state_for_votes.get_block_by_slot(tip) {
+                                    let ix = moltchain_core::Instruction {
+                                        program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                                        accounts: vec![vote.validator],
+                                        data: ix_data,
+                                    };
+                                    let msg = moltchain_core::Message::new(vec![ix], tip_block.hash());
+                                    let mut tx = Transaction::new(msg);
+                                    let kp = Keypair::from_seed(&slash_keypair_seed_for_votes);
+                                    let sig = kp.sign(&tx.message.serialize());
+                                    tx.signatures.push(sig);
+                                    {
+                                        let mut pool = mempool_for_slash_votes.lock().await;
+                                        if let Err(e) = pool.add_transaction(tx.clone(), 0, 0) {
+                                            warn!("⚠️  Failed to add SlashValidator tx to mempool: {}", e);
+                                        }
+                                    }
+                                    if let Some(ref peer_mgr) = peer_mgr_for_slash {
+                                        let slash_msg = moltchain_p2p::P2PMessage::new(
+                                            moltchain_p2p::MessageType::Transaction(tx),
+                                            p2p_config_for_slash_votes.listen_addr,
+                                        );
+                                        peer_mgr.broadcast(slash_msg).await;
+                                    }
+                                    info!("📝 Submitted SlashValidator tx for DoubleVote by {}", vote.validator.to_base58());
+                                }
                             }
                         }
                         drop(slasher);
@@ -10005,150 +10105,76 @@ async fn run_validator() {
             continue;
         }
 
-        // ── BYZANTINE FAULT SLASHING SWEEP ──
+        // ── SLASHING EVIDENCE HOUSEKEEPING ──
         //
-        // DESIGN (matching Solana/Ethereum):
-        // Slash ONLY for provably malicious Byzantine faults:
-        //   - DoubleBlock: same validator produced two blocks at the same slot
-        //   - DoubleVote: same validator voted for different blocks at the same slot
-        //   - InvalidStateTransition: provably wrong state root
-        //   - Censorship / Collusion: detected by quorum analysis
+        // PHASE-3: Economic slashing is now handled through consensus via the
+        // SlashValidator system instruction (opcode 27).  When double-vote or
+        // double-block evidence is detected, a SlashValidator transaction is
+        // submitted to the mempool (see vote receiver and block receiver tasks).
+        // All validators process the same transaction identically — no more
+        // local state mutations that could cause divergence.
         //
-        // Downtime is NOT a slashable offense. Online validators that aren't
-        // the current leader simply receive lower rewards (reputation-weighted).
-        // This is how Solana, Ethereum 2.0, and other production chains work.
+        // This periodic sweep only:
+        //   1. Cleans up expired local tracking data
+        //   2. Applies reputation penalties (local, non-consensus, advisory only)
+        //   3. Persists the evidence tracker to disk for forensics
         //
-        // Run every 100 slots (~40s) to reduce lock contention.
+        // Run every 100 slots (~40s).
         if slot % 100 == 0 {
             let mut slasher = slashing_tracker.lock().await;
-            let mut vs = validator_set.write().await;
-            let mut pool = stake_pool.write().await;
 
             slasher.cleanup_expired(slot);
 
-            let mut slash_debits: Vec<(moltchain_core::Pubkey, u64)> = Vec::new();
-
-            for validator_info in vs.validators_mut() {
-                // Only slash for BYZANTINE faults — never for downtime
-                let has_byzantine_fault = slasher
-                    .get_evidence(&validator_info.pubkey)
-                    .map(|ev| {
-                        ev.iter().any(|e| {
-                            matches!(
-                                e.offense,
-                                SlashingOffense::DoubleBlock { .. }
-                                    | SlashingOffense::DoubleVote { .. }
-                                    | SlashingOffense::InvalidStateTransition { .. }
-                                    | SlashingOffense::Censorship { .. }
-                                    | SlashingOffense::Collusion { .. }
-                            )
-                        })
-                    })
-                    .unwrap_or(false);
-
-                if has_byzantine_fault && !slasher.is_slashed(&validator_info.pubkey) {
-                    let slashed_amount = slasher.apply_economic_slashing_with_params(
-                        &validator_info.pubkey,
-                        &mut pool,
-                        &genesis_config.consensus,
-                        slot,
-                    );
-
-                    // GRANT-PROTECT: Floor enforcement is now inside
-                    // apply_economic_slashing_with_params — the returned amount
-                    // already respects MIN_VALIDATOR_STAKE.  Use it directly.
-                    let capped_slash = slashed_amount;
-
-                    let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
-                    let old_reputation = validator_info.reputation;
-                    validator_info.reputation = validator_info
-                        .reputation
-                        .saturating_sub(reputation_penalty)
-                        .max(50);
-
-                    if capped_slash > 0 {
-                        warn!(
-                            "⚔️💰 BYZANTINE SLASH {} | Offense: {:?} | Stake burned: {:.4} MOLT | Rep: {} -> {}",
-                            validator_info.pubkey.to_base58(),
-                            slasher.get_evidence(&validator_info.pubkey)
-                                .and_then(|ev| ev.iter().find(|e| !matches!(e.offense, SlashingOffense::Downtime { .. })))
-                                .map(|e| format!("{:?}", e.offense))
-                                .unwrap_or_default(),
-                            capped_slash as f64 / 1_000_000_000.0,
-                            old_reputation,
-                            validator_info.reputation
-                        );
-
-                        if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
-                            let debit = capped_slash.min(acct.staked);
-                            if debit > 0 {
-                                slash_debits.push((validator_info.pubkey, debit));
+            // Collect validators needing reputation penalty (read-only scan)
+            let rep_penalties: Vec<(moltchain_core::Pubkey, u64)> = {
+                let vs = validator_set.read().await;
+                vs.validators()
+                    .iter()
+                    .filter_map(|vi| {
+                        let has_fault = slasher
+                            .get_evidence(&vi.pubkey)
+                            .map(|ev| {
+                                ev.iter().any(|e| {
+                                    matches!(
+                                        e.offense,
+                                        SlashingOffense::DoubleBlock { .. }
+                                            | SlashingOffense::DoubleVote { .. }
+                                    )
+                                })
+                            })
+                            .unwrap_or(false);
+                        if has_fault {
+                            let penalty = slasher.calculate_penalty(&vi.pubkey);
+                            if penalty > 0 {
+                                Some((vi.pubkey, penalty))
+                            } else {
+                                None
                             }
+                        } else {
+                            None
                         }
+                    })
+                    .collect()
+            };
+
+            // Apply reputation penalties (write lock)
+            if !rep_penalties.is_empty() {
+                let mut vs_w = validator_set.write().await;
+                for (pk, penalty) in &rep_penalties {
+                    if let Some(val) = vs_w.get_validator_mut(pk) {
+                        val.reputation = val.reputation.saturating_sub(*penalty).max(50);
                     }
+                }
+                let vs_snapshot = vs_w.clone();
+                drop(vs_w);
+                if let Err(e) = state.save_validator_set(&vs_snapshot) {
+                    error!("Failed to persist validator set after rep penalty: {}", e);
                 }
             }
 
-            // AUDIT-FIX E-9: Atomically persist all slashing debits in a single batch.
-            // This ensures crash-consistency: either ALL account balance debits from this
-            // sweep are persisted, or NONE are.
-            if !slash_debits.is_empty() {
-                let mut batch = state.begin_batch();
-                for (pubkey, debit) in &slash_debits {
-                    if let Ok(Some(mut acct)) = state.get_account(pubkey) {
-                        acct.staked = acct.staked.saturating_sub(*debit);
-                        acct.shells = acct.shells.saturating_sub(*debit);
-                        if let Err(e) = batch.put_account(pubkey, &acct) {
-                            error!(
-                                "Failed to stage slashing debit for {}: {}",
-                                pubkey.to_base58(),
-                                e
-                            );
-                        }
-                    }
-                }
-                if let Err(e) = state.commit_batch(batch) {
-                    error!("Failed to atomically persist slashing debits: {}", e);
-                } else {
-                    info!(
-                        "✅ Atomically persisted {} slashing debit(s) in sweep at slot {}",
-                        slash_debits.len(),
-                        slot
-                    );
-                }
-            }
-
-            // Clean up slashed flags for next sweep (keep permanent bans)
-            {
-                let all_slashed: Vec<_> = slasher.slashed_validators().collect();
-                for pk in all_slashed {
-                    if !slasher.is_permanently_banned(&pk) {
-                        slasher.clear_slashed(&pk);
-                    }
-                }
-            }
-
-            // NOTE: We do NOT remove "ghost validators" — validators should
-            // remain in the set even after slashing. They can re-stake to
-            // get back above MIN_VALIDATOR_STAKE. Removal only happens for
-            // permanently banned validators (collusion).
-
-            // AUDIT-FIX 0.4: Persist stake pool and validator set after slashing
-            // so that slashing effects survive node restarts.
-            // PERF-OPT 4: Clone under lock, persist AFTER dropping write guards.
-            let pool_snapshot = pool.clone();
-            let vs_snapshot = vs.clone();
+            // Persist evidence tracker for forensics / restart recovery
             let slasher_snapshot = slasher.clone();
-            drop(vs);
-            drop(pool);
             drop(slasher);
-            if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                error!("Failed to persist stake pool after slashing: {}", e);
-            }
-            if let Err(e) = state.save_validator_set(&vs_snapshot) {
-                error!("Failed to persist validator set after slashing: {}", e);
-            }
-            // AUDIT-FIX M7: Persist slashing tracker evidence to disk
             if let Err(e) = state.put_slashing_tracker(&slasher_snapshot) {
                 error!("Failed to persist slashing tracker: {}", e);
             }

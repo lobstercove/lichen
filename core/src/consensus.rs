@@ -2538,6 +2538,18 @@ impl ForkChoice {
             .map(|(slot, hash, _)| (*slot, *hash))
     }
 
+    /// Select the canonical chain head, rejecting any head at or below the
+    /// finalized slot.  This enforces the finality invariant: once a block is
+    /// finalized it can never be reverted, so a competing head that would
+    /// require reverting past finality is simply ignored.
+    pub fn select_head_respecting_finality(&self, finalized_slot: u64) -> Option<(u64, Hash)> {
+        self.heads
+            .iter()
+            .filter(|(slot, _, _)| *slot > finalized_slot)
+            .max_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)).then(a.1 .0.cmp(&b.1 .0)))
+            .map(|(slot, hash, _)| (*slot, *hash))
+    }
+
     /// Get all current chain heads
     pub fn heads(&self) -> &[(u64, Hash, u64)] {
         &self.heads
