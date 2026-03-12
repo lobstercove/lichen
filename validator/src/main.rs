@@ -5983,9 +5983,13 @@ async fn run_validator() {
 
     // Create sync manager
     let sync_manager = Arc::new(SyncManager::new());
-    // Genesis validators and nodes with existing state start in LiveSync —
-    // they don't need initial catch-up. Only joining nodes start in InitialSync.
-    if !is_joining_network {
+    // Genesis validators start in LiveSync — they ARE the network, no catch-up.
+    // Restarted nodes that already progressed past genesis (tip > 0) also go to
+    // LiveSync — they'll quickly re-sync the few blocks they missed.
+    // Joining nodes AND restarted nodes stuck at tip=0 stay in InitialSync to
+    // ensure fast catch-up behaviour (500ms sync cooldown vs 2s in LiveSync).
+    let current_tip = state.get_last_slot().unwrap_or(0);
+    if !is_joining_network && current_tip > 0 {
         // Use block_on-safe approach: spawn a task that transitions immediately
         let sm_init = sync_manager.clone();
         tokio::spawn(async move {
@@ -6449,6 +6453,14 @@ async fn run_validator() {
                 }
                 let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
 
+                // Diagnostic: trace every block entering the receiver
+                info!(
+                    "📬 Block receiver: processing slot {} (tip={}, validator={})",
+                    block_slot,
+                    current_slot,
+                    Pubkey(block.header.validator).to_base58()
+                );
+
                 // Handle genesis block specially (slot 0 when current is also 0)
                 if block_slot == 0 && current_slot == 0 {
                     // M3 fix: Prevent overwriting an existing genesis block
@@ -6655,13 +6667,29 @@ async fn run_validator() {
                     }
 
                     // SYNC-FIX: Trigger sync IMMEDIATELY after genesis processing.
-                    // Previously, should_sync only ran inside the `else if block_slot > current_slot`
-                    // branch, so genesis processing never triggered sync — the node had to wait
-                    // for the next compact block to arrive before requesting catch-up blocks.
-                    // Like Ethereum (which starts sync immediately after genesis validation),
-                    // we now trigger sync right after genesis to minimize catch-up delay.
+                    // After genesis, the joining node must fetch blocks 1..tip
+                    // from peers. should_sync relies on highest_seen_slot, which
+                    // may still be 0 if no blocks were processed yet (compact
+                    // blocks are queued behind genesis in the channel). Use the
+                    // network tip from should_sync if available; otherwise fall
+                    // back to requesting the first batch unconditionally — the
+                    // should_sync check on subsequent blocks will continue from
+                    // there once highest_seen_slot is updated.
                     let post_genesis_slot = state_for_blocks.get_last_slot().unwrap_or(0);
-                    if let Some((start, end)) = sync_mgr.should_sync(post_genesis_slot).await {
+                    let sync_range = sync_mgr.should_sync(post_genesis_slot).await;
+
+                    // Determine the range to request.
+                    let (start, end) = if let Some(range) = sync_range {
+                        range
+                    } else {
+                        // Fallback: highest_seen_slot is 0 because no blocks
+                        // made it through yet. Request a bootstrap batch of
+                        // the first P2P_BLOCK_RANGE_LIMIT blocks and let the
+                        // normal sync loop continue from there.
+                        (1, sync::P2P_BLOCK_RANGE_LIMIT)
+                    };
+
+                    {
                         let gap = end.saturating_sub(post_genesis_slot);
                         if gap > sync::WARP_SYNC_THRESHOLD {
                             sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
@@ -7609,6 +7637,7 @@ async fn run_validator() {
         let validator_set_for_announce = validator_set.clone();
         let stake_pool_for_announce = stake_pool.clone();
         let validator_pubkey_for_announce_handler = validator_pubkey;
+        let sync_mgr_for_announce = sync_manager.clone();
         tokio::spawn(async move {
             info!("🔄 Validator announcement receiver started");
             // 1.5d: Per-minute announcement rate limiting
@@ -7657,6 +7686,15 @@ async fn run_validator() {
 
                 // Cap validator set size
                 const MAX_VALIDATORS: usize = 1000;
+
+                // Update highest seen slot from announcement so sync
+                // manager knows the network tip even before any blocks are
+                // processed by the block receiver.  Without this, a joining
+                // node's highest_seen_slot stays 0 after genesis and
+                // should_sync never fires.
+                sync_mgr_for_announce
+                    .note_seen_bounded(announcement.current_slot, 500)
+                    .await;
 
                 // Check if validator already exists
                 if is_existing_validator {

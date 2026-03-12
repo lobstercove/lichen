@@ -3782,7 +3782,7 @@ dependencies = [
 
 [[package]]
 name = "moltchain-validator"
-version = "0.2.29"
+version = "0.2.31"
 dependencies = [
  "anyhow",
  "axum",
