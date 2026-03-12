@@ -3080,33 +3080,36 @@ async fn apply_block_effects(
             val_info.last_active_slot = slot;
             val_info.update_reputation(true);
         } else {
-            // H13 fix: require minimum stake before accepting new validator
-            if stake_amount < MIN_VALIDATOR_STAKE {
-                warn!(
-                    "⚠️  Ignoring unregistered block producer {} with insufficient stake ({} < {})",
-                    producer.to_base58(),
-                    stake_amount,
-                    MIN_VALIDATOR_STAKE
-                );
+            // During header-first sync, RegisterValidator TXs may not have
+            // been replayed, so the on-chain stake reads as 0 even though the
+            // producer was legitimate when the block was created.  Use the
+            // bootstrap grant as a default so the validator set is populated
+            // before the full-execution window is reached.
+            // During live sync, the AUDIT-FIX C5 active-set gate already
+            // filters non-member validators, so this branch only runs for
+            // producers whose blocks were accepted into the chain.
+            let effective_stake = if stake_amount >= MIN_VALIDATOR_STAKE {
+                stake_amount
             } else {
-                let new_validator = ValidatorInfo {
-                    pubkey: producer,
-                    stake: stake_amount,
-                    reputation: 100,
-                    blocks_proposed: if reward_already { 0 } else { 1 },
-                    votes_cast: 0,
-                    correct_votes: 0,
-                    joined_slot: slot,
-                    last_active_slot: slot,
-                    commission_rate: 500,
-                    transactions_processed: if reward_already {
-                        0
-                    } else {
-                        block.transactions.len() as u64
-                    },
-                };
-                vs.add_validator(new_validator);
-            }
+                BOOTSTRAP_GRANT_AMOUNT
+            };
+            let new_validator = ValidatorInfo {
+                pubkey: producer,
+                stake: effective_stake,
+                reputation: 100,
+                blocks_proposed: if reward_already { 0 } else { 1 },
+                votes_cast: 0,
+                correct_votes: 0,
+                joined_slot: slot,
+                last_active_slot: slot,
+                commission_rate: 500,
+                transactions_processed: if reward_already {
+                    0
+                } else {
+                    block.transactions.len() as u64
+                },
+            };
+            vs.add_validator(new_validator);
         }
 
         // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
@@ -3124,6 +3127,18 @@ async fn apply_block_effects(
     // No treasury private key needed — the protocol itself authorizes it.
     let block_hash = block.hash();
     if !skip_rewards && !reward_already {
+        // Write the reward distribution guard hash FIRST, before any account
+        // modifications.  If we crash after this write but before crediting
+        // accounts the worst case is a single slot's rewards are lost (minor,
+        // self-correcting).  The old order (hash AFTER credits) risked
+        // double-crediting on restart — an inflation bug.
+        if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
+            warn!(
+                "⚠️  Failed to record reward distribution for slot {}: {}",
+                slot, e
+            );
+        }
+
         // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
         let reward_config = moltchain_core::consensus::RewardConfig::new();
         let molt_price = moltchain_core::consensus::molt_price_from_state(state);
@@ -3295,13 +3310,6 @@ async fn apply_block_effects(
                     }
                 }
             }
-        }
-
-        if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
-            warn!(
-                "⚠️  Failed to record reward distribution for slot {}: {}",
-                slot, e
-            );
         }
     }
 
@@ -6275,7 +6283,15 @@ async fn run_validator() {
                 // sync target or fork selection.
                 // Genesis block (slot 0) uses SYSTEM_ACCOUNT_OWNER as validator,
                 // which is not in the active set — allow it through.
-                if block_slot > 0 {
+                //
+                // During header-first sync, skip this check for blocks outside
+                // the full-execution window.  RegisterValidator TXs are not
+                // replayed for those blocks, so the in-memory validator set
+                // only contains the genesis producer.  The parent-hash chain
+                // and signature verification still protect against invalid
+                // blocks; the active-set gate is enforced once the node enters
+                // the full-execution window where TXs are replayed.
+                if block_slot > 0 && sync_mgr.should_full_validate(block_slot).await {
                     let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
                         warn!(

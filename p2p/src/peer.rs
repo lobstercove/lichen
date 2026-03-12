@@ -1444,10 +1444,17 @@ impl PeerFingerprintStore {
             if let Some(parent) = self.path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            if let Ok(mut file) = fs::File::create(&self.path) {
+            // Atomic write: write to temp file, sync, then rename.
+            // This prevents crash between truncation and write from
+            // leaving an empty/corrupt fingerprint file.
+            let tmp_path = self.path.with_extension("tmp");
+            if let Ok(mut file) = fs::File::create(&tmp_path) {
                 use std::io::Write;
-                let _ = file.write_all(json.as_bytes());
-                let _ = file.sync_all();
+                if file.write_all(json.as_bytes()).is_ok() && file.sync_all().is_ok() {
+                    let _ = fs::rename(&tmp_path, &self.path);
+                } else {
+                    let _ = fs::remove_file(&tmp_path);
+                }
             }
         }
     }
