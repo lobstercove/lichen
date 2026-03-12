@@ -5920,7 +5920,8 @@ async fn run_validator() {
     let (consistency_report_tx, mut consistency_report_rx) =
         mpsc::channel::<ConsistencyReportMsg>(50);
     let (snapshot_request_tx, mut snapshot_request_rx) = mpsc::channel::<SnapshotRequestMsg>(50);
-    let (snapshot_response_tx, mut snapshot_response_rx) = mpsc::channel::<SnapshotResponseMsg>(50);
+    let (snapshot_response_tx, mut snapshot_response_rx) =
+        mpsc::channel::<SnapshotResponseMsg>(500);
     let (slashing_evidence_tx, mut slashing_evidence_rx) =
         mpsc::channel::<moltchain_core::SlashingEvidence>(100);
     let (compact_block_tx, mut compact_block_rx) =
@@ -6651,6 +6652,92 @@ async fn run_validator() {
                                 .await;
                             }
                         }
+                    }
+
+                    // SYNC-FIX: Trigger sync IMMEDIATELY after genesis processing.
+                    // Previously, should_sync only ran inside the `else if block_slot > current_slot`
+                    // branch, so genesis processing never triggered sync — the node had to wait
+                    // for the next compact block to arrive before requesting catch-up blocks.
+                    // Like Ethereum (which starts sync immediately after genesis validation),
+                    // we now trigger sync right after genesis to minimize catch-up delay.
+                    let post_genesis_slot = state_for_blocks.get_last_slot().unwrap_or(0);
+                    if let Some((start, end)) = sync_mgr.should_sync(post_genesis_slot).await {
+                        let gap = end.saturating_sub(post_genesis_slot);
+                        if gap > sync::WARP_SYNC_THRESHOLD {
+                            sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                        } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
+                            sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
+                        } else {
+                            sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
+                        }
+                        info!("🔄 Post-genesis sync: blocks {} to {}", start, end);
+                        sync_mgr.start_sync(start, end).await;
+
+                        let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
+                        peer_infos.sort_by(|a, b| {
+                            b.1.cmp(&a.1)
+                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                        });
+                        let all_peers: Vec<std::net::SocketAddr> = peer_infos
+                            .into_iter()
+                            .take(SYNC_REQUEST_FANOUT.max(1))
+                            .map(|(addr, _)| addr)
+                            .collect();
+
+                        let mut chunk_start = start;
+                        let mut chunk_idx: usize = 0;
+                        while chunk_start <= end {
+                            let chunk_end =
+                                std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
+
+                            if all_peers.is_empty() {
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: chunk_start,
+                                        end_slot: chunk_end,
+                                    },
+                                    local_addr,
+                                );
+                                peer_mgr_for_sync.broadcast(request_msg).await;
+                            } else {
+                                let peer_addr = &all_peers[chunk_idx % all_peers.len()];
+                                let request_msg = P2PMessage::new(
+                                    MessageType::BlockRangeRequest {
+                                        start_slot: chunk_start,
+                                        end_slot: chunk_end,
+                                    },
+                                    local_addr,
+                                );
+                                if let Err(e) =
+                                    peer_mgr_for_sync.send_to_peer(peer_addr, request_msg).await
+                                {
+                                    warn!(
+                                        "⚠️  Failed post-genesis sync request {}-{} to {}: {}",
+                                        chunk_start, chunk_end, peer_addr, e
+                                    );
+                                }
+                            }
+                            info!(
+                                "📡 Sent post-genesis block range request: {} to {}",
+                                chunk_start, chunk_end
+                            );
+                            chunk_start = chunk_end + 1;
+                            chunk_idx += 1;
+                        }
+
+                        // Progress-based sync completion (same as main sync path)
+                        let sync_mgr_complete = sync_mgr.clone();
+                        let sync_start_slot = post_genesis_slot;
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            let progress = sync_mgr_complete.get_last_progress_slot().await;
+                            if progress > sync_start_slot {
+                                sync_mgr_complete.record_sync_success().await;
+                            } else {
+                                sync_mgr_complete.record_sync_failure().await;
+                            }
+                            sync_mgr_complete.complete_sync().await;
+                        });
                     }
                 } else if block_slot > current_slot {
                     // Check if this block extends our chain (parent matches our latest block)
@@ -8684,13 +8771,23 @@ async fn run_validator() {
                                         response.requester,
                                         merged_count
                                     );
-                                    snapshot_sync_for_apply.lock().await.validator_set = true;
+                                    // Only mark ready if the merged set is non-empty.
+                                    // Before genesis processing, on-chain stake is zero
+                                    // so the merge rejects all validators — the retry
+                                    // task must keep retrying until genesis state exists.
+                                    if !vs.validators().is_empty() {
+                                        snapshot_sync_for_apply.lock().await.validator_set = true;
+                                    } else {
+                                        warn!("⚠️  Validator set merge produced empty set — snapshot not ready (genesis may not be applied yet)");
+                                    }
                                 }
                                 drop(vs);
                             } else {
                                 // Hashes match — local set is already correct (from block replay).
-                                // Still mark snapshot as ready so the producer loop can proceed.
-                                snapshot_sync_for_apply.lock().await.validator_set = true;
+                                // Only mark ready if the local set is non-empty.
+                                if !vs.validators().is_empty() {
+                                    snapshot_sync_for_apply.lock().await.validator_set = true;
+                                }
                                 drop(vs);
                             }
                         }
@@ -8766,12 +8863,21 @@ async fn run_validator() {
                                         local_hash.to_hex(),
                                         merged_hash.to_hex()
                                     );
-                                    snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                    // Only mark ready if the merged pool is non-empty.
+                                    if !merged_pool.stake_entries().is_empty() {
+                                        snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                    } else {
+                                        warn!("⚠️  Stake pool merge produced empty pool — snapshot not ready");
+                                    }
                                 }
                             } else {
                                 // Hashes match — local pool is already correct (from block replay).
+                                // Only mark ready if the local pool is non-empty.
+                                let pool_non_empty = !pool.stake_entries().is_empty();
                                 drop(pool);
-                                snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                if pool_non_empty {
+                                    snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                }
                             }
                         }
                     }

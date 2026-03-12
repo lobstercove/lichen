@@ -297,7 +297,10 @@ impl SyncManager {
                     info!("🚀 Fast sync from checkpoint {}", checkpoint);
                     checkpoint
                 } else {
-                    0
+                    // Start from slot 1 — genesis (slot 0) is already stored.
+                    // Requesting slot 0 again wastes bandwidth and causes a
+                    // duplicate-genesis check on every sync attempt.
+                    1
                 }
             } else if phase == SyncPhase::InitialSync {
                 current_slot + 1 // No overlap — never trigger fork choice during catch-up
@@ -623,11 +626,11 @@ mod tests {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         // Current slot 0, behind by 100 → should sync
-        // current_slot == 0: uses checkpoint branch (start = 0)
+        // current_slot == 0: starts from slot 1 (genesis already exists)
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 0);
+        assert_eq!(start, 1);
         assert!(end <= 100);
     }
 
@@ -1012,9 +1015,9 @@ mod tests {
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        // current_slot == 0: uses checkpoint branch (start = 0)
-        assert_eq!(start, 0);
-        // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH (6000) blocks
+        // current_slot == 0: starts from slot 1 (genesis already exists)
+        assert_eq!(start, 1);
+        // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH blocks
         let batch_size = end - start + 1;
         assert_eq!(batch_size, SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH);
     }
