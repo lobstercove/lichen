@@ -3,7 +3,7 @@
 
 use crate::contract::ContractAccount;
 use crate::genesis::ConsensusParams;
-use crate::{Hash, Pubkey};
+use crate::{Block, Hash, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,21 +20,21 @@ pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k MOLT in shel
 /// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators
 pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
 
-/// Transaction block reward (0.1 MOLT per block with transactions — $0.01 at $0.10/MOLT)
-/// Reduced from 0.9 MOLT to achieve sustainable ~200+ year treasury runway.
-/// At 17,280 blocks/day with 3 validators, each earns ~576 blocks × 0.1 = 57.6 MOLT/day.
-pub const TRANSACTION_BLOCK_REWARD: u64 = 100_000_000; // 0.1 MOLT
+/// Transaction block reward (0.02 MOLT per block with transactions)
+/// Reduced from 0.1 MOLT for BFT adaptive timing (~200ms tx blocks, ~5× faster).
+/// At ~90,000 blocks/day with 3 validators, each earns ~30,000 blocks × 0.02 = 600 MOLT/day.
+pub const TRANSACTION_BLOCK_REWARD: u64 = 20_000_000; // 0.02 MOLT
 
-/// Heartbeat block reward (0.05 MOLT per heartbeat — 50% of transaction reward)
-/// Reduced from 0.135 MOLT. Heartbeats are empty blocks and should pay less.
-pub const HEARTBEAT_BLOCK_REWARD: u64 = 50_000_000; // 0.05 MOLT
+/// Heartbeat block reward (0.01 MOLT per heartbeat — 50% of transaction reward)
+/// Reduced from 0.05 MOLT for BFT adaptive timing (~800ms heartbeats, ~5× faster).
+pub const HEARTBEAT_BLOCK_REWARD: u64 = 10_000_000; // 0.01 MOLT
 
 /// Legacy constant for backward compatibility (uses transaction reward)
 pub const BLOCK_REWARD: u64 = TRANSACTION_BLOCK_REWARD;
 
 /// Target annual reward pool draw rate (informational only)
 /// MOLT is NOT inflationary — rewards are drawn from the validator rewards pool.
-/// With 0.1/0.05 MOLT rewards + 20% annual decay, the pool lasts 200+ years.
+/// With 0.02/0.01 MOLT rewards + 20% annual decay, the pool lasts 200+ years.
 pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
@@ -233,9 +233,9 @@ pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
 /// Reward configuration with price-based adjustment
 #[derive(Debug, Clone)]
 pub struct RewardConfig {
-    /// Base transaction reward (0.9 MOLT at $0.10 price)
+    /// Base transaction reward (0.02 MOLT)
     pub base_transaction_reward: u64,
-    /// Base heartbeat reward (0.135 MOLT at $0.10 price)
+    /// Base heartbeat reward (0.01 MOLT)
     pub base_heartbeat_reward: u64,
     /// Reference USD price ($0.10 launch target)
     pub reference_price_usd: f64,
@@ -1959,6 +1959,176 @@ impl VoteAuthority {
     }
 }
 
+// ============================================================================
+// BFT CONSENSUS — Tendermint-style Propose/Prevote/Precommit
+// ============================================================================
+
+/// BFT consensus round step.
+///
+/// Each height progresses through Propose → Prevote → Precommit → Commit.
+/// If consensus fails in a round, the engine advances to the next round
+/// with a new proposer (back to Propose).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoundStep {
+    /// Waiting for the designated proposer to broadcast a block.
+    Propose,
+    /// Waiting for 2/3+ stake-weighted prevotes.
+    Prevote,
+    /// Waiting for 2/3+ stake-weighted precommits.
+    Precommit,
+    /// Block committed — advancing to next height.
+    Commit,
+}
+
+/// BFT Proposal — proposer broadcasts a block for validators to vote on.
+///
+/// Contains the full block so validators can verify it before prevoting.
+/// The `valid_round` field enables Tendermint's proof-of-lock (POL) change:
+/// a proposer may re-propose a block that received 2/3+ prevotes in a
+/// prior round, allowing locked validators to unlock safely.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Proposal {
+    /// Block height (slot number) being proposed.
+    pub height: u64,
+    /// Round within this height (0-indexed).
+    pub round: u32,
+    /// The proposed block.
+    pub block: Block,
+    /// Round in which this block previously received 2/3+ prevotes,
+    /// or -1 if this is a fresh proposal with no prior POL.
+    pub valid_round: i32,
+    /// Public key of the proposer.
+    pub proposer: Pubkey,
+    /// Ed25519 signature over (height || round || block_hash || valid_round).
+    #[serde(
+        serialize_with = "serialize_signature",
+        deserialize_with = "deserialize_signature"
+    )]
+    pub signature: [u8; 64],
+}
+
+impl Proposal {
+    /// Construct the message bytes for signing/verification.
+    pub fn signable_bytes(&self) -> Vec<u8> {
+        let block_hash = self.block.hash();
+        let mut msg = Vec::with_capacity(48);
+        msg.extend_from_slice(&self.height.to_le_bytes());
+        msg.extend_from_slice(&self.round.to_le_bytes());
+        msg.extend_from_slice(&block_hash.0);
+        msg.extend_from_slice(&self.valid_round.to_le_bytes());
+        msg
+    }
+
+    /// Verify the proposer's Ed25519 signature.
+    pub fn verify_signature(&self) -> bool {
+        let msg = self.signable_bytes();
+        crate::Keypair::verify(&self.proposer, &msg, &self.signature)
+    }
+
+    /// Static helper to compute proposal signable bytes from components,
+    /// without needing a full Proposal instance.
+    pub fn signable_bytes_static(
+        height: u64,
+        round: u32,
+        block_hash: &Hash,
+        valid_round: i32,
+    ) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(48);
+        msg.extend_from_slice(&height.to_le_bytes());
+        msg.extend_from_slice(&round.to_le_bytes());
+        msg.extend_from_slice(&block_hash.0);
+        msg.extend_from_slice(&valid_round.to_le_bytes());
+        msg
+    }
+}
+
+/// BFT Prevote — a validator's first-round attestation for a block or nil.
+///
+/// `block_hash = None` is a nil prevote, indicating the validator did not
+/// receive a valid proposal in time (or the proposal was invalid).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Prevote {
+    /// Block height (slot number).
+    pub height: u64,
+    /// Round within this height.
+    pub round: u32,
+    /// Hash of the block being prevoted, or `None` for a nil prevote.
+    pub block_hash: Option<Hash>,
+    /// Validator who cast this prevote.
+    pub validator: Pubkey,
+    /// Ed25519 signature over (height || round || block_hash_or_nil).
+    #[serde(
+        serialize_with = "serialize_signature",
+        deserialize_with = "deserialize_signature"
+    )]
+    pub signature: [u8; 64],
+}
+
+impl Prevote {
+    /// Construct the message bytes for signing/verification.
+    pub fn signable_bytes(height: u64, round: u32, block_hash: &Option<Hash>) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(48);
+        msg.push(0x01); // prevote tag
+        msg.extend_from_slice(&height.to_le_bytes());
+        msg.extend_from_slice(&round.to_le_bytes());
+        match block_hash {
+            Some(h) => msg.extend_from_slice(&h.0),
+            None => msg.extend_from_slice(&[0u8; 32]),
+        }
+        msg
+    }
+
+    /// Verify the voter's Ed25519 signature.
+    pub fn verify_signature(&self) -> bool {
+        let msg = Self::signable_bytes(self.height, self.round, &self.block_hash);
+        crate::Keypair::verify(&self.validator, &msg, &self.signature)
+    }
+}
+
+/// BFT Precommit — a validator's second-round attestation for a block or nil.
+///
+/// 2/3+ stake-weighted precommits for the same `block_hash` triggers
+/// block commitment. 2/3+ nil precommits (or timeout) advances to the
+/// next round.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Precommit {
+    /// Block height (slot number).
+    pub height: u64,
+    /// Round within this height.
+    pub round: u32,
+    /// Hash of the block being precommitted, or `None` for a nil precommit.
+    pub block_hash: Option<Hash>,
+    /// Validator who cast this precommit.
+    pub validator: Pubkey,
+    /// Ed25519 signature over (height || round || block_hash_or_nil).
+    #[serde(
+        serialize_with = "serialize_signature",
+        deserialize_with = "deserialize_signature"
+    )]
+    pub signature: [u8; 64],
+}
+
+impl Precommit {
+    /// Construct the message bytes for signing/verification.
+    pub fn signable_bytes(height: u64, round: u32, block_hash: &Option<Hash>) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(48);
+        msg.push(0x02); // precommit tag
+        msg.extend_from_slice(&height.to_le_bytes());
+        msg.extend_from_slice(&round.to_le_bytes());
+        match block_hash {
+            Some(h) => msg.extend_from_slice(&h.0),
+            None => msg.extend_from_slice(&[0u8; 32]),
+        }
+        msg
+    }
+
+    /// Verify the voter's Ed25519 signature.
+    pub fn verify_signature(&self) -> bool {
+        let msg = Self::signable_bytes(self.height, self.round, &self.block_hash);
+        crate::Keypair::verify(&self.validator, &msg, &self.signature)
+    }
+}
+
 /// Validator information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorInfo {
@@ -2141,7 +2311,7 @@ impl ValidatorSet {
     ///
     /// Uses **Tendermint-style weighted round-robin** (CometBFT proposer
     /// selection) to guarantee fair, proportional leader rotation:
-    ///   1. Compute each validator's weight from sqrt(stake) * sqrt(reputation).
+    ///   1. Compute each validator's weight from sqrt(stake).
     ///   2. Simulate `slot` rounds of the algorithm starting from a
     ///      deterministic initial state derived from `randomness_seed`.
     ///   3. Each round: add weight to every priority → pick highest → subtract
@@ -2149,6 +2319,10 @@ impl ValidatorSet {
     ///
     /// Over N rounds every validator leads ~(weight/total)*N times, eliminating
     /// the clustering problem of pure hash-based random selection.
+    ///
+    /// Leader election depends ONLY on stake (immutable within epoch) so all
+    /// validators deterministically agree on who the leader is for any given
+    /// (slot, seed) pair. Reputation has no influence on leader selection.
     ///
     /// Validators below MIN_VALIDATOR_STAKE are EXCLUDED from leader rotation.
     /// This prevents 0-stake (slashed) validators from producing blocks.
@@ -2188,7 +2362,10 @@ impl ValidatorSet {
             return Some(eligible[0].pubkey);
         }
 
-        // ── Compute weights (same formula as before) ──
+        // ── Compute weights: stake-only (no reputation) ──
+        // Uses sqrt(stake) + 1 for proportional-but-not-dominant leader rotation.
+        // Reputation is excluded from leader election: leader selection must
+        // depend ONLY on immutable-within-epoch state so all validators agree.
         let weights: Vec<i128> = eligible
             .iter()
             .map(|v| {
@@ -2197,9 +2374,7 @@ impl ValidatorSet {
                     .map(|s| s.total_stake().min(MAX_VALIDATOR_STAKE))
                     .unwrap_or_else(|| v.stake.min(MAX_VALIDATOR_STAKE));
 
-                let base = integer_sqrt(stake.max(1));
-                let rep_sqrt = integer_sqrt(v.reputation.max(100)) as u128;
-                (((base as u128).saturating_mul(rep_sqrt) / 10u128) + 1) as i128
+                (integer_sqrt(stake.max(1)) as i128) + 1
             })
             .collect();
 
@@ -5283,10 +5458,10 @@ mod tests {
     #[test]
     #[allow(clippy::assertions_on_constants)]
     fn test_block_reward_constants() {
-        // TX block reward: 0.1 MOLT = 100,000,000 shells
-        assert_eq!(TRANSACTION_BLOCK_REWARD, 100_000_000);
-        // Heartbeat block reward: 0.05 MOLT = 50,000,000 shells
-        assert_eq!(HEARTBEAT_BLOCK_REWARD, 50_000_000);
+        // TX block reward: 0.02 MOLT = 20,000,000 shells
+        assert_eq!(TRANSACTION_BLOCK_REWARD, 20_000_000);
+        // Heartbeat block reward: 0.01 MOLT = 10,000,000 shells
+        assert_eq!(HEARTBEAT_BLOCK_REWARD, 10_000_000);
         // BLOCK_REWARD alias = TRANSACTION_BLOCK_REWARD
         assert_eq!(BLOCK_REWARD, TRANSACTION_BLOCK_REWARD);
         // Heartbeat must be less than transaction reward
@@ -5301,18 +5476,18 @@ mod tests {
         let v1 = Pubkey::new([1u8; 32]);
         pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
 
-        // Transaction block reward should be 0.1 MOLT
+        // Transaction block reward should be 0.02 MOLT
         let tx_reward = pool.distribute_block_reward(&v1, 1, false);
         assert_eq!(
-            tx_reward, 100_000_000,
-            "TX block reward must be 0.1 MOLT (100M shells)"
+            tx_reward, 20_000_000,
+            "TX block reward must be 0.02 MOLT (20M shells)"
         );
 
-        // Heartbeat block reward should be 0.05 MOLT
+        // Heartbeat block reward should be 0.01 MOLT
         let hb_reward = pool.distribute_block_reward(&v1, 2, true);
         assert_eq!(
-            hb_reward, 50_000_000,
-            "Heartbeat reward must be 0.05 MOLT (50M shells)"
+            hb_reward, 10_000_000,
+            "Heartbeat reward must be 0.01 MOLT (10M shells)"
         );
     }
 
@@ -5323,51 +5498,51 @@ mod tests {
     #[test]
     fn test_decayed_reward_year_0() {
         // Year 0 (slot 0 through SLOTS_PER_YEAR-1): no decay, full base reward
-        assert_eq!(decayed_reward(100_000_000, 0), 100_000_000);
-        assert_eq!(decayed_reward(50_000_000, 0), 50_000_000);
+        assert_eq!(decayed_reward(20_000_000, 0), 20_000_000);
+        assert_eq!(decayed_reward(10_000_000, 0), 10_000_000);
         // Just before the 1-year mark
-        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR - 1), 100_000_000);
+        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR - 1), 20_000_000);
     }
 
     #[test]
     fn test_decayed_reward_year_1() {
-        // Year 1: 80% of base → 100M × 0.8 = 80M
-        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR), 80_000_000);
-        assert_eq!(decayed_reward(50_000_000, SLOTS_PER_YEAR), 40_000_000);
+        // Year 1: 80% of base → 20M × 0.8 = 16M
+        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR), 16_000_000);
+        assert_eq!(decayed_reward(10_000_000, SLOTS_PER_YEAR), 8_000_000);
         // Mid-year-1 (slot = 1.5 years → still year 1 since integer division)
         assert_eq!(
-            decayed_reward(100_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2),
-            80_000_000
+            decayed_reward(20_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2),
+            16_000_000
         );
     }
 
     #[test]
     fn test_decayed_reward_year_5() {
-        // Year 5: 0.8^5 = 0.32768 → 100M × 0.32768 = 32,768,000
-        // Integer arithmetic: 100M × (80/100)^5
-        let mut expected = 100_000_000u64;
+        // Year 5: 0.8^5 = 0.32768 → 20M × 0.32768 = 6,553,600
+        // Integer arithmetic: 20M × (80/100)^5
+        let mut expected = 20_000_000u64;
         for _ in 0..5 {
             expected = expected * 80 / 100;
         }
-        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR * 5), expected);
-        assert_eq!(expected, 32_768_000); // verify exact value
+        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR * 5), expected);
+        assert_eq!(expected, 6_553_600); // verify exact value
 
-        // Heartbeat: 50M × 0.8^5 = 16,384,000
-        let mut hb_expected = 50_000_000u64;
+        // Heartbeat: 10M × 0.8^5 = 3,276,800
+        let mut hb_expected = 10_000_000u64;
         for _ in 0..5 {
             hb_expected = hb_expected * 80 / 100;
         }
-        assert_eq!(decayed_reward(50_000_000, SLOTS_PER_YEAR * 5), hb_expected);
-        assert_eq!(hb_expected, 16_384_000);
+        assert_eq!(decayed_reward(10_000_000, SLOTS_PER_YEAR * 5), hb_expected);
+        assert_eq!(hb_expected, 3_276_800);
     }
 
     #[test]
     fn test_decayed_reward_year_50() {
         // Year 50 (cap): 0.8^50 → effectively 0
-        // After 50 years of 20% decay, 100M becomes ~1,427 shells
-        let reward = decayed_reward(100_000_000, SLOTS_PER_YEAR * 50);
+        // After 50 years of 20% decay, 20M becomes ~285 shells
+        let reward = decayed_reward(20_000_000, SLOTS_PER_YEAR * 50);
         assert!(
-            reward < 2_000,
+            reward < 500,
             "Year 50 reward should be near zero, got {}",
             reward
         );
@@ -5375,9 +5550,9 @@ mod tests {
         assert!(reward > 0, "Year 50 tx reward should not be exactly 0");
 
         // Heartbeat: even smaller
-        let hb = decayed_reward(50_000_000, SLOTS_PER_YEAR * 50);
+        let hb = decayed_reward(10_000_000, SLOTS_PER_YEAR * 50);
         assert!(
-            hb < 1_000,
+            hb < 250,
             "Year 50 heartbeat should be near zero, got {}",
             hb
         );
@@ -5387,9 +5562,9 @@ mod tests {
     fn test_decayed_reward_overflow_safe() {
         // Extremely large slot values should not panic or overflow
         // AUDIT-FIX L2: reward decays to 0 past ~80 years, no cap needed
-        let r100 = decayed_reward(100_000_000, SLOTS_PER_YEAR * 100);
+        let r100 = decayed_reward(20_000_000, SLOTS_PER_YEAR * 100);
         assert_eq!(r100, 0, "Year 100 reward should decay to 0");
-        let r_max = decayed_reward(100_000_000, u64::MAX);
+        let r_max = decayed_reward(20_000_000, u64::MAX);
         assert_eq!(r_max, 0, "u64::MAX slot reward should decay to 0");
         // Zero base reward stays zero
         assert_eq!(decayed_reward(0, SLOTS_PER_YEAR * 10), 0);
@@ -5406,15 +5581,15 @@ mod tests {
 
         // Year 0: full reward
         let r0 = pool.distribute_block_reward(&v1, 100, false);
-        assert_eq!(r0, 100_000_000, "Year 0 TX reward should be 0.1 MOLT");
+        assert_eq!(r0, 20_000_000, "Year 0 TX reward should be 0.02 MOLT");
 
         // Year 1: 80% reward
         let r1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR, false);
-        assert_eq!(r1, 80_000_000, "Year 1 TX reward should be 0.08 MOLT");
+        assert_eq!(r1, 16_000_000, "Year 1 TX reward should be 0.016 MOLT");
 
-        // Year 1 heartbeat: 80% of 50M = 40M
+        // Year 1 heartbeat: 80% of 10M = 8M
         let h1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR + 1, true);
-        assert_eq!(h1, 40_000_000, "Year 1 heartbeat should be 0.04 MOLT");
+        assert_eq!(h1, 8_000_000, "Year 1 heartbeat should be 0.008 MOLT");
     }
 
     #[test]

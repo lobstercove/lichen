@@ -119,9 +119,9 @@ else
 fi
 
 echo ""
-echo "Block Production:"
-echo "   No TXs: Heartbeat every 5s (0.135 MOLT)"
-echo "   With TXs: 400ms blocks (0.9 MOLT)"
+echo "Block Production (Tendermint BFT):"
+echo "   No TXs: Heartbeat ~800ms (0.01 MOLT)"
+echo "   With TXs: ~200ms blocks (0.02 MOLT)"
 echo ""
 
 if [ -z "${MOLTCHAIN_SIGNER_BIND:-}" ]; then

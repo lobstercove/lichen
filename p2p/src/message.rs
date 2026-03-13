@@ -1,7 +1,8 @@
 // P2P Message Types
 
 use moltchain_core::{
-    Block, BlockHeader, Hash, Pubkey, SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, Hash, Precommit, Prevote, Proposal, Pubkey, SlashingEvidence, StakePool,
+    Transaction, ValidatorSet, Vote,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -158,6 +159,15 @@ pub enum MessageType {
 
     /// Consensus vote
     Vote(Vote),
+
+    /// BFT: Block proposal from the designated proposer
+    Proposal(Proposal),
+
+    /// BFT: Prevote attestation (first voting phase)
+    Prevote(Prevote),
+
+    /// BFT: Precommit attestation (second voting phase)
+    Precommit(Precommit),
 
     /// Transaction broadcast
     Transaction(Transaction),

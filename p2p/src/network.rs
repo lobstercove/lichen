@@ -6,7 +6,9 @@ use crate::message::{
 };
 use crate::peer::PeerManager;
 use crate::peer_store::PeerStore;
-use moltchain_core::{Block, Pubkey, StakePool, Transaction, ValidatorSet, Vote};
+use moltchain_core::{
+    Block, Precommit, Prevote, Proposal, Pubkey, StakePool, Transaction, ValidatorSet, Vote,
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -268,6 +270,15 @@ pub struct P2PNetwork {
     /// P3-4: Outgoing erasure shard response channel
     erasure_shard_response_tx: mpsc::Sender<ErasureShardResponseMsg>,
 
+    /// BFT: Outgoing proposal channel
+    proposal_tx: mpsc::Sender<Proposal>,
+
+    /// BFT: Outgoing prevote channel
+    prevote_tx: mpsc::Sender<Prevote>,
+
+    /// BFT: Outgoing precommit channel
+    precommit_tx: mpsc::Sender<Precommit>,
+
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
@@ -293,6 +304,9 @@ impl P2PNetwork {
         get_block_txs_tx: mpsc::Sender<GetBlockTxsMsg>,
         erasure_shard_request_tx: mpsc::Sender<ErasureShardRequestMsg>,
         erasure_shard_response_tx: mpsc::Sender<ErasureShardResponseMsg>,
+        proposal_tx: mpsc::Sender<Proposal>,
+        prevote_tx: mpsc::Sender<Prevote>,
+        precommit_tx: mpsc::Sender<Precommit>,
     ) -> Result<Self, String> {
         let effective_max_peers = config.effective_max_peers();
         info!(
@@ -371,6 +385,9 @@ impl P2PNetwork {
             get_block_txs_tx,
             erasure_shard_request_tx,
             erasure_shard_response_tx,
+            proposal_tx,
+            prevote_tx,
+            precommit_tx,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -403,6 +420,9 @@ impl P2PNetwork {
                 message.msg_type,
                 MessageType::Block(_)
                     | MessageType::Vote(_)
+                    | MessageType::Proposal(_)
+                    | MessageType::Prevote(_)
+                    | MessageType::Precommit(_)
                     | MessageType::Transaction(_)
                     | MessageType::ValidatorAnnounce { .. }
                     | MessageType::SlashingEvidence(_)
@@ -440,6 +460,45 @@ impl P2PNetwork {
                 if let Err(e) = self.vote_tx.try_send(vote) {
                     warn!(
                         "P2P: Vote channel full, dropping vote from {} ({})",
+                        peer_addr, e
+                    );
+                }
+            }
+
+            MessageType::Proposal(proposal) => {
+                debug!(
+                    "P2P: Received BFT proposal height={} round={} from {}",
+                    proposal.height, proposal.round, peer_addr
+                );
+                if let Err(e) = self.proposal_tx.try_send(proposal) {
+                    warn!(
+                        "P2P: Proposal channel full, dropping proposal from {} ({})",
+                        peer_addr, e
+                    );
+                }
+            }
+
+            MessageType::Prevote(prevote) => {
+                debug!(
+                    "P2P: Received BFT prevote height={} round={} from {}",
+                    prevote.height, prevote.round, peer_addr
+                );
+                if let Err(e) = self.prevote_tx.try_send(prevote) {
+                    warn!(
+                        "P2P: Prevote channel full, dropping prevote from {} ({})",
+                        peer_addr, e
+                    );
+                }
+            }
+
+            MessageType::Precommit(precommit) => {
+                debug!(
+                    "P2P: Received BFT precommit height={} round={} from {}",
+                    precommit.height, precommit.round, peer_addr
+                );
+                if let Err(e) = self.precommit_tx.try_send(precommit) {
+                    warn!(
+                        "P2P: Precommit channel full, dropping precommit from {} ({})",
                         peer_addr, e
                     );
                 }

@@ -1,0 +1,83 @@
+// MoltChain Block Producer
+//
+// Extracts transactions from the mempool, processes them, and constructs
+// a signed Block ready for inclusion in a BFT proposal. The block is NOT
+// yet stored or broadcast — that's the consensus engine's responsibility.
+
+use moltchain_core::{Block, Hash, Mempool, Pubkey, StateStore, TxProcessor};
+use tracing::{debug, info};
+
+/// Build a new block from pending mempool transactions.
+///
+/// Returns `(block, processed_tx_hashes)`:
+///   - `block` has `state_root = Hash::default()` — the caller MUST compute
+///     and set it after applying block effects.
+///   - `processed_tx_hashes` contains the hashes of transactions included in
+///     the block, for mempool cleanup.
+///
+/// This function does NOT:
+///   - Store the block to state
+///   - Apply block effects (rewards, staking, oracle)
+///   - Broadcast the block
+///   - Sign the block (caller signs after setting state_root)
+pub fn build_block(
+    _state: &StateStore,
+    mempool: &mut Mempool,
+    processor: &TxProcessor,
+    height: u64,
+    parent_hash: Hash,
+    validator_pubkey: &Pubkey,
+    oracle_prices: Vec<(String, u64)>,
+) -> (Block, Vec<Hash>) {
+    // Collect pending transactions (up to 2000)
+    let pending = mempool.get_top_transactions(2000);
+    let pending_count = pending.len();
+
+    // Process in parallel (non-conflicting TXs run simultaneously)
+    let results = processor.process_transactions_parallel(&pending, validator_pubkey);
+
+    // Keep only successful TXs
+    let mut transactions = Vec::with_capacity(pending_count);
+    let mut tx_fees_paid = Vec::with_capacity(pending_count);
+    let mut processed_hashes = Vec::with_capacity(pending_count);
+
+    for (tx, result) in pending.into_iter().zip(results) {
+        let tx_hash = tx.hash();
+        if result.success {
+            tx_fees_paid.push(result.fee_paid);
+            transactions.push(tx);
+        }
+        processed_hashes.push(tx_hash);
+    }
+
+    let wall_clock_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut block = Block::new_with_timestamp(
+        height,
+        parent_hash,
+        Hash::default(), // Placeholder — caller sets after effects
+        validator_pubkey.0,
+        transactions,
+        wall_clock_timestamp,
+    );
+    block.tx_fees_paid = tx_fees_paid;
+    block.oracle_prices = oracle_prices;
+
+    if block.transactions.is_empty() {
+        debug!(
+            "📦 Built empty block (heartbeat) at height {}",
+            height
+        );
+    } else {
+        info!(
+            "📦 Built block at height {} with {} txs",
+            height,
+            block.transactions.len()
+        );
+    }
+
+    (block, processed_hashes)
+}

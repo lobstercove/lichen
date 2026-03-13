@@ -244,7 +244,7 @@ cat > "$OUTPUT" <<EOF
     "slot_duration_ms": $SLOT_DURATION_MS,
     "epoch_slots": 216000,
     "min_validator_stake": $MIN_VALIDATOR_STAKE,
-    "validator_reward_per_block": 10000000,
+    "validator_reward_per_block": 20000000,
     "slashing_percentage_double_sign": 50,
     "slashing_downtime_per_100_missed": 1,
     "slashing_downtime_max_percent": 10,
