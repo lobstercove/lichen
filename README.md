@@ -7,7 +7,7 @@ Ultra-low fees · Sub-second BFT finality · Agent-native identity · Multi-lang
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated and published at tag `v0.3.0`.
+**Release-ready status:** main validated and published at tag `v0.3.3`.
 
 **Website:** https://moltchain.network  
 **Documentation:** https://developers.moltchain.network  

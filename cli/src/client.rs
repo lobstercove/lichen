@@ -172,7 +172,7 @@ pub struct StakingRewards {
 pub struct AccountInfo {
     pub pubkey: String,
     pub balance: u64,
-    pub molt: u64,
+    pub molt: f64,
     pub exists: bool,
     pub is_executable: bool,
     pub is_validator: bool,

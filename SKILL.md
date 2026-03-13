@@ -1870,6 +1870,23 @@ sudo systemctl enable moltchain-validator-testnet moltchain-validator-mainnet
 sudo systemctl start moltchain-validator-testnet moltchain-validator-mainnet
 ```
 
+**CRITICAL — VPS State Directory Convention:**
+
+All systemd services on production VPSes use `/var/lib/moltchain/` as the base directory:
+
+| Path | Purpose |
+|------|---------|
+| `/var/lib/moltchain/state-testnet` | Testnet chain state (RocksDB) |
+| `/var/lib/moltchain/state-mainnet` | Mainnet chain state (RocksDB) |
+| `/var/lib/moltchain/contracts/` | Compiled WASM contract artifacts |
+| `/var/lib/moltchain/faucet-keypair-testnet.json` | Faucet signing keypair |
+| `/var/lib/moltchain/airdrops.json` | Faucet airdrop tracking |
+| `/var/lib/moltchain/custody-db` | Custody bridge state (testnet) |
+| `/var/lib/moltchain/custody-db-mainnet` | Custody bridge state (mainnet) |
+| `/usr/local/bin/moltchain-*` | Installed binaries |
+
+**Never** run validators manually from `~/moltchain/data/state-*` on VPSes — this creates a separate state directory from what systemd uses and causes split-brain / network stalls. The systemd unit sets `HOME=/var/lib/moltchain` and `MOLTCHAIN_HOME=/var/lib/moltchain`.
+
 Or manually:
 ```bash
 sudo cp deploy/moltchain-validator.service /etc/systemd/system/
@@ -2065,7 +2082,18 @@ pub extern "C" fn my_function(addr_ptr: *const u8, amount: u64) -> u32 {
 
 ### Deploy Fee Refund
 
-If deployment fails (invalid WASM, duplicate address, etc.), the 25 MOLT deploy premium is refunded. Only the 0.001 MOLT base fee is kept. Failed transactions are stored on-chain and queryable via `getTransaction`.
+If deployment fails (invalid WASM, duplicate address, etc.), the 25 MOLT deploy premium is **automatically refunded** on-chain. Only the 0.001 MOLT base fee is kept. This includes failures in `b_put_transaction` and `commit_batch` paths — the premium refund is guaranteed regardless of which stage fails. Failed transactions are stored on-chain and queryable via `getTransaction`.
+
+### Deploy Output & Auto-Register Fallback
+
+When you deploy with `--symbol`, the CLI:
+1. Sends the deploy transaction (Phase 1)
+2. Polls up to 10 times (1s apart) to verify the contract account is live on-chain (Phase 2)
+3. Checks if the symbol was registered in the symbol registry (Phase 3)
+4. If the symbol is **not found** after 3 retries, the CLI **automatically sends a register-symbol transaction** as a fallback
+5. Reports final status with the contract address and symbol registration result
+
+This means user-deployed contracts get the same name, category, and metadata in the explorer as genesis contracts — no manual `molt contract register` step needed.
 
 ### Contract SDK Modules
 

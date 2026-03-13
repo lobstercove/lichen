@@ -930,18 +930,34 @@ impl TxProcessor {
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
+            // Refund deploy/upgrade premium — same as instruction failure path
+            let premium = Self::compute_premium_fee(tx, &fee_config);
+            if premium > 0 {
+                if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                    eprintln!("Failed to refund deploy premium: {}", refund_err);
+                }
+            }
+            let actual_fee = total_fee.saturating_sub(premium);
             return self.make_result(
                 false,
-                total_fee,
+                actual_fee,
                 Some(format!("Transaction storage error: {}", e)),
             );
         }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
+            // Refund deploy/upgrade premium — same as instruction failure path
+            let premium = Self::compute_premium_fee(tx, &fee_config);
+            if premium > 0 {
+                if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
+                    eprintln!("Failed to refund deploy premium: {}", refund_err);
+                }
+            }
+            let actual_fee = total_fee.saturating_sub(premium);
             return self.make_result(
                 false,
-                total_fee,
+                actual_fee,
                 Some(format!("Atomic commit failed: {}", e)),
             );
         }
@@ -4876,8 +4892,28 @@ impl DeployRegistryData {
         if init_data.is_empty() {
             return None;
         }
-        let raw = std::str::from_utf8(init_data).ok()?;
-        serde_json::from_str(raw).ok()
+        let raw = match std::str::from_utf8(init_data) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "⚠️  DeployRegistryData::from_init_data: UTF-8 decode failed ({} bytes): {}",
+                    init_data.len(),
+                    e
+                );
+                return None;
+            }
+        };
+        match serde_json::from_str(raw) {
+            Ok(data) => Some(data),
+            Err(e) => {
+                eprintln!(
+                    "⚠️  DeployRegistryData::from_init_data: JSON parse failed: {} (first 200 chars: {:?})",
+                    e,
+                    &raw[..raw.len().min(200)]
+                );
+                None
+            }
+        }
     }
 }
 
@@ -5554,6 +5590,130 @@ mod tests {
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Deploy with code too small should fail");
         assert!(result.error.unwrap().contains("too small"));
+    }
+
+    /// Test: ContractInstruction::Deploy via CONTRACT_PROGRAM_ID with init_data
+    /// populates the symbol registry atomically.
+    #[test]
+    fn test_contract_program_deploy_with_symbol_registry() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Valid WASM module (magic + version)
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+
+        // Build init_data JSON with symbol registration metadata
+        let init_data = serde_json::json!({
+            "symbol": "TESTCOIN",
+            "name": "Test Coin",
+            "template": "token",
+            "decimals": 9,
+            "metadata": {
+                "description": "A test token for unit testing",
+                "website": "https://example.com",
+                "mintable": true
+            }
+        });
+        let init_data_bytes = serde_json::to_vec(&init_data).unwrap();
+
+        // Compute contract address like the CLI does
+        let code_hash = Hash::hash(&code);
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[..16].copy_from_slice(&alice.0[..16]);
+        addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+        let contract_addr = Pubkey(addr_bytes);
+
+        // Create deploy instruction via CONTRACT_PROGRAM_ID
+        let contract_ix = crate::ContractInstruction::Deploy {
+            code: code.clone(),
+            init_data: init_data_bytes.clone(),
+        };
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: contract_ix.serialize().unwrap(),
+        };
+
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(
+            result.success,
+            "ContractProgram Deploy should succeed: {:?}",
+            result.error
+        );
+
+        // Verify contract account exists and is executable
+        let acct = state.get_account(&contract_addr).unwrap();
+        assert!(acct.is_some(), "Contract account should exist");
+        assert!(acct.unwrap().executable, "Contract should be executable");
+
+        // Verify symbol registry entry was written
+        let entry = state.get_symbol_registry("TESTCOIN").unwrap();
+        assert!(
+            entry.is_some(),
+            "Symbol TESTCOIN should be in the registry after deploy"
+        );
+        let entry = entry.unwrap();
+        assert_eq!(entry.symbol, "TESTCOIN");
+        assert_eq!(entry.program, contract_addr);
+        assert_eq!(entry.owner, alice);
+        assert_eq!(entry.name, Some("Test Coin".to_string()));
+        assert_eq!(entry.template, Some("token".to_string()));
+        assert_eq!(entry.decimals, Some(9));
+        assert!(entry.metadata.is_some());
+        let meta = entry.metadata.unwrap();
+        assert_eq!(
+            meta.get("description").and_then(|v| v.as_str()),
+            Some("A test token for unit testing")
+        );
+    }
+
+    /// Test: Deploy fee premium is refunded when deploy instruction itself fails.
+    #[test]
+    fn test_contract_program_deploy_failure_refunds_premium() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let initial_balance = state.get_balance(&alice).unwrap();
+
+        // Invalid WASM (bad magic bytes) — deploy should fail
+        let bad_code = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x00, 0x00, 0x00];
+
+        let code_hash = Hash::hash(&bad_code);
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[..16].copy_from_slice(&alice.0[..16]);
+        addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+        let contract_addr = Pubkey(addr_bytes);
+
+        let contract_ix = crate::ContractInstruction::Deploy {
+            code: bad_code,
+            init_data: vec![],
+        };
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![alice, contract_addr],
+            data: contract_ix.serialize().unwrap(),
+        };
+
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Deploy with bad WASM should fail");
+
+        // Verify only base fee was kept (premium refunded)
+        let final_balance = state.get_balance(&alice).unwrap();
+        let fee_kept = initial_balance - final_balance;
+        // base_fee = 1_000_000 shells (0.001 MOLT), deploy premium = 25_000_000_000
+        assert!(
+            fee_kept < 25_000_000_000,
+            "Premium should be refunded on failed deploy, but {} shells kept",
+            fee_kept
+        );
     }
 
     #[test]
