@@ -6001,9 +6001,10 @@ async fn run_validator() {
         mpsc::channel::<moltchain_p2p::ErasureShardResponseMsg>(200);
 
     // BFT consensus channels (Tendermint-style propose/prevote/precommit)
-    let (proposal_tx, mut proposal_rx) = mpsc::channel::<Proposal>(100);
-    let (prevote_tx, mut prevote_rx) = mpsc::channel::<Prevote>(500);
-    let (precommit_tx, mut precommit_rx) = mpsc::channel::<Precommit>(500);
+    // Sized for burst tolerance during sync catch-up with 3+ validators
+    let (proposal_tx, mut proposal_rx) = mpsc::channel::<Proposal>(2_000);
+    let (prevote_tx, mut prevote_rx) = mpsc::channel::<Prevote>(5_000);
+    let (precommit_tx, mut precommit_rx) = mpsc::channel::<Precommit>(5_000);
 
     // Create mempool
     let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
