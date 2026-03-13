@@ -302,6 +302,27 @@ impl RpcClient {
         Hash::from_hex(hash_str).map_err(|e| anyhow::anyhow!(e))
     }
 
+    /// Confirm a transaction reached at least "confirmed" status.
+    /// Returns Ok(true) if confirmed, Ok(false) if not found/not confirmed yet,
+    /// or Err with the on-chain error message if the TX failed.
+    pub async fn confirm_transaction(&self, signature: &str) -> Result<Option<bool>> {
+        let params = json!([signature, "confirmed"]);
+        let result = self.call("confirmTransaction", params).await?;
+        let value = result.get("value");
+        match value {
+            Some(serde_json::Value::Null) | None => Ok(None), // TX not found
+            Some(v) => {
+                // Check for on-chain error
+                if let Some(err) = v.get("err") {
+                    if !err.is_null() {
+                        anyhow::bail!("Transaction failed on-chain: {}", err);
+                    }
+                }
+                Ok(Some(true))
+            }
+        }
+    }
+
     /// AUDIT-FIX I-1: Request airdrop from the faucet via requestAirdrop RPC
     pub async fn request_airdrop(&self, to: &Pubkey, amount_molt: f64) -> Result<String> {
         // The RPC accepts whole MOLT amounts as u64
