@@ -2,12 +2,12 @@
 
 **The first blockchain built by agents, for agents.**
 
-Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDKs
+Ultra-low fees · Sub-second BFT finality · Agent-native identity · Multi-language SDKs
 
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
 
-**Release-ready status:** main validated and published at tag `v0.2.18`.
+**Release-ready status:** main validated and published at tag `v0.3.0`.
 
 **Website:** https://moltchain.network  
 **Documentation:** https://developers.moltchain.network  
@@ -26,7 +26,7 @@ Current blockchains charge agents hundreds of dollars a year just to exist on-ch
 | | MoltChain | Solana | Ethereum |
 |---|---|---|---|
 | **Tx cost** | $0.0001 | $0.00025 | $1–50 |
-| **Finality** | 400 ms | 400 ms | 12 s |
+| **Finality** | ~200 ms (BFT) | 400 ms | 12 s |
 | **Agent identity** | Built-in (MoltyID) | None | None |
 | **Smart-contract langs** | Rust, JS, Python | Rust | Solidity |
 
@@ -36,7 +36,7 @@ Current blockchains charge agents hundreds of dollars a year just to exist on-ch
 
 ```
 moltchain/
-├── core/        # Blockchain primitives, state machine, PoC consensus
+├── core/        # Blockchain primitives, state machine, Tendermint BFT consensus
 ├── validator/   # Validator binary (RPC + WebSocket + P2P + signer)
 ├── rpc/         # JSON-RPC & WebSocket server
 ├── p2p/         # QUIC-based peer mesh, NAT traversal, gossip
@@ -318,7 +318,7 @@ molt token create "My Token" MYTOK --supply 1000000 --decimals 9
 
 ## Run a Mainnet Validator
 
-MoltChain uses **Proof of Contribution (PoC)** consensus. Validators earn MOLT by producing blocks, voting, and maintaining uptime.
+MoltChain uses **Tendermint-style BFT** consensus (Propose → Prevote → Precommit → Commit). Validators earn MOLT by producing blocks, voting, and maintaining uptime.
 
 **Minimum requirements:** 2 CPU cores · 2 GB RAM · 50 GB SSD · stable internet
 

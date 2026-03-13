@@ -64,7 +64,7 @@
             <div class="sidebar-section">
                 <div class="sidebar-heading">Architecture</div>
                 <a href="#overview" class="sidebar-link">Overview</a>
-                <a href="#consensus" class="sidebar-link">Proof of Contribution</a>
+                <a href="#consensus" class="sidebar-link">Tendermint BFT Consensus</a>
                 <a href="#tx-lifecycle" class="sidebar-link">Transaction Lifecycle</a>
                 <a href="#state" class="sidebar-link">State Model</a>
                 <a href="#wasm" class="sidebar-link">WASM Execution</a>
@@ -93,7 +93,7 @@
             <h1>MoltChain Architecture</h1>
             <p>A technical deep-dive into how MoltChain is designed — from network gossip to state commitment. MoltChain
                 is an agent-first, high-performance Layer-1 blockchain with WASM smart contracts, on-chain reputation,
-                and a novel Proof of Contribution consensus mechanism.</p>
+                and a Tendermint-style BFT consensus mechanism.</p>
 
             <!-- ========== 1. OVERVIEW ========== -->
             <h2 id="overview">Overview</h2>
@@ -108,9 +108,10 @@
                         endpoints</div>
                 </div>
                 <div class="arch-layer layer-consensus">
-                    <div class="layer-name"><i class="fas fa-handshake"></i> Consensus Layer (Proof of Contribution)
+                    <div class="layer-name"><i class="fas fa-handshake"></i> Consensus Layer (Tendermint BFT)
                     </div>
-                    <div class="layer-desc">Leader selection, 400ms slot production, PBFT finality, validator scoring
+                    <div class="layer-desc">Propose → Prevote → Precommit → Commit, adaptive block time, validator
+                        scoring
                     </div>
                 </div>
                 <div class="arch-layer layer-execution">
@@ -135,16 +136,16 @@
                 selection. This makes the chain uniquely suited for autonomous agent economies.
             </div>
 
-            <!-- ========== 2. PROOF OF CONTRIBUTION ========== -->
-            <h2 id="consensus">Proof of Contribution</h2>
+            <!-- ========== 2. TENDERMINT BFT CONSENSUS ========== -->
+            <h2 id="consensus">Tendermint BFT Consensus</h2>
 
-            <p>MoltChain uses <strong>Proof of Contribution (PoC)</strong>, a leader-based consensus that combines
-                economic stake with validator behavior scoring to select block producers.</p>
+            <p>MoltChain uses <strong>Tendermint-style BFT</strong>, a leader-based consensus with
+                deterministic finality: Propose → Prevote → Precommit → Commit.</p>
 
-            <h3>Slot Production</h3>
-            <p>Time is divided into <strong>400ms slots</strong>. Each slot has a single designated leader responsible
-                for producing a block. If the leader fails to produce within the window, the slot is skipped and the
-                next leader takes over.</p>
+            <h3>Block Production</h3>
+            <p>Block time is <strong>adaptive</strong>: ~800ms for heartbeat (empty) blocks, ~200ms for
+                blocks containing transactions. The proposer waits for pending transactions before building a block,
+                then the BFT round delivers final commitment in a single round-trip.</p>
 
             <h3>Leader Selection</h3>
             <p>Leaders are selected via weighted random sampling where the weight is:</p>
@@ -198,7 +199,8 @@ contribution_score = (
                         <div class="step-title">Submit</div>
                         <div class="step-desc">Client sends a signed transaction to any RPC node via
                             <code>sendTransaction</code>. The node validates the signature, checks the nonce, and
-                            verifies the sender has sufficient balance for fees.</div>
+                            verifies the sender has sufficient balance for fees.
+                        </div>
                     </div>
                 </div>
 
@@ -366,7 +368,8 @@ contribution_score = (
 
             <p>MoltChain executes smart contracts using the <strong>Wasmer</strong> WebAssembly runtime with
                 ahead-of-time (AOT) compilation for near-native performance. Contracts are compiled from Rust to
-                <code>wasm32-unknown-unknown</code> and deployed as program accounts.</p>
+                <code>wasm32-unknown-unknown</code> and deployed as program accounts.
+            </p>
 
             <h3>Host Functions</h3>
 
@@ -547,7 +550,8 @@ contribution_score = (
                     (432 slots ≈ ~173 seconds). Exceeding the limit results in mempool rejection until the next epoch.
                 </li>
                 <li><strong>Validator Selection:</strong> For validators, MoltyID score contributes to the
-                    <code>community_score</code> component (10% weight) in leader selection.</li>
+                    <code>community_score</code> component (10% weight) in leader selection.
+                </li>
             </ul>
 
             <div class="callout callout-tip">
@@ -681,7 +685,7 @@ contribution_score = (
                     <tr>
                         <td>Block creation (500 tx)</td>
                         <td>~15 ms</td>
-                        <td>Well within 400ms slot target</td>
+                        <td>Well within block time budget</td>
                     </tr>
                     <tr>
                         <td>Ed25519 signature verify</td>

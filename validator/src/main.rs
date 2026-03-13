@@ -13,7 +13,11 @@
 // If only a subset is needed, the relative order must still be respected.
 // PERF: 1-3 use RwLock — reads never block each other.
 
+pub mod block_producer;
+pub mod block_receiver;
+pub mod consensus;
 mod keypair_loader;
+#[allow(dead_code)]
 mod sync;
 mod threshold_signer;
 pub mod updater;
@@ -23,11 +27,12 @@ use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
     evm_tx_hash, Account, Block, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice,
     GenesisConfig, GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool,
-    NftActivity, NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense,
-    StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
-    VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    NftActivity, NftActivityKind, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey,
+    RoundStep, SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
+    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
+    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
+    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -59,6 +64,8 @@ use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use crate::consensus::{ConsensusAction, ConsensusEngine};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const LEGACY_CONTRACT_DEPLOY_FEE_SHELLS: u64 = 2_500_000_000;
@@ -127,16 +134,6 @@ impl SharedOraclePrices {
         prices
     }
 }
-
-/// Maximum duration (seconds) the freeze-production guard can stay active
-/// before forcibly resuming production. Prevents the death spiral where
-/// continuous incoming blocks keep highest_seen elevated and the node
-/// never produces, eventually getting killed by the watchdog.
-const MAX_FREEZE_DURATION_SECS: u64 = 30;
-
-/// Heartbeat (empty block) production is allowed only after this duration
-/// since the last observed user-transaction block anywhere on the node.
-const HEARTBEAT_GLOBAL_IDLE_SECS: u64 = 5;
 
 /// Sync request fanout: send block-range requests to top-N peers by score
 /// instead of broadcasting to all peers.
@@ -2632,9 +2629,24 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
         return; // genesis txs use zero blockhash + dummy signatures
     }
     let producer_pubkey = Pubkey(block.header.validator);
+    let tx_count = block.transactions.len();
+    if tx_count > 0 {
+        info!(
+            "🔄 Replaying {} tx(s) for slot {} (producer={})",
+            tx_count,
+            block.header.slot,
+            producer_pubkey.to_base58()
+        );
+    }
     let results = processor.process_transactions_parallel(&block.transactions, &producer_pubkey);
     for (tx, result) in block.transactions.iter().zip(results.iter()) {
-        if !result.success {
+        if result.success {
+            info!(
+                "✅ Tx replay OK in slot {}: {}",
+                block.header.slot,
+                tx.signature().to_hex()
+            );
+        } else {
             warn!(
                 "⚠️  Tx replay failed in slot {}: {} ({})",
                 block.header.slot,
@@ -3041,13 +3053,60 @@ async fn apply_block_effects(
     // Stake, Unstake). Without this, the in-memory pool would miss changes
     // applied by TxProcessor during block transaction processing.
     if let Ok(fresh_pool) = state.get_stake_pool() {
+        let entry_count = fresh_pool.stake_entries().len();
         let mut pool = stake_pool.write().await;
         *pool = fresh_pool;
         drop(pool);
+        if block_has_user_transactions(block) || entry_count > 1 {
+            info!(
+                "📊 apply_block_effects slot {}: reloaded pool with {} entries from state",
+                block.header.slot, entry_count
+            );
+        }
     }
 
     let producer = Pubkey(block.header.validator);
     let slot = block.header.slot;
+
+    // SYNC-FIX: Ensure block producers have stake pool entries.
+    // The genesis validator's pool entry is created by direct state write on
+    // the genesis node (genesis bootstrap) and is NOT replicated to joining
+    // nodes through block transactions or snapshot sync. During initial sync,
+    // the pool is empty even though the block producer is legitimate (their
+    // block passed signature verification). Add the producer so that the
+    // RegisterValidator tx for joining validators sees the complete set,
+    // preventing eligible=1 state divergence (should be eligible=2+).
+    {
+        let pool_read = stake_pool.read().await;
+        let missing = pool_read.get_stake(&producer).is_none();
+        drop(pool_read);
+        if missing {
+            let mut pool_write = stake_pool.write().await;
+            if pool_write.get_stake(&producer).is_none() {
+                // Use try_bootstrap_with_fingerprint (not upsert_stake) to create
+                // byte-identical StakeInfo as the genesis bootstrap: bootstrap_index=0,
+                // bootstrap_debt=amount, status=Bootstrapping. Slot 0 matches genesis.
+                let _ = pool_write.try_bootstrap_with_fingerprint(
+                    producer,
+                    BOOTSTRAP_GRANT_AMOUNT,
+                    0,
+                    [0u8; 32],
+                );
+                let pool_snapshot = pool_write.clone();
+                drop(pool_write);
+                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                    warn!("⚠️  Failed to persist healed pool entry: {}", e);
+                } else {
+                    info!(
+                        "🩹 Pool healed: added block producer {} with {} MOLT stake",
+                        producer.to_base58(),
+                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                    );
+                }
+            }
+        }
+    }
+
     let has_user_transactions = block_has_user_transactions(block);
     let is_heartbeat = !has_user_transactions;
     let reward_already = if !skip_rewards {
@@ -4852,9 +4911,27 @@ async fn run_validator() {
     let has_any_seed_peers =
         !explicit_seed_peers.is_empty() || !cached_peers.is_empty() || !seed_peers.is_empty();
 
-    let mut is_joining_network = if has_genesis_block {
-        // Already have genesis — not joining, just resuming
-        false
+    let is_joining_network = if has_genesis_block {
+        if !explicit_seed_peers.is_empty() {
+            // Node was started with --bootstrap-peers. If it hasn't finished
+            // registering on-chain, the previous run was interrupted (e.g. by
+            // the watchdog). Re-enter joining mode so it goes through the full
+            // sync → snapshot → registration gate before starting BFT.
+            let join_complete = state
+                .get_metadata("join_complete")
+                .unwrap_or(None)
+                .is_some();
+            if join_complete {
+                info!("🔄 Resuming as registered validator (join previously completed)");
+                false
+            } else {
+                info!("🔄 Genesis found but join incomplete — re-entering join mode");
+                true
+            }
+        } else {
+            // No explicit bootstrap peers — genesis node resuming
+            false
+        }
     } else if has_any_seed_peers {
         // Seeds exist → this node MUST join the network, never create genesis
         info!("🔄 Seed peers found — will sync genesis from the existing network");
@@ -5794,11 +5871,14 @@ async fn run_validator() {
                             acct.staked = acct.staked.saturating_add(grant);
                             let _ = state.put_account(&validator_pubkey, &acct);
                             // Add to stake pool
+                            // Use [0u8; 32] fingerprint (not machine_fingerprint) so that
+                            // joining nodes can replicate the exact same StakeInfo bytes
+                            // without knowing the genesis machine's fingerprint.
                             match pool.try_bootstrap_with_fingerprint(
                                 validator_pubkey,
                                 grant,
                                 current_slot,
-                                machine_fingerprint,
+                                [0u8; 32],
                             ) {
                                 Ok((idx, _)) => {
                                     info!("  ✅ Founding validator registered: {} MOLT staked (bootstrap #{})",
@@ -5878,28 +5958,12 @@ async fn run_validator() {
 
     // Get starting slot (resume from last + 1)
     let last_slot = state.get_last_slot().unwrap_or(0);
-    let mut slot = if last_slot == 0 { 1 } else { last_slot + 1 };
+    let slot = if last_slot == 0 { 1 } else { last_slot + 1 };
     info!("Starting from slot {}", slot);
 
-    // Get parent hash - if joining network and no genesis yet, use placeholder
-    let mut parent_hash = if slot == 1 {
-        if let Ok(Some(genesis)) = state.get_block_by_slot(0) {
-            genesis.hash()
-        } else {
-            // No genesis yet (joining network) - will be set when genesis syncs
-            Hash::default()
-        }
-    } else {
-        state
-            .get_block_by_slot(slot - 1)
-            .ok()
-            .flatten()
-            .map(|b| b.hash())
-            .unwrap_or_else(|| {
-                warn!("⚠️  Could not load previous block at slot {}", slot - 1);
-                Hash::default()
-            })
-    };
+    // Parent hash — set properly when BFT starts each height
+    #[allow(unused_assignments)]
+    let mut parent_hash = Hash::default();
 
     let needs_genesis = is_joining_network; // Track if we need to request genesis
 
@@ -5933,6 +5997,11 @@ async fn run_validator() {
     let (erasure_shard_response_tx, mut erasure_shard_response_rx) =
         mpsc::channel::<moltchain_p2p::ErasureShardResponseMsg>(200);
 
+    // BFT consensus channels (Tendermint-style propose/prevote/precommit)
+    let (proposal_tx, mut proposal_rx) = mpsc::channel::<Proposal>(100);
+    let (prevote_tx, mut prevote_rx) = mpsc::channel::<Prevote>(500);
+    let (precommit_tx, mut precommit_rx) = mpsc::channel::<Precommit>(500);
+
     // Create mempool
     let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
 
@@ -5954,6 +6023,9 @@ async fn run_validator() {
         get_block_txs_tx,
         erasure_shard_request_tx,
         erasure_shard_response_tx,
+        proposal_tx,
+        prevote_tx,
+        precommit_tx,
     )
     .await
     {
@@ -6004,7 +6076,6 @@ async fn run_validator() {
     // `get_block_by_slot` guard and the actual `Block::new` call.
     let received_network_slots: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let received_network_slots_for_blocks = received_network_slots.clone();
-    let received_network_slots_for_producer = received_network_slots.clone();
 
     // Track last block time for leader timeout handling
     let last_block_time = Arc::new(Mutex::new(std::time::Instant::now()));
@@ -6012,7 +6083,6 @@ async fn run_validator() {
     let last_block_time_for_local = last_block_time.clone();
     let global_last_user_tx_activity = Arc::new(Mutex::new(std::time::Instant::now()));
     let global_last_user_tx_activity_for_blocks = global_last_user_tx_activity.clone();
-    let global_last_user_tx_activity_for_producer = global_last_user_tx_activity.clone();
 
     // PERF-OPT 1: Tip-advance notification.  The block receiver task signals
     // this Notify whenever a new block advances the chain tip.  The production
@@ -6779,10 +6849,113 @@ async fn run_validator() {
                         .unwrap_or(false);
 
                     if can_chain {
+                        // SYNC-FIX: Replicate genesis bootstrap for joining nodes.
+                        // The genesis validator's account + pool entry are created
+                        // by direct state write on the genesis node (not through a
+                        // transaction). Without replication, joining nodes have
+                        // divergent state_roots from block 1 onward. When we see
+                        // the first non-genesis block, identify the genesis validator
+                        // (block producer) and apply the same bootstrap: debit
+                        // treasury → create validator account with staked funds →
+                        // add to stake pool. This must happen BEFORE replay so that
+                        // state matches the genesis node exactly.
+                        if block_slot > 0 && block_slot <= 5 {
+                            let producer = Pubkey(block.header.validator);
+                            let pool_missing = state_for_blocks
+                                .get_stake_pool()
+                                .map(|p| p.get_stake(&producer).is_none())
+                                .unwrap_or(true);
+                            if pool_missing {
+                                // Replicate genesis bootstrap
+                                let treasury_pk =
+                                    state_for_blocks.get_treasury_pubkey().ok().flatten();
+                                if let Some(tpk) = treasury_pk {
+                                    if let Ok(Some(mut treasury)) =
+                                        state_for_blocks.get_account(&tpk)
+                                    {
+                                        if treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).is_ok()
+                                        {
+                                            state_for_blocks.put_account(&tpk, &treasury).ok();
+                                            let mut acct = state_for_blocks
+                                                .get_account(&producer)
+                                                .unwrap_or(None)
+                                                .unwrap_or_else(|| {
+                                                    Account::new(0, SYSTEM_ACCOUNT_OWNER)
+                                                });
+                                            acct.shells =
+                                                acct.shells.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            acct.staked =
+                                                acct.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            state_for_blocks.put_account(&producer, &acct).ok();
+                                            let mut pool = state_for_blocks
+                                                .get_stake_pool()
+                                                .unwrap_or_else(|_| StakePool::new());
+                                            // Must use try_bootstrap_with_fingerprint (not upsert_stake)
+                                            // to create byte-identical StakeInfo as the genesis node:
+                                            // bootstrap_index=0, bootstrap_debt=amount, status=Bootstrapping.
+                                            // upsert_stake creates bootstrap_index=u64::MAX, debt=0, FullyVested.
+                                            if let Err(e) = pool.try_bootstrap_with_fingerprint(
+                                                producer,
+                                                BOOTSTRAP_GRANT_AMOUNT,
+                                                0,
+                                                [0u8; 32],
+                                            ) {
+                                                warn!(
+                                                    "⚠️  Genesis bootstrap pool entry failed: {}",
+                                                    e
+                                                );
+                                            }
+                                            state_for_blocks.put_stake_pool(&pool).ok();
+                                            {
+                                                let mut mem_pool =
+                                                    stake_pool_for_blocks.write().await;
+                                                *mem_pool = pool;
+                                            }
+                                            info!(
+                                                "🩹 Genesis bootstrap replicated: {} staked {} MOLT",
+                                                producer.to_base58(),
+                                                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Valid next block in chain - replay transactions then store
                         // P1-1: Skip TX replay in header-only sync for far-away blocks.
                         if sync_mgr.should_full_validate(block_slot).await {
                             replay_block_transactions(&processor_for_blocks, &block);
+                        }
+                        // SYNC-FIX: Apply block effects (rewards, staking) during sync
+                        // so that the joining node's CF_ACCOUNTS state matches the
+                        // genesis node's. Without this, block rewards accumulate only
+                        // on the genesis node, causing state_root divergence when BFT
+                        // starts. The reward guard (per-slot idempotency) prevents
+                        // double-application if the block also goes through CommitBlock.
+                        apply_block_effects(
+                            &state_for_blocks,
+                            &validator_set_for_blocks,
+                            &stake_pool_for_blocks,
+                            &vote_agg_for_effects,
+                            &block,
+                            false,
+                        )
+                        .await;
+                        apply_oracle_from_block(&state_for_blocks, &block);
+                        // DIAG: Compare local state_root with block's stored state_root
+                        // to detect the first sync slot where state diverges.
+                        {
+                            let local_root = state_for_blocks.compute_state_root();
+                            let block_root = block.header.state_root;
+                            if local_root != block_root && block_root != Hash::default() {
+                                warn!(
+                                    "⚠️  SYNC STATE MISMATCH at slot {}: local={} block={}",
+                                    block_slot,
+                                    hex::encode(&local_root.0[..8]),
+                                    hex::encode(&block_root.0[..8]),
+                                );
+                            }
                         }
                         run_analytics_bridge_from_state(
                             &state_for_blocks,
@@ -8860,9 +9033,10 @@ async fn run_validator() {
                                 };
                                 if should_upsert {
                                     // GUARD: Only upsert stake entries for validators
-                                    // that exist in our local validator set. This prevents
-                                    // phantom entries from contaminated peers from being
-                                    // injected into our stake pool and creating fake accounts.
+                                    // that exist in our local validator set AND have
+                                    // confirmed on-chain stake. This prevents a joining
+                                    // node (pre-registration) from contaminating the
+                                    // producing node's pool and breaking solo BFT.
                                     let vs = validator_set_for_snapshot_apply.read().await;
                                     let is_known_validator =
                                         vs.get_validator(&entry_validator).is_some();
@@ -8870,6 +9044,21 @@ async fn run_validator() {
                                     if !is_known_validator {
                                         warn!(
                                             "⚠️  Snapshot: skipping stake entry for unknown validator {} from peer {} (not in local validator set)",
+                                            entry.validator.to_base58(),
+                                            response.requester
+                                        );
+                                        continue;
+                                    }
+
+                                    // Verify on-chain stake before accepting entry
+                                    let has_on_chain_stake = state_for_snapshot_apply
+                                        .get_account(&entry_validator)
+                                        .unwrap_or(None)
+                                        .map(|a| a.staked >= MIN_VALIDATOR_STAKE)
+                                        .unwrap_or(false);
+                                    if !has_on_chain_stake {
+                                        debug!(
+                                            "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
                                             entry.validator.to_base58(),
                                             response.requester
                                         );
@@ -9191,7 +9380,7 @@ async fn run_validator() {
                     let pool = stake_pool_for_announce.read().await;
                     pool.get_stake(&validator_pubkey_for_announce)
                         .map(|s| s.total_stake())
-                        .unwrap_or(BOOTSTRAP_GRANT_AMOUNT)
+                        .unwrap_or(0)
                 };
                 let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
 
@@ -9943,9 +10132,15 @@ async fn run_validator() {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_WATCHDOG_TIMEOUT_SECS);
 
+    // Shared flag: suppress watchdog during the joining sync phase.
+    // Joining nodes may spend minutes syncing without committing blocks,
+    // which is NOT a stall — the watchdog must not kill them.
+    let joining_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(is_joining_network));
+
     let last_block_time_for_watchdog = last_block_time.clone();
     let state_for_watchdog = state.clone();
     let sync_manager_for_watchdog = sync_manager.clone();
+    let joining_sync_for_watchdog = joining_sync_active.clone();
     tokio::spawn(async move {
         // Give the validator time to start up and sync before monitoring.
         // Use 60s startup grace — newly joining nodes need time to discover
@@ -9964,6 +10159,14 @@ async fn run_validator() {
             // has pending blocks or is actively syncing. The node is alive —
             // it's just behind, not deadlocked.
             let actively_receiving = sync_manager_for_watchdog.is_actively_receiving().await;
+
+            // Suppress watchdog entirely while the joining sync phase is active.
+            // Joining nodes wait for snapshots + chain sync before committing
+            // any blocks — this is normal, not a stall.
+            if joining_sync_for_watchdog.load(std::sync::atomic::Ordering::Relaxed) {
+                stale_checks = 0;
+                continue;
+            }
 
             if elapsed > Duration::from_secs(watchdog_timeout_secs)
                 && current_slot == last_known_slot
@@ -10397,258 +10600,751 @@ async fn run_validator() {
         });
     }
 
-    // Track when we first discovered other validators (for stabilization wait)
-    let mut first_announcement_time: Option<std::time::Instant> = None;
-    let validator_set_stabilization = if !explicit_seed_peers.is_empty()
-        && explicit_seed_peers
-            .iter()
-            .all(|addr| addr.ip().is_loopback())
-    {
-        Duration::from_secs(10)
-    } else {
-        Duration::from_secs(60)
-    };
+    // ═══════════════════════════════════════════════════════════════
+    //  BFT CONSENSUS LOOP
+    //
+    //  Tendermint-style: Propose → Prevote → Precommit → Commit.
+    //  The consensus engine is a pure state machine — it never touches
+    //  I/O directly. The loop drives it by feeding incoming P2P messages
+    //  and timeout events, then executing the resulting ConsensusActions.
+    // ═══════════════════════════════════════════════════════════════
 
-    // HEARTBEAT-FIX: Use the shared last_block_time (Arc<Mutex<Instant>>) instead
-    // of a local-only timer. This ensures the heartbeat gate accounts for blocks
-    // received from other validators via P2P, not just locally-produced blocks.
-    // Without this, validators would produce heartbeats simultaneously because
-    // each validator's local timer doesn't see network blocks.
-    let mut slot_start = std::time::Instant::now();
-    let mut last_attempted_slot: u64 = 0;
-
-    // STABILITY-FIX: Track when the freeze-production guard first engaged.
-    // If frozen for longer than MAX_FREEZE_DURATION_SECS, force-resume
-    // production to break the death spiral.
-    let mut freeze_started_at: Option<std::time::Instant> = None;
-
-    // PERF-OPT 5: Leader election cache.
-    // Cache the result of select_leader_weighted() to avoid acquiring RwLock
-    // reads on validator_set + stake_pool every 2ms loop iteration (~500x/sec).
-    // Invalidated when slot or view changes.
-    let mut cached_leader: Option<(u64, u64, bool)> = None; // (slot, view, should_produce)
-
-    // F6.2: Track DEX trade count for WS event emission
-    let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
-
-    // SLOT TIMING FLOOR: Track when the last block was produced to enforce
-    // minimum slot_duration_ms spacing between blocks. Without this, the 2ms
-    // poll loop would produce blocks every ~3ms when the leader bypass is active.
-    let mut last_block_produced_at: Option<std::time::Instant> = None;
-
-    loop {
-        // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
-        // This guarantees consecutive slot numbers — no gaps. Every validator agrees
-        // on which slot comes next because they all read from the same chain.
-        let tip_slot = state.get_last_slot().unwrap_or(0);
-        slot = tip_slot + 1;
-
-        // LEADER-SEED-FIX: Refresh parent_hash from chain tip BEFORE leader election.
-        // Previously this was done AFTER leader election (after all `continue` guards),
-        // meaning parent_hash could be stale for validators that weren't producing.
-        // With a stale seed, validators disagree on leader selection → neither produces
-        // → unnecessary view rotation delays and potential simultaneous production.
-        // Now every validator uses the same parent_hash seed for the same tip.
-        if tip_slot > 0 {
-            if let Ok(Some(latest_block)) = state.get_block_by_slot(tip_slot) {
-                parent_hash = latest_block.hash();
-            }
-        } else if let Ok(Some(genesis_block)) = state.get_block_by_slot(0) {
-            parent_hash = genesis_block.hash();
-        }
-
-        // Reset view timer when chain tip advances (new slot to fill)
-        if slot != last_attempted_slot {
-            slot_start = std::time::Instant::now();
-            last_attempted_slot = slot;
-            // Invalidate leader cache when slot changes
-            cached_leader = None;
-        }
-
-        // PERF-OPT 1: Event-driven wakeup instead of busy-poll.
-        // Wait for either a tip-advance notification (from block receiver) or a
-        // 2ms timeout.  This cuts average wakeup latency from 2.5ms to ~0ms
-        // when blocks arrive, while still polling at 2ms for mempool changes
-        // and heartbeat checks.
-        tokio::select! {
-            _ = tip_notify_for_producer.notified() => {},
-            _ = time::sleep(Duration::from_millis(2)) => {},
-        }
-
-        // Broadcast slot event to WebSocket subscribers
-        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Slot(slot));
-
-        // Check if we need to wait for initial sync and validator discovery
-        if is_joining_network {
+    // ── Pre-loop: Joining network sync ──
+    // Wait until we have genesis, validators, and are caught up before
+    // entering the consensus loop.
+    if is_joining_network {
+        info!("⏳ Joining network — waiting for genesis sync and validator discovery");
+        let snapshot_sync_join = snapshot_sync.clone();
+        let sync_manager_join = sync_manager.clone();
+        let vs_join = validator_set.clone();
+        let sp_join = stake_pool.clone();
+        loop {
             let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
             if !has_genesis {
-                // Still waiting for genesis sync — sleep 200ms instead of spinning at 2ms
-                if slot_start.elapsed().as_secs() >= 5 {
-                    info!(
-                        "⏳ Waiting for genesis sync from network (tip: {})",
-                        tip_slot
-                    );
-                    slot_start = std::time::Instant::now();
-                    last_attempted_slot = slot;
+                info!(
+                    "⏳ Waiting for genesis sync from network (tip: {})",
+                    state.get_last_slot().unwrap_or(0)
+                );
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            let snapshot_ready = {
+                let mut ss = snapshot_sync_join.lock().await;
+                // If snapshot exchange hasn't marked pool/validators ready yet,
+                // check if block replay already populated them (apply_block_effects
+                // during sync creates pool entries and validator set entries).
+                if !ss.validator_set {
+                    let vs = vs_join.read().await;
+                    if !vs.validators().is_empty() {
+                        ss.validator_set = true;
+                    }
                 }
+                if !ss.stake_pool {
+                    let pool = sp_join.read().await;
+                    if !pool.stake_entries().is_empty() {
+                        ss.stake_pool = true;
+                    }
+                }
+                ss.is_ready()
+            };
+            if !snapshot_ready {
+                info!("⏳ Waiting for validator/stake snapshots");
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            let vs = vs_join.read().await;
+            let validator_count = vs.validators().len();
+            drop(vs);
+
+            if validator_count == 0 {
+                info!(
+                    "⏳ Waiting for validator discovery (found {} validators)",
+                    validator_count
+                );
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+
+            // Wait for chain sync
+            let current_slot = state.get_last_slot().unwrap_or(0);
+            if !sync_manager_join.is_caught_up(current_slot).await {
+                let network_slot = sync_manager_join.get_highest_seen().await;
+                info!(
+                    "⏳ Syncing to network (current: {}, network: {}, {} validators)",
+                    current_slot, network_slot, validator_count
+                );
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
 
-            let snapshot_ready = snapshot_sync.lock().await.is_ready();
-            if !snapshot_ready {
-                if slot_start.elapsed().as_secs() >= 5 {
+            info!(
+                "✅ Synced! Found {} validators, chain tip at slot {}",
+                validator_count,
+                state.get_last_slot().unwrap_or(0)
+            );
+            break;
+        }
+
+        // ── Wait for on-chain registration before entering BFT ──
+        // Cosmos/Tendermint: full nodes sync blocks but DO NOT vote.
+        // Only validators with voting power > 0 participate in BFT.
+        // A joining node is a full node until RegisterValidator lands.
+        // Block receiver continues applying blocks in the background.
+        if needs_on_chain_registration {
+            info!("⏳ Waiting for RegisterValidator to land on-chain before entering consensus...");
+            info!("   (Block receiver continues syncing in the background)");
+            let mut wait_count = 0u32;
+            loop {
+                let is_registered = state
+                    .get_account(&validator_pubkey)
+                    .unwrap_or(None)
+                    .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
+                    .unwrap_or(false);
+                if is_registered {
+                    info!("✅ RegisterValidator confirmed — validator has on-chain stake");
+                    break;
+                }
+                wait_count += 1;
+                if wait_count.is_multiple_of(15) {
                     info!(
-                        "⏳ Waiting for validator/stake snapshots before producing (tip: {})",
-                        tip_slot
+                        "⏳ Still waiting for registration ({}s, tip={})",
+                        wait_count * 2,
+                        state.get_last_slot().unwrap_or(0)
                     );
-                    slot_start = std::time::Instant::now();
-                    last_attempted_slot = slot;
                 }
-                time::sleep(Duration::from_millis(200)).await;
-                continue;
-            } else {
-                // Genesis synced! But wait for validator discovery AND full chain sync
-                let vs = validator_set.read().await;
-                let validator_count = vs.validators().len();
-                drop(vs);
-
-                if validator_count <= 1 {
-                    // Still waiting for first validator announcement
-                    if slot_start.elapsed().as_secs() >= 5 {
-                        info!(
-                            "⏳ Waiting for validator discovery (found {} validators)",
-                            validator_count
-                        );
-                        slot_start = std::time::Instant::now();
-                        last_attempted_slot = slot;
-                    }
-                    time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                } else if first_announcement_time.is_none() {
-                    // Just discovered validators! Start stabilization wait
-                    first_announcement_time = Some(std::time::Instant::now());
-                    info!(
-                        "✅ Discovered {} validators. Waiting {}s for ValidatorSet stability...",
-                        validator_count,
-                        validator_set_stabilization.as_secs()
-                    );
-                    time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                } else {
-                    // Check if we've waited long enough for ValidatorSet to stabilize
-                    let elapsed = first_announcement_time
-                        .map(|t| t.elapsed())
-                        .unwrap_or_default();
-                    if elapsed < validator_set_stabilization {
-                        if elapsed.as_secs().is_multiple_of(5)
-                            && slot_start.elapsed().as_secs() >= 2
-                        {
-                            info!(
-                                "⏳ ValidatorSet stabilizing... ({:.0}s / {}s, {} validators)",
-                                elapsed.as_secs(),
-                                validator_set_stabilization.as_secs(),
-                                validator_count
-                            );
-                            slot_start = std::time::Instant::now();
-                            last_attempted_slot = slot;
-                        }
-                        time::sleep(Duration::from_millis(200)).await;
-                        continue;
-                    }
-                }
-
-                // ValidatorSet stable! Now wait until caught up with network
-                let current_slot = state.get_last_slot().unwrap_or(0);
-                if !sync_manager.is_caught_up(current_slot).await {
-                    let network_slot = sync_manager.get_highest_seen().await;
-                    // Only log every 5 seconds to avoid log spam during catch-up
-                    if slot_start.elapsed().as_secs() >= 5 {
-                        info!(
-                            "⏳ Syncing to network (current: {}, network: {}, {} validators)",
-                            current_slot, network_slot, validator_count
-                        );
-                        slot_start = std::time::Instant::now();
-                        last_attempted_slot = slot;
-                    }
-                    // Sleep 100ms during catch-up instead of spinning at 2ms
-                    // The P2P block receiver fills gaps independently
-                    time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                // Fully synced!
-                info!(
-                    "✅ READY! Found {} validators, fully synced. Starting consensus from slot {}",
-                    validator_count,
-                    tip_slot + 1
-                );
-                is_joining_network = false; // Exit joining mode - we're caught up!
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
 
-        // FREEZE PRODUCTION WHEN BEHIND: If the network is ahead of us,
-        // don't produce blocks (including heartbeats) to avoid creating
-        // a divergent chain. Let the block receiver + sync fill the gap.
-        //
-        // STABILITY-FIX: Bounded freeze guard. The original code could loop
-        // forever because continuous incoming blocks keep highest_seen elevated
-        // via note_seen(), preventing decay, and eventually the watchdog kills
-        // the process. Now: if frozen for > MAX_FREEZE_DURATION_SECS, force-
-        // decay and resume production to break the death spiral.
+        info!(
+            "✅ Entering BFT consensus from height {}",
+            state.get_last_slot().unwrap_or(0) + 1
+        );
+        // Mark join as complete so restarts don't re-enter joining mode.
+        if let Err(e) = state.put_metadata("join_complete", b"1") {
+            warn!("⚠️  Failed to persist join_complete marker: {}", e);
+        }
+        // Clear the joining sync flag so the watchdog resumes monitoring.
+        joining_sync_active.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // ── Initialize BFT consensus engine ──
+    let bft_keypair = Keypair::from_seed(validator_keypair.secret_key());
+    let mut bft = ConsensusEngine::new(bft_keypair, validator_pubkey);
+    let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+
+    // Current timeout handle (if any). When the engine requests a timeout,
+    // we spawn a sleep and race it against incoming messages.
+    let mut timeout_handle: Option<(RoundStep, u32, std::pin::Pin<Box<tokio::time::Sleep>>)> = None;
+
+    // Helper: derive parent_hash from chain tip
+    let get_parent_hash = |st: &StateStore| -> Hash {
+        let tip = st.get_last_slot().unwrap_or(0);
+        if tip > 0 {
+            st.get_block_by_slot(tip)
+                .ok()
+                .flatten()
+                .map(|b| b.hash())
+                .unwrap_or_default()
+        } else {
+            st.get_block_by_slot(0)
+                .ok()
+                .flatten()
+                .map(|b| b.hash())
+                .unwrap_or_default()
+        }
+    };
+
+    // Drain stale BFT messages that accumulated during sync.
+    // Without this, the proposal channel stays full of old-height proposals
+    // and new proposals from the leader get dropped → joining node misses
+    // current rounds and proposes its own blocks (fork).
+    {
+        let mut drained = 0u64;
+        while proposal_rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        while prevote_rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        while precommit_rx.try_recv().is_ok() {
+            drained += 1;
+        }
+        if drained > 0 {
+            info!(
+                "🔄 Drained {} stale BFT messages before entering consensus",
+                drained
+            );
+        }
+    }
+
+    // Start the first height
+    let start_height = state.get_last_slot().unwrap_or(0) + 1;
+    bft.start_height(start_height);
+    parent_hash = get_parent_hash(&state);
+
+    // If we're the proposer for round 0, build a block
+    {
+        let vs = validator_set.read().await;
+        let pool = stake_pool.read().await;
+        if bft.is_proposer(&vs, &pool, &parent_hash) {
+            info!(
+                "👑 BFT: We are proposer for height={} round=0",
+                start_height
+            );
+            let mut mp = mempool.lock().await;
+            let oracle_snapshot = shared_oracle_prices.snapshot();
+            let (mut block, _processed_hashes) = block_producer::build_block(
+                &state,
+                &mut mp,
+                &processor,
+                start_height,
+                parent_hash,
+                &validator_pubkey,
+                oracle_snapshot,
+            );
+            drop(mp);
+            block.sign(&validator_keypair);
+            let action = bft.create_proposal(block, &vs, &pool);
+            drop(pool);
+            drop(vs);
+            execute_consensus_actions(
+                action,
+                &bft,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &vote_aggregator,
+                &mempool,
+                &processor,
+                &finality_tracker,
+                &p2p_peer_manager,
+                &p2p_config,
+                &ws_event_tx,
+                &ws_dex_broadcaster,
+                &shared_oracle_prices,
+                &last_block_time_for_local,
+                &mut last_dex_trade_count,
+                &data_dir,
+                &sync_manager,
+                &mut parent_hash,
+                slot_duration_ms,
+                &validator_keypair,
+            )
+            .await;
+            // Schedule timeout for the step we landed on after proposing
+            match bft.step {
+                RoundStep::Prevote => {
+                    timeout_handle = Some((
+                        RoundStep::Prevote,
+                        bft.round,
+                        Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                    ));
+                }
+                RoundStep::Precommit => {
+                    timeout_handle = Some((
+                        RoundStep::Precommit,
+                        bft.round,
+                        Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                    ));
+                }
+                _ => {}
+            }
+        } else {
+            drop(pool);
+            drop(vs);
+            // Not proposer — schedule propose timeout
+            timeout_handle = Some((
+                RoundStep::Propose,
+                bft.round,
+                Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+            ));
+        }
+    }
+
+    // ── Delayed proposal timer ──
+    // When we are the proposer after a commit, we delay 800ms (empty mempool)
+    // or 100ms (pending TXs) to reduce QUIC stream pressure on P2P.
+    let mut propose_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+
+    // ── Main BFT event loop ──
+    loop {
+        // Check if chain tip advanced (block received via sync/P2P outside of BFT)
+        let tip_slot = state.get_last_slot().unwrap_or(0);
+        if tip_slot >= bft.height {
+            // Chain advanced past our current height — start new height
+            let new_height = tip_slot + 1;
+            bft.start_height(new_height);
+            parent_hash = get_parent_hash(&state);
+
+            let vs = validator_set.read().await;
+            let pool = stake_pool.read().await;
+            if bft.is_proposer(&vs, &pool, &parent_hash) {
+                info!("👑 BFT: We are proposer for height={} round=0", new_height);
+                let mut mp = mempool.lock().await;
+                let oracle_snapshot = shared_oracle_prices.snapshot();
+                let (mut block, _) = block_producer::build_block(
+                    &state,
+                    &mut mp,
+                    &processor,
+                    new_height,
+                    parent_hash,
+                    &validator_pubkey,
+                    oracle_snapshot,
+                );
+                drop(mp);
+                block.sign(&validator_keypair);
+                let action = bft.create_proposal(block, &vs, &pool);
+                drop(pool);
+                drop(vs);
+                execute_consensus_actions(
+                    action,
+                    &bft,
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    &vote_aggregator,
+                    &mempool,
+                    &processor,
+                    &finality_tracker,
+                    &p2p_peer_manager,
+                    &p2p_config,
+                    &ws_event_tx,
+                    &ws_dex_broadcaster,
+                    &shared_oracle_prices,
+                    &last_block_time_for_local,
+                    &mut last_dex_trade_count,
+                    &data_dir,
+                    &sync_manager,
+                    &mut parent_hash,
+                    slot_duration_ms,
+                    &validator_keypair,
+                )
+                .await;
+                // Schedule timeout for post-proposal step
+                match bft.step {
+                    RoundStep::Prevote => {
+                        timeout_handle = Some((
+                            RoundStep::Prevote,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                        ));
+                    }
+                    RoundStep::Precommit => {
+                        timeout_handle = Some((
+                            RoundStep::Precommit,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                        ));
+                    }
+                    _ => {
+                        timeout_handle = None;
+                    }
+                }
+                // If the block committed instantly (solo BFT), loop back to
+                // start the next height without waiting on tokio::select!
+                if bft.step == RoundStep::Commit {
+                    // Delay proposal: 800ms heartbeat for empty blocks,
+                    // slot_duration for blocks with pending TXs.
+                    let has_pending = { mempool.lock().await.size() > 0 };
+                    let delay = if has_pending { slot_duration_ms } else { 800 };
+                    time::sleep(Duration::from_millis(delay)).await;
+                    continue;
+                }
+            } else {
+                drop(pool);
+                drop(vs);
+                timeout_handle = Some((
+                    RoundStep::Propose,
+                    bft.round,
+                    Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                ));
+            }
+        }
+
+        // Freeze production when behind: if the network is significantly ahead,
+        // let sync fill the gap instead of participating in consensus.
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot + 2 {
-                // Check bounded freeze timeout
-                let now = std::time::Instant::now();
-                let freeze_start = freeze_started_at.get_or_insert(now);
-                let frozen_secs = freeze_start.elapsed().as_secs();
-                if frozen_secs >= MAX_FREEZE_DURATION_SECS {
-                    warn!(
-                        "🔥 Freeze guard timeout after {}s (tip={}, network={}) — resuming production",
-                        frozen_secs, tip_slot, network_highest
-                    );
-                    sync_manager.force_decay(tip_slot).await;
-                    freeze_started_at = None;
-                    // Fall through to production instead of continue
-                } else {
-                    continue;
-                }
-            } else {
-                // Not frozen or caught up — reset freeze timer
-                freeze_started_at = None;
+            if network_highest > tip_slot + 5 {
+                // Behind — sleep and let sync catch up
+                time::sleep(Duration::from_millis(200)).await;
+                continue;
             }
         }
 
-        // Check if we already have a block for this slot (received from P2P)
-        if let Ok(Some(_existing_block)) = state.get_block_by_slot(slot) {
-            // Already have a block for this slot — tip will advance next iteration
-            continue;
+        tokio::select! {
+            // ── Incoming proposal ──
+            Some(proposal) = proposal_rx.recv() => {
+                let vs = validator_set.read().await;
+                let pool = stake_pool.read().await;
+                let action = bft.on_proposal(proposal, &vs, &pool);
+                drop(pool);
+                drop(vs);
+                execute_consensus_actions(
+                    action,
+                    &bft,
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    &vote_aggregator,
+                    &mempool,
+                    &processor,
+                    &finality_tracker,
+                    &p2p_peer_manager,
+                    &p2p_config,
+                    &ws_event_tx,
+                    &ws_dex_broadcaster,
+                    &shared_oracle_prices,
+                    &last_block_time_for_local,
+                    &mut last_dex_trade_count,
+                    &data_dir,
+                    &sync_manager,
+                    &mut parent_hash,
+                    slot_duration_ms,
+                    &validator_keypair,
+                ).await;
+            }
+
+            // ── Incoming prevote ──
+            Some(prevote) = prevote_rx.recv() => {
+                let vs = validator_set.read().await;
+                let pool = stake_pool.read().await;
+                let action = bft.on_prevote(prevote, &vs, &pool);
+                drop(pool);
+                drop(vs);
+                execute_consensus_actions(
+                    action,
+                    &bft,
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    &vote_aggregator,
+                    &mempool,
+                    &processor,
+                    &finality_tracker,
+                    &p2p_peer_manager,
+                    &p2p_config,
+                    &ws_event_tx,
+                    &ws_dex_broadcaster,
+                    &shared_oracle_prices,
+                    &last_block_time_for_local,
+                    &mut last_dex_trade_count,
+                    &data_dir,
+                    &sync_manager,
+                    &mut parent_hash,
+                    slot_duration_ms,
+                    &validator_keypair,
+                ).await;
+            }
+
+            // ── Incoming precommit ──
+            Some(precommit) = precommit_rx.recv() => {
+                let vs = validator_set.read().await;
+                let pool = stake_pool.read().await;
+                let action = bft.on_precommit(precommit, &vs, &pool);
+                drop(pool);
+                drop(vs);
+                execute_consensus_actions(
+                    action,
+                    &bft,
+                    &state,
+                    &validator_set,
+                    &stake_pool,
+                    &vote_aggregator,
+                    &mempool,
+                    &processor,
+                    &finality_tracker,
+                    &p2p_peer_manager,
+                    &p2p_config,
+                    &ws_event_tx,
+                    &ws_dex_broadcaster,
+                    &shared_oracle_prices,
+                    &last_block_time_for_local,
+                    &mut last_dex_trade_count,
+                    &data_dir,
+                    &sync_manager,
+                    &mut parent_hash,
+                    slot_duration_ms,
+                    &validator_keypair,
+                ).await;
+            }
+
+            // ── Tip-advance notification (block received via P2P/sync) ──
+            _ = tip_notify_for_producer.notified() => {
+                // Chain tip advanced — the top-of-loop check will handle height change
+            }
+
+            // ── Delayed proposal timer ──
+            // Fires after commit delay (800ms empty / 100ms with TXs)
+            () = async {
+                if let Some(ref mut timer) = propose_timer {
+                    timer.as_mut().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                propose_timer = None;
+                // Verify we're still in the Propose step and still current
+                if bft.step == RoundStep::Propose {
+                    let vs = validator_set.read().await;
+                    let pool = stake_pool.read().await;
+                    if bft.is_proposer(&vs, &pool, &parent_hash) {
+                        info!(
+                            "👑 BFT: We are proposer for height={} round={}",
+                            bft.height, bft.round
+                        );
+                        let mut mp = mempool.lock().await;
+                        let oracle_snapshot = shared_oracle_prices.snapshot();
+                        let (mut block, _) = block_producer::build_block(
+                            &state,
+                            &mut mp,
+                            &processor,
+                            bft.height,
+                            parent_hash,
+                            &validator_pubkey,
+                            oracle_snapshot,
+                        );
+                        drop(mp);
+                        block.sign(&validator_keypair);
+                        let proposal_action = bft.create_proposal(block, &vs, &pool);
+                        drop(pool);
+                        drop(vs);
+                        execute_consensus_actions(
+                            proposal_action,
+                            &bft,
+                            &state,
+                            &validator_set,
+                            &stake_pool,
+                            &vote_aggregator,
+                            &mempool,
+                            &processor,
+                            &finality_tracker,
+                            &p2p_peer_manager,
+                            &p2p_config,
+                            &ws_event_tx,
+                            &ws_dex_broadcaster,
+                            &shared_oracle_prices,
+                            &last_block_time_for_local,
+                            &mut last_dex_trade_count,
+                            &data_dir,
+                            &sync_manager,
+                            &mut parent_hash,
+                            slot_duration_ms,
+                            &validator_keypair,
+                        ).await;
+                        // Schedule timeout for post-proposal step
+                        timeout_handle = match bft.step {
+                            RoundStep::Prevote => Some((
+                                RoundStep::Prevote,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                            )),
+                            RoundStep::Precommit => Some((
+                                RoundStep::Precommit,
+                                bft.round,
+                                Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                            )),
+                            _ => None,
+                        };
+                    } else {
+                        drop(pool);
+                        drop(vs);
+                    }
+                }
+            }
+
+            // ── Timeout ──
+            () = async {
+                if let Some((_, _, ref mut sleep)) = timeout_handle {
+                    sleep.as_mut().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                if let Some((step, round, _)) = timeout_handle.take() {
+                    let vs = validator_set.read().await;
+                    let pool = stake_pool.read().await;
+                    let action = bft.on_timeout(step, round, &vs, &pool);
+                    drop(pool);
+                    drop(vs);
+                    execute_consensus_actions(
+                        action,
+                        &bft,
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        &vote_aggregator,
+                        &mempool,
+                        &processor,
+                        &finality_tracker,
+                        &p2p_peer_manager,
+                        &p2p_config,
+                        &ws_event_tx,
+                        &ws_dex_broadcaster,
+                        &shared_oracle_prices,
+                        &last_block_time_for_local,
+                        &mut last_dex_trade_count,
+                        &data_dir,
+                        &sync_manager,
+                        &mut parent_hash,
+                        slot_duration_ms,
+                        &validator_keypair,
+                    ).await;
+
+                    // After timeout handling, if we moved to a new round's Propose step
+                    // and we're the proposer, build and propose a block
+                    if bft.step == RoundStep::Propose {
+                        let vs = validator_set.read().await;
+                        let pool = stake_pool.read().await;
+                        if bft.is_proposer(&vs, &pool, &parent_hash) {
+                            info!(
+                                "👑 BFT: We are proposer for height={} round={}",
+                                bft.height, bft.round
+                            );
+                            let mut mp = mempool.lock().await;
+                            let oracle_snapshot = shared_oracle_prices.snapshot();
+                            let (mut block, _) = block_producer::build_block(
+                                &state,
+                                &mut mp,
+                                &processor,
+                                bft.height,
+                                parent_hash,
+                                &validator_pubkey,
+                                oracle_snapshot,
+                            );
+                            drop(mp);
+                            block.sign(&validator_keypair);
+                            let proposal_action = bft.create_proposal(block, &vs, &pool);
+                            drop(pool);
+                            drop(vs);
+                            execute_consensus_actions(
+                                proposal_action,
+                                &bft,
+                                &state,
+                                &validator_set,
+                                &stake_pool,
+                                &vote_aggregator,
+                                &mempool,
+                                &processor,
+                                &finality_tracker,
+                                &p2p_peer_manager,
+                                &p2p_config,
+                                &ws_event_tx,
+                                &ws_dex_broadcaster,
+                                &shared_oracle_prices,
+                                &last_block_time_for_local,
+                                &mut last_dex_trade_count,
+                                &data_dir,
+                                &sync_manager,
+                                &mut parent_hash,
+                                slot_duration_ms,
+                                &validator_keypair,
+                            ).await;
+                        } else {
+                            drop(pool);
+                            drop(vs);
+                        }
+                    }
+                }
+            }
         }
 
-        // ── SLASHING EVIDENCE HOUSEKEEPING ──
-        //
-        // PHASE-3: Economic slashing is now handled through consensus via the
-        // SlashValidator system instruction (opcode 27).  When double-vote or
-        // double-block evidence is detected, a SlashValidator transaction is
-        // submitted to the mempool (see vote receiver and block receiver tasks).
-        // All validators process the same transaction identically — no more
-        // local state mutations that could cause divergence.
-        //
-        // This periodic sweep only:
-        //   1. Cleans up expired local tracking data
-        //   2. Applies reputation penalties (local, non-consensus, advisory only)
-        //   3. Persists the evidence tracker to disk for forensics
-        //
-        // Run every 100 slots (~40s).
-        if slot % 100 == 0 {
+        // ── Update timeout handle from engine state ──
+        // After processing any event, check if the engine wants a new timeout.
+        // The engine sets step to indicate what it's waiting for.
+        match bft.step {
+            RoundStep::Propose => {
+                if timeout_handle
+                    .as_ref()
+                    .map(|t| t.0 != RoundStep::Propose || t.1 != bft.round)
+                    .unwrap_or(true)
+                {
+                    timeout_handle = Some((
+                        RoundStep::Propose,
+                        bft.round,
+                        Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                    ));
+                }
+            }
+            RoundStep::Prevote => {
+                // Always ensure a prevote timeout is running so we don't
+                // deadlock waiting for votes that never arrive.
+                if timeout_handle
+                    .as_ref()
+                    .map(|t| t.0 != RoundStep::Prevote || t.1 != bft.round)
+                    .unwrap_or(true)
+                {
+                    timeout_handle = Some((
+                        RoundStep::Prevote,
+                        bft.round,
+                        Box::pin(tokio::time::sleep(bft.prevote_timeout())),
+                    ));
+                }
+            }
+            RoundStep::Precommit => {
+                // Always ensure a precommit timeout is running.
+                if timeout_handle
+                    .as_ref()
+                    .map(|t| t.0 != RoundStep::Precommit || t.1 != bft.round)
+                    .unwrap_or(true)
+                {
+                    timeout_handle = Some((
+                        RoundStep::Precommit,
+                        bft.round,
+                        Box::pin(tokio::time::sleep(bft.precommit_timeout())),
+                    ));
+                }
+            }
+            RoundStep::Commit => {
+                // Block committed — start new height
+                let new_height = state.get_last_slot().unwrap_or(0) + 1;
+                if new_height > bft.height {
+                    bft.start_height(new_height);
+                    parent_hash = get_parent_hash(&state);
+
+                    let vs = validator_set.read().await;
+                    let pool = stake_pool.read().await;
+                    if bft.is_proposer(&vs, &pool, &parent_hash) {
+                        drop(pool);
+                        drop(vs);
+                        // Delay proposal to reduce QUIC stream pressure.
+                        // 800ms for empty blocks (heartbeat), 100ms for blocks with TXs.
+                        let has_pending_txs = {
+                            let mp = mempool.lock().await;
+                            mp.size() > 0
+                        };
+                        let delay_ms = if has_pending_txs { 100 } else { 800 };
+                        propose_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+                            delay_ms,
+                        ))));
+                        // Also set a propose timeout as safety net
+                        timeout_handle = Some((
+                            RoundStep::Propose,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                        ));
+                    } else {
+                        drop(pool);
+                        drop(vs);
+                        timeout_handle = Some((
+                            RoundStep::Propose,
+                            bft.round,
+                            Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Periodic slashing evidence housekeeping (every 100 heights)
+        if bft.height.is_multiple_of(100) && bft.step == RoundStep::Propose && bft.round == 0 {
             let mut slasher = slashing_tracker.lock().await;
-
-            slasher.cleanup_expired(slot);
-
-            // Collect validators needing reputation penalty (read-only scan)
-            let rep_penalties: Vec<(moltchain_core::Pubkey, u64)> = {
+            slasher.cleanup_expired(bft.height);
+            let rep_penalties: Vec<(Pubkey, u64)> = {
                 let vs = validator_set.read().await;
                 vs.validators()
                     .iter()
@@ -10678,8 +11374,6 @@ async fn run_validator() {
                     })
                     .collect()
             };
-
-            // Apply reputation penalties (write lock)
             if !rep_penalties.is_empty() {
                 let mut vs_w = validator_set.write().await;
                 for (pk, penalty) in &rep_penalties {
@@ -10693,561 +11387,289 @@ async fn run_validator() {
                     error!("Failed to persist validator set after rep penalty: {}", e);
                 }
             }
-
-            // Persist evidence tracker for forensics / restart recovery
             let slasher_snapshot = slasher.clone();
             drop(slasher);
             if let Err(e) = state.put_slashing_tracker(&slasher_snapshot) {
                 error!("Failed to persist slashing tracker: {}", e);
             }
         }
+    }
+}
 
-        // ── SLOT TIMING FLOOR ──
-        // Enforce minimum slot_duration_ms (400ms) spacing between produced blocks.
-        // This is a hard floor that prevents runaway block production regardless
-        // of leader status or heartbeat gate logic. The 2ms poll loop is for
-        // responsiveness, not for block production rate.
-        if let Some(ref last_produced) = last_block_produced_at {
-            if last_produced.elapsed() < Duration::from_millis(slot_duration_ms) {
-                continue;
+/// Execute one or more ConsensusActions returned by the BFT engine.
+///
+/// This is the bridge between the pure state machine (ConsensusEngine) and
+/// the real world (P2P broadcast, state storage, mempool cleanup, etc.).
+#[allow(clippy::too_many_arguments)]
+async fn execute_consensus_actions(
+    action: ConsensusAction,
+    bft: &ConsensusEngine,
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    vote_aggregator: &Arc<RwLock<VoteAggregator>>,
+    mempool: &Arc<Mutex<Mempool>>,
+    processor: &Arc<TxProcessor>,
+    finality_tracker: &FinalityTracker,
+    p2p_peer_manager: &Option<Arc<moltchain_p2p::PeerManager>>,
+    p2p_config: &P2PConfig,
+    ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
+    ws_dex_broadcaster: &Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
+    shared_oracle_prices: &SharedOraclePrices,
+    last_block_time: &Arc<Mutex<std::time::Instant>>,
+    last_dex_trade_count: &mut u64,
+    data_dir: &str,
+    sync_manager: &Arc<SyncManager>,
+    parent_hash: &mut Hash,
+    slot_duration_ms: u64,
+    validator_keypair: &Keypair,
+) {
+    match action {
+        ConsensusAction::None => {}
+
+        ConsensusAction::ScheduleTimeout(_step, _duration) => {
+            // Timeouts are handled by the main loop's timeout_handle.
+            // The ScheduleTimeout action is informational — the loop uses
+            // the engine's step + round to manage the tokio::time::Sleep.
+        }
+
+        ConsensusAction::BroadcastProposal(proposal) => {
+            if let Some(ref pm) = p2p_peer_manager {
+                let msg = P2PMessage::new(MessageType::Proposal(proposal), p2p_config.listen_addr);
+                let pm_c = pm.clone();
+                tokio::spawn(async move {
+                    pm_c.broadcast(msg).await;
+                });
             }
         }
 
-        // ── VIEW ROTATION: Wall-clock based for the CURRENT slot ──
-        // Every view_change_interval (3 × slot_duration = 1200ms) without anyone
-        // producing this slot, rotate the leader. slot_start resets when the
-        // chain tip advances (a new slot to fill), so view starts fresh for
-        // each consecutive slot number.
-        let view_change_interval_ms = (slot_duration_ms * 3).max(1);
-        let view = (slot_start.elapsed().as_millis() as u64 / view_change_interval_ms).min(15);
-
-        // Stake-weighted leader election with deterministic fallback
-        // PERF-OPT 5: Use cached result when slot+view haven't changed.
-        let should_produce = if let Some((cs, cv, cp)) = cached_leader {
-            if cs == slot && cv == view {
-                cp
-            } else {
-                let vs = validator_set.read().await;
-                let pool = stake_pool.read().await;
-                let leader_slot = if view == 0 {
-                    slot
-                } else {
-                    slot.saturating_mul(16).saturating_add(view)
-                };
-                // A5-01: Mix parent_hash for unpredictable leader selection
-                let leader =
-                    vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
-                let sp = leader
-                    .map(|pubkey| pubkey == validator_pubkey)
-                    .unwrap_or(false);
-                drop(pool);
-                drop(vs);
-                cached_leader = Some((slot, view, sp));
-                sp
+        ConsensusAction::BroadcastPrevote(prevote) => {
+            if let Some(ref pm) = p2p_peer_manager {
+                let msg = P2PMessage::new(MessageType::Prevote(prevote), p2p_config.listen_addr);
+                let pm_c = pm.clone();
+                tokio::spawn(async move {
+                    pm_c.broadcast_to_validators(msg).await;
+                });
             }
-        } else {
-            let vs = validator_set.read().await;
-            let pool = stake_pool.read().await;
-            let leader_slot = if view == 0 {
-                slot
-            } else {
-                slot.saturating_mul(16).saturating_add(view)
-            };
-            // A5-01: Mix parent_hash for unpredictable leader selection
-            let leader = vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
-            let sp = leader
-                .map(|pubkey| pubkey == validator_pubkey)
-                .unwrap_or(false);
-            drop(pool);
-            drop(vs);
-            cached_leader = Some((slot, view, sp));
-            sp
-        };
+        }
 
-        // Track whether we're producing as the deadlock breaker (immune to heartbeat gate)
-        let mut is_deadlock_breaker = false;
+        ConsensusAction::BroadcastPrecommit(precommit) => {
+            if let Some(ref pm) = p2p_peer_manager {
+                let msg =
+                    P2PMessage::new(MessageType::Precommit(precommit), p2p_config.listen_addr);
+                let pm_c = pm.clone();
+                tokio::spawn(async move {
+                    pm_c.broadcast_to_validators(msg).await;
+                });
+            }
+        }
 
-        if !should_produce {
-            // Not our turn — wait for the assigned leader to produce.
-            // View rotation (wall-clock based above) will eventually make us
-            // the leader if the current leader is offline. No slot advancement
-            // needed since slot is derived from chain tip each iteration.
+        ConsensusAction::CommitBlock {
+            height,
+            round: _commit_round,
+            block,
+            block_hash,
+        } => {
+            // Non-proposer nodes must replay the block's transactions so
+            // their on-chain state (accounts, stake pool, contracts) matches
+            // the proposer.  The proposer already executed TXs during
+            // build_block, so replay is skipped for our own blocks (the
+            // duplicate-TX guard would reject them anyway).
+            let our_pubkey = validator_keypair.pubkey();
+            if block.header.validator != our_pubkey.0 {
+                replay_block_transactions(processor, &block);
+            }
+
+            // Apply block effects (rewards, staking, oracle)
+            apply_block_effects(
+                state,
+                validator_set,
+                stake_pool,
+                vote_aggregator,
+                &block,
+                false,
+            )
+            .await;
+            apply_oracle_from_block(state, &block);
+
+            // Store block AS-PROPOSED — do NOT recompute state_root or re-sign.
+            // All validators must store identical blocks so that parent_hash
+            // (derived from block.hash()) is the same on every node. If each
+            // node recomputes state_root from local state and overwrites the
+            // header, any micro-divergence in genesis initialization, contract
+            // state, or reward rounding causes a different stored hash, which
+            // makes leader election disagree and stalls the chain.
             //
-            // FIX: Deadlock breaker — if we've exhausted all 16 views (view==15)
-            // and still waited an additional full view interval without any block,
-            // produce anyway. This prevents the network from permanently stalling
-            // when the selected leaders (V2/V3) are still syncing and cannot produce.
-            // The heartbeat mechanism ensures the chain stays alive.
-            // STABILITY-FIX: Stagger the deadlock breaker per validator.
-            // Without jitter, ALL validators fire simultaneously after the
-            // same timeout, each producing its own block → immediate fork.
-            // Add 0-4.5s jitter based on pubkey to let one win cleanly.
-            let pubkey_jitter = (validator_pubkey.0[0] as u64 % 10) * 500;
-            let deadlock_timeout_ms = view_change_interval_ms * 20 + pubkey_jitter;
-            if view >= 15 && slot_start.elapsed().as_millis() as u64 > deadlock_timeout_ms {
-                // AUDIT-FIX H3: Deterministic tiebreaker — only the validator
-                // with the lowest pubkey (lexicographic) among active validators
-                // should produce as deadlock breaker to prevent fork from dual production.
-                let vs = validator_set.read().await;
-                let is_lowest = vs.validators().iter().all(|v| validator_pubkey <= v.pubkey);
-                drop(vs);
-                if !is_lowest {
-                    // Another active validator has a lower pubkey and should break the deadlock
-                    continue;
+            // Effects (rewards, staking) are still applied to local state above
+            // so CF_ACCOUNTS stays as up-to-date as possible, but the block
+            // header is authoritative and untouched.
+            let final_hash = block.hash();
+            info!(
+                "🔐 BFT: Block {} stored hash={} state_root={} proposer={}",
+                height,
+                hex::encode(&final_hash.0[..8]),
+                hex::encode(&block.header.state_root.0[..8]),
+                Pubkey(block.header.validator).to_base58(),
+            );
+
+            // Store block
+            if let Err(e) = state.put_block(&block) {
+                error!("Failed to store block at height {}: {e}", height);
+            }
+            if let Err(e) = state.set_last_slot(height) {
+                error!("Failed to update last slot to {}: {e}", height);
+            }
+
+            // EVM tx inclusion tracking
+            for tx in &block.transactions {
+                if let Some(ix) = tx.message.instructions.first() {
+                    if ix.program_id == EVM_PROGRAM_ID {
+                        let evm_hash = evm_tx_hash(&ix.data).0;
+                        if let Err(e) = state.mark_evm_tx_included(&evm_hash, height, &block_hash) {
+                            warn!("⚠️  Failed to mark EVM tx included: {}", e);
+                        }
+                    }
                 }
-                info!(
-                    "⚠️  Slot {} — all views exhausted with no block after {}ms, producing as deadlock breaker (lowest pubkey tiebreaker)",
-                    slot,
-                    slot_start.elapsed().as_millis()
+            }
+
+            // Update timestamps
+            *last_block_time.lock().await = std::time::Instant::now();
+
+            // Broadcast block to network (compact + full fallback)
+            if let Some(ref pm) = p2p_peer_manager {
+                let compact = moltchain_p2p::CompactBlock::from_block(&block);
+                let compact_msg = P2PMessage::new(
+                    MessageType::CompactBlockMsg(compact),
+                    p2p_config.listen_addr,
                 );
-                is_deadlock_breaker = true;
-                // Fall through to produce
+                let pm_c = pm.clone();
+                tokio::spawn(async move {
+                    pm_c.broadcast(compact_msg).await;
+                });
+            }
+
+            // Emit program and NFT WebSocket events
+            emit_program_and_nft_events(state, ws_event_tx, &block);
+
+            // Broadcast block event to WebSocket subscribers
+            let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
+            let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Slot(height));
+
+            // DEX events + analytics bridge + SL/TP triggers
+            {
+                let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+                if current_trade_count > *last_dex_trade_count {
+                    let prev = *last_dex_trade_count;
+                    *last_dex_trade_count = current_trade_count;
+                    let state_c = state.clone();
+                    let bc_c = ws_dex_broadcaster.clone();
+                    let slot_c = height;
+                    tokio::task::spawn_blocking(move || {
+                        emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
+                    });
+                }
+                run_analytics_bridge_from_state(state, height, slot_duration_ms);
+                run_sltp_triggers_from_state(state);
+            }
+
+            // Rolling 24h window reset
+            reset_24h_stats_if_expired(state, block.header.timestamp);
+
+            // Finality tracking
+            {
+                let finality = finality_tracker.clone();
+                if finality.mark_confirmed(height) {
+                    let _ = state.set_last_confirmed_slot(finality.confirmed_slot());
+                    let _ = state.set_last_finalized_slot(finality.finalized_slot());
+                }
+            }
+
+            // Remove included transactions from mempool
+            {
+                let tx_hashes: Vec<Hash> = block.transactions.iter().map(|tx| tx.hash()).collect();
+                let mut pool = mempool.lock().await;
+                pool.remove_transactions_bulk(&tx_hashes);
+            }
+
+            // Checkpoint
+            maybe_create_checkpoint(state, height, data_dir, sync_manager).await;
+
+            // Periodic stats pruning
+            if height.is_multiple_of(1000) {
+                match state.prune_slot_stats(height, 10_000) {
+                    Ok(0) => {}
+                    Ok(n) => info!("🧹 Pruned {} stale stats keys (retain last 10K slots)", n),
+                    Err(e) => warn!("⚠️  Stats pruning failed at height {}: {}", height, e),
+                }
+                let sync_stats = sync_manager.stats().await;
+                let checkpoint_slot = sync_manager.get_checkpoint().await;
+                info!(
+                    "📊 Sync stats [height {}]: pending={}, syncing={}, network_tip={}, checkpoint={}",
+                    height,
+                    sync_stats.pending_blocks,
+                    sync_stats.is_syncing,
+                    sync_stats.highest_seen,
+                    checkpoint_slot,
+                );
+            }
+
+            // Log
+            let tx_count = block.transactions.len();
+            if tx_count == 0 {
+                info!(
+                    "💓 COMMITTED {} | hash: {} | BFT round {} | liveness",
+                    height,
+                    hex::encode(&block_hash.0[..4]),
+                    _commit_round,
+                );
             } else {
-                continue;
-            }
-        }
-
-        // ADAPTIVE HEARTBEAT: Early check BEFORE draining the mempool.
-        // Heartbeats (empty blocks) are rate-limited to every 5 seconds for ALL
-        // leaders including the primary. This prevents runaway empty block production.
-        // Transaction blocks are produced immediately by the elected leader.
-        // The SyncManager decay mechanism independently prevents chain stalls,
-        // so the primary leader does NOT need to bypass the heartbeat gate.
-        // HEARTBEAT-FIX: Check shared last_block_time to see when ANY block
-        // (local or network-received) last occurred. This prevents simultaneous
-        // heartbeats from multiple validators.
-        let is_heartbeat_time =
-            last_block_time_for_local.lock().await.elapsed() >= Duration::from_secs(5);
-        let is_global_idle_for_heartbeat = global_last_user_tx_activity_for_producer
-            .lock()
-            .await
-            .elapsed()
-            >= Duration::from_secs(HEARTBEAT_GLOBAL_IDLE_SECS);
-
-        // Peek at mempool to determine if this would be a heartbeat or tx block
-        let has_pending = {
-            let pool = mempool.lock().await;
-            pool.size() > 0
-        };
-
-        if !has_pending {
-            // No transactions — this will be a heartbeat block.
-            // ALL heartbeats respect the 5-second timer, even primary leaders.
-            // Only exception: deadlock breaker must produce to unstick a frozen chain.
-            if (!is_heartbeat_time || !is_global_idle_for_heartbeat) && !is_deadlock_breaker {
-                continue;
-            }
-        } else if !should_produce && !is_deadlock_breaker {
-            // Has transactions but we were not selected as leader.
-            // This shouldn't normally happen (leader check is above), but guard anyway.
-            continue;
-        }
-
-        // parent_hash already refreshed at top of loop (LEADER-SEED-FIX)
-
-        // Prune stale-blockhash transactions before draining mempool.
-        // This avoids the death-spiral where a behind-validator collects
-        // transactions with expired blockhashes, tries to include them,
-        // drops them all, and produces only empty heartbeats.
-        {
-            let mut pool = mempool.lock().await;
-            if let Ok(valid_hashes) = state.get_recent_blockhashes(MAX_TX_AGE_BLOCKS) {
-                let evicted = pool.prune_stale_blockhashes(&valid_hashes);
-                if evicted > 0 {
-                    warn!(
-                        "🧹 Pre-production prune: evicted {} stale-blockhash txs",
-                        evicted
+                info!(
+                    "📦 COMMITTED {} | hash: {} | txs: {} | BFT round {}",
+                    height,
+                    hex::encode(&block_hash.0[..4]),
+                    tx_count,
+                    _commit_round,
+                );
+                if let Ok(Some(val_account)) = state.get_account(&bft.validator_pubkey) {
+                    info!(
+                        "   💰 Validator balance: {} MOLT",
+                        val_account.balance_molt()
                     );
                 }
             }
+
+            *parent_hash = block_hash;
         }
 
-        // Collect pending transactions from mempool
-        let pending_transactions = {
-            let mut pool = mempool.lock().await;
-            pool.get_top_transactions(2000) // PERF: 500 → 2000 TXs per block for 5000-trader HF throughput
-        };
-
-        // Process transactions in parallel where possible (FIX-2: rayon)
-        // Non-conflicting TXs (disjoint account sets) run on separate threads.
-        let processed_hashes: Vec<Hash> = pending_transactions.iter().map(|tx| tx.hash()).collect();
-        let results =
-            processor.process_transactions_parallel(&pending_transactions, &validator_pubkey);
-
-        let mut transactions: Vec<Transaction> = Vec::new();
-        let mut tx_fees_paid: Vec<u64> = Vec::new();
-        for (tx, result) in pending_transactions.into_iter().zip(results.into_iter()) {
-            if result.success {
-                transactions.push(tx);
-                tx_fees_paid.push(result.fee_paid);
-            } else {
-                warn!(
-                    "⚠️  Dropping transaction {}: {}",
-                    tx.signature().to_hex(),
-                    result.error.unwrap_or_else(|| "Unknown error".to_string())
-                );
+        ConsensusAction::Multiple(actions) => {
+            for sub_action in actions {
+                // Box::pin to avoid recursive async issue
+                Box::pin(execute_consensus_actions(
+                    sub_action,
+                    bft,
+                    state,
+                    validator_set,
+                    stake_pool,
+                    vote_aggregator,
+                    mempool,
+                    processor,
+                    finality_tracker,
+                    p2p_peer_manager,
+                    p2p_config,
+                    ws_event_tx,
+                    ws_dex_broadcaster,
+                    shared_oracle_prices,
+                    last_block_time,
+                    last_dex_trade_count,
+                    data_dir,
+                    sync_manager,
+                    parent_hash,
+                    slot_duration_ms,
+                    validator_keypair,
+                ))
+                .await;
             }
         }
-
-        let has_user_transactions = !transactions.is_empty();
-        if has_user_transactions {
-            *global_last_user_tx_activity_for_producer.lock().await = std::time::Instant::now();
-        }
-
-        // HEARTBEAT-RETROACTIVE: If the mempool looked non-empty (bypassed the
-        // heartbeat gate) but all transactions failed processing, this block
-        // would be a 0-tx heartbeat produced at the 400ms tx-rate instead of the
-        // 5s heartbeat interval.  Re-apply the heartbeat gate here so spurious
-        // empty blocks don't flood the chain during active tx submission.
-        if !has_user_transactions
-            && has_pending
-            && !is_deadlock_breaker
-            && (!is_heartbeat_time || !is_global_idle_for_heartbeat)
-        {
-            // Clean up the failed txs from mempool so they don't cause
-            // the same bypass on the next iteration.
-            if !processed_hashes.is_empty() {
-                let mut pool = mempool.lock().await;
-                pool.remove_transactions_bulk(&processed_hashes);
-            }
-            continue;
-        }
-
-        // ── FIX-FORK-1: Second guard right before block creation ──
-        // Between the early `get_block_by_slot` check and here, the block
-        // receiver task may have written a network block for this slot.
-        // Re-check both RocksDB and the shared received_network_slots set.
-        {
-            let already_received = received_network_slots_for_producer
-                .lock()
-                .await
-                .contains(&slot);
-            let already_stored = state.get_block_by_slot(slot).ok().flatten().is_some();
-
-            if already_received || already_stored {
-                debug!(
-                    "⏭️  Slot {} already has a network block, skipping production",
-                    slot
-                );
-
-                // ANTI-SPIN-FIX: Remove drained transactions from mempool NOW.
-                // Without this, the same stale/already-processed transactions stay
-                // in the mempool and get re-drained every loop iteration, flooding
-                // the log with "Dropping transaction" warnings.
-                if !processed_hashes.is_empty() {
-                    let mut pool = mempool.lock().await;
-                    pool.remove_transactions_bulk(&processed_hashes);
-                }
-
-                // ANTI-SPIN-FIX: When the deadlock breaker can't produce because
-                // a network block already occupies this slot, try to advance the
-                // chain tip to incorporate stored network blocks. This breaks the
-                // infinite spin loop where get_last_slot() stays behind while the
-                // deadlock breaker keeps retrying the same slot.
-                if is_deadlock_breaker {
-                    // Scan forward from current tip to find consecutive stored blocks
-                    // that we can adopt (advancing last_slot through the gap).
-                    let mut advance_slot = tip_slot;
-                    let max_scan = 200u64; // don't scan forever
-                    for probe in 1..=max_scan {
-                        let candidate = tip_slot + probe;
-                        if state.get_block_by_slot(candidate).ok().flatten().is_some() {
-                            advance_slot = candidate;
-                        } else {
-                            break;
-                        }
-                    }
-                    if advance_slot > tip_slot {
-                        if let Err(e) = state.set_last_slot(advance_slot) {
-                            warn!("⚠️  Failed to advance last_slot to {}: {}", advance_slot, e);
-                        } else {
-                            info!(
-                                "🔄 Deadlock breaker: advanced chain tip {} → {} (adopted network blocks)",
-                                tip_slot, advance_slot
-                            );
-                        }
-                    } else {
-                        // Can't advance yet — sleep to prevent tight spin loop
-                        // (without this, the loop spins at ~3ms per iteration,
-                        //  generating 28,000+ log lines per minute)
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-
-                continue;
-            }
-        }
-
-        let is_heartbeat = !has_user_transactions;
-
-        // HEARTBEAT-FIX: last_block_time_for_local is updated at L10012 after
-        // block storage — no separate activity timer needed.
-
-        if is_heartbeat {
-            info!("💓 Slot {} - HEARTBEAT (proving liveness)", slot);
-        } else {
-            info!(
-                "👑 Slot {} - I AM LEADER ({} transactions)",
-                slot,
-                transactions.len()
-            );
-        }
-
-        // Block rewards are applied as protocol-level effects in
-        // apply_block_effects (coinbase model), not as signed transactions.
-        // This means no treasury private key is needed for block production.
-        let rewards_applied = false;
-
-        // Test transactions disabled - use wallet or CLI to send real transactions
-        // (Previous test code was incorrectly signing transfers from genesis with validator key)
-
-        // AUDIT-FIX E-7: Apply block effects BEFORE computing state_root so the
-        // root in the block header reflects post-effect state (rewards, fees, etc.).
-        // Step 1: Create a preliminary block (state_root = default placeholder).
-        //         apply_block_effects only uses block.header.slot/validator/transactions.
-        let wall_clock_timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let mut block = Block::new_with_timestamp(
-            slot,
-            parent_hash,
-            Hash::default(), // placeholder — will be set after effects
-            validator_pubkey.0,
-            transactions.clone(),
-            wall_clock_timestamp,
-        );
-        block.tx_fees_paid = tx_fees_paid;
-
-        // Embed current oracle prices in the block for consensus propagation.
-        // All validators will apply these deterministically via apply_oracle_from_block().
-        block.oracle_prices = shared_oracle_prices.snapshot();
-
-        // Step 2: Apply block effects (rewards, stake updates, etc.)
-        apply_block_effects(
-            &state,
-            &validator_set,
-            &stake_pool,
-            &vote_aggregator,
-            &block,
-            rewards_applied,
-        )
-        .await;
-        apply_oracle_from_block(&state, &block);
-
-        // Step 3: Now compute state_root AFTER effects are applied
-        let state_root = state.compute_state_root();
-        block.header.state_root = state_root;
-
-        // Sign block so receiving validators can verify authenticity (T2.2)
-        block.sign(&validator_keypair);
-
-        let block_hash = block.hash();
-
-        // Store block
-        if let Err(e) = state.put_block(&block) {
-            error!("Failed to store block at slot {}: {e}", slot);
-        }
-        if let Err(e) = state.set_last_slot(slot) {
-            error!("Failed to update last slot to {}: {e}", slot);
-        }
-        for tx in &block.transactions {
-            if let Some(ix) = tx.message.instructions.first() {
-                if ix.program_id == EVM_PROGRAM_ID {
-                    let evm_hash = evm_tx_hash(&ix.data).0;
-                    if let Err(e) = state.mark_evm_tx_included(&evm_hash, slot, &block_hash) {
-                        warn!("⚠️  Failed to mark EVM tx included: {}", e);
-                    }
-                }
-            }
-        }
-        *last_block_time_for_local.lock().await = std::time::Instant::now();
-
-        // PERF-OPT 5: Broadcast block to network IMMEDIATELY after storing.
-        // P3-3: Send compact block (header + short TX IDs) instead of the full
-        // block.  Receiving peers reconstruct from their mempool, saving ~90%
-        // bandwidth.  Also send the full block as fallback for peers that don't
-        // have all TXs in their mempool yet.
-        if let Some(ref peer_mgr) = p2p_peer_manager {
-            let compact = moltchain_p2p::CompactBlock::from_block(&block);
-            let compact_msg = moltchain_p2p::P2PMessage::new(
-                moltchain_p2p::MessageType::CompactBlockMsg(compact),
-                p2p_config.listen_addr,
-            );
-            let pm_block = peer_mgr.clone();
-            tokio::spawn(async move {
-                pm_block.broadcast(compact_msg).await;
-            });
-        }
-
-        if rewards_applied {
-            if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
-                warn!(
-                    "⚠️  Failed to record reward distribution for slot {}: {}",
-                    slot, e
-                );
-            }
-        }
-
-        emit_program_and_nft_events(&state, &ws_event_tx, &block);
-
-        // PERF-OPT: Fire-and-forget DEX event emission + analytics bridge.
-        // Read the trade counter once (cheap), update tracking counters
-        // synchronously, then spawn the heavy I/O work (trade reads, WS
-        // broadcasts, analytics writes) on the blocking thread pool so the
-        // block production loop is not stalled.
-        {
-            // DEX-WS-FIX: Read trade count from shared state (not local-only).
-            // This ensures DEX WS events are emitted for trades in blocks produced
-            // by ANY validator (including blocks received via P2P and applied by
-            // the block receiver), not just blocks this validator produced.
-            let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
-
-            // F6.2: Emit DEX WebSocket events for new trades/orders
-            if current_trade_count > last_dex_trade_count {
-                let prev = last_dex_trade_count;
-                last_dex_trade_count = current_trade_count;
-                let state_c = state.clone();
-                let bc_c = ws_dex_broadcaster.clone();
-                let slot_c = slot;
-                tokio::task::spawn_blocking(move || {
-                    emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
-                });
-            }
-
-            // P9-VAL-04: Trade bridge uses state-persisted cursor (deterministic)
-            run_analytics_bridge_from_state(&state, slot, slot_duration_ms);
-
-            // SL/TP trigger engine: check dormant stop-limit orders and margin
-            // position SL/TP levels when new trades occurred.
-            // Uses state-persisted cursor so receivers execute identically (P9-VAL-01).
-            run_sltp_triggers_from_state(&state);
-        }
-
-        // Rolling 24h window reset: check if any pair's 24h stats need to roll over
-        // P9-VAL-05: Pass deterministic block timestamp
-        reset_24h_stats_if_expired(&state, block.header.timestamp);
-
-        // Broadcast block event to WebSocket subscribers
-        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
-
-        // Cast vote for our own block (BFT consensus)
-        // VOTE-AUTHORITY: Use the shared VoteAuthority to atomically check-then-sign.
-        // If the block receiver already voted for this slot (e.g. P2P echo arrived
-        // before producer finished), VoteAuthority returns None and we skip.
-        let maybe_vote = vote_authority.lock().await.try_vote(slot, block_hash);
-
-        if let Some(vote) = maybe_vote {
-            let mut agg = vote_aggregator.write().await;
-            let vs = validator_set.read().await;
-            if agg.add_vote_validated(vote.clone(), &vs) {
-                // Check if we reached finality immediately (solo validator case)
-                let pool = stake_pool.read().await;
-                if agg.has_supermajority(slot, &block_hash, &vs, &pool) {
-                    info!("🔒 Block {} FINALIZED (stake-weighted self-vote)", slot);
-                    // Update finality tracker + persist to StateStore
-                    if finality_tracker.mark_confirmed(slot) {
-                        let _ = state.set_last_confirmed_slot(finality_tracker.confirmed_slot());
-                        let _ = state.set_last_finalized_slot(finality_tracker.finalized_slot());
-                    }
-                }
-            }
-
-            // P3-5: Route self-vote through validator mesh for lowest latency
-            if let Some(ref peer_mgr) = p2p_peer_manager {
-                let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
-                let pm_vote = peer_mgr.clone();
-                tokio::spawn(async move {
-                    pm_vote.broadcast_to_validators(vote_msg).await;
-                });
-                info!("📡 Broadcasted block {} + vote to validator mesh", slot);
-            }
-        } else {
-            info!(
-                "⚠️  VoteAuthority: slot {} already voted — producer self-vote skipped",
-                slot
-            );
-        }
-
-        // Remove included transactions from mempool (PERF: bulk removal, single heap rebuild)
-        {
-            let mut pool = mempool.lock().await;
-            pool.remove_transactions_bulk(&processed_hashes);
-        }
-
-        // AUDIT-FIX E-7: apply_block_effects already called before block creation (above)
-        maybe_create_checkpoint(&state, slot, &data_dir, &sync_manager).await;
-
-        // Periodic stats pruning — every 1000 slots, prune seq counters older than 10K slots
-        if slot % 1000 == 0 {
-            match state.prune_slot_stats(slot, 10_000) {
-                Ok(0) => {} // nothing to prune
-                Ok(n) => info!("🧹 Pruned {} stale stats keys (retain last 10K slots)", n),
-                Err(e) => warn!("⚠️  Stats pruning failed at slot {}: {}", slot, e),
-            }
-        }
-
-        // Periodic sync & checkpoint stats — every 1000 slots
-        if slot % 1000 == 0 {
-            let sync_stats = sync_manager.stats().await;
-            let checkpoint_slot = sync_manager.get_checkpoint().await;
-            info!(
-                "📊 Sync stats [slot {}]: pending={}, syncing={}, network_tip={}, checkpoint={}",
-                slot,
-                sync_stats.pending_blocks,
-                sync_stats.is_syncing,
-                sync_stats.highest_seen,
-                checkpoint_slot,
-            );
-            if let Some(progress) = sync_manager.get_sync_progress(slot).await {
-                info!(
-                    "📊 Sync progress: {}/{} slots (batch: {:?}, behind: {})",
-                    progress.current_slot,
-                    progress.target_slot,
-                    progress.current_batch,
-                    progress.blocks_behind,
-                );
-            }
-        }
-
-        let tx_count = transactions.len();
-        let current_reputation = {
-            let vs = validator_set.read().await;
-            vs.get_validator(&validator_pubkey)
-                .map(|v| v.reputation)
-                .unwrap_or(0)
-        };
-
-        if is_heartbeat {
-            info!(
-                "💓 HEARTBEAT {} | hash: {} | parent: {} | reputation: {} | proving liveness",
-                slot,
-                block_hash.to_hex()[..8].to_string(),
-                parent_hash.to_hex()[..8].to_string(),
-                current_reputation,
-            );
-        } else {
-            info!(
-                "📦 BLOCK {} | hash: {} | txs: {} | parent: {} | reputation: {}",
-                slot,
-                block_hash.to_hex()[..8].to_string(),
-                tx_count,
-                parent_hash.to_hex()[..8].to_string(),
-                current_reputation,
-            );
-
-            // Show validator balance for transaction blocks
-            if let Ok(Some(val_account)) = state.get_account(&validator_pubkey) {
-                info!(
-                    "   💰 Validator balance: {} MOLT",
-                    val_account.balance_molt()
-                );
-            }
-        }
-
-        parent_hash = block_hash;
-        last_block_produced_at = Some(std::time::Instant::now());
-        // (No slot increment — next iteration derives slot from chain tip)
     }
 }
 
@@ -11485,16 +11907,6 @@ mod tests {
     fn watchdog_timeout_reasonable() {
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS >= 30);
         assert!(DEFAULT_WATCHDOG_TIMEOUT_SECS <= 600);
-    }
-
-    #[test]
-    fn max_freeze_is_30s() {
-        assert_eq!(MAX_FREEZE_DURATION_SECS, 30);
-    }
-
-    #[test]
-    fn heartbeat_idle_is_5s() {
-        assert_eq!(HEARTBEAT_GLOBAL_IDLE_SECS, 5);
     }
 
     #[test]

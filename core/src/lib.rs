@@ -35,14 +35,15 @@ pub use account::{Account, Keypair, Pubkey};
 pub use block::{Block, BlockHeader, MAX_BLOCK_SIZE, MAX_CONTRACT_CODE, MAX_TX_PER_BLOCK};
 pub use consensus::{
     epoch_start_slot, is_epoch_boundary, molt_price_from_state, read_molt_price_feed_from_state,
-    slot_to_epoch, BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, PriceOracle,
-    RewardAdjustmentInfo, RewardConfig, SlashingEvidence, SlashingOffense, SlashingTracker,
-    StakeInfo, StakePool, StakingStats, StateOracle, ValidatorInfo, ValidatorSet, Vote,
-    VoteAggregator, VoteAuthority, BLOCK_REWARD, BOOTSTRAP_GRANT_AMOUNT,
-    DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS, DOWNTIME_TIER2_SLASH_BPS,
-    FINALITY_DEPTH, HEARTBEAT_BLOCK_REWARD, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
-    MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PENALTY_REPAYMENT_BOOST_SLOTS,
-    PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH, TRANSACTION_BLOCK_REWARD, UPTIME_BONUS_THRESHOLD_BPS,
+    slot_to_epoch, BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, Precommit, Prevote,
+    PriceOracle, Proposal, RewardAdjustmentInfo, RewardConfig, RoundStep, SlashingEvidence,
+    SlashingOffense, SlashingTracker, StakeInfo, StakePool, StakingStats, StateOracle,
+    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BLOCK_REWARD,
+    BOOTSTRAP_GRANT_AMOUNT, DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS,
+    DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, HEARTBEAT_BLOCK_REWARD, MAX_BOOTSTRAP_SLOTS,
+    MAX_BOOTSTRAP_VALIDATORS, MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE,
+    PENALTY_REPAYMENT_BOOST_SLOTS, PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH,
+    TRANSACTION_BLOCK_REWARD, UPTIME_BONUS_THRESHOLD_BPS,
 };
 pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,

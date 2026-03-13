@@ -584,7 +584,8 @@ cargo build --release
                         <td><code>slot_duration_ms</code></td>
                         <td>Integer</td>
                         <td><code>400</code></td>
-                        <td>Target block slot time in milliseconds. MoltChain targets ~2,500 TPS at 400ms slots.</td>
+                        <td>Base slot duration in milliseconds. Actual block time is adaptive: ~800ms for heartbeat
+                            blocks, ~200ms with transactions (Tendermint BFT).</td>
                     </tr>
                     <tr>
                         <td><code>enable_slashing</code></td>

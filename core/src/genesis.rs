@@ -90,7 +90,7 @@ impl Default for ConsensusParams {
             slot_duration_ms: 400,
             epoch_slots: 432000,
             min_validator_stake: 75_000_000_000, // 75 MOLT — testnet only, see note above
-            validator_reward_per_block: 100_000_000, // 0.1 MOLT — sustainable emission rate
+            validator_reward_per_block: 20_000_000, // 0.02 MOLT — sustainable emission rate
             slashing_percentage_double_sign: 50,
             slashing_downtime_per_100_missed: 1,
             slashing_downtime_max_percent: 10,
@@ -398,8 +398,8 @@ impl GenesisConfig {
                 epoch_slots: 432000, // ~2 days at 400ms
                 // AUDIT-FIX 3.22: Lower stake requirement for testnet (75 MOLT vs 75k)
                 min_validator_stake: 75_000_000_000, // 75 MOLT (testnet)
-                // Sustainable emission: 0.1 MOLT/block (was 0.9, reduced per tokenomics overhaul)
-                validator_reward_per_block: 100_000_000, // 0.1 MOLT
+                // Sustainable emission: 0.02 MOLT/block (reduced for BFT adaptive timing)
+                validator_reward_per_block: 20_000_000, // 0.02 MOLT
                 slashing_percentage_double_sign: 50,
                 // AUDIT-FIX A5-03: graduated downtime (1% per 100 missed, max 10%)
                 slashing_downtime_per_100_missed: 1,
@@ -446,8 +446,8 @@ impl GenesisConfig {
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000,
                 min_validator_stake: 75_000_000_000_000, // 75,000 MOLT
-                // Sustainable emission: 0.1 MOLT/block (was 0.9, reduced per tokenomics overhaul)
-                validator_reward_per_block: 100_000_000, // 0.1 MOLT
+                // Sustainable emission: 0.02 MOLT/block (reduced for BFT adaptive timing)
+                validator_reward_per_block: 20_000_000, // 0.02 MOLT
                 slashing_percentage_double_sign: 50,
                 // AUDIT-FIX A5-03: graduated downtime (1% per 100 missed, max 10%)
                 slashing_downtime_per_100_missed: 1,

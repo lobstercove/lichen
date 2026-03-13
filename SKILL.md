@@ -35,8 +35,8 @@
 | Property | Value |
 |----------|-------|
 | Chain | MoltChain (custom L1) |
-| Consensus | Proof of Stake with contributory stake |
-| Slot time | 400 ms |
+| Consensus | Tendermint-style BFT (PoS with contributory stake) |
+| Block time | ~800ms heartbeat, ~200ms with transactions (adaptive) |
 | Native token | MOLT (1 MOLT = 1 000 000 000 shells) |
 | Signing | Ed25519 |
 | Smart contracts | WASM (Rust → wasm32-unknown-unknown) |

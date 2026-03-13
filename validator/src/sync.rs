@@ -297,10 +297,11 @@ impl SyncManager {
                     info!("🚀 Fast sync from checkpoint {}", checkpoint);
                     checkpoint
                 } else {
-                    // Start from slot 1 — genesis (slot 0) is already stored.
-                    // Requesting slot 0 again wastes bandwidth and causes a
-                    // duplicate-genesis check on every sync attempt.
-                    1
+                    // Start from slot 0 — joining nodes need the genesis
+                    // block before they can build the chain.  The genesis
+                    // node already has it, so the block receiver will
+                    // skip the duplicate harmlessly.
+                    0
                 }
             } else if phase == SyncPhase::InitialSync {
                 current_slot + 1 // No overlap — never trigger fork choice during catch-up
