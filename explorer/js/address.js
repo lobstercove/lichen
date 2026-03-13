@@ -394,7 +394,7 @@ function renderIdentityPane(profile) {
     const displayName = escapeHtml(rawName);
     const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
     const availability = escapeHtml(String(profile?.agent?.availability_name || 'offline'));
-    const rateMolt = (Number(profile?.agent?.rate || 0) / SHELLS_PER_MOLT).toFixed(6);
+    const rateMolt = formatMoltExact(Number(profile?.agent?.rate || 0) / SHELLS_PER_MOLT);
     const metadataText = escapeHtml(JSON.stringify(profile?.agent?.metadata || {}, null, 2));
 
     const contributions = profile?.contributions || {};
@@ -1543,22 +1543,17 @@ async function loadValidatorRewards(address) {
             return false;
         }
 
-        const fmt = (v) => {
-            const molt = typeof v === 'number' ? v / 1_000_000_000 : parseFloat(v) || 0;
-            return molt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 }) + ' MOLT';
-        };
-
-        document.getElementById('rewardsTotalEarned').textContent = fmt(totalEarned);
-        document.getElementById('rewardsPending').textContent = fmt(pending);
-        document.getElementById('rewardsClaimed').textContent = fmt(claimed);
+        document.getElementById('rewardsTotalEarned').textContent = formatMolt(totalEarned);
+        document.getElementById('rewardsPending').textContent = formatMolt(pending);
+        document.getElementById('rewardsClaimed').textContent = formatMolt(claimed);
 
         // Calculate actual reward rate from total rewards / blocks produced
         let actualRate;
         if (blocksProduced > 0 && Number(totalEarned) > 0) {
             const totalMolt = Number(totalEarned) / 1_000_000_000;
-            actualRate = (totalMolt / blocksProduced).toFixed(9) + ' MOLT/block';
+            actualRate = formatMoltExact(totalMolt / blocksProduced) + ' MOLT/block';
         } else {
-            actualRate = rate + ' MOLT/block';
+            actualRate = formatMoltExact(parseFloat(rate) || 0) + ' MOLT/block';
         }
         document.getElementById('rewardsRate').textContent = actualRate;
 
@@ -1566,10 +1561,8 @@ async function loadValidatorRewards(address) {
         if (blocksEl) blocksEl.textContent = blocksProduced.toLocaleString();
 
         // Debt section
-        const debtMolt = typeof debt === 'number' ? debt / 1_000_000_000 : parseFloat(debt) || 0;
-        const earnedMolt = typeof earned === 'number' ? earned / 1_000_000_000 : parseFloat(earned) || 0;
-        document.getElementById('rewardsDebt').textContent = debtMolt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 }) + ' MOLT';
-        document.getElementById('rewardsDebtRepaid').textContent = earnedMolt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 }) + ' MOLT';
+        document.getElementById('rewardsDebt').textContent = formatMolt(debt);
+        document.getElementById('rewardsDebtRepaid').textContent = formatMolt(earned);
 
         const vestingPct = Math.min(100, Math.max(0, (typeof vesting === 'number' ? vesting * 100 : parseFloat(vesting) * 100) || 0));
         const vestingLabel = vestingPct > 0 && vestingPct < 0.1 ? '< 0.1%' : vestingPct.toFixed(1) + '%';
