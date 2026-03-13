@@ -1545,20 +1545,20 @@ async fn main() -> Result<()> {
 
             if let Some(ref err) = tx_error {
                 println!("❌ Deploy transaction FAILED on-chain: {}", err);
-                println!("   The deploy fee premium (25 MOLT) should be refunded.");
+                println!("   The deploy fee premium (25 MOLT) is refunded.");
                 println!("   Only the base fee (0.001 MOLT) is kept.");
                 println!("   Check your balance: molt balance --keypair <keypair>");
             } else if tx_confirmed {
-                // Phase 2: Verify contract account exists
+                // Phase 2: Verify contract account exists (up to 10 attempts, 1s apart)
                 let mut verified = false;
-                for attempt in 1..=5 {
+                for attempt in 1..=10 {
                     match client.get_account_info(&contract_addr.to_base58()).await {
                         Ok(info) if info.is_executable => {
                             verified = true;
                             break;
                         }
-                        _ if attempt < 5 => {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        _ if attempt < 10 => {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         }
                         _ => break,
                     }
@@ -1567,23 +1567,78 @@ async fn main() -> Result<()> {
                     println!("✅ Contract deployed and verified on-chain!");
                     println!("🔗 Address: {}", contract_addr.to_base58());
 
-                    // Verify symbol registry entry if symbol was requested
+                    // Phase 3: Verify symbol registry entry if symbol was requested
                     if let Some(ref s) = symbol {
-                        match client.resolve_symbol(s).await {
-                            Ok(Some(_)) => {
-                                println!("🏷️  Symbol '{}' registered in symbol registry", s);
+                        // Give the registry a moment to propagate, then check
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        let mut symbol_found = false;
+                        for _attempt in 1..=3 {
+                            match client.resolve_symbol(s).await {
+                                Ok(Some(_)) => {
+                                    symbol_found = true;
+                                    break;
+                                }
+                                _ => {
+                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                }
                             }
-                            _ => {
-                                println!(
-                                    "⚠️  Symbol '{}' was NOT found in the registry. \
-                                     The symbol registration may have failed silently.",
-                                    s
-                                );
-                                println!(
-                                    "   You can register manually: molt register-symbol {} --address {}",
+                        }
+                        if symbol_found {
+                            println!("🏷️  Symbol '{}' registered in symbol registry", s);
+                        } else {
+                            // Auto-register: deploy succeeded but symbol didn't persist —
+                            // send a register-symbol transaction as fallback
+                            println!(
+                                "⚠️  Symbol '{}' not found in registry — auto-registering...",
+                                s
+                            );
+                            match client
+                                .register_symbol(
+                                    &deployer,
+                                    &contract_addr,
                                     s,
-                                    contract_addr.to_base58()
-                                );
+                                    name.as_deref(),
+                                    template.as_deref(),
+                                    decimals,
+                                )
+                                .await
+                            {
+                                Ok(reg_sig) => {
+                                    // Wait for the register-symbol tx to confirm
+                                    for _wait in 1..=10 {
+                                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                        if let Ok(Some(true)) =
+                                            client.confirm_transaction(&reg_sig).await
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    match client.resolve_symbol(s).await {
+                                        Ok(Some(_)) => {
+                                            println!(
+                                                "🏷️  Symbol '{}' registered via fallback (sig: {})",
+                                                s, reg_sig
+                                            );
+                                        }
+                                        _ => {
+                                            println!(
+                                                "⚠️  Symbol '{}' fallback registration sent (sig: {}) — verify with: molt contract info {}",
+                                                s, reg_sig, contract_addr.to_base58()
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "⚠️  Auto-register failed: {}. Register manually:\n   molt contract register --address {} --symbol {} {}{}{}",
+                                        e,
+                                        contract_addr.to_base58(),
+                                        s,
+                                        name.as_ref().map(|n| format!(" --name \"{}\"", n)).unwrap_or_default(),
+                                        template.as_ref().map(|t| format!(" --template {}", t)).unwrap_or_default(),
+                                        decimals.map(|d| format!(" --decimals {}", d)).unwrap_or_default(),
+                                    );
+                                }
                             }
                         }
                     }

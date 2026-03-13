@@ -1192,19 +1192,45 @@ wasm-opt -Oz -o optimized.wasm \
                 <h3>Deploy</h3>
                 <div class="code-block">
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
-                    <pre><code># Deploy with symbol registration
+                    <pre><code># Deploy with full symbol registration (recommended)
+molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
+    --symbol MYTK --name "My Token" --template token --decimals 9 \
+    --supply 1000000 --metadata '{"website":"https://example.com","logo":"https://example.com/logo.png"}'
+
+# Deploy with just symbol + name (minimum for explorer visibility)
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
     --symbol MYTK --name "My Token" --template token --decimals 9
 
-# Deploy without registration (can register later with: molt contract register)
+# Deploy without registration (can register later)
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
+# Register an already-deployed contract retroactively
+molt contract register &lt;address&gt; --symbol MYTK --name "My Token" --template token
+
 # Output:
-# <i class="fa-solid fa-shrimp"></i> Deploying contract: my_contract.wasm
-# <i class="fa-solid fa-cube"></i> Size: 45 KB
-# <i class="fa-solid fa-location-dot"></i> Contract address: 7xK9...mN2q
-# <i class="fa-solid fa-circle-check"></i> Contract deployed!
-# <i class="fa-solid fa-file-signature"></i> Signature: 3hF8...pQ7r</code></pre>
+# 🦐 Deploying contract: my_contract.wasm
+# 📦 Size: 45 KB
+# 📍 Contract address: 7xK9...mN2q
+# ✅ Contract deployed and verified on-chain!
+# 🏷️  Symbol 'MYTK' registered in symbol registry
+# 📝 Signature: 3hF8...pQ7r</code></pre>
+                </div>
+
+                <div class="info-box">
+                    <i class="fas fa-info-circle"></i>
+                    <div>
+                        <strong>Deploy Flags Reference</strong>
+                        <ul>
+                            <li><code>--symbol</code> — Token ticker (e.g. MYTK). Registered in the on-chain symbol registry.</li>
+                            <li><code>--name</code> — Human-readable name (e.g. "My Token"). Shown in explorer and wallet.</li>
+                            <li><code>--template</code> — Contract type: <code>token</code>, <code>nft</code>, <code>defi</code>, <code>governance</code>, <code>utility</code>, <code>bridge</code>, <code>oracle</code>, etc.</li>
+                            <li><code>--decimals</code> — Token decimal places (default: 9 for MOLT-compatible).</li>
+                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to shells via decimals).</li>
+                            <li><code>--metadata</code> — JSON object with arbitrary metadata (website, logo, description, etc.).</li>
+                        </ul>
+                        <p><strong>Fee:</strong> 25.001 MOLT (25 MOLT deploy premium + 0.001 MOLT base fee). If deploy fails, the 25 MOLT premium is automatically refunded.</p>
+                        <p><strong>Auto-register:</strong> If the symbol doesn't appear in the registry after deploy, the CLI automatically sends a fallback register-symbol transaction.</p>
+                    </div>
                 </div>
 
                 <h3>Call</h3>
