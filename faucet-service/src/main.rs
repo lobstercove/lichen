@@ -24,7 +24,7 @@ use tracing::{error, info};
 const SHELLS_PER_MOLT: u64 = 1_000_000_000;
 const DEFAULT_PORT: u16 = 9100;
 const DEFAULT_MAX_PER_REQUEST: u64 = 10;
-const DEFAULT_DAILY_LIMIT_PER_IP: u64 = 50;
+const DEFAULT_DAILY_LIMIT_PER_IP: u64 = 150;
 const DEFAULT_COOLDOWN_SECONDS: u64 = 60;
 
 #[derive(Debug, Deserialize)]

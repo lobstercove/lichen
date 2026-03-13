@@ -349,10 +349,15 @@ struct RpcState {
 const AIRDROP_COOLDOWN_SECS: u64 = 60;
 const AIRDROP_COOLDOWN_STALE_SECS: u64 = 120;
 const AIRDROP_COOLDOWN_MAX_ENTRIES: usize = 10_000;
+/// Daily per-address airdrop limit in MOLT (matches faucet-service).
+const AIRDROP_DAILY_LIMIT_MOLT: u64 = 150;
+const AIRDROP_DAILY_WINDOW_SECS: u64 = 86_400;
 
 #[derive(Default)]
 struct AirdropCooldowns {
     by_address: HashMap<String, Instant>,
+    /// Per-address daily airdrop ledger: (timestamp, amount_molt) entries.
+    daily_ledger: HashMap<String, Vec<(Instant, u64)>>,
     order: VecDeque<String>,
 }
 
@@ -370,6 +375,11 @@ impl AirdropCooldowns {
             self.order.pop_front();
             self.by_address.remove(&front);
         }
+        // Prune daily ledger entries older than 24h
+        self.daily_ledger.retain(|_, entries| {
+            entries.retain(|(ts, _)| now.duration_since(*ts).as_secs() < AIRDROP_DAILY_WINDOW_SECS);
+            !entries.is_empty()
+        });
     }
 
     fn evict_overflow(&mut self) {
@@ -380,6 +390,36 @@ impl AirdropCooldowns {
                 break;
             }
         }
+    }
+
+    /// Check daily limit for an address. Returns Err with message if exceeded.
+    fn check_daily_limit(&self, address: &str, amount_molt: u64, now: Instant) -> Result<(), String> {
+        let used: u64 = self
+            .daily_ledger
+            .get(address)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(ts, _)| now.duration_since(*ts).as_secs() < AIRDROP_DAILY_WINDOW_SECS)
+                    .map(|(_, amt)| *amt)
+                    .sum()
+            })
+            .unwrap_or(0);
+        if used.saturating_add(amount_molt) > AIRDROP_DAILY_LIMIT_MOLT {
+            return Err(format!(
+                "Daily airdrop limit reached for this address ({}/{} MOLT). Try again later.",
+                used, AIRDROP_DAILY_LIMIT_MOLT
+            ));
+        }
+        Ok(())
+    }
+
+    /// Record an airdrop amount in the daily ledger.
+    fn record_daily(&mut self, address: &str, amount_molt: u64, now: Instant) {
+        self.daily_ledger
+            .entry(address.to_string())
+            .or_default()
+            .push((now, amount_molt));
     }
 
     /// Returns Some(remaining_secs) if still cooling down, otherwise records access and returns None.
@@ -11329,7 +11369,7 @@ async fn handle_request_airdrop(
         message: format!("Invalid address: {}", e),
     })?;
 
-    // AUDIT-FIX RPC-4: Per-address airdrop rate limiting (1 per 60 seconds)
+    // AUDIT-FIX RPC-4: Per-address airdrop rate limiting (1 per 60 seconds + 150 MOLT/day)
     {
         let now = Instant::now();
         let mut cooldowns = state.airdrop_cooldowns.write().await;
@@ -11342,6 +11382,13 @@ async fn handle_request_airdrop(
                 ),
             });
         }
+        if let Err(msg) = cooldowns.check_daily_limit(address_str, amount_molt, now) {
+            return Err(RpcError {
+                code: -32005,
+                message: msg,
+            });
+        }
+        cooldowns.record_daily(address_str, amount_molt, now);
     }
 
     let amount_shells = amount_molt * 1_000_000_000;
