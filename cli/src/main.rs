@@ -100,7 +100,7 @@ enum Commands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Contract template category: token, wrapped, dex, defi, nft, governance, infra
+        /// Contract template category (e.g. token, nft, defi, dex, governance, wrapped, bridge, oracle, lending, marketplace, auction, identity, launchpad, vault, payments)
         #[arg(long)]
         template: Option<String>,
 
@@ -371,7 +371,7 @@ enum ContractCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Template category: token, wrapped, dex, defi, nft, governance, infra
+        /// Template category (e.g. token, nft, defi, dex, governance, wrapped, bridge, oracle, lending, marketplace, auction, identity, launchpad, vault, payments)
         #[arg(long)]
         template: Option<String>,
 
