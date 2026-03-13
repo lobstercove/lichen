@@ -1520,30 +1520,65 @@ async fn main() -> Result<()> {
 
             println!("📝 Signature: {}", signature);
 
-            // On-chain verification: confirm the contract actually landed
-            let mut verified = false;
-            for attempt in 1..=5 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                match client.get_account_info(&contract_addr.to_base58()).await {
-                    Ok(info) => {
-                        if info.is_executable {
-                            verified = true;
-                            break;
+            // Phase 1: Wait for transaction confirmation (up to 15s)
+            println!("⏳ Waiting for transaction confirmation...");
+            let mut tx_confirmed = false;
+            let mut tx_error: Option<String> = None;
+            for attempt in 1..=15 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                match client.confirm_transaction(&signature).await {
+                    Ok(Some(true)) => {
+                        tx_confirmed = true;
+                        break;
+                    }
+                    Ok(Some(false) | None) => {
+                        if attempt % 5 == 0 {
+                            println!("   ...still waiting ({}/15s)", attempt);
                         }
                     }
-                    Err(_) if attempt < 5 => continue,
-                    Err(_) => break,
+                    Err(e) => {
+                        tx_error = Some(e.to_string());
+                        break;
+                    }
                 }
             }
 
-            if verified {
-                println!("✅ Contract deployed and verified on-chain!");
+            if let Some(ref err) = tx_error {
+                println!("❌ Deploy transaction FAILED on-chain: {}", err);
+                println!("   The deploy fee premium (25 MOLT) should be refunded.");
+                println!("   Only the base fee (0.001 MOLT) is kept.");
+                println!("   Check your balance: molt balance --keypair <keypair>");
+            } else if tx_confirmed {
+                // Phase 2: Verify contract account exists
+                let mut verified = false;
+                for attempt in 1..=5 {
+                    match client.get_account_info(&contract_addr.to_base58()).await {
+                        Ok(info) if info.is_executable => {
+                            verified = true;
+                            break;
+                        }
+                        _ if attempt < 5 => {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        _ => break,
+                    }
+                }
+                if verified {
+                    println!("✅ Contract deployed and verified on-chain!");
+                } else {
+                    println!(
+                        "⚠️  Transaction confirmed but contract not found at expected address."
+                    );
+                    println!("   This is a known issue — please report the following:");
+                    println!("   Signature: {}", signature);
+                    println!("   Expected:  {}", contract_addr.to_base58());
+                }
             } else {
-                println!("⚠️  Transaction submitted but contract not yet confirmed on-chain.");
-                println!("   The transaction may still be processing. Check with:");
-                println!("   molt balance --keypair <keypair> (to see if deploy fee was deducted)");
+                println!("⚠️  Transaction not confirmed after 15 seconds.");
+                println!("   The transaction may still be processing. Check:");
+                println!("   molt balance --keypair <keypair>");
                 println!(
-                    "   Or check the explorer: https://explorer.moltchain.network/address/{}",
+                    "   Explorer: https://explorer.moltchain.network/address/{}",
                     contract_addr.to_base58()
                 );
             }

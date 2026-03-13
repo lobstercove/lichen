@@ -3655,13 +3655,31 @@ impl TxProcessor {
         let deployer = &ix.accounts[0];
         let contract_address = &ix.accounts[1];
 
+        eprintln!(
+            "📋 contract_deploy: deployer={} addr={} code_len={}",
+            deployer.to_base58(),
+            contract_address.to_base58(),
+            code.len()
+        );
+
         if self.b_get_account(contract_address)?.is_some() {
-            return Err("Contract account already exists".to_string());
+            return Err(format!(
+                "Contract account {} already exists (deployer={})",
+                contract_address.to_base58(),
+                deployer.to_base58()
+            ));
         }
 
         let mut runtime = ContractRuntime::get_pooled();
         let deploy_result = runtime.deploy(&code);
         runtime.return_to_pool();
+        if let Err(ref e) = deploy_result {
+            eprintln!(
+                "❌ contract_deploy: WASM validation failed for {} — {}",
+                contract_address.to_base58(),
+                e
+            );
+        }
         deploy_result?;
 
         let mut owner = *deployer;
@@ -3713,6 +3731,14 @@ impl TxProcessor {
         if make_public {
             self.b_index_program(contract_address)?;
         }
+
+        eprintln!(
+            "✅ contract_deploy: {} created (deployer={}, code={}B, data={}B)",
+            contract_address.to_base58(),
+            deployer.to_base58(),
+            account.data.len(),
+            init_data.len()
+        );
 
         Ok(())
     }

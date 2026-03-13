@@ -36,18 +36,34 @@ pub fn build_block(
     // Process in parallel (non-conflicting TXs run simultaneously)
     let results = processor.process_transactions_parallel(&pending, validator_pubkey);
 
-    // Keep only successful TXs
+    // Keep only successful TXs; track ALL processed hashes (success + fail)
+    // so we can remove failed TXs from mempool immediately.
     let mut transactions = Vec::with_capacity(pending_count);
     let mut tx_fees_paid = Vec::with_capacity(pending_count);
     let mut processed_hashes = Vec::with_capacity(pending_count);
+    let mut failed_hashes = Vec::new();
 
     for (tx, result) in pending.into_iter().zip(results) {
         let tx_hash = tx.hash();
         if result.success {
             tx_fees_paid.push(result.fee_paid);
             transactions.push(tx);
+        } else {
+            failed_hashes.push(tx_hash);
         }
         processed_hashes.push(tx_hash);
+    }
+
+    // Immediately remove failed TXs from mempool so they aren't
+    // reprocessed in subsequent blocks (their state effects like fee
+    // charges persist from process_transactions_parallel).
+    if !failed_hashes.is_empty() {
+        info!(
+            "🧹 Removing {} failed tx(s) from mempool at height {}",
+            failed_hashes.len(),
+            height
+        );
+        mempool.remove_transactions_bulk(&failed_hashes);
     }
 
     let wall_clock_timestamp = std::time::SystemTime::now()

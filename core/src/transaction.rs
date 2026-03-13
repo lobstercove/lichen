@@ -246,11 +246,15 @@ impl Transaction {
             ));
         }
         for (i, ix) in self.message.instructions.iter().enumerate() {
-            // Deploy contract (system program, instruction type 17) allows up to 4MB for WASM code
-            let is_deploy = ix.program_id == crate::Pubkey([0u8; 32])
+            // Deploy instructions allow up to 4MB for WASM code:
+            // - System program type 17 (system_deploy_contract)
+            // - Contract program Deploy variant (JSON-encoded WASM via ContractInstruction)
+            let is_system_deploy = ix.program_id == crate::Pubkey([0u8; 32])
                 && !ix.data.is_empty()
                 && ix.data[0] == 17;
-            let data_limit = if is_deploy {
+            let is_contract_deploy =
+                ix.program_id == crate::Pubkey([0xFFu8; 32]) && ix.data.starts_with(b"{\"Deploy\"");
+            let data_limit = if is_system_deploy || is_contract_deploy {
                 MAX_DEPLOY_INSTRUCTION_DATA
             } else {
                 MAX_INSTRUCTION_DATA

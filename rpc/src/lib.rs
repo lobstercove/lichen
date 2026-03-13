@@ -393,7 +393,12 @@ impl AirdropCooldowns {
     }
 
     /// Check daily limit for an address. Returns Err with message if exceeded.
-    fn check_daily_limit(&self, address: &str, amount_molt: u64, now: Instant) -> Result<(), String> {
+    fn check_daily_limit(
+        &self,
+        address: &str,
+        amount_molt: u64,
+        now: Instant,
+    ) -> Result<(), String> {
         let used: u64 = self
             .daily_ledger
             .get(address)
