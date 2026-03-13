@@ -627,11 +627,12 @@ mod tests {
         let sm = SyncManager::new();
         sm.note_seen(100).await;
         // Current slot 0, behind by 100 → should sync
-        // current_slot == 0: starts from slot 1 (genesis already exists)
+        // current_slot == 0, no checkpoint: starts from slot 0 (joining
+        // nodes need the genesis block from peers).
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        assert_eq!(start, 1);
+        assert_eq!(start, 0);
         assert!(end <= 100);
     }
 
@@ -1016,8 +1017,8 @@ mod tests {
         let batch = sm.should_sync(0).await;
         assert!(batch.is_some());
         let (start, end) = batch.unwrap();
-        // current_slot == 0: starts from slot 1 (genesis already exists)
-        assert_eq!(start, 1);
+        // current_slot == 0, no checkpoint: starts from slot 0
+        assert_eq!(start, 0);
         // Should request up to SYNC_BATCH_SIZE * PIPELINE_DEPTH blocks
         let batch_size = end - start + 1;
         assert_eq!(batch_size, SYNC_BATCH_SIZE * SYNC_PIPELINE_DEPTH);

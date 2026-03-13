@@ -225,8 +225,13 @@ pub struct P2PNetwork {
     /// Message receiver (bounded — T4.7)
     message_rx: mpsc::Receiver<(SocketAddr, P2PMessage)>,
 
-    /// Outgoing block channel
+    /// Outgoing block channel (live BFT blocks, compact-reconstructed)
     block_tx: mpsc::Sender<Block>,
+
+    /// Outgoing sync block channel (BlockRangeResponse / BlockResponse)
+    /// Separated from block_tx so sync-critical blocks are never dropped
+    /// due to live traffic contention during InitialSync catch-up.
+    sync_block_tx: mpsc::Sender<Block>,
 
     /// Outgoing vote channel
     vote_tx: mpsc::Sender<Vote>,
@@ -290,6 +295,7 @@ impl P2PNetwork {
     pub async fn new(
         config: P2PConfig,
         block_tx: mpsc::Sender<Block>,
+        sync_block_tx: mpsc::Sender<Block>,
         vote_tx: mpsc::Sender<Vote>,
         transaction_tx: mpsc::Sender<Transaction>,
         validator_announce_tx: mpsc::Sender<ValidatorAnnouncement>,
@@ -371,6 +377,7 @@ impl P2PNetwork {
             role: config.role,
             message_rx,
             block_tx,
+            sync_block_tx,
             vote_tx,
             transaction_tx,
             validator_announce_tx,
@@ -633,9 +640,9 @@ impl P2PNetwork {
                     "P2P: Received block response for slot {} from {}",
                     block.header.slot, peer_addr
                 );
-                if let Err(e) = self.block_tx.try_send(block) {
+                if let Err(e) = self.sync_block_tx.try_send(block) {
                     warn!(
-                        "P2P: Block channel full, dropping block response from {} ({})",
+                        "P2P: Sync block channel full, dropping block response from {} ({})",
                         peer_addr, e
                     );
                 }
@@ -658,9 +665,9 @@ impl P2PNetwork {
                     peer_addr
                 );
                 for block in blocks {
-                    if let Err(e) = self.block_tx.try_send(block) {
+                    if let Err(e) = self.sync_block_tx.try_send(block) {
                         warn!(
-                            "P2P: Block channel full during range response from {} ({})",
+                            "P2P: Sync block channel full during range response from {} ({})",
                             peer_addr, e
                         );
                         break; // Stop sending remaining blocks — will be re-requested

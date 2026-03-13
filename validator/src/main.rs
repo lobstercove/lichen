@@ -5975,6 +5975,9 @@ async fn run_validator() {
     let (block_tx, mut block_rx) = mpsc::channel(10_000);
     let block_tx_for_compact = block_tx.clone(); // P3-3: sender for reconstructed compact blocks
     let block_tx_for_erasure = block_tx.clone(); // P3-4: sender for erasure-reconstructed blocks
+                                                 // Dedicated sync channel: BlockRangeResponse / BlockResponse blocks arrive here
+                                                 // so they are never starved by live BFT compact blocks during catch-up.
+    let (sync_block_tx, mut sync_block_rx) = mpsc::channel::<Block>(10_000);
     let (vote_tx, mut vote_rx) = mpsc::channel(2_000);
     let (transaction_tx, mut transaction_rx) = mpsc::channel(5_000);
     let (validator_announce_tx, mut validator_announce_rx) = mpsc::channel(100);
@@ -6009,6 +6012,7 @@ async fn run_validator() {
     let (p2p_peer_manager, _p2p_handle) = match P2PNetwork::new(
         p2p_config.clone(),
         block_tx,
+        sync_block_tx,
         vote_tx,
         transaction_tx,
         validator_announce_tx,
@@ -6314,7 +6318,15 @@ async fn run_validator() {
             let mut fork_choice = ForkChoice::new();
             // Periodically prune old entries (keep last 1000 slots)
             let mut prune_below_slot: u64 = 0;
-            while let Some(block) = block_rx.recv().await {
+            // Priority select: drain sync-response blocks (BlockRangeResponse /
+            // BlockResponse) before live blocks so catch-up is never starved.
+            loop {
+                let block = tokio::select! {
+                    biased;
+                    Some(b) = sync_block_rx.recv() => b,
+                    Some(b) = block_rx.recv() => b,
+                    else => break,
+                };
                 let block_slot = block.header.slot;
                 let block_has_user_transactions = !block.transactions.is_empty();
 
