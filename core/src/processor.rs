@@ -3686,7 +3686,23 @@ impl TxProcessor {
         let mut make_public = true;
         let mut deployer_abi: Option<ContractAbi> = None;
 
-        if let Some(registry) = DeployRegistryData::from_init_data(&init_data) {
+        let registry_parsed = if !init_data.is_empty() {
+            match DeployRegistryData::from_init_data(&init_data) {
+                Some(r) => Some(r),
+                None => {
+                    eprintln!(
+                        "⚠️  contract_deploy: init_data ({} bytes) could not be parsed as registry metadata — \
+                         symbol/name/template will NOT be registered",
+                        init_data.len()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(registry) = registry_parsed {
             if let Some(raw_owner) = registry.upgrade_authority.clone() {
                 if raw_owner == "none" {
                     owner = SYSTEM_PROGRAM_ID;

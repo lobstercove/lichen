@@ -1565,13 +1565,35 @@ async fn main() -> Result<()> {
                 }
                 if verified {
                     println!("✅ Contract deployed and verified on-chain!");
+                    println!("🔗 Address: {}", contract_addr.to_base58());
+
+                    // Verify symbol registry entry if symbol was requested
+                    if let Some(ref s) = symbol {
+                        match client.resolve_symbol(s).await {
+                            Ok(Some(_)) => {
+                                println!("🏷️  Symbol '{}' registered in symbol registry", s);
+                            }
+                            _ => {
+                                println!(
+                                    "⚠️  Symbol '{}' was NOT found in the registry. \
+                                     The symbol registration may have failed silently.",
+                                    s
+                                );
+                                println!(
+                                    "   You can register manually: molt register-symbol {} --address {}",
+                                    s,
+                                    contract_addr.to_base58()
+                                );
+                            }
+                        }
+                    }
                 } else {
                     println!(
                         "⚠️  Transaction confirmed but contract not found at expected address."
                     );
-                    println!("   This is a known issue — please report the following:");
                     println!("   Signature: {}", signature);
                     println!("   Expected:  {}", contract_addr.to_base58());
+                    println!("   This may indicate an on-chain processing error.");
                 }
             } else {
                 println!("⚠️  Transaction not confirmed after 15 seconds.");
@@ -1581,10 +1603,6 @@ async fn main() -> Result<()> {
                     "   Explorer: https://explorer.moltchain.network/address/{}",
                     contract_addr.to_base58()
                 );
-            }
-            println!("🔗 Address: {}", contract_addr.to_base58());
-            if symbol.is_some() {
-                println!("🏷️  Symbol registered in symbol registry");
             }
         }
 
