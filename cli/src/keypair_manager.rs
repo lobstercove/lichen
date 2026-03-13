@@ -95,10 +95,14 @@ impl KeypairManager {
         let json: serde_json::Value =
             serde_json::from_str(&contents).context("Failed to parse keypair file as JSON")?;
 
-        // --- Format 2: hex-string privateKey (wallet create) ---
-        if let Some(hex_str) = json.get("privateKey").and_then(|v| v.as_str()) {
-            let seed_bytes =
-                hex::decode(hex_str).context("Failed to hex-decode privateKey string")?;
+        // --- Format 2: hex-string privateKey or secret_key (wallet create / genesis keys) ---
+        if let Some(hex_str) = json
+            .get("privateKey")
+            .or_else(|| json.get("secret_key"))
+            .and_then(|v| v.as_str())
+        {
+            let seed_bytes = hex::decode(hex_str)
+                .context("Failed to hex-decode privateKey/secret_key string")?;
             if seed_bytes.len() != 32 {
                 anyhow::bail!(
                     "Invalid hex privateKey length: expected 32 bytes, got {}",
