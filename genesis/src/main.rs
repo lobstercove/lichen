@@ -4,7 +4,7 @@
 //!   moltchain-genesis --network testnet --db-path /var/lib/moltchain/state-testnet
 //!   moltchain-genesis --network mainnet --db-path /var/lib/moltchain/state-mainnet
 
-use moltchain_core::consensus::{FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS};
+use moltchain_core::consensus::{BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS, StakePool};
 use moltchain_core::multisig::GovernedWalletConfig;
 use moltchain_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair, Message,
@@ -671,6 +671,92 @@ fn main() {
     }
     info!("✓ Genesis block created and stored (slot 0)");
     info!("  Genesis hash: {}", genesis_block.hash());
+
+    // ════════════════════════════════════════════════════════════════════
+    // PRE-REGISTER FOUNDING VALIDATOR IN STAKE POOL
+    // ════════════════════════════════════════════════════════════════════
+    // Generate a validator identity for the founding (genesis-producing) node
+    // and register it in the stake pool with a bootstrap grant.  This makes
+    // pool.bootstrap_grants_issued() >= 1 in the genesis state, which
+    // prevents ALL nodes that receive a copy of this state from triggering
+    // the runtime "genesis bootstrap" self-registration path.  Every
+    // subsequent validator MUST go through the consensus RegisterValidator
+    // transaction, producing a visible on-chain tx.
+    {
+        let founding_keypair = Keypair::new();
+        let founding_pubkey = founding_keypair.pubkey();
+
+        // Fund from treasury
+        let treasury_pk = state.get_treasury_pubkey().ok().flatten();
+        let grant = BOOTSTRAP_GRANT_AMOUNT;
+        let mut funded = false;
+
+        if let Some(tpk) = treasury_pk {
+            if let Ok(Some(mut treasury_acct)) = state.get_account(&tpk) {
+                if treasury_acct.deduct_spendable(grant).is_ok() {
+                    let _ = state.put_account(&tpk, &treasury_acct);
+
+                    // Create the founding validator account with staked shells
+                    let mut val_acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+                    val_acct.shells = grant;
+                    val_acct.staked = grant;
+                    val_acct.spendable = 0;
+                    let _ = state.put_account(&founding_pubkey, &val_acct);
+
+                    // Register in stake pool
+                    let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+                    match pool.try_bootstrap_with_fingerprint(
+                        founding_pubkey,
+                        grant,
+                        0, // slot 0
+                        [0u8; 32],
+                    ) {
+                        Ok((idx, _)) => {
+                            info!(
+                                "  ✅ Founding validator pre-registered: {} MOLT staked (bootstrap #{})",
+                                grant / 1_000_000_000,
+                                idx
+                            );
+                            funded = true;
+                        }
+                        Err(e) => error!("  ❌ Stake pool bootstrap failed: {}", e),
+                    }
+                    if funded {
+                        if let Err(e) = state.put_stake_pool(&pool) {
+                            error!("  ❌ Failed to persist stake pool: {}", e);
+                        }
+                    }
+                } else {
+                    error!("  ❌ Treasury has insufficient funds for founding validator bootstrap");
+                }
+            }
+        }
+
+        if funded {
+            // Save founding validator keypair into the state directory so the
+            // genesis-producing node loads it automatically on first start.
+            let keypair_path = std::path::Path::new(&db_dir).join("validator-keypair.json");
+            let keypair_json = serde_json::json!({
+                "privateKey": founding_keypair.to_seed().to_vec(),
+                "publicKey": founding_pubkey.0.to_vec(),
+                "publicKeyBase58": founding_pubkey.to_base58(),
+            });
+            match std::fs::write(&keypair_path, serde_json::to_string_pretty(&keypair_json).unwrap_or_default()) {
+                Ok(()) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&keypair_path, std::fs::Permissions::from_mode(0o600)).ok();
+                    }
+                    info!("  ✅ Founding validator keypair saved: {}", keypair_path.display());
+                    info!("     Pubkey: {}", founding_pubkey.to_base58());
+                }
+                Err(e) => error!("  ❌ Failed to save founding validator keypair: {}", e),
+            }
+        } else {
+            warn!("  ⚠️  Founding validator NOT pre-registered — runtime genesis bootstrap will be needed");
+        }
+    }
 
     // Store founding moltys vesting schedule
     if let Some(fm_dw) = wallet

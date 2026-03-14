@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# ============================================================================
+# MoltChain Validator — Production Server Setup
+# ============================================================================
+#
+# Run as root or with sudo on a fresh Debian/Ubuntu VPS.
+#
+# Usage:
+#   sudo bash deploy/setup.sh testnet          # Setup for testnet
+#   sudo bash deploy/setup.sh mainnet          # Setup for mainnet
+#   sudo bash deploy/setup.sh testnet mainnet  # Setup for both networks
+#
+# This script:
+#   1. Creates a 'moltchain' system user
+#   2. Creates /etc/moltchain, /var/lib/moltchain, /var/log/moltchain
+#   3. Copies binaries to /usr/local/bin
+#   4. Generates /etc/moltchain/env with correct port assignments
+#   5. Installs and enables the systemd service
+#
+# Port assignments (matching moltchain-start.sh / run-validator.sh V1):
+#   Testnet: RPC=8899  WS=8900  P2P=7001  Signer=9201
+#   Mainnet: RPC=9899  WS=9900  P2P=8001  Signer=9201
+#
+# ============================================================================
+
+set -euo pipefail
+
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/etc/moltchain"
+DATA_DIR="/var/lib/moltchain"
+LOG_DIR="/var/log/moltchain"
+SHARE_DIR="/usr/local/share/moltchain"
+USER="moltchain"
+GROUP="moltchain"
+
+# Parse network(s)
+NETWORKS=()
+for arg in "$@"; do
+    case "$arg" in
+        testnet|mainnet) NETWORKS+=("$arg") ;;
+        *)
+            echo "Usage: $0 <testnet|mainnet> [testnet|mainnet]"
+            echo "Example: $0 testnet          # Setup testnet only"
+            echo "         $0 testnet mainnet   # Setup both"
+            exit 1
+            ;;
+    esac
+done
+
+if [ ${#NETWORKS[@]} -eq 0 ]; then
+    echo "Usage: $0 <testnet|mainnet> [testnet|mainnet]"
+    exit 1
+fi
+
+echo "=== MoltChain Validator Setup ==="
+echo "Networks: ${NETWORKS[*]}"
+echo ""
+
+# ── 1. Create system user ──
+if ! id -u "$USER" &>/dev/null; then
+    groupadd -r "$GROUP"
+    useradd -r -g "$GROUP" -d /home/"$USER" -m -s /bin/false "$USER"
+    echo "✅ Created system user: $USER"
+else
+    echo "✅ System user $USER already exists"
+fi
+
+# ── 2. Create directories ──
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$SHARE_DIR"
+chown "$USER":"$GROUP" "$DATA_DIR" "$LOG_DIR"
+echo "✅ Directories created"
+
+# ── 3. Copy binaries ──
+for bin in moltchain-validator moltchain-genesis molt moltchain-faucet moltchain-custody; do
+    if [ -f "target/release/$bin" ]; then
+        cp "target/release/$bin" "$INSTALL_DIR/$bin"
+        chmod +x "$INSTALL_DIR/$bin"
+        echo "   Installed: $bin → $INSTALL_DIR"
+    else
+        echo "   ⚠  $bin not found in target/release/ (skipping)"
+    fi
+done
+
+# ── 3b. Copy seeds.json to config dir ──
+if [ -f "seeds.json" ]; then
+    cp seeds.json "$CONFIG_DIR/seeds.json"
+    chmod 644 "$CONFIG_DIR/seeds.json"
+    echo "✅ Installed seeds.json → $CONFIG_DIR/seeds.json"
+else
+    echo "   ⚠  seeds.json not found (validators will need --bootstrap-peers)"
+fi
+
+# ── 3c. Install contract artifacts for genesis/runtime bootstrap ──
+if [ -d "contracts" ]; then
+    rm -rf "$DATA_DIR/contracts"
+    mkdir -p "$DATA_DIR/contracts"
+    cp -R contracts/. "$DATA_DIR/contracts/"
+    chown -R "$USER":"$GROUP" "$DATA_DIR/contracts"
+    echo "✅ Installed contract artifacts → $DATA_DIR/contracts"
+else
+    echo "   ⚠  contracts/ directory not found (genesis bootstrap may skip contract deployment)"
+fi
+
+# ── 3d. Install ZK keys (prefer bundled, fallback to zk-setup) ──
+# HOME is overridden to /var/lib/moltchain in the systemd service (ProtectHome=true),
+# so ZK keys must live at /var/lib/moltchain/.moltchain/zk/ to be found at runtime.
+ZK_DIR="$DATA_DIR/.moltchain/zk"
+sudo -u "$USER" mkdir -p "$ZK_DIR"
+if [ -d "zk" ] && [ -f "zk/vk_shield.bin" ]; then
+    # Release tarballs ship pre-generated ZK keys — use those (instant)
+    echo "   Installing bundled ZK keys..."
+    cp zk/*.bin "$ZK_DIR/"
+    chown "$USER":"$GROUP" "$ZK_DIR"/*.bin
+    echo "✅ ZK verification keys installed from release bundle"
+elif [ -f "$ZK_DIR/vk_shield.bin" ] && [ -f "$ZK_DIR/vk_unshield.bin" ] && [ -f "$ZK_DIR/vk_transfer.bin" ]; then
+    echo "✅ ZK verification keys already exist"
+elif [ -x "$INSTALL_DIR/zk-setup" ]; then
+    echo "   Running ZK trusted setup (this may take several minutes)..."
+    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
+    echo "✅ ZK verification keys ready"
+elif [ -f "target/release/zk-setup" ]; then
+    cp "target/release/zk-setup" "$INSTALL_DIR/zk-setup"
+    chmod +x "$INSTALL_DIR/zk-setup"
+    echo "   Running ZK trusted setup (this may take several minutes)..."
+    sudo -u "$USER" HOME="$DATA_DIR" "$INSTALL_DIR/zk-setup" 2>&1 | sed 's/^/   /' || true
+    echo "✅ ZK verification keys ready"
+else
+    echo "   ⚠  zk-setup binary not found — shielded transactions unavailable until keys are generated"
+fi
+
+# ── 4. Generate env file + install systemd per network ──
+for net in "${NETWORKS[@]}"; do
+    echo ""
+    echo "--- Setting up $net ---"
+
+    case $net in
+        testnet)
+            RPC_PORT=8899; WS_PORT=8900; P2P_PORT=7001; SIGNER_PORT=9201
+            ;;
+        mainnet)
+            RPC_PORT=9899; WS_PORT=9900; P2P_PORT=8001; SIGNER_PORT=9201
+            ;;
+    esac
+
+    ENV_FILE="$CONFIG_DIR/env-${net}"
+    cat > "$ENV_FILE" <<EOF
+# MoltChain $net environment — auto-generated by deploy/setup.sh
+MOLTCHAIN_NETWORK=$net
+MOLTCHAIN_RPC_PORT=$RPC_PORT
+MOLTCHAIN_WS_PORT=$WS_PORT
+MOLTCHAIN_P2P_PORT=$P2P_PORT
+# P9-INF-09: Custody signer binds to loopback only (not all interfaces)
+MOLTCHAIN_SIGNER_BIND=127.0.0.1:$SIGNER_PORT
+MOLTCHAIN_CONTRACTS_DIR=$DATA_DIR/contracts
+RUST_LOG=info
+# Bootstrap peers — read directly by the validator binary via env var.
+# This avoids systemd word-splitting issues with MOLTCHAIN_EXTRA_ARGS.
+# Set to comma-separated host:port pairs for joining (non-genesis) nodes.
+# Leave empty on the genesis-producing node.
+MOLTCHAIN_BOOTSTRAP_PEERS=
+# Extra CLI args passed to the validator (legacy — prefer MOLTCHAIN_BOOTSTRAP_PEERS)
+MOLTCHAIN_EXTRA_ARGS=
+# MOLTCHAIN_ADMIN_TOKEN=your-secret-token-here
+EOF
+    chmod 600 "$ENV_FILE"
+    echo "   ✅ Created $ENV_FILE"
+
+    # Create network-specific state dir
+    mkdir -p "$DATA_DIR/state-${net}"
+    chown "$USER":"$GROUP" "$DATA_DIR/state-${net}"
+
+    # Create custody DB directory for this network
+    CUSTODY_DB_NAME="custody-db"
+    [ "$net" = "mainnet" ] && CUSTODY_DB_NAME="custody-db-mainnet"
+    mkdir -p "$DATA_DIR/$CUSTODY_DB_NAME"
+    chown "$USER":"$GROUP" "$DATA_DIR/$CUSTODY_DB_NAME"
+    echo "   ✅ Created $DATA_DIR/$CUSTODY_DB_NAME"
+
+    # Install network-specific systemd service (validator)
+    SERVICE_NAME="moltchain-validator-${net}"
+    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+    sed "s|EnvironmentFile=/etc/moltchain/env|EnvironmentFile=/etc/moltchain/env-${net}|" \
+        deploy/moltchain-validator.service > "$SERVICE_FILE"
+
+    # Update SyslogIdentifier for this network
+    sed -i "s|SyslogIdentifier=moltchain-validator|SyslogIdentifier=${SERVICE_NAME}|" \
+        "$SERVICE_FILE"
+
+    systemctl enable "${SERVICE_NAME}" 2>/dev/null || true
+    echo "   ✅ Installed + enabled systemd service: $SERVICE_NAME"
+
+    # Install custody service for this network
+    if [ "$net" = "testnet" ]; then
+        cp deploy/moltchain-custody.service /etc/systemd/system/moltchain-custody.service
+        systemctl enable moltchain-custody 2>/dev/null || true
+        echo "   ✅ Installed + enabled systemd service: moltchain-custody"
+    else
+        cp deploy/moltchain-custody-mainnet.service /etc/systemd/system/moltchain-custody-mainnet.service
+        systemctl enable moltchain-custody-mainnet 2>/dev/null || true
+        echo "   ✅ Installed + enabled systemd service: moltchain-custody-mainnet"
+    fi
+
+    # Install faucet service (testnet only)
+    if [ "$net" = "testnet" ]; then
+        cp deploy/moltchain-faucet.service /etc/systemd/system/moltchain-faucet.service
+        systemctl enable moltchain-faucet 2>/dev/null || true
+        echo "   ✅ Installed + enabled systemd service: moltchain-faucet"
+    fi
+
+    # Generate custody env file if not present
+    CUSTODY_ENV_NAME="custody-env"
+    CUSTODY_RPC_URL="http://127.0.0.1:$RPC_PORT"
+    CUSTODY_PORT=9105
+    [ "$net" = "mainnet" ] && CUSTODY_ENV_NAME="custody-env-mainnet" && CUSTODY_PORT=9106
+    if [ ! -f "$CONFIG_DIR/$CUSTODY_ENV_NAME" ]; then
+        CUSTODY_AUTH_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
+        CUSTODY_SEED=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
+        cat > "$CONFIG_DIR/$CUSTODY_ENV_NAME" <<CUSTEOF
+# MoltChain Custody Service — $net (auto-generated by deploy/setup.sh)
+CUSTODY_DB_PATH=$DATA_DIR/$CUSTODY_DB_NAME
+CUSTODY_API_AUTH_TOKEN=$CUSTODY_AUTH_TOKEN
+CUSTODY_MASTER_SEED=$CUSTODY_SEED
+CUSTODY_MOLT_RPC_URL=$CUSTODY_RPC_URL
+CUSTODY_POLL_INTERVAL_SECS=15
+CUSTODY_DEPOSIT_TTL_SECS=86400
+CUSTODY_LISTEN_PORT=$CUSTODY_PORT
+RUST_LOG=info
+CUSTODY_TREASURY_KEYPAIR=$CONFIG_DIR/custody-treasury-$net.json
+CUSTEOF
+        chmod 600 "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        chown root:root "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        echo "   ✅ Generated $CONFIG_DIR/$CUSTODY_ENV_NAME"
+    else
+        TREASURY_PATH="$CONFIG_DIR/custody-treasury-$net.json"
+        if grep -q '^CUSTODY_TREASURY_KEYPAIR=' "$CONFIG_DIR/$CUSTODY_ENV_NAME"; then
+            sed -i "s|^CUSTODY_TREASURY_KEYPAIR=.*|CUSTODY_TREASURY_KEYPAIR=$TREASURY_PATH|" "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        else
+            echo "CUSTODY_TREASURY_KEYPAIR=$TREASURY_PATH" >> "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        fi
+        chmod 600 "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        chown root:root "$CONFIG_DIR/$CUSTODY_ENV_NAME"
+        echo "   ✅ $CONFIG_DIR/$CUSTODY_ENV_NAME already exists (updated treasury key path)"
+    fi
+
+    systemctl daemon-reload
+done
+
+echo ""
+echo "=== Setup Complete ==="
+echo ""
+echo "Quick reference:"
+for net in "${NETWORKS[@]}"; do
+    case $net in
+        testnet) echo "  $net → RPC :8899  WS :8900  P2P :7001" ;;
+        mainnet) echo "  $net → RPC :9899  WS :9900  P2P :8001" ;;
+    esac
+done
+echo ""
+echo "Firewall (if using ufw):"
+for net in "${NETWORKS[@]}"; do
+    case $net in
+        testnet) echo "  sudo ufw allow 7001/tcp  # testnet P2P" ;;
+        mainnet) echo "  sudo ufw allow 8001/tcp  # mainnet P2P" ;;
+    esac
+done
+echo ""
+echo "⚠  VPS bootstrap: create genesis once with /usr/local/bin/moltchain-genesis"
+echo "   (or a validator process that has MOLTCHAIN_CONTRACTS_DIR set to"
+echo "   /var/lib/moltchain/contracts). Subsequent validators must bootstrap"
+echo "   from the existing network via seeds.json or --bootstrap-peers."
+echo "   Genesis keys (treasury) will be in: $DATA_DIR/state-<network>/genesis-keys/"
+echo "   Keep those keys secure — they control the 1B MOLT treasury."

@@ -4692,6 +4692,27 @@ async fn run_validator() {
         }
     }
 
+    // Env var fallback — MOLTCHAIN_BOOTSTRAP_PEERS provides reliable delivery
+    // of bootstrap peers without systemd word-splitting issues that can break
+    // MOLTCHAIN_EXTRA_ARGS expansion in ExecStart.
+    if explicit_seed_peer_strings.is_empty() {
+        if let Ok(peers) = std::env::var("MOLTCHAIN_BOOTSTRAP_PEERS") {
+            for part in peers.split(',') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    seed_peer_strings.push(trimmed.to_string());
+                    explicit_seed_peer_strings.push(trimmed.to_string());
+                }
+            }
+            if !explicit_seed_peer_strings.is_empty() {
+                info!(
+                    "📡 Loaded {} bootstrap peer(s) from MOLTCHAIN_BOOTSTRAP_PEERS env var",
+                    explicit_seed_peer_strings.len()
+                );
+            }
+        }
+    }
+
     // Collect positional peer arguments (legacy)
     let mut skip_next = false;
     for (i, arg) in args.iter().enumerate() {
