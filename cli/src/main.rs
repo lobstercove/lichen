@@ -1614,12 +1614,18 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Contract file is empty");
             }
 
-            // Generate contract address (deterministic from deployer + code hash)
+            // Generate contract address (deterministic from deployer + code hash + slot nonce)
+            // Include current slot so retries after a failed deploy produce a fresh address.
             use moltchain_core::Hash;
+            let slot_nonce = client.get_slot().await.unwrap_or(0);
             let code_hash = Hash::hash(&wasm_code);
+            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+            sha2::Digest::update(&mut hasher, deployer.pubkey().0);
+            sha2::Digest::update(&mut hasher, code_hash.0);
+            sha2::Digest::update(&mut hasher, slot_nonce.to_le_bytes());
+            let result = sha2::Digest::finalize(hasher);
             let mut addr_bytes = [0u8; 32];
-            addr_bytes[..16].copy_from_slice(&deployer.pubkey().0[..16]);
-            addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+            addr_bytes.copy_from_slice(&result[..32]);
             let contract_addr = moltchain_core::Pubkey(addr_bytes);
 
             // Build init_data for symbol registry if any metadata flags provided
@@ -1721,9 +1727,30 @@ async fn main() -> Result<()> {
             }
 
             if let Some(ref err) = tx_error {
-                println!("❌ Deploy transaction FAILED on-chain: {}", err);
-                println!("   The deploy fee premium (25 MOLT) is refunded.");
-                println!("   Only the base fee (0.001 MOLT) is kept.");
+                if err.contains("Transaction failed on-chain") {
+                    println!("❌ Deploy transaction FAILED on-chain: {}", err);
+                    println!("   The deploy fee premium (25 MOLT) is refunded.");
+                    println!("   Only the base fee (0.001 MOLT) is kept.");
+                } else {
+                    println!(
+                        "⚠️  Could not verify deploy transaction status: {}",
+                        err
+                    );
+                    println!(
+                        "   The transaction may have succeeded. Check the explorer:"
+                    );
+                    println!(
+                        "   Explorer: https://explorer.moltchain.network/contract/{}",
+                        contract_addr.to_base58()
+                    );
+                    println!("   Signature: {}", signature);
+                    println!(
+                        "   If the contract exists, no action is needed."
+                    );
+                    println!(
+                        "   If it does not exist, the 25 MOLT premium is refunded."
+                    );
+                }
                 println!("   Check your balance: molt balance --keypair <keypair>");
             } else if tx_confirmed {
                 // Phase 2: Verify contract account exists (up to 10 attempts, 1s apart)
