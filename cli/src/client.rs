@@ -889,6 +889,56 @@ impl RpcClient {
             Err(_) => Ok(None),
         }
     }
+
+    // ===== New methods for enhanced CLI =====
+
+    /// Get symbol registry entry by symbol name
+    pub async fn get_symbol_registry(&self, symbol: &str) -> Result<serde_json::Value> {
+        let params = json!([symbol]);
+        self.call("getSymbolRegistry", params).await
+    }
+
+    /// Get all symbol registry entries
+    pub async fn get_all_symbol_registry(&self) -> Result<serde_json::Value> {
+        let params = json!([]);
+        self.call("getAllSymbolRegistry", params).await
+    }
+
+    /// Get symbol registry entry by contract address
+    pub async fn get_symbol_by_program(&self, address: &str) -> Result<serde_json::Value> {
+        let params = json!([address]);
+        self.call("getSymbolRegistryByProgram", params).await
+    }
+
+    /// Get transaction by signature
+    pub async fn get_transaction(&self, signature: &str) -> Result<serde_json::Value> {
+        let params = json!([signature]);
+        self.call("getTransaction", params).await
+    }
+
+    /// Get NFTs owned by an address
+    pub async fn get_nfts_by_owner(&self, address: &str) -> Result<serde_json::Value> {
+        let params = json!([address]);
+        self.call("getNFTsByOwner", params).await
+    }
+
+    /// Get NFTs in a collection
+    pub async fn get_nfts_by_collection(&self, address: &str) -> Result<serde_json::Value> {
+        let params = json!([address]);
+        self.call("getNFTsByCollection", params).await
+    }
+
+    /// Get marketplace listings
+    pub async fn get_market_listings(&self, limit: usize) -> Result<serde_json::Value> {
+        let params = json!([limit]);
+        self.call("getMarketListings", params).await
+    }
+
+    /// Get DeFi protocol stats by method name
+    pub async fn get_defi_stats(&self, method: &str) -> Result<serde_json::Value> {
+        let params = json!([]);
+        self.call(method, params).await
+    }
 }
 
 fn base64_encode(data: &[u8]) -> String {

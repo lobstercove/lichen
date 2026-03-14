@@ -7,6 +7,7 @@ use moltchain_core::{Keypair, Pubkey};
 use std::path::PathBuf;
 
 mod client;
+mod config;
 mod keygen;
 mod keypair_manager;
 mod wallet;
@@ -18,14 +19,65 @@ use wallet::WalletManager;
 /// MoltChain CLI - Blockchain for autonomous agents
 #[derive(Parser)]
 #[command(name = "molt")]
-#[command(about = "MoltChain CLI - Economic freedom for agents 🦞⚡", long_about = None)]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "MoltChain CLI - Economic freedom for agents 🦞⚡")]
+#[command(long_about = "MoltChain CLI — command-line interface for MoltChain, a Layer 1 blockchain\n\
+    built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
+    WASM smart contracts, Ed25519 signing, ZK privacy (Groth16/BN254).\n\n\
+    Native token: MOLT (1 MOLT = 1,000,000,000 shells)\n\
+    Fee: 0.001 MOLT base | 25 MOLT deploy | 10 MOLT upgrade | 0.5 MOLT NFT mint\n\
+    Fee split: 40% burn, 30% producer, 10% voters, 10% treasury, 10% community\n\n\
+    Mainnet RPC: https://rpc.moltchain.network\n\
+    Testnet RPC: https://testnet-rpc.moltchain.network\n\
+    Explorer:    https://explorer.moltchain.network\n\
+    Docs:        https://developers.moltchain.network")]
+#[command(after_help = "EXAMPLES:\n\
+    molt identity new                              Create a new keypair\n\
+    molt airdrop 100                               Get 100 testnet MOLT\n\
+    molt balance                                   Check your balance\n\
+    molt transfer <ADDRESS> 10.5                   Send 10.5 MOLT\n\
+    molt deploy token.wasm --symbol TKN            Deploy a contract\n\
+    molt call <ADDR> get_info                      Call a contract\n\
+    molt status                                    Chain status dashboard\n\
+    molt --output json status                      JSON output (agent-friendly)\n\
+    molt --rpc-url https://rpc.moltchain.network balance")]
 struct Cli {
     /// RPC server URL
-    #[arg(long, default_value = "http://localhost:8899")]
+    #[arg(long, global = true, default_value = "http://localhost:8899", env = "MOLT_RPC_URL")]
     rpc_url: String,
+
+    /// Output format: human (default) or json (machine-readable for AI agents)
+    #[arg(long, global = true, default_value = "human", env = "MOLT_OUTPUT")]
+    output: OutputFormat,
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum OutputFormat {
+    Human,
+    Json,
+}
+
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "human" | "text" | "h" => Ok(OutputFormat::Human),
+            "json" | "j" => Ok(OutputFormat::Json),
+            _ => Err(format!("Unknown output format '{}'. Use 'human' or 'json'.", s)),
+        }
+    }
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputFormat::Human => write!(f, "human"),
+            OutputFormat::Json => write!(f, "json"),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -201,6 +253,43 @@ enum Commands {
     /// Governance operations (propose, vote, list)
     #[command(subcommand)]
     Gov(GovCommands),
+
+    /// Show version and build information
+    Version,
+
+    /// CLI configuration management
+    #[command(subcommand)]
+    Config(ConfigCommands),
+
+    /// Symbol registry operations (lookup, list)
+    #[command(subcommand)]
+    Symbol(SymbolCommands),
+
+    /// Transaction lookup by signature
+    Tx {
+        /// Transaction signature (hex)
+        signature: String,
+    },
+
+    /// NFT operations (collections, minting, transfers)
+    #[command(subcommand)]
+    Nft(NftCommands),
+
+    /// DeFi protocol stats (DEX, lending, swaps)
+    #[command(subcommand)]
+    Defi(DefiCommands),
+
+    /// Supply and economics information
+    Supply,
+
+    /// Fee configuration and calculator
+    Fees,
+
+    /// Epoch information
+    Epoch,
+
+    /// Show available WASM host functions for contract developers
+    HostFunctions,
 }
 
 #[derive(Subcommand)]
@@ -548,6 +637,84 @@ enum GovCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current CLI configuration
+    Show,
+
+    /// Set RPC endpoint URL
+    Set {
+        /// Configuration key (rpc_url, ws_url, keypair)
+        key: String,
+
+        /// Value to set
+        value: String,
+    },
+
+    /// Reset configuration to defaults
+    Reset,
+}
+
+#[derive(Subcommand)]
+enum SymbolCommands {
+    /// Look up a symbol in the registry (e.g. MOLT, DEX, DAO)
+    Lookup {
+        /// Symbol to look up (case-insensitive)
+        symbol: String,
+    },
+
+    /// List all symbols in the registry
+    List,
+
+    /// Look up a contract address in the registry
+    ByAddress {
+        /// Contract address (Base58)
+        address: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum NftCommands {
+    /// List NFTs owned by an account
+    List {
+        /// Owner address (defaults to your identity)
+        #[arg(short, long)]
+        owner: Option<String>,
+
+        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
+
+    /// List NFTs in a collection
+    Collection {
+        /// Collection address (Base58)
+        address: String,
+    },
+
+    /// Show NFT marketplace listings
+    Marketplace {
+        /// Number of listings to show (default: 20)
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum DefiCommands {
+    /// Show DEX overview (ClawSwap core stats)
+    Dex,
+
+    /// Show AMM pool stats
+    Amm,
+
+    /// Show lending protocol stats (LobsterLend)
+    Lending,
+
+    /// Show all DeFi protocol stats
+    Overview,
+}
+
 /// Convert MOLT (f64) to shells (u64) with precise integer arithmetic.
 /// Avoids floating-point precision loss for amounts near the f64 precision boundary
 /// by splitting into whole and fractional parts and computing with integers.
@@ -565,9 +732,19 @@ fn molt_to_shells(molt: f64) -> u64 {
     whole.saturating_mul(1_000_000_000).saturating_add(frac)
 }
 
+/// Helper: print JSON or human output
+fn print_json(value: &serde_json::Value) {
+    println!("{}", serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string()));
+}
+
+fn to_molt(shells: u64) -> f64 {
+    shells as f64 / 1_000_000_000.0
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let json_output = cli.output == OutputFormat::Json;
     let client = RpcClient::new(&cli.rpc_url);
     let keypair_mgr = KeypairManager::new();
 
@@ -2140,9 +2317,661 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
+        // ====================================================================
+        // VERSION
+        // ====================================================================
+        Commands::Version => {
+            let version_info = serde_json::json!({
+                "cli_version": env!("CARGO_PKG_VERSION"),
+                "binary": "molt",
+                "chain": "MoltChain",
+                "consensus": "Tendermint BFT",
+                "signing": "Ed25519",
+                "contracts": "WASM (Rust → wasm32-unknown-unknown)",
+                "zk": "Groth16 over BN254",
+                "native_token": "MOLT",
+                "shells_per_molt": 1_000_000_000u64,
+                "rpc_url": cli.rpc_url,
+                "system_program": "0000000000000000000000000000000000000000000000000000000000000000",
+                "contract_program": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "instruction_types": 28,
+                "fee_structure": {
+                    "base_fee": "0.001 MOLT (1,000,000 shells)",
+                    "deploy_premium": "25 MOLT",
+                    "upgrade_premium": "10 MOLT",
+                    "nft_mint_premium": "0.5 MOLT",
+                    "fee_split": "40% burn, 30% block producer, 10% voters, 10% treasury, 10% community"
+                },
+                "wasm_host_functions": 16,
+                "rpc_endpoints": {
+                    "mainnet": "https://rpc.moltchain.network",
+                    "mainnet_ws": "wss://ws.moltchain.network",
+                    "testnet": "https://testnet-rpc.moltchain.network"
+                }
+            });
+
+            if json_output {
+                print_json(&version_info);
+            } else {
+                println!("🦞 MoltChain CLI v{}", env!("CARGO_PKG_VERSION"));
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!();
+                println!("Chain:       MoltChain (custom L1)");
+                println!("Consensus:   Tendermint BFT (~800ms blocks)");
+                println!("Signing:     Ed25519");
+                println!("Contracts:   WASM (Rust → wasm32-unknown-unknown)");
+                println!("ZK Proofs:   Groth16 over BN254");
+                println!("Token:       MOLT (1 MOLT = 1,000,000,000 shells)");
+                println!();
+                println!("RPC (current): {}", cli.rpc_url);
+                println!("Mainnet RPC:   https://rpc.moltchain.network");
+                println!("Testnet RPC:   https://testnet-rpc.moltchain.network");
+                println!("Explorer:      https://explorer.moltchain.network");
+                println!("Docs:          https://developers.moltchain.network");
+                println!();
+                println!("Fees:");
+                println!("  Base:    0.001 MOLT    Deploy: 25 MOLT");
+                println!("  Upgrade: 10 MOLT       NFT Mint: 0.5 MOLT");
+                println!("  Split: 40% burn / 30% producer / 10% voters / 10% treasury / 10% community");
+                println!();
+                println!("System program:   [0x00; 32]");
+                println!("Contract program: [0xFF; 32]");
+                println!();
+                println!("28 instruction types | 16 WASM host functions");
+                println!("Use --output json for machine-readable output.");
+            }
+        }
+
+        // ====================================================================
+        // CONFIG
+        // ====================================================================
+        Commands::Config(config_cmd) => {
+            match config_cmd {
+                ConfigCommands::Show => {
+                    let cfg = config::CliConfig::load(None, None)?;
+                    if json_output {
+                        print_json(&serde_json::json!({
+                            "rpc_url": cfg.rpc_url,
+                            "ws_url": cfg.ws_url,
+                            "keypair": cfg.keypair,
+                            "config_path": config::CliConfig::default_path().display().to_string(),
+                        }));
+                    } else {
+                        cfg.display();
+                    }
+                }
+                ConfigCommands::Set { key, value } => {
+                    let mut cfg = config::CliConfig::load(None, None)?;
+                    match key.as_str() {
+                        "rpc_url" | "rpc" => {
+                            cfg.rpc_url = value.clone();
+                            println!("✅ rpc_url set to: {}", value);
+                        }
+                        "ws_url" | "ws" => {
+                            cfg.ws_url = Some(value.clone());
+                            println!("✅ ws_url set to: {}", value);
+                        }
+                        "keypair" | "key" => {
+                            cfg.keypair = Some(PathBuf::from(&value));
+                            println!("✅ default keypair set to: {}", value);
+                        }
+                        _ => {
+                            anyhow::bail!("Unknown config key '{}'. Valid: rpc_url, ws_url, keypair", key);
+                        }
+                    }
+                    cfg.save()?;
+                }
+                ConfigCommands::Reset => {
+                    let cfg = config::CliConfig::default();
+                    cfg.save()?;
+                    println!("✅ Configuration reset to defaults");
+                    cfg.display();
+                }
+            }
+        }
+
+        // ====================================================================
+        // SYMBOL REGISTRY
+        // ====================================================================
+        Commands::Symbol(sym_cmd) => match sym_cmd {
+            SymbolCommands::Lookup { symbol } => {
+                match client.get_symbol_registry(&symbol).await {
+                    Ok(entry) => {
+                        if json_output {
+                            print_json(&entry);
+                        } else {
+                            println!("🏷️  Symbol: {}", symbol.to_uppercase());
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                                println!("Name:     {}", name);
+                            }
+                            if let Some(program) = entry.get("program").and_then(|v| v.as_str()) {
+                                println!("Address:  {}", program);
+                            }
+                            if let Some(owner) = entry.get("owner").and_then(|v| v.as_str()) {
+                                println!("Owner:    {}", owner);
+                            }
+                            if let Some(template) = entry.get("template").and_then(|v| v.as_str()) {
+                                println!("Template: {}", template);
+                            }
+                            if let Some(decimals) = entry.get("decimals").and_then(|v| v.as_u64()) {
+                                println!("Decimals: {}", decimals);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string(), "symbol": symbol}));
+                        } else {
+                            println!("Symbol '{}' not found: {}", symbol, e);
+                        }
+                    }
+                }
+            }
+            SymbolCommands::List => {
+                match client.get_all_symbol_registry().await {
+                    Ok(entries) => {
+                        if json_output {
+                            print_json(&entries);
+                        } else {
+                            println!("🏷️  Symbol Registry");
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            if let Some(arr) = entries.as_array() {
+                                println!("{:<12} {:<30} {:<10} Address", "Symbol", "Name", "Template");
+                                println!("{}", "─".repeat(90));
+                                for entry in arr {
+                                    let sym = entry.get("symbol").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let tmpl = entry.get("template").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let addr = entry.get("program").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let addr_short = if addr.len() > 16 { &addr[..16] } else { addr };
+                                    println!("{:<12} {:<30} {:<10} {}...", sym, name, tmpl, addr_short);
+                                }
+                                println!("\nTotal: {} symbols registered", arr.len());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string()}));
+                        } else {
+                            println!("Could not fetch symbol registry: {}", e);
+                        }
+                    }
+                }
+            }
+            SymbolCommands::ByAddress { address } => {
+                match client.get_symbol_by_program(&address).await {
+                    Ok(entry) => {
+                        if json_output {
+                            print_json(&entry);
+                        } else {
+                            let sym = entry.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                            let tmpl = entry.get("template").and_then(|v| v.as_str()).unwrap_or("?");
+                            println!("🏷️  {} — {} ({})", sym, name, tmpl);
+                            println!("Address: {}", address);
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string(), "address": address}));
+                        } else {
+                            println!("No symbol registered for {}: {}", address, e);
+                        }
+                    }
+                }
+            }
+        },
+
+        // ====================================================================
+        // TRANSACTION LOOKUP
+        // ====================================================================
+        Commands::Tx { signature } => {
+            match client.get_transaction(&signature).await {
+                Ok(tx) => {
+                    if json_output {
+                        print_json(&tx);
+                    } else {
+                        println!("📝 Transaction {}", signature);
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        if let Some(slot) = tx.get("slot").and_then(|v| v.as_u64()) {
+                            println!("Slot:   {}", slot);
+                        }
+                        if let Some(status) = tx.get("status").and_then(|v| v.as_str()) {
+                            println!("Status: {}", status);
+                        }
+                        if let Some(fee) = tx.get("fee").and_then(|v| v.as_u64()) {
+                            println!("Fee:    {} MOLT", to_molt(fee));
+                        }
+                        if let Some(from) = tx.get("from").and_then(|v| v.as_str()) {
+                            println!("From:   {}", from);
+                        }
+                        if let Some(to) = tx.get("to").and_then(|v| v.as_str()) {
+                            println!("To:     {}", to);
+                        }
+                        if let Some(amount) = tx.get("amount").and_then(|v| v.as_u64()) {
+                            if amount > 0 {
+                                println!("Amount: {} MOLT", to_molt(amount));
+                            }
+                        }
+                        if let Some(err) = tx.get("error").and_then(|v| v.as_str()) {
+                            if !err.is_empty() {
+                                println!("Error:  {}", err);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if json_output {
+                        print_json(&serde_json::json!({"error": e.to_string(), "signature": signature}));
+                    } else {
+                        println!("Transaction not found: {}", e);
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // NFT COMMANDS
+        // ====================================================================
+        Commands::Nft(nft_cmd) => match nft_cmd {
+            NftCommands::List { owner, keypair } => {
+                let addr = if let Some(o) = owner {
+                    o
+                } else {
+                    let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+                    let kp = keypair_mgr.load_keypair(&path)?;
+                    kp.pubkey().to_base58()
+                };
+
+                match client.get_nfts_by_owner(&addr).await {
+                    Ok(nfts) => {
+                        if json_output {
+                            print_json(&nfts);
+                        } else {
+                            println!("🖼️  NFTs owned by {}", addr);
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            if let Some(arr) = nfts.as_array() {
+                                if arr.is_empty() {
+                                    println!("No NFTs found");
+                                } else {
+                                    for (i, nft) in arr.iter().enumerate() {
+                                        let name = nft.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
+                                        let collection = nft.get("collection").and_then(|v| v.as_str()).unwrap_or("-");
+                                        let token_id = nft.get("token_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        println!("#{} {} (ID: {}, Collection: {})", i + 1, name, token_id, collection);
+                                    }
+                                    println!("\nTotal: {} NFTs", arr.len());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string()}));
+                        } else {
+                            println!("Could not fetch NFTs: {}", e);
+                        }
+                    }
+                }
+            }
+            NftCommands::Collection { address } => {
+                match client.get_nfts_by_collection(&address).await {
+                    Ok(nfts) => {
+                        if json_output {
+                            print_json(&nfts);
+                        } else {
+                            println!("🖼️  NFT Collection: {}", address);
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            if let Some(arr) = nfts.as_array() {
+                                for (i, nft) in arr.iter().enumerate() {
+                                    let name = nft.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
+                                    let owner = nft.get("owner").and_then(|v| v.as_str()).unwrap_or("-");
+                                    println!("#{} {} (Owner: {})", i + 1, name, owner);
+                                }
+                                println!("\nTotal: {} NFTs in collection", arr.len());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string()}));
+                        } else {
+                            println!("Could not fetch collection: {}", e);
+                        }
+                    }
+                }
+            }
+            NftCommands::Marketplace { limit } => {
+                match client.get_market_listings(limit).await {
+                    Ok(listings) => {
+                        if json_output {
+                            print_json(&listings);
+                        } else {
+                            println!("🏪 NFT Marketplace Listings");
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            if let Some(arr) = listings.as_array() {
+                                if arr.is_empty() {
+                                    println!("No active listings");
+                                } else {
+                                    for (i, listing) in arr.iter().enumerate() {
+                                        let name = listing.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
+                                        let price = listing.get("price").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let seller = listing.get("seller").and_then(|v| v.as_str()).unwrap_or("-");
+                                        println!("#{} {} — {} MOLT (Seller: {})", i + 1, name, to_molt(price), seller);
+                                    }
+                                    println!("\nShowing {} listings", arr.len());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if json_output {
+                            print_json(&serde_json::json!({"error": e.to_string()}));
+                        } else {
+                            println!("Could not fetch marketplace: {}", e);
+                        }
+                    }
+                }
+            }
+        },
+
+        // ====================================================================
+        // DEFI STATS
+        // ====================================================================
+        Commands::Defi(defi_cmd) => match defi_cmd {
+            DefiCommands::Dex => {
+                match client.get_defi_stats("getDexCoreStats").await {
+                    Ok(stats) => {
+                        if json_output {
+                            print_json(&stats);
+                        } else {
+                            println!("📊 ClawSwap DEX Stats");
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            print_defi_stats(&stats);
+                        }
+                    }
+                    Err(e) => println!("Could not fetch DEX stats: {}", e),
+                }
+            }
+            DefiCommands::Amm => {
+                match client.get_defi_stats("getDexAmmStats").await {
+                    Ok(stats) => {
+                        if json_output {
+                            print_json(&stats);
+                        } else {
+                            println!("📊 AMM Pool Stats");
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            print_defi_stats(&stats);
+                        }
+                    }
+                    Err(e) => println!("Could not fetch AMM stats: {}", e),
+                }
+            }
+            DefiCommands::Lending => {
+                match client.get_defi_stats("getLobsterLendStats").await {
+                    Ok(stats) => {
+                        if json_output {
+                            print_json(&stats);
+                        } else {
+                            println!("📊 LobsterLend Stats");
+                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                            print_defi_stats(&stats);
+                        }
+                    }
+                    Err(e) => println!("Could not fetch lending stats: {}", e),
+                }
+            }
+            DefiCommands::Overview => {
+                let labels = ["ClawSwap DEX", "AMM Pools", "LobsterLend", "ClawPay", "MoltSwap"];
+                let methods = ["getDexCoreStats", "getDexAmmStats", "getLobsterLendStats", "getClawPayStats", "getMoltswapStats"];
+
+                if json_output {
+                    let mut all = serde_json::Map::new();
+                    for (method, label) in methods.iter().zip(labels.iter()) {
+                        match client.get_defi_stats(method).await {
+                            Ok(stats) => { all.insert(label.to_string(), stats); }
+                            Err(_) => { all.insert(label.to_string(), serde_json::json!(null)); }
+                        }
+                    }
+                    print_json(&serde_json::Value::Object(all));
+                } else {
+                    println!("📊 DeFi Protocol Overview");
+                    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    for (method, label) in methods.iter().zip(labels.iter()) {
+                        println!("\n{}:", label);
+                        match client.get_defi_stats(method).await {
+                            Ok(stats) => print_defi_stats(&stats),
+                            Err(_) => println!("  (unavailable)"),
+                        }
+                    }
+                }
+            }
+        },
+
+        // ====================================================================
+        // SUPPLY & ECONOMICS
+        // ====================================================================
+        Commands::Supply => {
+            match client.get_metrics().await {
+                Ok(metrics) => {
+                    if json_output {
+                        print_json(&serde_json::json!({
+                            "total_supply_shells": metrics.total_supply,
+                            "total_supply_molt": to_molt(metrics.total_supply),
+                            "circulating_supply_shells": metrics.circulating_supply,
+                            "circulating_supply_molt": to_molt(metrics.circulating_supply),
+                            "total_burned_shells": metrics.total_burned,
+                            "total_burned_molt": to_molt(metrics.total_burned),
+                            "total_staked_shells": metrics.total_staked,
+                            "total_staked_molt": to_molt(metrics.total_staked),
+                            "burn_percentage": if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
+                            "staked_percentage": if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
+                            "total_accounts": metrics.total_accounts,
+                            "total_contracts": metrics.total_contracts,
+                        }));
+                    } else {
+                        println!("💰 MOLT Supply & Economics");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!();
+                        println!("Total Supply:       {:>14.4} MOLT", to_molt(metrics.total_supply));
+                        println!("Circulating:        {:>14.4} MOLT", to_molt(metrics.circulating_supply));
+                        println!("Burned:             {:>14.4} MOLT ({:.2}%)", to_molt(metrics.total_burned),
+                            if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 });
+                        println!("Staked:             {:>14.4} MOLT ({:.2}%)", to_molt(metrics.total_staked),
+                            if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 });
+                        println!();
+                        println!("Accounts: {}   Contracts: {}", metrics.total_accounts, metrics.total_contracts);
+                    }
+                }
+                Err(e) => println!("Could not fetch supply info: {}", e),
+            }
+        }
+
+        // ====================================================================
+        // FEES
+        // ====================================================================
+        Commands::Fees => {
+            let fees = serde_json::json!({
+                "base_fee_shells": 1_000_000u64,
+                "base_fee_molt": 0.001,
+                "deploy_premium_shells": 25_000_000_000u64,
+                "deploy_premium_molt": 25.0,
+                "upgrade_premium_shells": 10_000_000_000u64,
+                "upgrade_premium_molt": 10.0,
+                "nft_mint_premium_shells": 500_000_000u64,
+                "nft_mint_premium_molt": 0.5,
+                "fee_split": {
+                    "burn_pct": 40,
+                    "block_producer_pct": 30,
+                    "voters_pct": 10,
+                    "treasury_pct": 10,
+                    "community_pct": 10
+                },
+                "reputation_discounts": {
+                    "500+": "5% off",
+                    "750+": "7.5% off",
+                    "1000+": "10% off"
+                },
+                "notes": [
+                    "All fees paid in MOLT (1 MOLT = 1,000,000,000 shells)",
+                    "Deploy premium refunded on failure (only base fee kept)",
+                    "40% of fees burned permanently (deflationary)",
+                    "Reputation discounts apply to base fee only"
+                ]
+            });
+
+            if json_output {
+                print_json(&fees);
+            } else {
+                println!("💸 MoltChain Fee Schedule");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!();
+                println!("Transaction Type          Fee");
+                println!("─────────────────────────────────────────────");
+                println!("Transfer / Call            0.001 MOLT (base)");
+                println!("Deploy Contract           25.001 MOLT (25 + base)");
+                println!("Upgrade Contract          10.001 MOLT (10 + base)");
+                println!("Mint NFT                   0.501 MOLT (0.5 + base)");
+                println!();
+                println!("Fee Split:");
+                println!("  40% burned forever (deflationary)");
+                println!("  30% block producer reward");
+                println!("  10% stake voters reward");
+                println!("  10% treasury");
+                println!("  10% community pool");
+                println!();
+                println!("Reputation Discounts (on base fee):");
+                println!("  500+ rep  -> 5% off");
+                println!("  750+ rep  -> 7.5% off");
+                println!("  1000+ rep -> 10% off");
+                println!();
+                println!("Note: Deploy premium refunded on failure.");
+            }
+        }
+
+        // ====================================================================
+        // EPOCH
+        // ====================================================================
+        Commands::Epoch => {
+            match client.get_chain_status().await {
+                Ok(status) => {
+                    let epoch = status.current_slot / 1000;
+                    let slot_in_epoch = status.current_slot % 1000;
+
+                    if json_output {
+                        print_json(&serde_json::json!({
+                            "current_epoch": epoch,
+                            "current_slot": status.current_slot,
+                            "slot_in_epoch": slot_in_epoch,
+                            "slots_per_epoch": 1000,
+                            "epoch_progress_pct": (slot_in_epoch as f64 / 1000.0) * 100.0,
+                            "validators": status.validator_count,
+                            "total_staked_molt": to_molt(status.total_staked),
+                        }));
+                    } else {
+                        println!("📅 Epoch Information");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!();
+                        println!("Current Epoch: {}", epoch);
+                        println!("Current Slot:  {} ({}/1000 in epoch)", status.current_slot, slot_in_epoch);
+                        println!("Progress:      {:.1}%", (slot_in_epoch as f64 / 1000.0) * 100.0);
+                        println!("Validators:    {}", status.validator_count);
+                        println!("Total Staked:  {:.4} MOLT", to_molt(status.total_staked));
+                    }
+                }
+                Err(e) => println!("Could not fetch epoch info: {}", e),
+            }
+        }
+
+        // ====================================================================
+        // HOST FUNCTIONS (for contract developers)
+        // ====================================================================
+        Commands::HostFunctions => {
+            let host_fns = serde_json::json!({
+                "host_functions": [
+                    {"name": "storage_read", "signature": "(key_ptr: u32, key_len: u32) -> u32", "category": "storage", "description": "Read a value from contract storage. Returns value length or 0 if not found."},
+                    {"name": "storage_read_result", "signature": "(buf_ptr: u32, buf_len: u32) -> u32", "category": "storage", "description": "Copy the last storage_read result into a buffer."},
+                    {"name": "storage_write", "signature": "(key_ptr: u32, key_len: u32, val_ptr: u32, val_len: u32)", "category": "storage", "description": "Write a key-value pair to contract storage."},
+                    {"name": "storage_delete", "signature": "(key_ptr: u32, key_len: u32)", "category": "storage", "description": "Delete a key from contract storage."},
+                    {"name": "log", "signature": "(msg_ptr: u32, msg_len: u32)", "category": "logging", "description": "Write a log message (visible in transaction logs)."},
+                    {"name": "emit_event", "signature": "(name_ptr: u32, name_len: u32, data_ptr: u32, data_len: u32)", "category": "logging", "description": "Emit a named event with data payload."},
+                    {"name": "get_timestamp", "signature": "() -> u64", "category": "chain", "description": "Get the current block timestamp (Unix seconds)."},
+                    {"name": "get_caller", "signature": "(buf_ptr: u32) -> u32", "category": "chain", "description": "Get the caller's 32-byte public key."},
+                    {"name": "get_contract_address", "signature": "(buf_ptr: u32) -> u32", "category": "chain", "description": "Get this contract's own 32-byte address."},
+                    {"name": "get_value", "signature": "() -> u64", "category": "chain", "description": "Get the MOLT value (shells) attached to this call."},
+                    {"name": "get_slot", "signature": "() -> u64", "category": "chain", "description": "Get the current block slot number."},
+                    {"name": "get_args_len", "signature": "() -> u32", "category": "arguments", "description": "Get the length of the call arguments in bytes."},
+                    {"name": "get_args", "signature": "(buf_ptr: u32, buf_len: u32) -> u32", "category": "arguments", "description": "Copy call arguments into a buffer."},
+                    {"name": "set_return_data", "signature": "(data_ptr: u32, data_len: u32)", "category": "arguments", "description": "Set the return data for this contract call."},
+                    {"name": "cross_contract_call", "signature": "(addr_ptr: u32, fn_ptr: u32, fn_len: u32, args_ptr: u32, args_len: u32, value: u64) -> i32", "category": "interop", "description": "Call another contract. Returns 0 on success, -1 on error."},
+                    {"name": "host_poseidon_hash", "signature": "(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32", "category": "crypto", "description": "Compute Poseidon hash (BN254 Fr) of two 32-byte field elements. ZK-friendly."}
+                ],
+                "sdk_crate": "moltchain-contract-sdk",
+                "compile_target": "wasm32-unknown-unknown",
+                "build_command": "cargo build --target wasm32-unknown-unknown --release"
+            });
+
+            if json_output {
+                print_json(&host_fns);
+            } else {
+                println!("🔧 WASM Host Functions (available in contracts)");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("SDK: moltchain-contract-sdk | Target: wasm32-unknown-unknown");
+                println!();
+                println!("  Storage (4):");
+                println!("    storage_read(key_ptr, key_len) -> u32");
+                println!("    storage_read_result(buf_ptr, buf_len) -> u32");
+                println!("    storage_write(key_ptr, key_len, val_ptr, val_len)");
+                println!("    storage_delete(key_ptr, key_len)");
+                println!();
+                println!("  Logging (2):");
+                println!("    log(msg_ptr, msg_len)");
+                println!("    emit_event(name_ptr, name_len, data_ptr, data_len)");
+                println!();
+                println!("  Chain Introspection (5):");
+                println!("    get_timestamp() -> u64");
+                println!("    get_caller(buf_ptr) -> u32");
+                println!("    get_contract_address(buf_ptr) -> u32");
+                println!("    get_value() -> u64");
+                println!("    get_slot() -> u64");
+                println!();
+                println!("  Arguments & Returns (3):");
+                println!("    get_args_len() -> u32");
+                println!("    get_args(buf_ptr, buf_len) -> u32");
+                println!("    set_return_data(data_ptr, data_len)");
+                println!();
+                println!("  Cross-Contract (1):");
+                println!("    cross_contract_call(addr, fn, fn_len, args, args_len, value) -> i32");
+                println!();
+                println!("  Cryptography (1):");
+                println!("    host_poseidon_hash(left_ptr, right_ptr, out_ptr) -> u32");
+            }
+        }
     }
 
     Ok(())
+}
+
+fn print_defi_stats(stats: &serde_json::Value) {
+    if let Some(obj) = stats.as_object() {
+        for (key, value) in obj {
+            let label = key.replace('_', " ");
+            if let Some(n) = value.as_u64() {
+                if n > 1_000_000_000 {
+                    println!("  {}: {:.4} MOLT", label, to_molt(n));
+                } else {
+                    println!("  {}: {}", label, n);
+                }
+            } else if let Some(f) = value.as_f64() {
+                println!("  {}: {:.4}", label, f);
+            } else if let Some(s) = value.as_str() {
+                println!("  {}: {}", label, s);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
