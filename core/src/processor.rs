@@ -1712,16 +1712,14 @@ impl TxProcessor {
                 }
             }
             if ix.program_id == CONTRACT_PROGRAM_ID {
-                if let Ok(contract_ix) = ContractInstruction::deserialize(&ix.data) {
-                    match contract_ix {
-                        ContractInstruction::Deploy { .. } => {
-                            premium = premium.saturating_add(fee_config.contract_deploy_fee)
-                        }
-                        ContractInstruction::Upgrade { .. } => {
-                            premium = premium.saturating_add(fee_config.contract_upgrade_fee)
-                        }
-                        _ => {}
-                    }
+                // Fast-path: peek at JSON tag without full deserialization to avoid
+                // re-parsing large WASM payloads. The serde_json enum encoding
+                // always starts with {"Deploy": or {"Upgrade": for premium instructions.
+                let data_str = std::str::from_utf8(&ix.data).unwrap_or("");
+                if data_str.starts_with("{\"Deploy\"") {
+                    premium = premium.saturating_add(fee_config.contract_deploy_fee);
+                } else if data_str.starts_with("{\"Upgrade\"") {
+                    premium = premium.saturating_add(fee_config.contract_upgrade_fee);
                 }
             }
         }

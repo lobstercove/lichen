@@ -873,14 +873,9 @@ impl RpcClient {
         match result {
             Ok(val) => {
                 if let Some(program) = val.get("program").and_then(|v| v.as_str()) {
-                    let bytes = hex::decode(program)
-                        .map_err(|e| anyhow::anyhow!("Invalid hex in symbol registry: {}", e))?;
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Ok(Some(Pubkey::new(arr)))
-                    } else {
-                        Ok(None)
+                    match Pubkey::from_base58(program) {
+                        Ok(pk) => Ok(Some(pk)),
+                        Err(_) => Ok(None),
                     }
                 } else {
                     Ok(None)

@@ -6844,30 +6844,42 @@ async fn handle_get_all_contracts(
             message: format!("Database error: {}", e),
         })?;
 
-    let registry_by_program: HashMap<Pubkey, (String, Option<String>, String)> = registry_entries
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.program,
-                (entry.symbol, entry.name, entry.owner.to_base58()),
-            )
-        })
-        .collect();
+    let registry_by_program: HashMap<Pubkey, (String, Option<String>, String, Option<String>)> =
+        registry_entries
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.program,
+                    (
+                        entry.symbol,
+                        entry.name,
+                        entry.owner.to_base58(),
+                        entry.template,
+                    ),
+                )
+            })
+            .collect();
 
     let contracts: Vec<serde_json::Value> = programs
         .iter()
         .map(|(pk, metadata)| {
-            let (symbol, name, owner) = registry_by_program
+            let (symbol, name, owner, template) = registry_by_program
                 .get(pk)
-                .map(|(symbol, name, owner)| {
-                    (Some(symbol.clone()), name.clone(), Some(owner.clone()))
+                .map(|(symbol, name, owner, template)| {
+                    (
+                        Some(symbol.clone()),
+                        name.clone(),
+                        Some(owner.clone()),
+                        template.clone(),
+                    )
                 })
-                .unwrap_or((None, None, None));
+                .unwrap_or((None, None, None, None));
             serde_json::json!({
                 "program_id": pk.to_base58(),
                 "symbol": symbol,
                 "name": name,
                 "owner": owner,
+                "template": template,
                 "metadata": metadata,
             })
         })
