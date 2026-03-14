@@ -11200,11 +11200,14 @@ async fn run_validator() {
                 }
             } => {
                 if let Some((step, round, _)) = timeout_handle.take() {
-                    let vs = validator_set.read().await;
-                    let pool = stake_pool.read().await;
-                    let action = bft.on_timeout(step, round, &vs, &pool);
-                    drop(pool);
-                    drop(vs);
+                    // CONSISTENCY FIX: Snapshot vs/pool ONCE so on_timeout and the
+                    // subsequent is_proposer check use identical state. Without this,
+                    // P2P tasks can modify validator_set between the two reads, causing
+                    // leader election disagreement (on_timeout sees N eligible, but
+                    // is_proposer sees M eligible → different leader → nobody proposes).
+                    let vs_snap = validator_set.read().await.clone();
+                    let pool_snap = stake_pool.read().await.clone();
+                    let action = bft.on_timeout(step, round, &vs_snap, &pool_snap);
                     execute_consensus_actions(
                         action,
                         &bft,
@@ -11230,11 +11233,11 @@ async fn run_validator() {
                     ).await;
 
                     // After timeout handling, if we moved to a new round's Propose step
-                    // and we're the proposer, build and propose a block
-                    if bft.step == RoundStep::Propose {
-                        let vs = validator_set.read().await;
-                        let pool = stake_pool.read().await;
-                        if bft.is_proposer(&vs, &pool, &parent_hash) {
+                    // and we're the proposer, build and propose a block.
+                    // Uses the SAME snapshot to guarantee consistent leader election.
+                    if bft.step == RoundStep::Propose
+                        && bft.is_proposer(&vs_snap, &pool_snap, &parent_hash)
+                    {
                             info!(
                                 "👑 BFT: We are proposer for height={} round={}",
                                 bft.height, bft.round
@@ -11252,9 +11255,7 @@ async fn run_validator() {
                             );
                             drop(mp);
                             block.sign(&validator_keypair);
-                            let proposal_action = bft.create_proposal(block, &vs, &pool);
-                            drop(pool);
-                            drop(vs);
+                            let proposal_action = bft.create_proposal(block, &vs_snap, &pool_snap);
                             execute_consensus_actions(
                                 proposal_action,
                                 &bft,
@@ -11278,10 +11279,6 @@ async fn run_validator() {
                                 slot_duration_ms,
                                 &validator_keypair,
                             ).await;
-                        } else {
-                            drop(pool);
-                            drop(vs);
-                        }
                     }
                 }
             }
