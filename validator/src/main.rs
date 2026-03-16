@@ -4939,60 +4939,48 @@ async fn run_validator() {
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();
-
-    // ────────────────────────────────────────────────────────────────
-    // SINGLE GENESIS INVARIANT
-    // ────────────────────────────────────────────────────────────────
-    // Rule: If ANY seed peers are known (from --bootstrap-peers,
-    // seeds.json, or cached peers), this node MUST join the existing
-    // network and sync genesis from it. Genesis creation ONLY happens
-    // when there are genuinely zero seeds — the very first validator
-    // bootstrapping a brand-new network with no peers configured.
-    //
-    // This makes it impossible for a second node to accidentally
-    // create its own genesis — as long as seeds.json or --bootstrap-peers
-    // is present (which it always will be after the first validator
-    // publishes its address), every subsequent node joins.
-    // ────────────────────────────────────────────────────────────────
+    let last_slot = state.get_last_slot().unwrap_or(0);
     let has_any_seed_peers =
         !explicit_seed_peers.is_empty() || !cached_peers.is_empty() || !seed_peers.is_empty();
 
-    let is_joining_network = if has_genesis_block {
-        if !explicit_seed_peers.is_empty() {
-            // Node was started with --bootstrap-peers. If it hasn't finished
-            // registering on-chain, the previous run was interrupted (e.g. by
-            // the watchdog). Re-enter joining mode so it goes through the full
-            // sync → snapshot → registration gate before starting BFT.
-            let join_complete = state
-                .get_metadata("join_complete")
-                .unwrap_or(None)
-                .is_some();
-            if join_complete {
-                info!("🔄 Resuming as registered validator (join previously completed)");
-                false
-            } else {
-                info!("🔄 Genesis found but join incomplete — re-entering join mode");
-                true
-            }
-        } else {
-            // No explicit bootstrap peers — genesis node resuming
-            false
-        }
-    } else if has_any_seed_peers {
-        // Seeds exist → this node MUST join the network, never create genesis
-        info!("🔄 Seed peers found — will sync genesis from the existing network");
+    // ────────────────────────────────────────────────────────────────
+    // STARTUP MODE: RESUME vs JOIN
+    // ────────────────────────────────────────────────────────────────
+    // How every blockchain works:
+    //   - State on disk (last_slot > 0)  → RESUME. Load state, start consensus.
+    //   - No state, seeds exist          → JOIN.   Sync from peers first.
+    //   - No state, no seeds             → ERROR.  Can't start.
+    //
+    // That's it. No metadata checks, no join_complete flags, no special
+    // cases for --bootstrap-peers on restart. If the node has blocks,
+    // it resumes from where it left off. Period.
+    // ────────────────────────────────────────────────────────────────
+    let is_joining_network = if last_slot > 0 || has_genesis_block {
+        // Node has state on disk — resume consensus.
         info!(
-            "   Sources: {} explicit, {} from seeds.json, {} cached",
+            "🔄 Resuming from slot {} (genesis: {})",
+            last_slot,
+            if has_genesis_block {
+                "present"
+            } else {
+                "missing"
+            }
+        );
+        false
+    } else if has_any_seed_peers {
+        // Fresh node with no state — join the existing network
+        info!("🔄 Fresh node — will sync from existing network");
+        info!(
+            "   Seeds: {} explicit, {} from seeds.json, {} cached",
             explicit_seed_peers.len(),
             seed_peers.len().saturating_sub(explicit_seed_peers.len()),
             cached_peers.len(),
         );
         true
     } else {
-        // No seeds at all → this is the very first validator on a new network
-        error!("❌ No genesis block found and no seed peers available.");
-        error!("   Run moltchain-genesis first to create the genesis database,");
-        error!("   or provide --bootstrap-peers / seeds.json to join an existing network.");
+        // No state, no seeds — can't start
+        error!("❌ No blocks on disk and no seed peers available.");
+        error!("   Run moltchain-genesis first, or provide --bootstrap-peers / seeds.json.");
         std::process::exit(1);
     };
 
