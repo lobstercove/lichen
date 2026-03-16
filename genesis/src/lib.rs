@@ -252,10 +252,10 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
         // Enrich token/wrapped contracts with MT-20 metadata
         match template {
             "token" => {
-                // MOLT native token: 1B fixed supply, 9 decimals, NOT mintable (deflationary via 50% fee burn)
-                meta["total_supply"] = serde_json::json!(1_000_000_000_u64 * 1_000_000_000_u64);
+                // MOLT native token: 500M initial supply, 9 decimals, mintable (inflationary via block rewards)
+                meta["total_supply"] = serde_json::json!(500_000_000_u64 * 1_000_000_000_u64);
                 meta["decimals"] = serde_json::json!(9);
-                meta["mintable"] = serde_json::json!(false);
+                meta["mintable"] = serde_json::json!(true);
                 meta["burnable"] = serde_json::json!(true);
                 meta["is_native"] = serde_json::json!(true);
                 // Cosmetic profile metadata — shown in explorer contract page

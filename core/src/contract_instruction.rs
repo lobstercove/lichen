@@ -39,6 +39,24 @@ pub enum ContractInstruction {
     /// Close contract and withdraw remaining balance
     /// Accounts: [owner (signer), contract (writable), destination (writable)]
     Close,
+
+    /// Set or update the upgrade timelock for a contract.
+    /// Once set, upgrades are staged for N epochs before execution.
+    /// Setting to 0 removes the timelock (instant upgrades again).
+    /// Accounts: [owner (signer), contract (writable)]
+    SetUpgradeTimelock {
+        /// Number of epochs to delay between submission and execution.
+        /// 0 removes the timelock.
+        epochs: u32,
+    },
+
+    /// Execute a previously staged upgrade after the timelock has expired.
+    /// Accounts: [owner (signer), contract (writable)]
+    ExecuteUpgrade,
+
+    /// Veto (cancel) a pending upgrade. Only the governance authority can veto.
+    /// Accounts: [governance_authority (signer), contract (writable)]
+    VetoUpgrade,
 }
 
 impl ContractInstruction {
@@ -74,6 +92,21 @@ impl ContractInstruction {
     /// Create close instruction
     pub fn close() -> Self {
         ContractInstruction::Close
+    }
+
+    /// Create set upgrade timelock instruction
+    pub fn set_upgrade_timelock(epochs: u32) -> Self {
+        ContractInstruction::SetUpgradeTimelock { epochs }
+    }
+
+    /// Create execute upgrade instruction
+    pub fn execute_upgrade() -> Self {
+        ContractInstruction::ExecuteUpgrade
+    }
+
+    /// Create veto upgrade instruction
+    pub fn veto_upgrade() -> Self {
+        ContractInstruction::VetoUpgrade
     }
 }
 

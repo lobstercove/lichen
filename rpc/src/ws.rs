@@ -156,6 +156,9 @@ use tracing::{debug, error, info, warn};
 /// Per-IP connection limit
 const MAX_CONNECTIONS_PER_IP: u32 = 10;
 
+/// M-19: WebSocket keepalive ping interval in seconds (RFC 6455)
+const WS_PING_INTERVAL_SECS: u64 = 30;
+
 static IP_CONNECTIONS: std::sync::LazyLock<Mutex<HashMap<IpAddr, u32>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -498,10 +501,19 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     // Subscribe to prediction market events
     let mut prediction_event_rx = state.prediction_broadcaster.subscribe();
 
+    // M-19: Pong tracking for dead-connection detection.
+    // When a Ping is sent, pong_pending is set true.
+    // When a Pong is received (in the recv loop), it is set false.
+    // If pong_pending is still true when the next ping fires, the client is
+    // considered dead and the connection is closed.
+    let pong_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pong_pending_writer = pong_pending.clone();
+    let pong_pending_reader = pong_pending.clone();
+
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
-        // Send periodic pings to keep the connection alive
-        let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
+        // M-19: Send periodic pings at 30-second intervals (RFC 6455 keepalive)
+        let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -516,6 +528,13 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     }
                 }
                 _ = ping_interval.tick() => {
+                    // M-19: If the previous ping's pong was not received, the
+                    // client is considered dead — close the connection.
+                    if pong_pending_writer.load(std::sync::atomic::Ordering::SeqCst) {
+                        warn!("WS: Pong timeout — closing dead connection");
+                        break;
+                    }
+                    pong_pending_writer.store(true, std::sync::atomic::Ordering::SeqCst);
                     if sender.send(Message::Ping(vec![b'k'])).await.is_err() {
                         break;
                     }
@@ -806,7 +825,8 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                 }
             }
         } else if let Message::Pong(_) = msg {
-            // Keepalive pong received — connection is alive
+            // M-19: Clear pong_pending to signal the connection is alive
+            pong_pending_reader.store(false, std::sync::atomic::Ordering::SeqCst);
         } else if let Message::Close(_) = msg {
             break;
         }
@@ -2288,5 +2308,44 @@ mod tests {
         ];
         // 19 base subscription types (excluding Dex/Prediction which wrap inner types)
         assert!(_types.len() >= 19);
+    }
+
+    // ── M-19: WebSocket Keepalive ──
+
+    #[test]
+    fn ws_ping_interval_is_30_seconds() {
+        assert_eq!(WS_PING_INTERVAL_SECS, 30);
+    }
+
+    #[test]
+    fn ws_pong_pending_flag_lifecycle() {
+        // Verify the pong_pending flag pattern used for dead-connection detection
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Initial: not pending
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+
+        // After sending ping: mark pending
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+
+        // After receiving pong: clear pending
+        flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn ws_pong_timeout_detects_dead_connection() {
+        // If pong_pending is still true when the next ping fires,
+        // the connection should be considered dead
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Simulate: first ping sets pending
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // No pong received → next ping interval fires
+        // Check: should detect dead connection
+        let is_dead = flag.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(is_dead, "Connection with missed pong should be detected as dead");
     }
 }

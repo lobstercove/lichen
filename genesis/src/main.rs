@@ -4,7 +4,9 @@
 //!   moltchain-genesis --network testnet --db-path /var/lib/moltchain/state-testnet
 //!   moltchain-genesis --network mainnet --db-path /var/lib/moltchain/state-mainnet
 
-use moltchain_core::consensus::{BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS, StakePool};
+use moltchain_core::consensus::{
+    StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
+};
 use moltchain_core::multisig::GovernedWalletConfig;
 use moltchain_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair, Message,
@@ -20,7 +22,7 @@ use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-const REWARD_POOL_MOLT: u64 = 100_000_000;
+const TREASURY_RESERVE_MOLT: u64 = 100_000_000;
 
 fn main() {
     // Initialize tracing
@@ -298,7 +300,7 @@ fn main() {
     }
 
     // Create genesis treasury account with full supply
-    let total_supply_molt = 1_000_000_000u64;
+    let total_supply_molt = 500_000_000u64;
     let mut genesis_account = Account::new(total_supply_molt, genesis_pubkey);
 
     if let Some(ref multisig) = wallet.multisig {
@@ -406,7 +408,7 @@ fn main() {
             );
         }
 
-        info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
+        info!("  ✓ Genesis distribution complete — 500M MOLT allocated per whitepaper");
 
         // Governed wallet configs for multi-sig spending
         {
@@ -550,7 +552,7 @@ fn main() {
     }
     // Legacy: single treasury (backward compat)
     else if let Some(treasury_pubkey) = wallet.treasury_pubkey {
-        let reward_pool_molt = REWARD_POOL_MOLT.min(1_000_000_000);
+        let reward_pool_molt = TREASURY_RESERVE_MOLT.min(1_000_000_000);
         let treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
         if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
             error!("Failed to store treasury account: {e}");
@@ -562,7 +564,7 @@ fn main() {
             "  ✓ Treasury account created: {}",
             treasury_pubkey.to_base58()
         );
-        info!("  ✓ Reward pool pending: {} MOLT", reward_pool_molt);
+        info!("  ✓ Treasury reserve pending: {} MOLT", reward_pool_molt);
 
         let reward_shells = Account::molt_to_shells(reward_pool_molt);
 
@@ -590,7 +592,7 @@ fn main() {
             error!("Failed to update treasury account balance: {e}");
         }
 
-        info!("  ✓ Reward pool funded via genesis transfer tx");
+        info!("  ✓ Treasury reserve funded via genesis transfer tx");
 
         // Legacy treasury transaction
         let mut data = Vec::with_capacity(9);
@@ -741,14 +743,24 @@ fn main() {
                 "publicKey": founding_pubkey.0.to_vec(),
                 "publicKeyBase58": founding_pubkey.to_base58(),
             });
-            match std::fs::write(&keypair_path, serde_json::to_string_pretty(&keypair_json).unwrap_or_default()) {
+            match std::fs::write(
+                &keypair_path,
+                serde_json::to_string_pretty(&keypair_json).unwrap_or_default(),
+            ) {
                 Ok(()) => {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(&keypair_path, std::fs::Permissions::from_mode(0o600)).ok();
+                        std::fs::set_permissions(
+                            &keypair_path,
+                            std::fs::Permissions::from_mode(0o600),
+                        )
+                        .ok();
                     }
-                    info!("  ✅ Founding validator keypair saved: {}", keypair_path.display());
+                    info!(
+                        "  ✅ Founding validator keypair saved: {}",
+                        keypair_path.display()
+                    );
                     info!("     Pubkey: {}", founding_pubkey.to_base58());
                 }
                 Err(e) => error!("  ❌ Failed to save founding validator keypair: {}", e),

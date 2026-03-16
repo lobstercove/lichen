@@ -156,8 +156,16 @@ pub struct Account {
     /// Is this account an executable program?
     pub executable: bool,
 
-    /// Rent epoch (not used yet, reserved for future)
+    /// Last epoch when rent was assessed
     pub rent_epoch: u64,
+
+    /// Whether this account is dormant (excluded from active state root)
+    #[serde(default)]
+    pub dormant: bool,
+
+    /// Consecutive epochs where rent could not be fully paid
+    #[serde(default)]
+    pub missed_rent_epochs: u64,
 }
 
 impl Account {
@@ -193,6 +201,8 @@ impl Account {
             owner,
             executable: false,
             rent_epoch: 0,
+            dormant: false,
+            missed_rent_epochs: 0,
         }
     }
 

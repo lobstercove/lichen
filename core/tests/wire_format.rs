@@ -25,6 +25,7 @@ fn make_test_transaction() -> Transaction {
     Transaction {
         signatures: vec![sig],
         message: Message::new(vec![ix], blockhash),
+        tx_type: Default::default(),
     }
 }
 
@@ -68,6 +69,15 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
 
     // recent_blockhash: Hash([u8; 32]) — newtype, bincode writes inner array flat
     out.extend_from_slice(&tx.message.recent_blockhash.0);
+
+    // tx_type: enum variant index as u32 LE (bincode default)
+    // Native = 0, Evm = 1, SolanaCompat = 2
+    let variant = match tx.tx_type {
+        moltchain_core::TransactionType::Native => 0u32,
+        moltchain_core::TransactionType::Evm => 1u32,
+        moltchain_core::TransactionType::SolanaCompat => 2u32,
+    };
+    out.extend_from_slice(&variant.to_le_bytes());
 
     out
 }
@@ -195,6 +205,7 @@ fn test_multiple_signatures() {
     let tx = Transaction {
         signatures: vec![sig1, sig2],
         message: Message::new(vec![ix], Hash::default()),
+        tx_type: Default::default(),
     };
 
     let bytes = bincode::serialize(&tx).unwrap();
@@ -218,6 +229,7 @@ fn test_empty_signatures() {
     let tx = Transaction {
         signatures: vec![],
         message: Message::new(vec![ix], Hash::default()),
+        tx_type: Default::default(),
     };
 
     let bytes = bincode::serialize(&tx).unwrap();
@@ -243,6 +255,7 @@ fn test_multiple_instructions() {
     let tx = Transaction {
         signatures: vec![[0xCCu8; 64]],
         message: Message::new(vec![ix1, ix2], Hash::new([0xDDu8; 32])),
+        tx_type: Default::default(),
     };
 
     let bytes = bincode::serialize(&tx).unwrap();
@@ -281,6 +294,8 @@ fn test_simulated_js_sdk_bytes_deserialize() {
     js_bytes.extend_from_slice(&data);
     // recent_blockhash
     js_bytes.extend_from_slice(&blockhash.0);
+    // tx_type: Native = variant 0 (u32 LE)
+    js_bytes.extend_from_slice(&0u32.to_le_bytes());
 
     // This must deserialize successfully
     let tx: Transaction =
@@ -319,4 +334,265 @@ fn test_json_backward_compat_hex_signatures() {
     let tx: Transaction = serde_json::from_str(&json).unwrap();
     assert_eq!(tx.signatures.len(), 1);
     assert_eq!(tx.signatures[0], [0xABu8; 64]);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// M-6: Wire-format envelope tests
+// ═══════════════════════════════════════════════════════════════════
+
+const MAX_TEST_LIMIT: u64 = 4 * 1024 * 1024;
+
+#[test]
+fn test_wire_envelope_round_trip_native() {
+    let tx = make_test_transaction();
+    let wire = tx.to_wire();
+
+    // Check envelope header
+    assert_eq!(&wire[0..2], &moltchain_core::TX_WIRE_MAGIC);
+    assert_eq!(wire[2], moltchain_core::TX_WIRE_VERSION);
+    assert_eq!(wire[3], 0); // Native = 0
+
+    // Round-trip
+    let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.signatures, tx.signatures);
+    assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
+    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Native);
+}
+
+#[test]
+fn test_wire_envelope_round_trip_evm() {
+    let ix = moltchain_core::Instruction {
+        program_id: Pubkey([0xEE; 32]),
+        accounts: vec![Pubkey([2; 32])],
+        data: vec![1, 2, 3],
+    };
+    let msg = moltchain_core::Message::new(vec![ix], Hash::default());
+    let tx = Transaction {
+        signatures: vec![[0x11; 64]],
+        message: msg,
+        tx_type: moltchain_core::TransactionType::Evm,
+    };
+    let wire = tx.to_wire();
+    assert_eq!(wire[3], 1); // Evm = 1
+
+    let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Evm);
+}
+
+#[test]
+fn test_wire_envelope_round_trip_solana_compat() {
+    let ix = moltchain_core::Instruction {
+        program_id: Pubkey([1; 32]),
+        accounts: vec![],
+        data: vec![],
+    };
+    let msg = moltchain_core::Message::new(vec![ix], Hash::default());
+    let tx = Transaction {
+        signatures: vec![[0xCC; 64]],
+        message: msg,
+        tx_type: moltchain_core::TransactionType::SolanaCompat,
+    };
+    let wire = tx.to_wire();
+    assert_eq!(wire[3], 2); // SolanaCompat = 2
+
+    let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::SolanaCompat);
+}
+
+#[test]
+fn test_wire_envelope_backward_compat_legacy_bincode() {
+    // Legacy format: raw bincode without envelope header
+    let tx = make_test_transaction();
+    let legacy = bincode::serialize(&tx).unwrap();
+
+    // First two bytes should NOT be the magic (they're the sig count u64 LE)
+    assert_ne!(&legacy[0..2], &moltchain_core::TX_WIRE_MAGIC);
+
+    // from_wire must still decode legacy bincode
+    let tx2 = Transaction::from_wire(&legacy, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.signatures, tx.signatures);
+    assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
+}
+
+#[test]
+fn test_wire_envelope_backward_compat_json() {
+    // Legacy JSON format: serde_json serialized Transaction
+    let tx = make_test_transaction();
+    let json_bytes = serde_json::to_vec(&tx).unwrap();
+
+    // from_wire must decode JSON too
+    let tx2 = Transaction::from_wire(&json_bytes, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.signatures, tx.signatures);
+    assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
+}
+
+#[test]
+fn test_wire_envelope_unsupported_version() {
+    let tx = make_test_transaction();
+    let mut wire = tx.to_wire();
+    wire[2] = 99; // bad version
+
+    let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Unsupported wire version"));
+}
+
+#[test]
+fn test_wire_envelope_unknown_type() {
+    let tx = make_test_transaction();
+    let mut wire = tx.to_wire();
+    wire[3] = 255; // unknown type
+
+    let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Unknown transaction type"));
+}
+
+#[test]
+fn test_wire_envelope_corrupt_payload() {
+    // Valid header but corrupt bincode payload
+    let mut wire = vec![0x4D, 0x54, 1, 0]; // magic + version 1 + Native
+    wire.extend_from_slice(&[0xFF; 32]); // garbage
+
+    let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_wire_envelope_too_short() {
+    // Less than 4-byte header but starts with magic
+    let wire = vec![0x4D, 0x54, 1]; // only 3 bytes
+    let result = Transaction::from_wire(&wire, MAX_TEST_LIMIT);
+    // Should fall through to legacy path (which also fails)
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_wire_envelope_type_overrides_payload() {
+    // Envelope says Evm, but payload was serialized as Native.
+    // Envelope type is authoritative.
+    let tx = make_test_transaction(); // Native
+    let payload = bincode::serialize(&tx).unwrap();
+    let mut wire = vec![0x4D, 0x54, 1, 1]; // magic + v1 + Evm
+    wire.extend_from_slice(&payload);
+
+    let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
+    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Evm);
+}
+
+#[test]
+fn test_wire_envelope_size_matches() {
+    let tx = make_test_transaction();
+    let legacy = bincode::serialize(&tx).unwrap();
+    let wire = tx.to_wire();
+
+    // Wire = 4 (header) + legacy bincode
+    assert_eq!(wire.len(), 4 + legacy.len());
+    assert_eq!(&wire[4..], &legacy[..]);
+}
+
+// ─── Task 4.1: Transaction Hash Determinism (H-7) ───────────────────
+
+#[test]
+fn test_hash_determinism_same_tx() {
+    let tx = make_test_transaction();
+    let h1 = tx.hash();
+    let h2 = tx.hash();
+    assert_eq!(h1, h2, "Same transaction must always produce the same hash");
+}
+
+#[test]
+fn test_hash_determinism_cloned_tx() {
+    let tx = make_test_transaction();
+    let tx2 = tx.clone();
+    assert_eq!(tx.hash(), tx2.hash(), "Cloned transaction must hash identically");
+}
+
+#[test]
+fn test_hash_determinism_reconstructed_tx() {
+    // Build the same transaction from scratch twice
+    let tx1 = make_test_transaction();
+    let tx2 = make_test_transaction();
+    assert_eq!(
+        tx1.hash(),
+        tx2.hash(),
+        "Independently constructed identical transactions must hash identically"
+    );
+}
+
+#[test]
+fn test_hash_includes_signatures() {
+    let tx1 = make_test_transaction();
+    let mut tx2 = make_test_transaction();
+    tx2.signatures = vec![[0xCDu8; 64]]; // different signature
+
+    assert_ne!(
+        tx1.hash(),
+        tx2.hash(),
+        "Transactions with different signatures must have different hashes"
+    );
+}
+
+#[test]
+fn test_message_hash_excludes_signatures() {
+    let tx1 = make_test_transaction();
+    let mut tx2 = make_test_transaction();
+    tx2.signatures = vec![[0xCDu8; 64]]; // different signature
+
+    assert_eq!(
+        tx1.message_hash(),
+        tx2.message_hash(),
+        "message_hash must be signature-independent"
+    );
+}
+
+#[test]
+fn test_message_hash_differs_from_tx_hash() {
+    let tx = make_test_transaction();
+    assert_ne!(
+        tx.hash(),
+        tx.message_hash(),
+        "tx hash (includes sigs) must differ from message hash (excludes sigs)"
+    );
+}
+
+#[test]
+fn test_hash_differs_with_different_message() {
+    let tx1 = make_test_transaction();
+    let mut tx2 = make_test_transaction();
+    tx2.message.recent_blockhash = Hash::new([0x01u8; 32]);
+
+    assert_ne!(tx1.hash(), tx2.hash());
+    assert_ne!(tx1.message_hash(), tx2.message_hash());
+}
+
+#[test]
+fn test_hash_signature_order_matters() {
+    let sig_a = [0xAAu8; 64];
+    let sig_b = [0xBBu8; 64];
+    let blockhash = Hash::new([0xFFu8; 32]);
+    let ix = Instruction {
+        program_id: Pubkey([1u8; 32]),
+        accounts: vec![Pubkey([2u8; 32])],
+        data: vec![1],
+    };
+
+    let tx1 = Transaction {
+        signatures: vec![sig_a, sig_b],
+        message: Message::new(vec![ix.clone()], blockhash),
+        tx_type: Default::default(),
+    };
+    let tx2 = Transaction {
+        signatures: vec![sig_b, sig_a],
+        message: Message::new(vec![ix], blockhash),
+        tx_type: Default::default(),
+    };
+
+    assert_ne!(
+        tx1.hash(),
+        tx2.hash(),
+        "Signature order must affect the transaction hash"
+    );
+    // But message hash is the same since message is identical
+    assert_eq!(tx1.message_hash(), tx2.message_hash());
 }

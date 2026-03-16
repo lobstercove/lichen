@@ -31,8 +31,8 @@ use moltchain_core::{
     RoundStep, SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
     ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
     BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE,
+    NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -69,10 +69,9 @@ use crate::consensus::{ConsensusAction, ConsensusEngine};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const LEGACY_CONTRACT_DEPLOY_FEE_SHELLS: u64 = 2_500_000_000;
-/// Validator rewards pool: 100M MOLT (10% of 1B supply).
-/// Reduced from 150M (15%) for sustainable treasury with 20% annual reward decay.
-/// The `.min(1_000_000_000)` cap in the legacy path is a safety guard.
-const REWARD_POOL_MOLT: u64 = 100_000_000; // 10% of 1B supply (in MOLT, not shells)
+/// Treasury reserve funded at genesis for bootstrap grants (50M MOLT = 10% of 500M genesis).
+/// Block rewards are now minted via the inflation curve, not debited from treasury.
+const TREASURY_RESERVE_MOLT: u64 = 50_000_000;
 
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
@@ -2136,6 +2135,30 @@ fn emit_program_and_nft_events(
                                 });
                             }
                         }
+                        ContractInstruction::SetUpgradeTimelock { .. } => {
+                            if let Some(program) = ix.accounts.get(1) {
+                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                    program: *program,
+                                    kind: "set_timelock".to_string(),
+                                });
+                            }
+                        }
+                        ContractInstruction::ExecuteUpgrade => {
+                            if let Some(program) = ix.accounts.get(1) {
+                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                    program: *program,
+                                    kind: "execute_upgrade".to_string(),
+                                });
+                            }
+                        }
+                        ContractInstruction::VetoUpgrade => {
+                            if let Some(program) = ix.accounts.get(1) {
+                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                    program: *program,
+                                    kind: "veto_upgrade".to_string(),
+                                });
+                            }
+                        }
                         ContractInstruction::Call { function, args, .. } => {
                             if let Some(program) = ix.accounts.get(1) {
                                 let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramCall {
@@ -2618,6 +2641,58 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
 /// The producing validator already executed these transactions; receivers
 /// must replay them so that fee charges and balance mutations are applied
 /// identically, preventing state divergence across the network.
+/// Compute BFT timestamp for a new block proposal.
+///
+/// Looks up the parent block from state and computes the stake-weighted
+/// median of its commit vote timestamps (CometBFT BFT Time model).
+/// Falls back to wall-clock time if the parent has no commit signatures
+/// (genesis or first blocks before BFT activation).
+fn compute_proposed_timestamp(
+    state: &StateStore,
+    parent_hash: &Hash,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Option<u64> {
+    // Find parent block by hash
+    let parent_slot = match state.get_last_slot() {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    // Search recent blocks for the parent
+    let parent_block = if parent_slot == 0 {
+        state.get_block_by_slot(0).ok().flatten()
+    } else {
+        // The parent is at parent_slot (tip)
+        let block = state.get_block_by_slot(parent_slot).ok().flatten();
+        match block {
+            Some(b) if b.hash() == *parent_hash => Some(b),
+            _ => None,
+        }
+    };
+
+    let parent = parent_block?;
+
+    if parent.commit_signatures.is_empty() {
+        return None;
+    }
+
+    let bft_ts = moltchain_core::compute_bft_timestamp(
+        &parent.commit_signatures,
+        validator_set,
+        stake_pool,
+        Some(parent.header.timestamp),
+    )?;
+
+    // Clamp BFT timestamp to wall-clock + 1s to prevent future-drift blocks.
+    // Validators with skewed clocks can push the weighted median ahead of real
+    // time, which confuses explorers and time-dependent contract logic.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Some(bft_ts.min(now + 1))
+}
+
 /// Genesis-block transactions (slot 0) are created with special
 /// signatures and a zero blockhash, so they cannot pass the normal
 /// validation pipeline — the genesis state was applied directly.
@@ -2672,18 +2747,6 @@ async fn revert_block_effects(
     // TOCTOU races from concurrent revert/apply operations.
     let old_producer = Pubkey(old_block.header.validator);
     let slot = old_block.header.slot;
-    let is_heartbeat = !block_has_user_transactions(old_block);
-
-    let reward = {
-        // Use oracle-adjusted rewards (same logic as apply_block_effects)
-        let reward_config = moltchain_core::consensus::RewardConfig::new();
-        let molt_price = moltchain_core::consensus::molt_price_from_state(state);
-        if is_heartbeat {
-            reward_config.get_adjusted_heartbeat_reward(molt_price)
-        } else {
-            reward_config.get_adjusted_transaction_reward(molt_price)
-        }
-    };
 
     // Phase 1: Read all needed state
     let treasury_pubkey = match state.get_treasury_pubkey() {
@@ -2710,16 +2773,10 @@ async fn revert_block_effects(
         }
     };
 
-    // Phase 2a: Compute reward reversal
-    let reward_debit = reward.min(producer_account.spendable);
-    if reward_debit > 0 {
-        producer_account.shells = producer_account.shells.saturating_sub(reward_debit);
-        producer_account.spendable = producer_account.spendable.saturating_sub(reward_debit);
-        treasury_account.shells = treasury_account.shells.saturating_add(reward_debit);
-        treasury_account.spendable = treasury_account.spendable.saturating_add(reward_debit);
-    }
+    // NOTE: No per-slot inflation reward reversal needed — inflation is now
+    // distributed at epoch boundaries, not per-block. Only fee reversal applies.
 
-    // Phase 2b: Compute fee reversal
+    // Compute fee reversal — fees are still treasury-sourced
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
@@ -2974,6 +3031,8 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                     owner: SYSTEM_ACCOUNT_OWNER,
                                     executable: false,
                                     rent_epoch: 0,
+                                    dormant: false,
+                                    missed_rent_epochs: 0,
                                 };
                                 restore_accounts.push((*acct_key, zeroed));
                             }
@@ -3180,10 +3239,11 @@ async fn apply_block_effects(
         }
     }
 
-    // ── Protocol-level block reward (coinbase) ──────────────────────────
-    // This is a consensus rule, not a transaction. Every validator
-    // deterministically applies the same reward when processing any block.
-    // No treasury private key needed — the protocol itself authorizes it.
+    // ── Protocol-level epoch rewards (Solana model) ───────────────────
+    // Inflation is NOT distributed per-slot. Instead, at each epoch boundary,
+    // the total epoch mint is computed and distributed to ALL active stakers
+    // proportionally by stake weight. Block producers still earn tx fees per-block.
+    // Every validator deterministically applies the same rewards.
     let block_hash = block.hash();
     if !skip_rewards && !reward_already {
         // Write the reward distribution guard hash FIRST, before any account
@@ -3198,168 +3258,121 @@ async fn apply_block_effects(
             );
         }
 
-        // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
-        let reward_config = moltchain_core::consensus::RewardConfig::new();
-        let molt_price = moltchain_core::consensus::molt_price_from_state(state);
-        let reward_total = if is_heartbeat {
-            reward_config.get_adjusted_heartbeat_reward(molt_price)
-        } else {
-            reward_config.get_adjusted_transaction_reward(molt_price)
-        };
+        // Compute total supply for inflation curve: genesis + minted - burned
+        let total_supply = GENESIS_SUPPLY_SHELLS
+            .saturating_add(state.get_total_minted().unwrap_or(0))
+            .saturating_sub(state.get_total_burned().unwrap_or(0));
 
-        // 1. Check treasury can afford the reward BEFORE updating StakePool
-        let treasury_pubkey = state.get_treasury_pubkey().ok().flatten();
-        let can_afford = if let Some(ref tpk) = treasury_pubkey {
-            state
-                .get_account(tpk)
-                .ok()
-                .flatten()
-                .map(|a| a.shells >= reward_total)
-                .unwrap_or(false)
-        } else {
-            false
-        };
-
-        if !can_afford {
-            if let Some(ref tpk) = treasury_pubkey {
-                let bal = state
-                    .get_account(tpk)
-                    .ok()
-                    .flatten()
-                    .map(|a| a.shells)
-                    .unwrap_or(0);
+        // ── Per-block: record block production (no per-slot inflation) ──
+        // Inflation is distributed at epoch boundaries to ALL stakers proportionally.
+        // Block producers still earn transaction fees per-block (below).
+        {
+            let mut pool = stake_pool.write().await;
+            // distribute_block_reward now only updates last_reward_slot (returns 0)
+            pool.distribute_block_reward(&producer, slot, is_heartbeat, total_supply);
+            pool.record_block_produced(&producer);
+            let pool_snapshot = pool.clone();
+            drop(pool);
+            if let Err(e) = state.put_stake_pool(&pool_snapshot) {
                 warn!(
-                    "⚠️  Treasury balance {} < reward {}, skipping protocol reward",
-                    bal, reward_total
+                    "⚠️  Failed to persist stake pool block-production update: {}",
+                    e
                 );
             }
-        } else {
-            // 2. Update StakePool (tracks rewards, vesting, bootstrap debt)
-            let (liquid, debt_payment, reward) = {
+        }
+
+        // ── Epoch boundary: distribute inflation to ALL stakers proportionally ──
+        // At the start of each new epoch, mint the previous epoch's inflation
+        // and distribute to every active staker by stake weight, routed through
+        // the vesting pipeline (bootstrap debt repayment).
+        if moltchain_core::is_epoch_boundary(slot) && slot > 0 {
+            let completed_epoch_start = moltchain_core::epoch_start_slot(
+                moltchain_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+            );
+            let (total_minted, distributions) = {
                 let mut pool = stake_pool.write().await;
-                let is_active = pool
-                    .get_stake(&producer)
-                    .map(|info| info.is_active)
-                    .unwrap_or(false);
-                if !is_active {
-                    (0u64, 0u64, 0u64)
-                } else {
-                    let reward = pool.distribute_block_reward(&producer, slot, is_heartbeat);
-                    pool.record_block_produced(&producer);
-                    let (liquid, debt_payment) = pool.claim_rewards(&producer, slot);
-                    // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
-                    let pool_snapshot = pool.clone();
-                    drop(pool);
-                    if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                        warn!("⚠️  Failed to persist stake pool reward update: {}", e);
-                    }
-                    (liquid, debt_payment, reward)
+                let result =
+                    pool.distribute_epoch_staker_rewards(completed_epoch_start, total_supply);
+                let pool_snapshot = pool.clone();
+                drop(pool);
+                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                    warn!(
+                        "⚠️  Failed to persist stake pool epoch reward update: {}",
+                        e
+                    );
                 }
+                result
             };
 
-            // 3. Protocol-level balance transfer: treasury → producer
-            if reward > 0 {
-                if let Some(ref treasury_pubkey) = treasury_pubkey {
-                    let mut treasury_account = state
-                        .get_account(treasury_pubkey)
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-
-                    // Debit treasury: only the liquid portion leaves treasury
-                    // Debt repayment is internal bookkeeping (reclassifies existing stake)
-                    // H12 fix: when liquid==0, no treasury debit or producer credit needed
-                    let debit_amount = liquid;
-                    treasury_account.shells = treasury_account.shells.saturating_sub(debit_amount);
-                    treasury_account.spendable =
-                        treasury_account.spendable.saturating_sub(debit_amount);
-
-                    // Credit producer: only liquid portion to spendable
-                    // During vesting: 50% liquid to spendable, 50% debt repayment (no new coins)
-                    // Fully vested: 100% liquid
-                    // H12 fix: when liquid==0, credit nothing (was falling through to reward_total)
-                    let credit_amount = liquid;
-                    let mut producer_account = state
-                        .get_account(&producer)
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-                    producer_account
-                        .add_spendable(credit_amount)
-                        .unwrap_or_else(|e| {
+            if total_minted > 0 {
+                // Credit each validator's liquid reward to their on-chain account
+                let mut mint_pairs: Vec<(Pubkey, Account)> = Vec::new();
+                for (validator_pk, _reward, liquid, _debt_payment) in &distributions {
+                    if *liquid > 0 {
+                        let mut account = state
+                            .get_account(validator_pk)
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                        account.add_spendable(*liquid).unwrap_or_else(|e| {
                             warn!(
-                                "\u{26a0}\u{fe0f}  Overflow crediting producer block reward: {}",
-                                e
+                                "⚠️  Overflow crediting epoch reward to {}: {}",
+                                validator_pk, e
                             );
                         });
-
-                    // L4-01 fix: treasury debit + producer credit in single atomic WriteBatch
-                    if let Err(e) = state.atomic_put_accounts(
-                        &[
-                            (treasury_pubkey, &treasury_account),
-                            (&producer, &producer_account),
-                        ],
-                        0,
-                    ) {
-                        warn!(
-                            "⚠️  Failed to persist block reward (treasury→producer): {}",
-                            e
-                        );
+                        mint_pairs.push((*validator_pk, account));
                     }
                 }
 
-                let reward_type = if is_heartbeat {
-                    "heartbeat"
-                } else {
-                    "transaction"
-                };
+                // Build reference slice for atomic_mint_accounts
+                let refs: Vec<(&Pubkey, &Account)> =
+                    mint_pairs.iter().map(|(pk, acc)| (pk, acc)).collect();
+                if let Err(e) = state.atomic_mint_accounts(&refs, total_minted) {
+                    warn!("⚠️  Failed to persist epoch staker rewards: {}", e);
+                }
+
+                let epoch = moltchain_core::consensus::slot_to_epoch(slot);
                 info!(
-                    "💰 Block reward: {:.3} MOLT ({}) | liquid {:.3}, debt {:.3}",
-                    reward as f64 / 1_000_000_000.0,
-                    reward_type,
-                    liquid as f64 / 1_000_000_000.0,
-                    debt_payment as f64 / 1_000_000_000.0,
+                    "🏛️  Epoch {} rewards: minted {:.3} MOLT to {} stakers",
+                    epoch.saturating_sub(1),
+                    total_minted as f64 / 1_000_000_000.0,
+                    distributions.len(),
                 );
+                for (pk, reward, liquid, debt) in &distributions {
+                    debug!(
+                        "  └─ {} : reward {:.6}, liquid {:.6}, debt {:.6}",
+                        pk,
+                        *reward as f64 / 1_000_000_000.0,
+                        *liquid as f64 / 1_000_000_000.0,
+                        *debt as f64 / 1_000_000_000.0,
+                    );
+                }
 
                 // ── ReefStake liquid staking reward distribution ──
-                // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of each block
-                // reward to the ReefStake pool, funding stMOLT yield.
-                let reef_share = (reward_total as u128
+                // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
+                // to the ReefStake pool, funding stMOLT yield.
+                let epoch_mint =
+                    moltchain_core::compute_epoch_mint(completed_epoch_start, total_supply);
+                let reef_share = (epoch_mint as u128
                     * moltchain_core::REEFSTAKE_BLOCK_SHARE_BPS as u128
                     / 10_000) as u64;
                 if reef_share > 0 {
                     match state.get_reefstake_pool() {
                         Ok(mut reef_pool) => {
                             if reef_pool.st_molt_token.total_supply > 0 {
-                                // AUDIT-FIX E-6: Re-read treasury from state to get the
-                                // post-block-reward-debit balance. The re-read is safe because
-                                // atomic_put_accounts above writes directly to RocksDB.
-                                if let Some(ref tpk) = treasury_pubkey {
-                                    let mut t_acct =
-                                        state.get_account(tpk).ok().flatten().unwrap_or_else(
-                                            || Account::new(0, SYSTEM_ACCOUNT_OWNER),
-                                        );
-                                    if t_acct.shells >= reef_share {
-                                        t_acct.shells = t_acct.shells.saturating_sub(reef_share);
-                                        t_acct.spendable =
-                                            t_acct.spendable.saturating_sub(reef_share);
-                                        reef_pool.distribute_rewards(reef_share);
-                                        // L4-01 fix: treasury debit + pool update in single atomic WriteBatch
-                                        if let Err(e) = state.atomic_put_account_with_reefstake(
-                                            tpk, &t_acct, &reef_pool,
-                                        ) {
-                                            warn!(
-                                                "⚠️  Failed to persist ReefStake distribution: {}",
-                                                e
-                                            );
-                                        } else {
-                                            debug!(
-                                                    "🌊 ReefStake: distributed {:.6} MOLT to {} stakers",
-                                                    reef_share as f64 / 1_000_000_000.0,
-                                                    reef_pool.positions.len(),
-                                                );
-                                        }
-                                    }
+                                reef_pool.distribute_rewards(reef_share);
+                                if let Err(e) = state.atomic_mint_reefstake(&reef_pool, reef_share)
+                                {
+                                    warn!(
+                                        "⚠️  Failed to persist ReefStake epoch distribution: {}",
+                                        e
+                                    );
+                                } else {
+                                    debug!(
+                                        "🌊 ReefStake: minted {:.6} MOLT to {} stakers (epoch)",
+                                        reef_share as f64 / 1_000_000_000.0,
+                                        reef_pool.positions.len(),
+                                    );
                                 }
                             }
                         }
@@ -3367,6 +3380,21 @@ async fn apply_block_effects(
                             warn!("⚠️  Failed to load ReefStake pool: {}", e);
                         }
                     }
+                }
+            }
+
+            // ── Apply pending governance parameter changes at epoch boundary ──
+            match state.apply_pending_governance_changes() {
+                Ok(0) => {} // No pending changes
+                Ok(n) => {
+                    let epoch = moltchain_core::consensus::slot_to_epoch(slot);
+                    info!(
+                        "🏛️  Epoch {} governance: applied {} parameter change(s)",
+                        epoch, n,
+                    );
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to apply governance parameter changes: {}", e);
                 }
             }
         }
@@ -5186,8 +5214,8 @@ async fn run_validator() {
             // 3. Create treasury account
             let mut treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
 
-            // 4. Fund treasury from genesis account (transfer REWARD_POOL)
-            let reward_shells = Account::molt_to_shells(REWARD_POOL_MOLT.min(1_000_000_000));
+            // 4. Fund treasury from genesis account (treasury reserve for bootstrap grants)
+            let reward_shells = Account::molt_to_shells(TREASURY_RESERVE_MOLT.min(1_000_000_000));
             if let Some(genesis_pk) = genesis_wallet.as_ref().map(|w| w.pubkey) {
                 if let Ok(Some(mut genesis_acct)) = state.get_account(&genesis_pk) {
                     if genesis_acct.spendable >= reward_shells {
@@ -5198,8 +5226,8 @@ async fn run_validator() {
                         treasury_account.spendable = reward_shells;
                         state.put_account(&genesis_pk, &genesis_acct).ok();
                         info!(
-                            "  ✓ Funded treasury with {} MOLT from genesis",
-                            REWARD_POOL_MOLT
+                            "  ✓ Funded treasury with {} MOLT from genesis (bootstrap reserve)",
+                            TREASURY_RESERVE_MOLT
                         );
                     } else {
                         warn!(
@@ -5887,6 +5915,8 @@ async fn run_validator() {
                                     owner: Pubkey([0x01; 32]),
                                     executable: false,
                                     rent_epoch: 0,
+                                    dormant: false,
+                                    missed_rent_epochs: 0,
                                 });
                             acct.shells = acct.shells.saturating_add(grant);
                             acct.staked = acct.staked.saturating_add(grant);
@@ -6632,7 +6662,7 @@ async fn run_validator() {
 
                         if let Some(gpk) = extracted_genesis_pubkey {
                             // 4. Process all distribution transfers from genesis block
-                            let total_supply_molt = 1_000_000_000u64;
+                            let total_supply_molt = 500_000_000u64;
                             let total_shells = Account::molt_to_shells(total_supply_molt);
                             let mut total_distributed_shells = 0u64;
 
@@ -7619,19 +7649,12 @@ async fn run_validator() {
 
         // Start incoming transaction handler
         let mempool_for_txs = mempool.clone();
-        let state_for_p2p_txs = state.clone();
         tokio::spawn(async move {
             info!("🔄 Transaction receiver started");
             while let Some(tx) = transaction_rx.recv().await {
                 info!("📥 Received transaction from P2P");
                 // AUDIT-FIX 1.6: Validate transaction before adding to mempool
                 // 1. Verify all required signatures (first account of each instruction)
-                let sender_pubkey = tx
-                    .message
-                    .instructions
-                    .first()
-                    .and_then(|ix| ix.accounts.first())
-                    .copied();
                 if !validate_p2p_transaction_signatures(&tx) {
                     info!("❌ P2P transaction rejected: invalid or missing signature");
                     continue;
@@ -7641,17 +7664,12 @@ async fn run_validator() {
                     info!("❌ P2P transaction rejected: {}", e);
                     continue;
                 }
-                // AUDIT-FIX V5.3: Look up on-chain MoltyID reputation
-                // so express-lane priority works for P2P-received transactions.
+                // M-8 FIX: No reputation lookup needed — mempool uses fee-only ordering.
                 // Do not reject based on local account balance here: peers can be
                 // briefly behind in state sync, and strict pre-checks cause mempool
                 // imbalance (one validator receives TXs, others drop them).
-                let reputation = sender_pubkey
-                    .as_ref()
-                    .and_then(|pk| state_for_p2p_txs.get_reputation(pk).ok())
-                    .unwrap_or(0);
                 let mut pool = mempool_for_txs.lock().await;
-                if let Err(e) = pool.add_transaction(tx, BASE_FEE, reputation) {
+                if let Err(e) = pool.add_transaction(tx, BASE_FEE, 0) {
                     info!("Mempool: {}", e);
                 }
             }
@@ -9208,7 +9226,6 @@ async fn run_validator() {
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();
-    let state_for_rpc_lookup = state.clone(); // AUDIT-FIX V5.2: reputation lookup
     let p2p_peer_manager_for_txs = p2p_peer_manager.clone();
     let p2p_config_for_txs = p2p_config.clone();
     tokio::spawn(async move {
@@ -9237,15 +9254,8 @@ async fn run_validator() {
                 continue;
             }
 
-            // AUDIT-FIX V5.2: Look up on-chain MoltyID reputation so
-            // high-reputation agents get express-lane mempool priority.
-            let reputation = tx
-                .message
-                .instructions
-                .first()
-                .and_then(|ix| ix.accounts.first())
-                .and_then(|sender| state_for_rpc_lookup.get_reputation(sender).ok())
-                .unwrap_or(0);
+            // M-8 FIX: No reputation lookup needed — mempool uses fee-only ordering.
+            let reputation = 0u64;
 
             // Add to mempool
             {
@@ -9929,6 +9939,7 @@ async fn run_validator() {
                             transactions,
                             tx_fees_paid: cb.tx_fees_paid,
                             oracle_prices: cb.oracle_prices,
+                            commit_signatures: cb.commit_signatures,
                         };
                         info!(
                             "📦 Compact block slot {} fully reconstructed from mempool ({} txs)",
@@ -10291,6 +10302,11 @@ async fn run_validator() {
                 bootstrap_rpc_url
             );
 
+            let http_client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("Failed to build HTTP client");
+
             // ────────────────────────────────────────────────────────
             // WAIT FOR SYNC — a validator MUST be fully synced before
             // registering.  This is how every other blockchain works:
@@ -10299,7 +10315,9 @@ async fn run_validator() {
             // Solana syncs snapshots → then creates vote account.
             // We sync all blocks → then send RegisterValidator tx.
             // ────────────────────────────────────────────────────────
+
             info!("⏳ Waiting for chain sync to complete before registering...");
+            let sync_wait_start = std::time::Instant::now();
             loop {
                 let current_slot = state_for_register.get_last_slot().unwrap_or(0);
                 let phase = sync_mgr_for_register.get_sync_phase().await;
@@ -10317,6 +10335,40 @@ async fn run_validator() {
                         current_slot
                     );
                     break;
+                }
+                // Fallback: query bootstrap peer's RPC for its slot.
+                // This handles the case where external seed peers advertise
+                // much higher slots (different network), polluting highest_seen_slot.
+                // If we're within 5 slots of our bootstrap peer, we're synced enough.
+                if current_slot > 0 && sync_wait_start.elapsed() > Duration::from_secs(30) {
+                    if let Ok(resp) = http_client
+                        .post(&bootstrap_rpc_url)
+                        .json(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getSlot",
+                            "params": []
+                        }))
+                        .send()
+                        .await
+                    {
+                        if let Ok(body) = resp.json::<serde_json::Value>().await {
+                            if let Some(bootstrap_slot) = body["result"].as_u64() {
+                                if current_slot + 5 >= bootstrap_slot {
+                                    info!(
+                                        "✅ Caught up with bootstrap peer (local={}, bootstrap={}) — proceeding with registration",
+                                        current_slot, bootstrap_slot
+                                    );
+                                    break;
+                                } else {
+                                    info!(
+                                        "⏳ Syncing to bootstrap peer: slot {} / {}",
+                                        current_slot, bootstrap_slot
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 // Log progress every 10s
                 let highest = sync_mgr_for_register.get_highest_seen().await;
@@ -10343,10 +10395,6 @@ async fn run_validator() {
                 return;
             }
 
-            let http_client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .expect("Failed to build HTTP client");
             let register_kp = Keypair::from_seed(&register_keypair_seed);
 
             // Helper: check local state for registration
@@ -10515,17 +10563,7 @@ async fn run_validator() {
                 let sig = register_kp.sign(&tx.message.serialize());
                 tx.signatures.push(sig);
 
-                let tx_bytes = match bincode::serialize(&tx) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!(
-                            "⚠️  Failed to serialize tx: {} — retrying ({}/3)",
-                            e, attempt
-                        );
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                };
+                let tx_bytes = tx.to_wire();
                 use base64::{engine::general_purpose, Engine as _};
                 let tx_b64 = general_purpose::STANDARD.encode(&tx_bytes);
 
@@ -10830,6 +10868,7 @@ async fn run_validator() {
             );
             let mut mp = mempool.lock().await;
             let oracle_snapshot = shared_oracle_prices.snapshot();
+            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
             let (mut block, _processed_hashes) = block_producer::build_block(
                 &state,
                 &mut mp,
@@ -10838,6 +10877,7 @@ async fn run_validator() {
                 parent_hash,
                 &validator_pubkey,
                 oracle_snapshot,
+                bft_ts,
             );
             drop(mp);
             block.sign(&validator_keypair);
@@ -10919,6 +10959,7 @@ async fn run_validator() {
                 info!("👑 BFT: We are proposer for height={} round=0", new_height);
                 let mut mp = mempool.lock().await;
                 let oracle_snapshot = shared_oracle_prices.snapshot();
+                let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
                 let (mut block, _) = block_producer::build_block(
                     &state,
                     &mut mp,
@@ -10927,6 +10968,7 @@ async fn run_validator() {
                     parent_hash,
                     &validator_pubkey,
                     oracle_snapshot,
+                    bft_ts,
                 );
                 drop(mp);
                 block.sign(&validator_keypair);
@@ -11133,6 +11175,7 @@ async fn run_validator() {
                         );
                         let mut mp = mempool.lock().await;
                         let oracle_snapshot = shared_oracle_prices.snapshot();
+                        let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
                         let (mut block, _) = block_producer::build_block(
                             &state,
                             &mut mp,
@@ -11141,6 +11184,7 @@ async fn run_validator() {
                             parent_hash,
                             &validator_pubkey,
                             oracle_snapshot,
+                            bft_ts,
                         );
                         drop(mp);
                         block.sign(&validator_keypair);
@@ -11244,6 +11288,7 @@ async fn run_validator() {
                             );
                             let mut mp = mempool.lock().await;
                             let oracle_snapshot = shared_oracle_prices.snapshot();
+                            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs_snap, &pool_snap);
                             let (mut block, _) = block_producer::build_block(
                                 &state,
                                 &mut mp,
@@ -11252,6 +11297,7 @@ async fn run_validator() {
                                 parent_hash,
                                 &validator_pubkey,
                                 oracle_snapshot,
+                                bft_ts,
                             );
                             drop(mp);
                             block.sign(&validator_keypair);
@@ -11722,6 +11768,7 @@ mod tests {
                 }],
                 recent_blockhash: Hash([0u8; 32]),
             },
+            tx_type: Default::default(),
         }
     }
 
@@ -11732,6 +11779,7 @@ mod tests {
                 instructions: vec![],
                 recent_blockhash: Hash([0u8; 32]),
             },
+            tx_type: Default::default(),
         }
     }
 
@@ -11749,6 +11797,7 @@ mod tests {
             transactions: txs,
             tx_fees_paid: vec![],
             oracle_prices: vec![],
+            commit_signatures: vec![],
         }
     }
 
@@ -11929,8 +11978,8 @@ mod tests {
     // ── constants sanity ────────────────────────────────────────────
 
     #[test]
-    fn reward_pool_is_100m() {
-        assert_eq!(REWARD_POOL_MOLT, 100_000_000);
+    fn treasury_reserve_is_50m() {
+        assert_eq!(TREASURY_RESERVE_MOLT, 50_000_000);
     }
 
     #[test]

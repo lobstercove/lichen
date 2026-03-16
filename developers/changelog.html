@@ -79,6 +79,105 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.3.7 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.3.7</span>
+                    <span class="changelog-date">March 18, 2026</span>
+                </div>
+                <h3 class="changelog-title">Blockchain Alignment Phases 3 &amp; 4 &mdash; Archive Mode, Oracle
+                    Attestation, EVM Precompiles, Hash Determinism &amp; More</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li><strong>Archive Mode &amp; Historical State Queries</strong> &mdash; new
+                            <code>getAccountAtSlot</code> RPC method returns account state at any past slot.
+                            Write-through snapshots stored in dedicated <code>CF_ACCOUNT_SNAPSHOTS</code> column family
+                            with pruning support (Task 3.9, M-16)</li>
+                        <li><strong>Wire Envelope Format (Payload Type Envelope)</strong> &mdash; transactions now use a
+                            4-byte header (<code>[0x4D, 0x54, version, type]</code>) followed by bincode payload.
+                            Three-format decoder supports V1 envelope, legacy bincode, and JSON for full backward
+                            compatibility. Centralized <code>decode_transaction_bytes()</code> replaces 7+ first-byte
+                            heuristic decode sites across RPC (Task 3.10, M-6)</li>
+                        <li><strong>TOFU Certificate Rotation</strong> &mdash; new <code>CertRotation</code> P2P gossip
+                            message allows validators to rotate TLS certificates without losing peer trust. Validated
+                            via old-fingerprint match, cert verification, FP/cert consistency check, and 1-hour rate
+                            limit. Successful rotations re-gossipped to all peers (Task 3.11, M-9)</li>
+                        <li><strong>Eclipse Defense (AS-Level)</strong> &mdash; /16 IPv4 and /32 IPv6 prefix bucketing
+                            limits peers per autonomous-system bucket to 4, preventing hosting-provider-level eclipse
+                            attacks. Zero external dependencies (Task 3.12, M-10)</li>
+                        <li><strong>Oracle Multi-Source Attestation</strong> &mdash; validators submit signed price
+                            attestations via system instruction 30; consensus prices derived from BFT-weighted medians
+                            stored in <code>CF_STATS</code> (Task 3.6, M-17)</li>
+                        <li><strong>EVM Precompiles &amp; eth_getLogs</strong> &mdash; 9 standard precompiles
+                            (ecRecover, SHA-256, RIPEMD-160, identity, modexp, ecAdd, ecMul, ecPairing, blake2f) plus
+                            two-phase <code>eth_getLogs</code> with topic/address filtering per EIP-1474 (Task 3.4,
+                            M-12)</li>
+                        <li><strong>Contract Upgrade Governance (Timelock)</strong> &mdash; upgrade proposals require
+                            governance approval with configurable timelock delay before execution (Task 3.3, M-14)</li>
+                        <li><strong>Deterministic BFT Timestamps</strong> &mdash; block timestamps derived from
+                            BFT-weighted median of validator proposals, monotonically increasing (Task 3.2, M-15)</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="improved">
+                    <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
+                    <ul>
+                        <li><strong>WASM Memory Limit Increase</strong> &mdash; contract memory ceiling raised from 1
+                            MiB to 4 MiB with configurable per-contract limits (Task 3.5, M-13)</li>
+                        <li><strong>WebSocket Keepalive Standard</strong> &mdash; 30-second ping/pong heartbeat with
+                            strict single-pong timeout; prevents stale connections from accumulating (Task 3.8, M-19)
+                        </li>
+                        <li><strong>Epoch Boundary Logic</strong> &mdash; rewards distributed at epoch boundaries using
+                            Solana-style epoch model (Task 3.1, M-1)</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Mempool Express Lane Removed</strong> &mdash; eliminated reputation-based priority
+                            multiplier; mempool now uses strict fee-only ordering to prevent MEV favoritism (Task 3.7,
+                            M-8)</li>
+                    </ul>
+                </div>
+
+                <h3 class="changelog-title" style="margin-top: 2rem;">Phase 4 &mdash; Transaction Integrity, Fee
+                    Fairness &amp; Storage Metering</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
+                    <ul>
+                        <li><strong>Transaction Hash Determinism</strong> &mdash; <code>Transaction::hash()</code>
+                            algorithm formally specified as
+                            <code>SHA-256(bincode(message) || sig_0 || sig_1 || ...)</code>. New
+                            <code>Transaction::message_hash()</code> method returns the signature-independent message
+                            digest. RPC <code>getTransaction</code> now includes <code>message_hash</code> field
+                            alongside the txid. 8 new wire-format determinism tests (Task 4.1, H-7)</li>
+                        <li><strong>Contract Storage Metering</strong> &mdash; per-byte compute cost on
+                            <code>storage_write</code> (1 CU/byte) with 10 MB total storage cap per contract. Live byte
+                            tracking via <code>ContractContext.storage_bytes_used</code>; <code>storage_delete</code>
+                            reclaims freed bytes. Prevents unbounded state growth (Task 4.3, M-4)</li>
+                        <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; comprehensive research document at
+                            <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing MoltChain
+                            primitives (commit certificates, state proofs, BFT finality), gap analysis, and phased
+                            implementation roadmap. Full IBC deferred; MoltBridge adequate for current phase (Task 4.4,
+                            H-14)</li>
+                    </ul>
+                </div>
+
+                <div class="changelog-section" data-type="fixed">
+                    <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
+                    <ul>
+                        <li><strong>Fee Discount MEV Vector Removed</strong> &mdash; deprecated
+                            <code>apply_reputation_fee_discount()</code>; all transactions now pay the flat base fee
+                            regardless of MoltyID reputation score. Eliminates identity-based fee manipulation and
+                            aligns with standard blockchain fee models (Task 4.2, M-7)</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.2.18 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
@@ -312,9 +411,9 @@
                         </li>
                         <li>Agent Discovery Registry with endpoints, metadata, availability signalling, and rate-limit
                             config</li>
-                        <li>Trust tiers (0–5) integrated into mempool priority lanes</li>
+                        <li>Trust tiers (0–5) integrated with fee discounts</li>
                         <li>Identity-gated access on MoltBridge, Compute Market, BountyBoard, ClawPay, and MoltSwap</li>
-                        <li>Express lane in mempool for Tier 4+ agents — lower latency, higher throughput</li>
+                        <li>Fee-only mempool ordering — fair priority for all participants</li>
                         <li>113 tests added across 7 previously-untested contracts</li>
                     </ul>
                 </div>

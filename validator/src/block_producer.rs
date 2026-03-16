@@ -9,6 +9,10 @@ use tracing::{debug, info};
 
 /// Build a new block from pending mempool transactions.
 ///
+/// `bft_timestamp`: If `Some`, use this BFT-derived timestamp (weighted
+/// median of the parent block's commit vote timestamps). Falls back to
+/// wall-clock time if `None` (genesis, solo validator, or no parent commit).
+///
 /// Returns `(block, processed_tx_hashes)`:
 ///   - `block` has `state_root = Hash::default()` — the caller MUST compute
 ///     and set it after applying block effects.
@@ -20,6 +24,7 @@ use tracing::{debug, info};
 ///   - Apply block effects (rewards, staking, oracle)
 ///   - Broadcast the block
 ///   - Sign the block (caller signs after setting state_root)
+#[allow(clippy::too_many_arguments)]
 pub fn build_block(
     _state: &StateStore,
     mempool: &mut Mempool,
@@ -28,6 +33,7 @@ pub fn build_block(
     parent_hash: Hash,
     validator_pubkey: &Pubkey,
     oracle_prices: Vec<(String, u64)>,
+    bft_timestamp: Option<u64>,
 ) -> (Block, Vec<Hash>) {
     // Collect pending transactions (up to 2000)
     let pending = mempool.get_top_transactions(2000);
@@ -71,13 +77,17 @@ pub fn build_block(
         .unwrap_or_default()
         .as_secs();
 
+    // Use BFT timestamp (weighted median of parent commit) if available,
+    // falling back to wall clock for genesis or solo validator scenarios.
+    let block_timestamp = bft_timestamp.unwrap_or(wall_clock_timestamp);
+
     let mut block = Block::new_with_timestamp(
         height,
         parent_hash,
         Hash::default(), // Placeholder — caller sets after effects
         validator_pubkey.0,
         transactions,
-        wall_clock_timestamp,
+        block_timestamp,
     );
     block.tx_fees_paid = tx_fees_paid;
     block.oracle_prices = oracle_prices;

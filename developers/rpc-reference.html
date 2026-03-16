@@ -73,6 +73,7 @@
                 <h3 class="sidebar-heading">Account</h3>
                 <a href="#getBalance" class="sidebar-link">getBalance</a>
                 <a href="#getAccount" class="sidebar-link">getAccount</a>
+                <a href="#getAccountAtSlot" class="sidebar-link">getAccountAtSlot</a>
                 <a href="#getAccountInfo" class="sidebar-link">getAccountInfo</a>
                 <a href="#getAccountTxCount" class="sidebar-link">getAccountTxCount</a>
             </div>
@@ -440,6 +441,62 @@
             </div>
 
             <!-- getAccountInfo -->
+
+            <!-- getAccountAtSlot -->
+            <div class="method-card" id="getAccountAtSlot">
+                <h3 class="method-name">getAccountAtSlot</h3>
+                <p class="method-desc">Returns historical account state at or before the given slot. Requires archive
+                    mode to be enabled on the node.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key</td>
+                            </tr>
+                            <tr>
+                                <td>slot</td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>Yes</td>
+                                <td>Target slot number (returns latest snapshot at or before this slot)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object —
+                        <code>{ pubkey, slot, shells, molt, spendable, staked, locked, owner, executable, data_len }</code>
+                    </p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Errors</h4>
+                    <ul>
+                        <li><code>-32003</code> — Archive mode is not enabled on this node</li>
+                        <li><code>-32001</code> — No snapshot found for the account at or before the given slot</li>
+                    </ul>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountAtSlot","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", 1000]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getAccountInfo -->
             <div class="method-card" id="getAccountInfo">
                 <h3 class="method-name">getAccountInfo</h3>
                 <p class="method-desc">Returns enhanced account information including balance, transaction count, and
@@ -595,6 +652,15 @@
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object — Transaction details including signatures, instructions, slot, timestamp, fee, and
                         status.</p>
+                    <p><strong>Hash fields:</strong></p>
+                    <ul>
+                        <li><code>signature</code> — Canonical transaction ID:
+                            <code>SHA-256(bincode(message) || sig_0 || sig_1 || ...)</code>. Includes signatures for
+                            unique deduplication (matches Cosmos/CometBFT and Bitcoin wtxid convention).</li>
+                        <li><code>message_hash</code> — Message-only hash: <code>SHA-256(bincode(message))</code>.
+                            Signature-independent — useful for multi-sig coordination and client-side txid prediction
+                            before all parties have signed.</li>
+                    </ul>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -1743,8 +1809,10 @@
                     have individual method cards on this page.</p>
 
                 <div class="callout callout-info">
-                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana</code> and <code>POST /evm</code>
-                        are also supported in addition to <code>POST /</code>.</p>
+                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana-compat</code> (legacy alias:
+                        <code>/solana</code>) and <code>POST /evm</code>
+                        are also supported in addition to <code>POST /</code>.
+                    </p>
                 </div>
 
                 <h3>Chain / Account / Tx</h3>
@@ -1852,7 +1920,10 @@
                     <li><code>getNameAuction</code> — query MoltyID .molt name auction by name</li>
                 </ul>
 
-                <h3>Solana-Compatible Endpoint (<code>/solana</code>)</h3>
+                <h3>Solana-Format Endpoint (<code>/solana-compat</code>)</h3>
+                <p class="callout callout-warning">Accepts MoltChain transactions in Solana wire format. Does
+                    <strong>not</strong> accept native Solana transactions.
+                </p>
                 <ul>
                     <li><code>getLatestBlockhash</code>, <code>getRecentBlockhash</code>, <code>getBalance</code>,
                         <code>getAccountInfo</code>, <code>getBlock</code>, <code>getBlockHeight</code>,

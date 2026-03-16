@@ -337,13 +337,13 @@ impl GenesisConfig {
     }
 
     /// Generate genesis distribution per tokenomics overhaul:
-    ///   25% Community Treasury (250M MOLT)
-    ///   35% Builder Grants (350M MOLT)
-    ///   10% Validator Rewards Pool (100M MOLT)
-    ///   10% Founding Moltys (100M MOLT)
-    ///   10% Ecosystem Partnerships (100M MOLT)
-    ///   10% Reserve Pool (100M MOLT)
-    /// Total: 1,000,000,000 MOLT
+    ///   25% Community Treasury (125M MOLT)
+    ///   35% Builder Grants (175M MOLT)
+    ///   10% Validator Rewards Pool (50M MOLT)
+    ///   10% Founding Moltys (50M MOLT)
+    ///   10% Ecosystem Partnerships (50M MOLT)
+    ///   10% Reserve Pool (50M MOLT)
+    /// Total: 500,000,000 MOLT
     pub fn generate_genesis_distribution(
         community_treasury: &str,
         builder_grants: &str,
@@ -355,32 +355,32 @@ impl GenesisConfig {
         vec![
             GenesisAccount {
                 address: community_treasury.to_string(),
-                balance_molt: 250_000_000,
+                balance_molt: 125_000_000,
                 comment: Some("Community Treasury (25%)".to_string()),
             },
             GenesisAccount {
                 address: builder_grants.to_string(),
-                balance_molt: 350_000_000,
+                balance_molt: 175_000_000,
                 comment: Some("Builder Grants (35%)".to_string()),
             },
             GenesisAccount {
                 address: validator_rewards.to_string(),
-                balance_molt: 100_000_000,
+                balance_molt: 50_000_000,
                 comment: Some("Validator Rewards Pool (10%)".to_string()),
             },
             GenesisAccount {
                 address: founding_moltys.to_string(),
-                balance_molt: 100_000_000,
+                balance_molt: 50_000_000,
                 comment: Some("Founding Moltys (10%)".to_string()),
             },
             GenesisAccount {
                 address: ecosystem_partnerships.to_string(),
-                balance_molt: 100_000_000,
+                balance_molt: 50_000_000,
                 comment: Some("Ecosystem Partnerships (10%)".to_string()),
             },
             GenesisAccount {
                 address: reserve_pool.to_string(),
-                balance_molt: 100_000_000,
+                balance_molt: 50_000_000,
                 comment: Some("Reserve Pool (10%)".to_string()),
             },
         ]
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_genesis_distribution_sums_to_1b() {
+    fn test_genesis_distribution_sums_to_500m() {
         let accounts = GenesisConfig::generate_genesis_distribution(
             "11111111111111111111111111111111",
             "22222222222222222222222222222222",
@@ -511,16 +511,16 @@ mod tests {
         );
         let total: u64 = accounts.iter().map(|a| a.balance_molt).sum();
         assert_eq!(
-            total, 1_000_000_000,
-            "Genesis distribution must total 1B MOLT"
+            total, 500_000_000,
+            "Genesis distribution must total 500M MOLT"
         );
         assert_eq!(accounts.len(), 6);
-        assert_eq!(accounts[0].balance_molt, 250_000_000); // 25%
-        assert_eq!(accounts[1].balance_molt, 350_000_000); // 35%
-        assert_eq!(accounts[2].balance_molt, 100_000_000); // 10%
-        assert_eq!(accounts[3].balance_molt, 100_000_000); // 10%
-        assert_eq!(accounts[4].balance_molt, 100_000_000); // 10%
-        assert_eq!(accounts[5].balance_molt, 100_000_000); // 10%
+        assert_eq!(accounts[0].balance_molt, 125_000_000); // 25%
+        assert_eq!(accounts[1].balance_molt, 175_000_000); // 35%
+        assert_eq!(accounts[2].balance_molt, 50_000_000); // 10%
+        assert_eq!(accounts[3].balance_molt, 50_000_000); // 10%
+        assert_eq!(accounts[4].balance_molt, 50_000_000); // 10%
+        assert_eq!(accounts[5].balance_molt, 50_000_000); // 10%
     }
 
     #[test]

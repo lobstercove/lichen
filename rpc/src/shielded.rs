@@ -359,13 +359,10 @@ async fn submit_shielded_tx(
         Err(e) => return api_err(&format!("Invalid base64: {}", e)),
     };
 
-    // Deserialize — try bincode first, then JSON (wallet may send JSON)
-    let tx: moltchain_core::Transaction = match crate::bounded_bincode_deserialize(&tx_bytes) {
+    // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
+    let tx: moltchain_core::Transaction = match crate::decode_transaction_bytes(&tx_bytes) {
         Ok(t) => t,
-        Err(_) => match crate::parse_json_transaction(&tx_bytes) {
-            Ok(t) => t,
-            Err(e) => return api_err(&format!("Invalid transaction: {}", e.message)),
-        },
+        Err(e) => return api_err(&format!("Invalid transaction: {}", e.message)),
     };
 
     // Validate that the transaction contains a shielded instruction of the

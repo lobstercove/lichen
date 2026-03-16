@@ -1,6 +1,7 @@
 // MoltChain Core - Transaction Processor
 
 use crate::account::{Account, Pubkey};
+use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{ContractAbi, ContractAccount, ContractContext, ContractRuntime};
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
@@ -21,6 +22,8 @@ pub struct TxResult {
     pub success: bool,
     pub fee_paid: u64,
     pub error: Option<String>,
+    /// Compute units consumed by this transaction (native + WASM).
+    pub compute_units_used: u64,
     /// Contract return code (if the transaction includes a contract call).
     /// This is the raw WASM function return value — interpretation depends on the
     /// contract's ABI. For MoltyID: 0=success, 1=bad input, 2=identity not found, etc.
@@ -73,6 +76,13 @@ pub const EVM_SENTINEL_BLOCKHASH: Hash = Hash([0xEE; 32]);
 
 /// Slot-based month length (400ms slots, 216,000 per day)
 pub const SLOTS_PER_MONTH: u64 = 216_000 * 30;
+
+/// Free tier: accounts with data ≤ 2KB are exempt from rent
+pub const RENT_FREE_BYTES: u64 = 2048;
+
+/// Number of consecutive missed rent epochs before an account becomes dormant
+pub const DORMANCY_THRESHOLD_EPOCHS: u64 = 2;
+
 /// Maximum age in blocks for a transaction's recent_blockhash.
 /// Transactions referencing a blockhash older than this are rejected.
 pub const MAX_TX_AGE_BLOCKS: u64 = 300;
@@ -96,6 +106,209 @@ pub const NFT_MINT_FEE: u64 = 500_000_000;
 /// NFT collection creation fee (1,000 MOLT = 1,000,000,000,000 shells)
 /// At $0.10/MOLT: $100 per collection  |  At $1.00/MOLT: $1,000 per collection
 pub const NFT_COLLECTION_FEE: u64 = 1_000_000_000_000;
+
+/// Minimum balance required to create a nonce account (0.01 MOLT = 10,000,000 shells).
+/// Keeps nonce accounts rent-exempt while preventing spam creation.
+pub const NONCE_ACCOUNT_MIN_BALANCE: u64 = 10_000_000;
+
+/// Magic marker stored at data[0] to identify nonce accounts.
+pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
+
+// ── Governance parameter IDs (system instruction type 29) ──
+/// base_fee (shells per transaction)
+pub const GOV_PARAM_BASE_FEE: u8 = 0;
+/// fee_burn_percent (0-100)
+pub const GOV_PARAM_FEE_BURN_PERCENT: u8 = 1;
+/// fee_producer_percent (0-100)
+pub const GOV_PARAM_FEE_PRODUCER_PERCENT: u8 = 2;
+/// fee_voters_percent (0-100)
+pub const GOV_PARAM_FEE_VOTERS_PERCENT: u8 = 3;
+/// fee_treasury_percent (0-100)
+pub const GOV_PARAM_FEE_TREASURY_PERCENT: u8 = 4;
+/// fee_community_percent (0-100)
+pub const GOV_PARAM_FEE_COMMUNITY_PERCENT: u8 = 5;
+/// min_validator_stake (shells)
+pub const GOV_PARAM_MIN_VALIDATOR_STAKE: u8 = 6;
+/// epoch_slots (slots per epoch)
+pub const GOV_PARAM_EPOCH_SLOTS: u8 = 7;
+
+// ── Compute unit costs for native instructions (Task 2.12) ──
+// Each native system instruction has a fixed compute-unit cost reflecting
+// its relative computational weight. WASM contract calls track CU via the
+// runtime metering; these constants cover the non-WASM path.
+pub const CU_TRANSFER: u64 = 100;
+pub const CU_CREATE_ACCOUNT: u64 = 200;
+pub const CU_CREATE_COLLECTION: u64 = 500;
+pub const CU_MINT_NFT: u64 = 1_000;
+pub const CU_TRANSFER_NFT: u64 = 200;
+pub const CU_STAKE: u64 = 500;
+pub const CU_UNSTAKE: u64 = 500;
+pub const CU_CLAIM_UNSTAKE: u64 = 300;
+pub const CU_REGISTER_EVM: u64 = 200;
+pub const CU_REEFSTAKE: u64 = 500;
+pub const CU_DEPLOY_CONTRACT: u64 = 5_000;
+pub const CU_SET_CONTRACT_ABI: u64 = 1_000;
+pub const CU_FAUCET_AIRDROP: u64 = 100;
+pub const CU_REGISTER_SYMBOL: u64 = 300;
+pub const CU_GOVERNED_PROPOSAL: u64 = 1_000;
+pub const CU_ZK_SHIELD: u64 = 100_000;
+pub const CU_ZK_TRANSFER: u64 = 200_000;
+pub const CU_REGISTER_VALIDATOR: u64 = 500;
+pub const CU_SLASH_VALIDATOR: u64 = 500;
+pub const CU_NONCE: u64 = 200;
+pub const CU_GOVERNANCE_PARAM: u64 = 300;
+pub const CU_ORACLE_ATTESTATION: u64 = 500;
+
+/// Minimum number of assets name bytes (e.g. "BTC" = 3).
+pub const ORACLE_ASSET_MIN_LEN: usize = 1;
+/// Maximum asset name length for oracle attestations.
+pub const ORACLE_ASSET_MAX_LEN: usize = 16;
+/// Oracle attestation staleness window in slots (~1 hour at 400ms/slot).
+pub const ORACLE_STALENESS_SLOTS: u64 = 9_000;
+
+/// Look up the compute-unit cost for a system program instruction by its type byte.
+pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
+    match instruction_type {
+        0 | 2..=5 => CU_TRANSFER,
+        1 => CU_CREATE_ACCOUNT,
+        6 => CU_CREATE_COLLECTION,
+        7 => CU_MINT_NFT,
+        8 => CU_TRANSFER_NFT,
+        9 => CU_STAKE,
+        10 => CU_UNSTAKE,
+        11 => CU_CLAIM_UNSTAKE,
+        12 => CU_REGISTER_EVM,
+        13..=16 => CU_REEFSTAKE,
+        17 => CU_DEPLOY_CONTRACT,
+        18 => CU_SET_CONTRACT_ABI,
+        19 => CU_FAUCET_AIRDROP,
+        20 => CU_REGISTER_SYMBOL,
+        21 | 22 => CU_GOVERNED_PROPOSAL,
+        23 => CU_ZK_SHIELD,
+        24 | 25 => CU_ZK_TRANSFER,
+        26 => CU_REGISTER_VALIDATOR,
+        27 => CU_SLASH_VALIDATOR,
+        28 => CU_NONCE,
+        29 => CU_GOVERNANCE_PARAM,
+        30 => CU_ORACLE_ATTESTATION,
+        _ => 100, // Unknown — default cost
+    }
+}
+
+/// Compute total compute units for all instructions in a transaction.
+pub fn compute_units_for_tx(tx: &Transaction) -> u64 {
+    let mut total = 0u64;
+    for ix in &tx.message.instructions {
+        if ix.program_id == SYSTEM_PROGRAM_ID {
+            if let Some(&instruction_type) = ix.data.first() {
+                total += compute_units_for_system_ix(instruction_type);
+            }
+        }
+        // WASM contract CU is tracked separately by the runtime
+    }
+    total
+}
+
+/// A single validator oracle price attestation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OracleAttestation {
+    pub validator: Pubkey,
+    pub price: u64,
+    pub decimals: u8,
+    pub stake: u64,
+    pub slot: u64,
+}
+
+/// Consensus oracle price derived from validator attestations.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OracleConsensusPrice {
+    pub asset: String,
+    pub price: u64,
+    pub decimals: u8,
+    pub slot: u64,
+    pub attestation_count: u32,
+}
+
+/// Compute the stake-weighted median price from a set of attestations.
+///
+/// Sorts attestations by price, walks through accumulating stake until
+/// the cumulative weight crosses half of total attested stake. This is
+/// identical to the BFT timestamp median algorithm used in Task 3.2.
+pub fn compute_stake_weighted_median(attestations: &[OracleAttestation]) -> u64 {
+    if attestations.is_empty() {
+        return 0;
+    }
+    if attestations.len() == 1 {
+        return attestations[0].price;
+    }
+
+    let mut sorted: Vec<(u64, u64)> = attestations
+        .iter()
+        .map(|a| (a.price, a.stake))
+        .collect();
+    sorted.sort_by_key(|&(price, _)| price);
+
+    let total_stake: u128 = sorted.iter().map(|&(_, s)| s as u128).sum();
+    let half = total_stake / 2;
+
+    let mut cumulative: u128 = 0;
+    for &(price, stake) in &sorted {
+        cumulative += stake as u128;
+        if cumulative > half {
+            return price;
+        }
+    }
+
+    // Fallback (shouldn't reach here): return last price
+    sorted.last().unwrap().0
+}
+
+/// Durable nonce account state — serialized into the account's `data` field.
+/// Mirrors Solana's `NonceState::Initialized` variant.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NonceState {
+    /// Authority allowed to advance, withdraw, or re-authorize the nonce.
+    pub authority: Pubkey,
+    /// Stored blockhash — transactions using this hash remain valid until
+    /// the nonce is explicitly advanced.
+    pub blockhash: Hash,
+    /// Fee rate (shells per signature) at the time the nonce was last advanced.
+    pub fee_per_signature: u64,
+}
+
+/// Compute graduated rent for an account based on its data size.
+///
+/// Tiers (billable bytes = data_len - RENT_FREE_BYTES):
+///   - First 8KB above free tier (2KB–10KB total): 1× rate per KB
+///   - Next 90KB (10KB–100KB total): 2× rate per KB
+///   - Above 100KB total: 4× rate per KB
+///
+/// Returns rent in shells per epoch.
+pub fn compute_graduated_rent(data_len: u64, rate_per_kb_per_epoch: u64) -> u64 {
+    if data_len <= RENT_FREE_BYTES {
+        return 0;
+    }
+    let billable = data_len - RENT_FREE_BYTES;
+
+    // Tier boundaries (in billable bytes, relative to the free threshold)
+    const TIER1_CAP: u64 = 8 * 1024; // 8KB (covers 2KB–10KB total)
+    const TIER2_CAP: u64 = 98 * 1024; // 98KB (covers 10KB–100KB total)
+
+    let tier1_bytes = billable.min(TIER1_CAP);
+    let tier2_bytes = billable
+        .saturating_sub(TIER1_CAP)
+        .min(TIER2_CAP - TIER1_CAP);
+    let tier3_bytes = billable.saturating_sub(TIER2_CAP);
+
+    let tier1_kb = tier1_bytes.div_ceil(1024);
+    let tier2_kb = tier2_bytes.div_ceil(1024);
+    let tier3_kb = tier3_bytes.div_ceil(1024);
+
+    tier1_kb
+        .saturating_mul(rate_per_kb_per_epoch)
+        .saturating_add(tier2_kb.saturating_mul(rate_per_kb_per_epoch.saturating_mul(2)))
+        .saturating_add(tier3_kb.saturating_mul(rate_per_kb_per_epoch.saturating_mul(4)))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FeeConfig {
@@ -164,22 +377,26 @@ impl TxProcessor {
     }
 
     /// Build a TxResult, draining any accumulated contract metadata.
-    fn make_result(&self, success: bool, fee_paid: u64, error: Option<String>) -> TxResult {
+    fn make_result(
+        &self,
+        success: bool,
+        fee_paid: u64,
+        error: Option<String>,
+        compute_units_used: u64,
+    ) -> TxResult {
         let (return_code, contract_logs) = self.drain_contract_meta();
         TxResult {
             success,
             fee_paid,
             error,
+            compute_units_used,
             return_code,
             contract_logs,
         }
     }
 
-    /// Calculate total fees for a transaction (base + program-specific)
-    /// Applies reputation-based fee discount per whitepaper:
-    ///   500+ reputation → 5% discount
-    ///   750+ reputation → 7.5% discount
-    ///   1000+ reputation → 10% discount
+    /// Calculate total fees for a transaction (base + program-specific).
+    /// All users pay the same flat rate — reputation discounts removed (Task 4.2 M-7).
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
         // Internal system transaction types 2-5, 19, 26, 27 are fee-free:
         //   2 = Reward distribution (validator block rewards from treasury)
@@ -246,7 +463,8 @@ impl TxProcessor {
                         ContractInstruction::Deploy { .. } => {
                             total = total.saturating_add(fee_config.contract_deploy_fee)
                         }
-                        ContractInstruction::Upgrade { .. } => {
+                        ContractInstruction::Upgrade { .. }
+                        | ContractInstruction::ExecuteUpgrade => {
                             total = total.saturating_add(fee_config.contract_upgrade_fee)
                         }
                         _ => {}
@@ -258,21 +476,58 @@ impl TxProcessor {
         total
     }
 
-    /// Apply reputation-based fee discount per whitepaper:
-    ///   reputation 500–749  → 5% discount
-    ///   reputation 750–999  → 7.5% discount
-    ///   reputation 1000+    → 10% discount
-    pub fn apply_reputation_fee_discount(base_fee: u64, reputation: u64) -> u64 {
-        let discount_bps = if reputation >= 1000 {
-            1000
-        } else if reputation >= 750 {
-            750
-        } else if reputation >= 500 {
-            500
-        } else {
-            0
+    /// Task 4.2 (M-7): Reputation-based fee discounts REMOVED.
+    ///
+    /// Previously discounted fees by 5–10% based on MoltyID reputation score.
+    /// Removed because: (1) no real blockchain uses identity-based fee discounts,
+    /// (2) creates MEV vector — high-rep searchers get a fee advantage,
+    /// (3) express lane already removed in Task 3.7. All users now pay flat fees.
+    ///
+    /// Kept as identity function for backward compatibility with any external callers.
+    #[deprecated(note = "Fee discounts removed (Task 4.2 M-7 MEV audit). Returns base_fee unchanged.")]
+    pub fn apply_reputation_fee_discount(base_fee: u64, _reputation: u64) -> u64 {
+        base_fee
+    }
+
+    /// Check if a transaction is a valid durable nonce transaction.
+    ///
+    /// A durable nonce TX must:
+    /// 1. Have its first instruction target the system program (type 28, sub 1 = AdvanceNonce)
+    /// 2. Reference a nonce account whose stored blockhash matches `tx.message.recent_blockhash`
+    ///
+    /// This is called as a fallback when the normal recency check fails.
+    fn check_durable_nonce(tx: &Transaction, state: &StateStore) -> bool {
+        let first_ix = match tx.message.instructions.first() {
+            Some(ix) => ix,
+            None => return false,
         };
-        base_fee.saturating_sub(base_fee.saturating_mul(discount_bps) / 10_000)
+
+        // Must be a system program instruction with type=28 (nonce), sub=1 (advance)
+        if first_ix.program_id != SYSTEM_PROGRAM_ID {
+            return false;
+        }
+        if first_ix.data.len() < 2 || first_ix.data[0] != 28 || first_ix.data[1] != 1 {
+            return false;
+        }
+
+        // The nonce account is accounts[1] of the AdvanceNonce instruction
+        // (accounts[0] is the authority/signer)
+        let nonce_pk = match first_ix.accounts.get(1) {
+            Some(pk) => pk,
+            None => return false,
+        };
+
+        // Read the nonce account from state
+        let nonce_account = match state.get_account(nonce_pk) {
+            Ok(Some(acct)) => acct,
+            _ => return false,
+        };
+
+        // Decode nonce state and compare blockhash
+        match Self::decode_nonce_state(&nonce_account.data) {
+            Ok(ns) => ns.blockhash == tx.message.recent_blockhash,
+            Err(_) => false,
+        }
     }
 
     // ========================================================================
@@ -511,6 +766,20 @@ impl TxProcessor {
         }
     }
 
+    /// Task 3.4: Store EVM logs in per-slot index through the active batch.
+    fn b_put_evm_logs_for_slot(
+        &self,
+        slot: u64,
+        logs: &[crate::evm::EvmLogEntry],
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.put_evm_logs_for_slot(slot, logs)
+        } else {
+            self.state.put_evm_logs_for_slot(slot, logs)
+        }
+    }
+
     /// H3 fix: Apply deferred EVM state changes through the active batch.
     fn b_apply_evm_state_changes(
         &self,
@@ -713,6 +982,7 @@ impl TxProcessor {
                 false,
                 0,
                 Some(format!("Invalid transaction structure: {}", e)),
+                0,
             );
         }
 
@@ -722,26 +992,28 @@ impl TxProcessor {
                 false,
                 0,
                 Some("Zero blockhash is not valid for replay protection".to_string()),
+                0,
             );
         }
 
         // Reject replayed transactions
         let tx_hash = tx.hash();
         if let Ok(Some(_)) = self.state.get_transaction(&tx_hash) {
-            return self.make_result(false, 0, Some("Transaction already processed".to_string()));
+            return self.make_result(
+                false,
+                0,
+                Some("Transaction already processed".to_string()),
+                0,
+            );
         }
 
-        // P9-RPC-01: Handle EVM sentinel blockhash.
-        // EVM-wrapped TXs use a sentinel blockhash because the EVM layer has its
-        // own replay protection (nonces + ECDSA).  We must:
-        //   a) Allow the sentinel for EVM instructions (skip normal blockhash check)
-        //   b) Reject the sentinel for non-EVM instructions (prevents bypass attack)
-        if tx.message.recent_blockhash == EVM_SENTINEL_BLOCKHASH {
+        // EVM transaction detection: typed enum (preferred) or legacy sentinel blockhash.
+        // EVM-wrapped TXs skip native blockhash + sig verification because the
+        // EVM layer provides its own replay protection (nonces + ECDSA).
+        if tx.is_evm() {
             if is_evm_instruction(tx) {
-                // EVM TX with sentinel — process via EVM path (no native blockhash needed)
                 return self.process_evm_transaction(tx);
             } else {
-                // Non-EVM TX trying to use sentinel — this is an attempted bypass
                 return self.make_result(
                     false,
                     0,
@@ -749,6 +1021,7 @@ impl TxProcessor {
                         "EVM sentinel blockhash is reserved for EVM-wrapped transactions"
                             .to_string(),
                     ),
+                    0,
                 );
             }
         }
@@ -766,11 +1039,18 @@ impl TxProcessor {
                 recent.contains(&tx.message.recent_blockhash)
             };
             if !valid {
-                return self.make_result(
-                    false,
-                    0,
-                    Some("Blockhash not found or too old".to_string()),
-                );
+                // Durable nonce fallback: if the first instruction is AdvanceNonce
+                // (system program, type 28, sub 1), check whether the nonce account's
+                // stored blockhash matches the transaction's recent_blockhash.
+                let nonce_valid = Self::check_durable_nonce(tx, &self.state);
+                if !nonce_valid {
+                    return self.make_result(
+                        false,
+                        0,
+                        Some("Blockhash not found or too old".to_string()),
+                        0,
+                    );
+                }
             }
         }
 
@@ -780,11 +1060,11 @@ impl TxProcessor {
 
         // 1. Verify signatures
         if tx.signatures.is_empty() {
-            return self.make_result(false, 0, Some("No signatures".to_string()));
+            return self.make_result(false, 0, Some("No signatures".to_string()), 0);
         }
 
         if tx.message.instructions.is_empty() {
-            return self.make_result(false, 0, Some("No instructions".to_string()));
+            return self.make_result(false, 0, Some("No instructions".to_string()), 0);
         }
 
         // Collect all unique signer accounts (first account of each instruction)
@@ -793,7 +1073,12 @@ impl TxProcessor {
             if let Some(first_acc) = ix.accounts.first() {
                 required_signers.insert(*first_acc);
             } else {
-                return self.make_result(false, 0, Some("Instruction has no accounts".to_string()));
+                return self.make_result(
+                    false,
+                    0,
+                    Some("Instruction has no accounts".to_string()),
+                    0,
+                );
             }
         }
 
@@ -807,6 +1092,7 @@ impl TxProcessor {
                     tx.signatures.len(),
                     required_signers.len()
                 )),
+                0,
             );
         }
 
@@ -862,6 +1148,7 @@ impl TxProcessor {
                         "Missing or invalid signature for account {}",
                         signer
                     )),
+                    0,
                 );
             }
         }
@@ -869,22 +1156,20 @@ impl TxProcessor {
         // Fee payer is the first account of the first instruction (must be verified)
         let fee_payer = tx.message.instructions[0].accounts[0];
 
-        // 2. Charge fee (with reputation-based discount per whitepaper)
+        // 2. Charge fee (flat fee — reputation discounts removed per Task 4.2 M-7)
         let fee_config = self
             .state
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
         let base_fee = Self::compute_transaction_fee(tx, &fee_config);
-        // Apply reputation-based fee discount
-        let payer_reputation = self.state.get_reputation(&fee_payer).unwrap_or(0);
-        let total_fee = Self::apply_reputation_fee_discount(base_fee, payer_reputation);
+        let total_fee = base_fee;
 
         // M4 fix: charge fee BEFORE beginning the instruction batch.
         // This ensures fees are always collected even when instructions fail,
         // preventing free-compute DoS attacks via intentionally-failing TXs.
         if total_fee > 0 {
             if let Err(e) = self.charge_fee_direct(&fee_payer, total_fee) {
-                return self.make_result(false, 0, Some(format!("Fee error: {}", e)));
+                return self.make_result(false, 0, Some(format!("Fee error: {}", e)), 0);
             }
         }
 
@@ -894,8 +1179,11 @@ impl TxProcessor {
         // 3. Apply rent for involved accounts
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
-            return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)));
+            return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)), 0);
         }
+
+        // Compute CU for native instructions upfront (WASM CU tracked separately)
+        let native_cu = compute_units_for_tx(tx);
 
         // 4. Execute each instruction
         for instruction in &tx.message.instructions {
@@ -920,6 +1208,7 @@ impl TxProcessor {
                     false,
                     actual_fee,
                     Some(format!("Execution error: {}", e)),
+                    native_cu,
                 );
             }
         }
@@ -942,6 +1231,7 @@ impl TxProcessor {
                 false,
                 actual_fee,
                 Some(format!("Transaction storage error: {}", e)),
+                native_cu,
             );
         }
 
@@ -959,10 +1249,11 @@ impl TxProcessor {
                 false,
                 actual_fee,
                 Some(format!("Atomic commit failed: {}", e)),
+                native_cu,
             );
         }
 
-        self.make_result(true, total_fee, None)
+        self.make_result(true, total_fee, None, native_cu)
     }
 
     /// Process multiple transactions in parallel where possible.
@@ -1089,6 +1380,7 @@ impl TxProcessor {
                     success: false,
                     fee_paid: 0,
                     error: None,
+                    compute_units_used: 0,
                     return_code: None,
                     contract_logs: Vec::new(),
                 })
@@ -1138,8 +1430,8 @@ impl TxProcessor {
             };
         }
 
-        // Handle EVM sentinel blockhash
-        if tx.message.recent_blockhash == EVM_SENTINEL_BLOCKHASH {
+        // EVM transaction detection: typed enum or legacy sentinel
+        if tx.is_evm() {
             if !is_evm_instruction(tx) {
                 return SimulationResult {
                     success: false,
@@ -1155,7 +1447,7 @@ impl TxProcessor {
                     state_changes: 0,
                 };
             }
-            // EVM sentinel: skip blockhash validation (EVM has its own replay protection)
+            // EVM: skip blockhash validation (EVM has its own replay protection)
         } else {
             // Validate blockhash
             let recent = self
@@ -1163,16 +1455,19 @@ impl TxProcessor {
                 .get_recent_blockhashes(MAX_TX_AGE_BLOCKS)
                 .unwrap_or_default();
             if !recent.contains(&tx.message.recent_blockhash) {
-                return SimulationResult {
-                    success: false,
-                    fee: 0,
-                    logs,
-                    error: Some("Blockhash not found or too old".to_string()),
-                    compute_used: 0,
-                    return_data: None,
-                    return_code: None,
-                    state_changes: 0,
-                };
+                // Durable nonce fallback
+                if !Self::check_durable_nonce(tx, &self.state) {
+                    return SimulationResult {
+                        success: false,
+                        fee: 0,
+                        logs,
+                        error: Some("Blockhash not found or too old".to_string()),
+                        compute_used: 0,
+                        return_data: None,
+                        return_code: None,
+                        state_changes: 0,
+                    };
+                }
             }
         }
 
@@ -1225,15 +1520,14 @@ impl TxProcessor {
             }
         }
 
-        // Compute fee (T2.12 fix: include reputation discount, same as process_transaction)
+        // Compute fee (flat — reputation discounts removed per Task 4.2 M-7)
         let fee_config = self
             .state
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
         let base_fee = Self::compute_transaction_fee(tx, &fee_config);
         let fee_payer = tx.message.instructions[0].accounts[0];
-        let payer_reputation = self.state.get_reputation(&fee_payer).unwrap_or(0);
-        let total_fee = Self::apply_reputation_fee_discount(base_fee, payer_reputation);
+        let total_fee = base_fee;
 
         // Check fee payer balance
         let balance = self.state.get_balance(&fee_payer).unwrap_or(0);
@@ -1367,10 +1661,34 @@ impl TxProcessor {
                                 idx
                             ));
                         }
+                        ContractInstruction::SetUpgradeTimelock { epochs } => {
+                            logs.push(format!(
+                                "[ix{}] SetUpgradeTimelock instruction (epochs={})",
+                                idx, epochs
+                            ));
+                        }
+                        ContractInstruction::ExecuteUpgrade => {
+                            logs.push(format!(
+                                "[ix{}] ExecuteUpgrade instruction (would apply staged upgrade)",
+                                idx
+                            ));
+                        }
+                        ContractInstruction::VetoUpgrade => {
+                            logs.push(format!(
+                                "[ix{}] VetoUpgrade instruction (would cancel pending upgrade)",
+                                idx
+                            ));
+                        }
                     }
                 }
             } else if instruction.program_id == SYSTEM_PROGRAM_ID {
-                logs.push(format!("[ix{}] System instruction", idx));
+                let cu = instruction
+                    .data
+                    .first()
+                    .map(|&t| compute_units_for_system_ix(t))
+                    .unwrap_or(0);
+                total_compute += cu;
+                logs.push(format!("[ix{}] System instruction ({} CU)", idx, cu));
             } else if instruction.program_id == EVM_PROGRAM_ID {
                 logs.push(format!(
                     "[ix{}] EVM instruction (use eth_call for simulation)",
@@ -1404,7 +1722,12 @@ impl TxProcessor {
     /// fees) go through a single `StateBatch` and commit atomically.
     fn process_evm_transaction(&self, tx: &Transaction) -> TxResult {
         if tx.message.instructions.len() != 1 {
-            return self.make_result(false, 0, Some("Invalid EVM transaction format".to_string()));
+            return self.make_result(
+                false,
+                0,
+                Some("Invalid EVM transaction format".to_string()),
+                0,
+            );
         }
 
         let instruction = &tx.message.instructions[0];
@@ -1413,7 +1736,7 @@ impl TxProcessor {
         let evm_tx = match decode_evm_transaction(raw) {
             Ok(tx) => tx,
             Err(err) => {
-                return self.make_result(false, 0, Some(err));
+                return self.make_result(false, 0, Some(err), 0);
             }
         };
 
@@ -1422,6 +1745,7 @@ impl TxProcessor {
                 false,
                 0,
                 Some("EVM value must be multiple of 1e9 wei".to_string()),
+                0,
             );
         }
 
@@ -1429,12 +1753,12 @@ impl TxProcessor {
         let mapping = match self.state.lookup_evm_address(&from_address) {
             Ok(value) => value,
             Err(err) => {
-                return self.make_result(false, 0, Some(err));
+                return self.make_result(false, 0, Some(err), 0);
             }
         };
 
         if mapping.is_none() {
-            return self.make_result(false, 0, Some("EVM address not registered".to_string()));
+            return self.make_result(false, 0, Some("EVM address not registered".to_string()), 0);
         }
 
         let chain_id = evm_tx.chain_id.unwrap_or(0);
@@ -1442,7 +1766,7 @@ impl TxProcessor {
             match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
                 Ok(res) => res,
                 Err(err) => {
-                    return self.make_result(false, 0, Some(err));
+                    return self.make_result(false, 0, Some(err), 0);
                 }
             };
 
@@ -1473,7 +1797,21 @@ impl TxProcessor {
             block_hash: None,
             contract_address: result.created_address,
             logs: result.logs.clone(),
+            structured_logs: result.structured_logs.clone(),
         };
+
+        // Task 3.4: Build per-slot EVM log entries for eth_getLogs index
+        let evm_log_entries: Vec<crate::evm::EvmLogEntry> = result
+            .structured_logs
+            .iter()
+            .enumerate()
+            .map(|(i, log)| crate::evm::EvmLogEntry {
+                tx_hash: evm_hash,
+                tx_index: 0, // Updated later when block is finalized
+                log_index: i as u32,
+                log: log.clone(),
+            })
+            .collect();
 
         // AUDIT-FIX 0.7: Charge EVM fee BEFORE the batch, so rollback can't erase it.
         // This prevents free-compute DoS via intentionally-failing EVM transactions.
@@ -1486,11 +1824,12 @@ impl TxProcessor {
                         false,
                         0,
                         Some("EVM fee charge error: missing native payer mapping".to_string()),
+                        0,
                     )
                 }
             };
             if let Err(e) = self.charge_fee_direct(&native_payer, fee_paid) {
-                return self.make_result(false, 0, Some(format!("EVM fee charge error: {}", e)));
+                return self.make_result(false, 0, Some(format!("EVM fee charge error: {}", e)), 0);
             }
         }
 
@@ -1503,6 +1842,7 @@ impl TxProcessor {
                 false,
                 fee_paid,
                 Some(format!("EVM tx storage error: {}", e)),
+                0,
             );
         }
         if let Err(e) = self.b_put_evm_receipt(&receipt) {
@@ -1511,7 +1851,22 @@ impl TxProcessor {
                 false,
                 fee_paid,
                 Some(format!("EVM receipt storage error: {}", e)),
+                0,
             );
+        }
+
+        // Task 3.4: Store structured EVM logs in per-slot index
+        if !evm_log_entries.is_empty() {
+            let slot = self.state.get_last_slot().unwrap_or(0);
+            if let Err(e) = self.b_put_evm_logs_for_slot(slot, &evm_log_entries) {
+                self.rollback_batch();
+                return self.make_result(
+                    false,
+                    fee_paid,
+                    Some(format!("EVM log index error: {}", e)),
+                    0,
+                );
+            }
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
@@ -1520,6 +1875,7 @@ impl TxProcessor {
                 false,
                 fee_paid,
                 Some(format!("Transaction storage error: {}", e)),
+                0,
             );
         }
 
@@ -1533,6 +1889,7 @@ impl TxProcessor {
                 false,
                 fee_paid,
                 Some(format!("EVM state apply error: {}", e)),
+                0,
             );
         }
 
@@ -1542,6 +1899,7 @@ impl TxProcessor {
                 false,
                 fee_paid,
                 Some(format!("Atomic commit failed: {}", e)),
+                0,
             );
         }
 
@@ -1553,6 +1911,7 @@ impl TxProcessor {
             } else {
                 Some("EVM execution reverted".to_string())
             },
+            0,
         )
     }
 
@@ -1809,6 +2168,12 @@ impl TxProcessor {
             26 => self.system_register_validator(ix),
             // On-chain slashing via consensus (Ethereum/Cosmos pattern)
             27 => self.system_slash_validator(ix),
+            // Durable nonce (Solana-style long-lived transaction support)
+            28 => self.system_nonce(ix),
+            // Governance parameter changes (queued for next epoch boundary)
+            29 => self.system_governance_param_change(ix),
+            // Oracle multi-source price attestation (N/M validator threshold)
+            30 => self.system_oracle_attestation(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -2393,7 +2758,7 @@ impl TxProcessor {
         let proof_bytes = ix.data[105..233].to_vec();
 
         // Bind public recipient input to the credited account.
-        // recipient_public must be Poseidon(Fr(recipient_pubkey), 0).
+        // recipient_public must be Poseidon(Fr(recipient_pubkey)).
         let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_pubkey.0);
         let expected_recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
         let expected_recipient_bytes = fr_to_bytes(&expected_recipient);
@@ -3414,6 +3779,8 @@ impl TxProcessor {
                 owner: Pubkey([0x01; 32]), // SYSTEM_ACCOUNT_OWNER
                 executable: false,
                 rent_epoch: 0,
+                dormant: false,
+                missed_rent_epochs: 0,
             });
         account.shells = account.shells.saturating_add(grant_amount);
         account.staked = account.staked.saturating_add(grant_amount);
@@ -3621,6 +3988,457 @@ impl TxProcessor {
         Ok(())
     }
 
+    /// System program: Durable nonce operations (instruction type 28).
+    ///
+    /// Sub-opcodes (data[1]):
+    ///   0 = Initialize — create a nonce account with stored blockhash
+    ///   1 = Advance    — advance stored blockhash to latest (validates durable tx)
+    ///   2 = Withdraw   — withdraw shells from nonce account (authority only)
+    ///   3 = Authorize  — change nonce authority to a new pubkey
+    ///
+    /// Accounts layout:
+    ///   Initialize: [funder, nonce_account]
+    ///   Advance:    [nonce_account]           (authority must be tx signer)
+    ///   Withdraw:   [nonce_account, recipient]
+    ///   Authorize:  [nonce_account]           (new_authority in data[2..34])
+    fn system_nonce(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.data.len() < 2 {
+            return Err("Nonce: missing sub-opcode".to_string());
+        }
+        let sub = ix.data[1];
+        match sub {
+            0 => self.nonce_initialize(ix),
+            1 => self.nonce_advance(ix),
+            2 => self.nonce_withdraw(ix),
+            3 => self.nonce_authorize(ix),
+            _ => Err(format!("Nonce: unknown sub-opcode {}", sub)),
+        }
+    }
+
+    /// Initialize a new nonce account.
+    /// Data: [28, 0, authority(32)]   Accounts: [funder, nonce_account]
+    fn nonce_initialize(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("NonceInitialize requires [funder, nonce_account]".to_string());
+        }
+        if ix.data.len() < 34 {
+            // 1 (opcode) + 1 (sub) + 32 (authority)
+            return Err("NonceInitialize: missing authority pubkey".to_string());
+        }
+
+        let funder = ix.accounts[0];
+        let nonce_pk = ix.accounts[1];
+
+        // Authority is embedded in instruction data
+        let mut authority_bytes = [0u8; 32];
+        authority_bytes.copy_from_slice(&ix.data[2..34]);
+        let authority = Pubkey(authority_bytes);
+
+        // The nonce account must not already exist
+        if self.b_get_account(&nonce_pk)?.is_some() {
+            return Err("NonceInitialize: nonce account already exists".to_string());
+        }
+
+        // Fund the nonce account with minimum balance
+        let funder_account = self
+            .b_get_account(&funder)?
+            .ok_or("NonceInitialize: funder account not found")?;
+        if funder_account.spendable < NONCE_ACCOUNT_MIN_BALANCE {
+            return Err(format!(
+                "NonceInitialize: funder needs at least {} shells",
+                NONCE_ACCOUNT_MIN_BALANCE
+            ));
+        }
+
+        // Get latest committed blockhash to store in the nonce
+        let last_slot = self.b_get_last_slot().unwrap_or(0);
+        let stored_blockhash = self
+            .state
+            .get_block_by_slot(last_slot)?
+            .map(|b| b.hash())
+            .unwrap_or_default();
+
+        let nonce_state = NonceState {
+            authority,
+            blockhash: stored_blockhash,
+            fee_per_signature: BASE_FEE,
+        };
+
+        let mut nonce_data =
+            bincode::serialize(&nonce_state).map_err(|e| format!("NonceInit serialize: {}", e))?;
+        // Prepend marker byte so we can identify nonce accounts cheaply
+        nonce_data.insert(0, NONCE_ACCOUNT_MARKER);
+
+        // Transfer funds from funder to nonce account
+        self.b_transfer(&funder, &nonce_pk, NONCE_ACCOUNT_MIN_BALANCE)?;
+
+        // Set the nonce account data
+        let mut nonce_account = self
+            .b_get_account(&nonce_pk)?
+            .ok_or("NonceInitialize: nonce account disappeared after transfer")?;
+        nonce_account.data = nonce_data;
+        nonce_account.owner = SYSTEM_PROGRAM_ID;
+        self.b_put_account(&nonce_pk, &nonce_account)?;
+
+        Ok(())
+    }
+
+    /// Advance the durable nonce — updates stored blockhash to latest.
+    /// This MUST be the first instruction in a durable transaction.
+    /// Data: [28, 1]   Accounts: [authority, nonce_account]
+    fn nonce_advance(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("NonceAdvance requires [authority, nonce_account]".to_string());
+        }
+
+        let authority = ix.accounts[0]; // signer (verified by sig check)
+        let nonce_pk = ix.accounts[1];
+        let nonce_account = self
+            .b_get_account(&nonce_pk)?
+            .ok_or("NonceAdvance: nonce account not found")?;
+
+        let nonce_state = Self::decode_nonce_state(&nonce_account.data)?;
+
+        // Verify signer is the nonce authority
+        if authority != nonce_state.authority {
+            return Err("NonceAdvance: signer is not the nonce authority".to_string());
+        }
+
+        // Get latest blockhash
+        let last_slot = self.b_get_last_slot().unwrap_or(0);
+        let new_blockhash = self
+            .state
+            .get_block_by_slot(last_slot)?
+            .map(|b| b.hash())
+            .unwrap_or_default();
+
+        // The new blockhash must differ from the stored one (prevents double-advance)
+        if new_blockhash == nonce_state.blockhash {
+            return Err("NonceAdvance: blockhash has not changed since last advance".to_string());
+        }
+
+        let updated = NonceState {
+            authority: nonce_state.authority,
+            blockhash: new_blockhash,
+            fee_per_signature: BASE_FEE,
+        };
+
+        let mut data =
+            bincode::serialize(&updated).map_err(|e| format!("NonceAdvance serialize: {}", e))?;
+        data.insert(0, NONCE_ACCOUNT_MARKER);
+
+        let mut acct = nonce_account;
+        acct.data = data;
+        self.b_put_account(&nonce_pk, &acct)?;
+
+        Ok(())
+    }
+
+    /// Withdraw shells from a nonce account (authority only).
+    /// Data: [28, 2, amount(8 LE)]   Accounts: [authority, nonce_account, recipient]
+    fn nonce_withdraw(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 3 {
+            return Err("NonceWithdraw requires [authority, nonce_account, recipient]".to_string());
+        }
+        if ix.data.len() < 10 {
+            // 1 + 1 + 8
+            return Err("NonceWithdraw: missing amount".to_string());
+        }
+
+        let authority = ix.accounts[0]; // signer
+        let nonce_pk = ix.accounts[1];
+        let recipient = ix.accounts[2];
+
+        let nonce_account = self
+            .b_get_account(&nonce_pk)?
+            .ok_or("NonceWithdraw: nonce account not found")?;
+        let nonce_state = Self::decode_nonce_state(&nonce_account.data)?;
+
+        // Verify signer is the nonce authority
+        if authority != nonce_state.authority {
+            return Err("NonceWithdraw: signer is not the nonce authority".to_string());
+        }
+
+        let amount = u64::from_le_bytes(
+            ix.data[2..10]
+                .try_into()
+                .map_err(|_| "NonceWithdraw: invalid amount bytes")?,
+        );
+
+        if amount == 0 {
+            return Err("NonceWithdraw: amount must be > 0".to_string());
+        }
+
+        // If withdrawing everything, close the nonce account
+        if amount >= nonce_account.shells {
+            // Close: transfer all to recipient, zero out account
+            let full_amount = nonce_account.shells;
+            self.b_transfer(&nonce_pk, &recipient, full_amount)?;
+            // Clear nonce data
+            let mut acct = self
+                .b_get_account(&nonce_pk)?
+                .unwrap_or_else(|| Account::new(0, nonce_pk));
+            acct.data.clear();
+            self.b_put_account(&nonce_pk, &acct)?;
+        } else {
+            self.b_transfer(&nonce_pk, &recipient, amount)?;
+        }
+
+        Ok(())
+    }
+
+    /// Change the nonce authority.
+    /// Data: [28, 3, new_authority(32)]   Accounts: [authority, nonce_account]
+    fn nonce_authorize(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("NonceAuthorize requires [authority, nonce_account]".to_string());
+        }
+        if ix.data.len() < 34 {
+            return Err("NonceAuthorize: missing new authority pubkey".to_string());
+        }
+
+        let authority = ix.accounts[0]; // signer
+        let nonce_pk = ix.accounts[1];
+        let nonce_account = self
+            .b_get_account(&nonce_pk)?
+            .ok_or("NonceAuthorize: nonce account not found")?;
+        let nonce_state = Self::decode_nonce_state(&nonce_account.data)?;
+
+        // Verify signer is the current nonce authority
+        if authority != nonce_state.authority {
+            return Err("NonceAuthorize: signer is not the nonce authority".to_string());
+        }
+
+        let mut new_auth_bytes = [0u8; 32];
+        new_auth_bytes.copy_from_slice(&ix.data[2..34]);
+        let new_authority = Pubkey(new_auth_bytes);
+
+        // Zero pubkey is not allowed as authority
+        if new_authority == Pubkey([0u8; 32]) {
+            return Err("NonceAuthorize: new authority cannot be the zero pubkey".to_string());
+        }
+
+        let updated = NonceState {
+            authority: new_authority,
+            blockhash: nonce_state.blockhash,
+            fee_per_signature: nonce_state.fee_per_signature,
+        };
+
+        let mut data =
+            bincode::serialize(&updated).map_err(|e| format!("NonceAuthorize serialize: {}", e))?;
+        data.insert(0, NONCE_ACCOUNT_MARKER);
+
+        let mut acct = nonce_account;
+        acct.data = data;
+        self.b_put_account(&nonce_pk, &acct)?;
+
+        Ok(())
+    }
+
+    /// Decode a `NonceState` from the account's data field (skipping the marker byte).
+    fn decode_nonce_state(data: &[u8]) -> Result<NonceState, String> {
+        if data.is_empty() || data[0] != NONCE_ACCOUNT_MARKER {
+            return Err("Not a nonce account".to_string());
+        }
+        bincode::deserialize(&data[1..]).map_err(|e| format!("Invalid nonce state: {}", e))
+    }
+
+    /// System instruction type 29: GovernanceParamChange
+    ///
+    /// Queues a consensus parameter change to take effect at the next epoch
+    /// boundary. Only the governance authority (stored in state) may submit
+    /// these instructions.
+    ///
+    /// Data layout: [29, param_id, value_u64_le(8 bytes)]  (10 bytes total)
+    /// Accounts: [governance_authority]
+    fn system_governance_param_change(&self, ix: &Instruction) -> Result<(), String> {
+        // Validate data length: 1 (opcode) + 1 (param_id) + 8 (value)
+        if ix.data.len() < 10 {
+            return Err(
+                "GovernanceParamChange: data too short (need opcode + param_id + u64)".to_string(),
+            );
+        }
+
+        let param_id = ix.data[1];
+        let value = u64::from_le_bytes(
+            ix.data[2..10]
+                .try_into()
+                .map_err(|_| "GovernanceParamChange: invalid value bytes".to_string())?,
+        );
+
+        // Verify the signer is the governance authority
+        if ix.accounts.is_empty() {
+            return Err("GovernanceParamChange: requires governance authority account".to_string());
+        }
+        let signer = ix.accounts[0];
+
+        let authority = self
+            .state
+            .get_governance_authority()?
+            .ok_or("GovernanceParamChange: no governance authority configured")?;
+
+        if signer != authority {
+            return Err(
+                "GovernanceParamChange: signer is not the governance authority".to_string(),
+            );
+        }
+
+        // Validate param_id and value ranges
+        match param_id {
+            GOV_PARAM_BASE_FEE => {
+                // base_fee must be > 0 (anti-spam) and <= 1 MOLT
+                if value == 0 || value > 1_000_000_000 {
+                    return Err(
+                        "GovernanceParamChange: base_fee must be 1..=1_000_000_000 shells"
+                            .to_string(),
+                    );
+                }
+            }
+            GOV_PARAM_FEE_BURN_PERCENT
+            | GOV_PARAM_FEE_PRODUCER_PERCENT
+            | GOV_PARAM_FEE_VOTERS_PERCENT
+            | GOV_PARAM_FEE_TREASURY_PERCENT
+            | GOV_PARAM_FEE_COMMUNITY_PERCENT => {
+                if value > 100 {
+                    return Err("GovernanceParamChange: fee percentage must be 0..=100".to_string());
+                }
+            }
+            GOV_PARAM_MIN_VALIDATOR_STAKE => {
+                // Minimum 1 MOLT, maximum 1,000,000 MOLT
+                if !(1_000_000_000..=1_000_000_000_000_000_000).contains(&value) {
+                    return Err(
+                        "GovernanceParamChange: min_validator_stake out of range".to_string()
+                    );
+                }
+            }
+            GOV_PARAM_EPOCH_SLOTS => {
+                // Minimum 1,000 slots (~6.7 min at 400ms), maximum 10,000,000 slots (~46 days)
+                if !(1_000..=10_000_000).contains(&value) {
+                    return Err(
+                        "GovernanceParamChange: epoch_slots must be 1_000..=10_000_000".to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "GovernanceParamChange: unknown param_id {}",
+                    param_id
+                ));
+            }
+        }
+
+        // Queue the change
+        self.state.queue_governance_param_change(param_id, value)?;
+
+        Ok(())
+    }
+
+    /// System instruction type 30: Oracle multi-source price attestation.
+    ///
+    /// Validators submit price attestations for named assets. When 2/3+ of
+    /// total active stake has attested for the same asset (within the
+    /// staleness window), the stake-weighted median price is computed and
+    /// stored as the consensus oracle price.
+    ///
+    /// Data layout: [30, asset_len(1), asset_bytes(1..=16), price_u64_le(8), decimals(1)]
+    /// Accounts: [validator_pubkey]
+    fn system_oracle_attestation(&self, ix: &Instruction) -> Result<(), String> {
+        // ── Parse instruction data ──────────────────────────────────
+        if ix.data.len() < 4 {
+            return Err(
+                "OracleAttestation: data too short (need opcode + asset_len + asset + price + decimals)"
+                    .to_string(),
+            );
+        }
+        let asset_len = ix.data[1] as usize;
+        if !(ORACLE_ASSET_MIN_LEN..=ORACLE_ASSET_MAX_LEN).contains(&asset_len) {
+            return Err(format!(
+                "OracleAttestation: asset name length {} out of range {}..={}",
+                asset_len, ORACLE_ASSET_MIN_LEN, ORACLE_ASSET_MAX_LEN
+            ));
+        }
+        // Total: 1 (opcode) + 1 (asset_len) + asset_len + 8 (price) + 1 (decimals)
+        let expected_len = 2 + asset_len + 9;
+        if ix.data.len() < expected_len {
+            return Err(format!(
+                "OracleAttestation: data too short (need {} bytes, got {})",
+                expected_len,
+                ix.data.len()
+            ));
+        }
+        let asset = std::str::from_utf8(&ix.data[2..2 + asset_len])
+            .map_err(|_| "OracleAttestation: asset name is not valid UTF-8".to_string())?;
+        let price_offset = 2 + asset_len;
+        let price = u64::from_le_bytes(
+            ix.data[price_offset..price_offset + 8]
+                .try_into()
+                .map_err(|_| "OracleAttestation: invalid price bytes".to_string())?,
+        );
+        let decimals = ix.data[price_offset + 8];
+
+        if price == 0 {
+            return Err("OracleAttestation: price must be > 0".to_string());
+        }
+        if decimals > 18 {
+            return Err("OracleAttestation: decimals must be 0..=18".to_string());
+        }
+
+        // ── Verify signer is an active validator ────────────────────
+        if ix.accounts.is_empty() {
+            return Err("OracleAttestation: requires validator account".to_string());
+        }
+        let signer = ix.accounts[0];
+
+        let pool = self.b_get_stake_pool()?;
+        let stake_info = pool
+            .get_stake(&signer)
+            .ok_or_else(|| "OracleAttestation: signer has no stake".to_string())?;
+        if !stake_info.is_active || !stake_info.meets_minimum() {
+            return Err("OracleAttestation: signer is not an active validator".to_string());
+        }
+        let signer_stake = stake_info.total_stake();
+
+        // ── Store attestation ───────────────────────────────────────
+        let current_slot = self.state.get_last_slot().unwrap_or(0);
+        self.state.put_oracle_attestation(
+            asset,
+            &signer,
+            price,
+            decimals,
+            signer_stake,
+            current_slot,
+        )?;
+
+        // ── Check for quorum and compute consensus price ────────────
+        let attestations =
+            self.state
+                .get_oracle_attestations(asset, current_slot, ORACLE_STALENESS_SLOTS)?;
+
+        let total_active_stake = pool.active_stake();
+        if total_active_stake == 0 {
+            return Ok(());
+        }
+
+        let attested_stake: u128 = attestations.iter().map(|a| a.stake as u128).sum();
+
+        // 2/3+ supermajority of active stake required
+        let threshold = (total_active_stake as u128 * 2) / 3;
+        if attested_stake > threshold {
+            // Compute stake-weighted median price
+            let consensus_price =
+                compute_stake_weighted_median(&attestations);
+            self.state.put_oracle_consensus_price(
+                asset,
+                consensus_price,
+                decimals,
+                current_slot,
+                attestations.len() as u32,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Execute smart contract program instruction
     fn execute_contract_program(&self, ix: &Instruction) -> Result<(), String> {
         let contract_ix = ContractInstruction::deserialize(&ix.data)?;
@@ -3636,6 +4454,11 @@ impl TxProcessor {
             } => self.contract_call(ix, function, args, value),
             ContractInstruction::Upgrade { code } => self.contract_upgrade(ix, code),
             ContractInstruction::Close => self.contract_close(ix),
+            ContractInstruction::SetUpgradeTimelock { epochs } => {
+                self.contract_set_upgrade_timelock(ix, epochs)
+            }
+            ContractInstruction::ExecuteUpgrade => self.contract_execute_upgrade(ix),
+            ContractInstruction::VetoUpgrade => self.contract_veto_upgrade(ix),
         }
     }
 
@@ -4691,7 +5514,9 @@ impl TxProcessor {
         Ok(())
     }
 
-    /// Upgrade contract (owner only)
+    /// Upgrade contract (owner only).
+    /// If the contract has a timelock, the upgrade is staged rather than applied
+    /// immediately. Without a timelock, behaviour is unchanged (instant upgrade).
     fn contract_upgrade(&self, ix: &Instruction, new_code: Vec<u8>) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("Upgrade requires owner and contract accounts".to_string());
@@ -4711,12 +5536,35 @@ impl TxProcessor {
             return Err("Only contract owner can upgrade".to_string());
         }
 
-        let mut runtime = ContractRuntime::get_pooled();
-        let new_hash_result = runtime.deploy(&new_code);
-        runtime.return_to_pool();
-        let new_hash = new_hash_result?;
+        // Validate the new code compiles (fresh runtime to avoid metering reuse panic)
+        let mut runtime = ContractRuntime::new();
+        let new_hash = runtime.deploy(&new_code)?;
 
-        // Version tracking: store previous code hash and bump version
+        // If the contract has a timelock, stage the upgrade
+        if let Some(timelock_epochs) = contract.upgrade_timelock_epochs {
+            if timelock_epochs > 0 {
+                if contract.pending_upgrade.is_some() {
+                    return Err("Contract already has a pending upgrade — execute or veto first".to_string());
+                }
+                let current_slot = self.b_get_last_slot().unwrap_or(0);
+                let current_epoch = crate::consensus::slot_to_epoch(current_slot);
+                contract.pending_upgrade = Some(crate::contract::PendingUpgrade {
+                    code: new_code,
+                    code_hash: new_hash,
+                    submitted_epoch: current_epoch,
+                    execute_after_epoch: current_epoch + timelock_epochs as u64,
+                });
+
+                let mut updated_account = account;
+                updated_account.data = serde_json::to_vec(&contract)
+                    .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+                self.b_put_account(contract_address, &updated_account)?;
+
+                return Ok(());
+            }
+        }
+
+        // No timelock — apply immediately (legacy behaviour)
         contract.previous_code_hash = Some(contract.code_hash);
         contract.version = contract.version.saturating_add(1);
 
@@ -4725,6 +5573,141 @@ impl TxProcessor {
         // AUDIT-FIX 3.7: Clear stale ABI from previous code version — the new
         // code may have different exports/params. ABI should be re-published.
         contract.abi = None;
+        contract.pending_upgrade = None;
+
+        let mut updated_account = account;
+        updated_account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+
+        self.b_put_account(contract_address, &updated_account)?;
+
+        Ok(())
+    }
+
+    /// Set or remove the upgrade timelock for a contract (owner only).
+    fn contract_set_upgrade_timelock(
+        &self,
+        ix: &Instruction,
+        epochs: u32,
+    ) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("SetUpgradeTimelock requires owner and contract accounts".to_string());
+        }
+
+        let owner = &ix.accounts[0];
+        let contract_address = &ix.accounts[1];
+
+        let account = self
+            .b_get_account(contract_address)?
+            .ok_or("Contract not found")?;
+
+        let mut contract: ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
+
+        if contract.owner != *owner {
+            return Err("Only contract owner can set upgrade timelock".to_string());
+        }
+
+        // Cannot remove timelock while an upgrade is pending
+        if epochs == 0 && contract.pending_upgrade.is_some() {
+            return Err(
+                "Cannot remove timelock while an upgrade is pending — execute or veto first"
+                    .to_string(),
+            );
+        }
+
+        contract.upgrade_timelock_epochs = if epochs == 0 { None } else { Some(epochs) };
+
+        let mut updated_account = account;
+        updated_account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+
+        self.b_put_account(contract_address, &updated_account)?;
+
+        Ok(())
+    }
+
+    /// Execute a previously staged upgrade after the timelock has expired (owner only).
+    fn contract_execute_upgrade(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("ExecuteUpgrade requires owner and contract accounts".to_string());
+        }
+
+        let owner = &ix.accounts[0];
+        let contract_address = &ix.accounts[1];
+
+        let account = self
+            .b_get_account(contract_address)?
+            .ok_or("Contract not found")?;
+
+        let mut contract: ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
+
+        if contract.owner != *owner {
+            return Err("Only contract owner can execute upgrade".to_string());
+        }
+
+        let pending = contract
+            .pending_upgrade
+            .take()
+            .ok_or("No pending upgrade to execute")?;
+
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let current_epoch = crate::consensus::slot_to_epoch(current_slot);
+
+        if current_epoch <= pending.execute_after_epoch {
+            return Err(format!(
+                "Timelock has not expired — current epoch {} but upgrade executable after epoch {}",
+                current_epoch, pending.execute_after_epoch,
+            ));
+        }
+
+        // Apply the staged upgrade
+        contract.previous_code_hash = Some(contract.code_hash);
+        contract.version = contract.version.saturating_add(1);
+        contract.code = pending.code;
+        contract.code_hash = pending.code_hash;
+        contract.abi = None;
+
+        let mut updated_account = account;
+        updated_account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+
+        self.b_put_account(contract_address, &updated_account)?;
+
+        Ok(())
+    }
+
+    /// Veto (cancel) a pending contract upgrade. Governance authority only.
+    fn contract_veto_upgrade(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("VetoUpgrade requires governance authority and contract accounts".to_string());
+        }
+
+        let signer = &ix.accounts[0];
+        let contract_address = &ix.accounts[1];
+
+        let governance_authority = self
+            .state
+            .get_governance_authority()?
+            .ok_or("No governance authority configured")?;
+
+        if *signer != governance_authority {
+            return Err("Only governance authority can veto upgrades".to_string());
+        }
+
+        let account = self
+            .b_get_account(contract_address)?
+            .ok_or("Contract not found")?;
+
+        let mut contract: ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
+
+        if contract.pending_upgrade.is_none() {
+            return Err("No pending upgrade to veto".to_string());
+        }
+
+        contract.pending_upgrade = None;
 
         let mut updated_account = account;
         updated_account.data = serde_json::to_vec(&contract)
@@ -4793,6 +5776,8 @@ impl TxProcessor {
             return Ok(());
         }
 
+        let current_epoch = slot_to_epoch(current_slot);
+
         let mut accounts = HashSet::new();
         for ix in &tx.message.instructions {
             for account in &ix.accounts {
@@ -4800,9 +5785,14 @@ impl TxProcessor {
             }
         }
 
-        let (rent_rate, rent_free_kb) = self.state.get_rent_params()?;
+        let (rent_rate, _rent_free_kb) = self.state.get_rent_params()?;
 
-        // Accumulate total rent collected to credit treasury afterwards
+        // Convert monthly rate to per-epoch rate:
+        // SLOTS_PER_MONTH = 216_000 * 30 = 6_480_000
+        // SLOTS_PER_EPOCH = 432_000
+        // epochs_per_month ≈ 15
+        let rent_rate_per_epoch = rent_rate.saturating_mul(SLOTS_PER_EPOCH) / SLOTS_PER_MONTH;
+
         let mut total_rent_collected: u64 = 0;
 
         for pubkey in accounts {
@@ -4811,36 +5801,42 @@ impl TxProcessor {
                 None => continue,
             };
 
+            // Initialize rent_epoch on first touch
             if account.rent_epoch == 0 {
                 account.rent_epoch = current_slot;
                 self.b_put_account(&pubkey, &account)?;
                 continue;
             }
 
-            let elapsed_slots = current_slot.saturating_sub(account.rent_epoch);
-            if elapsed_slots < SLOTS_PER_MONTH {
+            let last_rent_epoch = slot_to_epoch(account.rent_epoch);
+            if current_epoch <= last_rent_epoch {
+                continue;
+            }
+            let epochs_elapsed = current_epoch - last_rent_epoch;
+
+            let data_len = account.data.len() as u64;
+
+            // Free tier: accounts with ≤ 2KB data are exempt
+            if data_len <= RENT_FREE_BYTES {
+                account.rent_epoch = current_slot;
+                // Exempt accounts reset missed epochs
+                account.missed_rent_epochs = 0;
+                self.b_put_account(&pubkey, &account)?;
                 continue;
             }
 
-            let months = elapsed_slots / SLOTS_PER_MONTH;
-            let data_len = account.data.len() as u64;
-            let free_bytes = rent_free_kb.saturating_mul(1024);
-
-            if data_len <= free_bytes {
+            // Zero-balance accounts with no data: also exempt
+            if account.shells == 0 && data_len == 0 {
                 account.rent_epoch = current_slot;
                 self.b_put_account(&pubkey, &account)?;
                 continue;
             }
 
-            let billable_bytes = data_len - free_bytes;
-            let billable_kb = billable_bytes.div_ceil(1024);
-            let rent_due = months.saturating_mul(billable_kb).saturating_mul(rent_rate);
+            // Graduated rent calculation
+            let rent_per_epoch = compute_graduated_rent(data_len, rent_rate_per_epoch);
+            let rent_due = epochs_elapsed.saturating_mul(rent_per_epoch);
 
             if rent_due > 0 {
-                // AUDIT-FIX 3.9: Graceful rent — collect up to what is available.
-                // Zero-balance accounts persist indefinitely (rent is clamped to 0).
-                // Account eviction is NOT implemented to avoid data loss risks.
-                // Future: consider garbage collection of zero-balance + zero-data accounts.
                 let actual_rent = rent_due.min(account.spendable);
                 if actual_rent > 0 {
                     account
@@ -4848,13 +5844,27 @@ impl TxProcessor {
                         .map_err(|e| format!("Rent deduction failed: {}", e))?;
                     total_rent_collected = total_rent_collected.saturating_add(actual_rent);
                 }
+
+                if actual_rent < rent_due {
+                    // Could not pay full rent — increment missed epochs
+                    account.missed_rent_epochs =
+                        account.missed_rent_epochs.saturating_add(epochs_elapsed);
+
+                    // Mark dormant after 2+ consecutive missed epochs
+                    if account.missed_rent_epochs >= DORMANCY_THRESHOLD_EPOCHS {
+                        account.dormant = true;
+                    }
+                } else {
+                    // Paid in full — reset missed counter
+                    account.missed_rent_epochs = 0;
+                }
             }
 
             account.rent_epoch = current_slot;
             self.b_put_account(&pubkey, &account)?;
         }
 
-        // Credit collected rent to treasury (prevents supply leak)
+        // Credit collected rent to treasury
         if total_rent_collected > 0 {
             let treasury_pubkey = self
                 .state
@@ -4941,6 +5951,7 @@ pub fn get_trust_tier(reputation: u64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::MIN_VALIDATOR_STAKE;
     use crate::Hash;
     use crate::Keypair;
     use tempfile::tempdir;
@@ -6211,6 +7222,7 @@ mod tests {
         let tx = Transaction {
             signatures: vec![sig],
             message: msg,
+            tx_type: Default::default(),
         };
         let result = processor.process_transaction(&tx, &validator);
         assert!(
@@ -6249,6 +7261,7 @@ mod tests {
         let tx = Transaction {
             signatures: vec![[0u8; 64]],
             message: msg,
+            tx_type: Default::default(),
         };
         let result = processor.process_transaction(&tx, &validator);
         // Should fail with EVM decode error — NOT with "sentinel blockhash" error
@@ -7243,6 +8256,8 @@ mod tests {
             abi: None,
             version: 1,
             previous_code_hash: None,
+            upgrade_timelock_epochs: None,
+            pending_upgrade: None,
         };
         let mut acct = Account::new(0, contract_id);
         acct.executable = true;
@@ -7355,24 +8370,15 @@ mod tests {
     // ====================================================================
 
     #[test]
-    fn test_reputation_fee_discount_tiers() {
-        // 0-499 rep: no discount
+    #[allow(deprecated)]
+    fn test_reputation_fee_discount_removed() {
+        // Task 4.2 (M-7): reputation fee discount removed — always returns base_fee
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 0), 1000);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 499), 1000);
-
-        // 500–749: 5% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 950);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 749), 950);
-
-        // 750–999: 7.5% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 925);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 999), 925);
-
-        // 1000+: 10% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 1000), 900);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 5000), 900);
-
-        // Edge: 0 base fee stays 0
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 1000);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 1000);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 1000), 1000);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 5000), 1000);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(0, 9999), 0);
     }
 
@@ -8120,5 +9126,1609 @@ mod tests {
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("insufficient data"));
+    }
+
+    // ─── Graduated Rent Tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_graduated_rent_below_free_tier() {
+        // Accounts with ≤ 2KB data pay zero rent
+        assert_eq!(compute_graduated_rent(0, 100), 0);
+        assert_eq!(compute_graduated_rent(1024, 100), 0);
+        assert_eq!(compute_graduated_rent(2048, 100), 0);
+    }
+
+    #[test]
+    fn test_graduated_rent_tier1() {
+        // 3KB total → 1KB billable → 1KB × 1× rate
+        assert_eq!(compute_graduated_rent(3 * 1024, 100), 100);
+        // 10KB total → 8KB billable → 8KB × 1× rate
+        assert_eq!(compute_graduated_rent(10 * 1024, 100), 800);
+    }
+
+    #[test]
+    fn test_graduated_rent_tier2() {
+        // 11KB total → 9KB billable → 8KB @1x + 1KB @2x
+        assert_eq!(compute_graduated_rent(11 * 1024, 100), 800 + 200);
+        // 50KB total → 48KB billable → 8KB @1x + 40KB @2x
+        assert_eq!(compute_graduated_rent(50 * 1024, 100), 800 + 8000);
+        // 100KB total → 98KB billable → 8KB @1x + 90KB @2x
+        assert_eq!(compute_graduated_rent(100 * 1024, 100), 800 + 18000);
+    }
+
+    #[test]
+    fn test_graduated_rent_tier3() {
+        // 101KB total → 99KB billable → 8KB @1x + 90KB @2x + 1KB @4x
+        assert_eq!(compute_graduated_rent(101 * 1024, 100), 800 + 18000 + 400);
+        // 200KB total → 198KB billable → 8KB @1x + 90KB @2x + 100KB @4x
+        assert_eq!(compute_graduated_rent(200 * 1024, 100), 800 + 18000 + 40000);
+    }
+
+    #[test]
+    fn test_graduated_rent_partial_kb() {
+        // 2049 bytes → 1 byte over free tier → rounds up to 1KB
+        assert_eq!(compute_graduated_rent(2049, 100), 100);
+        // 2048 + 512 = 2560 → 512 bytes over → rounds up to 1KB
+        assert_eq!(compute_graduated_rent(2560, 100), 100);
+    }
+
+    #[test]
+    fn test_graduated_rent_zero_rate() {
+        assert_eq!(compute_graduated_rent(100 * 1024, 0), 0);
+    }
+
+    // ======== Durable Nonce Tests ========
+
+    /// Helper: create a nonce-initialize instruction
+    fn make_nonce_init_ix(funder: Pubkey, nonce_pk: Pubkey, authority: Pubkey) -> Instruction {
+        let mut data = vec![28u8, 0u8]; // type=28, sub=0 (Initialize)
+        data.extend_from_slice(&authority.0);
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![funder, nonce_pk],
+            data,
+        }
+    }
+
+    /// Helper: create a nonce-advance instruction
+    fn make_nonce_advance_ix(authority: Pubkey, nonce_pk: Pubkey) -> Instruction {
+        let data = vec![28u8, 1u8]; // type=28, sub=1 (Advance)
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![authority, nonce_pk],
+            data,
+        }
+    }
+
+    #[test]
+    fn test_nonce_initialize() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(
+            result.success,
+            "NonceInit should succeed: {:?}",
+            result.error
+        );
+
+        // Verify nonce account exists with expected state
+        let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
+        assert_eq!(nonce_acct.shells, NONCE_ACCOUNT_MIN_BALANCE);
+        assert_eq!(nonce_acct.owner, SYSTEM_PROGRAM_ID);
+        assert_eq!(nonce_acct.data[0], NONCE_ACCOUNT_MARKER);
+
+        let ns = TxProcessor::decode_nonce_state(&nonce_acct.data).unwrap();
+        assert_eq!(ns.authority, alice);
+        assert_eq!(ns.blockhash, genesis_hash);
+        assert_eq!(ns.fee_per_signature, BASE_FEE);
+    }
+
+    #[test]
+    fn test_nonce_initialize_rejects_existing_account() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        // Pre-create the nonce account
+        state
+            .put_account(&nonce_pk, &Account::new(0, nonce_pk))
+            .unwrap();
+
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+        assert!(
+            result.error.as_ref().unwrap().contains("already exists"),
+            "Expected 'already exists' error, got: {:?}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_nonce_initialize_rejects_insufficient_funds() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+
+        // Poor alice with only 1 shell
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let mut poor_account = Account::new(0, alice);
+        poor_account.shells = 1;
+        poor_account.spendable = 1;
+        state.put_account(&alice, &poor_account).unwrap();
+
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
+        let genesis_hash = genesis.hash();
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+
+        let nonce_pk = Pubkey([99u8; 32]);
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let validator = Pubkey([42u8; 32]);
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn test_nonce_advance() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        // Step 1: Initialize nonce
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "Init failed: {:?}", r.error);
+
+        // Step 2: Advance the nonce — need a new block so blockhash changes
+        let block1 = crate::Block::new_with_timestamp(
+            1,
+            genesis_hash,
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            1,
+        );
+        let block1_hash = block1.hash();
+        state.put_block(&block1).unwrap();
+        state.set_last_slot(1).unwrap();
+
+        let advance_ix = make_nonce_advance_ix(alice, nonce_pk);
+        let msg2 = crate::transaction::Message::new(vec![advance_ix], block1_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r2 = processor.process_transaction(&tx2, &validator);
+        assert!(r2.success, "Advance failed: {:?}", r2.error);
+
+        // Verify blockhash updated
+        let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
+        let ns = TxProcessor::decode_nonce_state(&nonce_acct.data).unwrap();
+        assert_eq!(ns.blockhash, block1_hash);
+    }
+
+    #[test]
+    fn test_nonce_advance_rejects_same_blockhash() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        // Initialize nonce (stores genesis_hash)
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Try to advance without a new block — blockhash hasn't changed
+        let advance_ix = make_nonce_advance_ix(alice, nonce_pk);
+        let msg2 = crate::transaction::Message::new(vec![advance_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r = processor.process_transaction(&tx2, &validator);
+        assert!(!r.success);
+        assert!(r.error.as_ref().unwrap().contains("has not changed"));
+    }
+
+    #[test]
+    fn test_durable_tx_with_nonce_blockhash() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        // Step 1: Initialize nonce (stores genesis_hash)
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Step 2: Create many new blocks to push genesis_hash out of the recent window
+        let mut prev_hash = genesis_hash;
+        for slot in 1..=350 {
+            let block = crate::Block::new_with_timestamp(
+                slot,
+                prev_hash,
+                Hash::default(),
+                [0u8; 32],
+                Vec::new(),
+                slot,
+            );
+            prev_hash = block.hash();
+            state.put_block(&block).unwrap();
+            state.set_last_slot(slot).unwrap();
+        }
+
+        // Confirm genesis_hash is now too old for a normal tx
+        let normal_tx = make_transfer_tx(&alice_kp, alice, bob, 1, genesis_hash);
+        let normal_result = processor.process_transaction(&normal_tx, &validator);
+        assert!(
+            !normal_result.success,
+            "Normal tx with old blockhash should fail"
+        );
+        assert!(normal_result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Blockhash not found or too old"));
+
+        // Step 3: Build a durable tx using the nonce's stored blockhash (genesis_hash)
+        // First instruction = AdvanceNonce, second = Transfer
+        let advance_ix = make_nonce_advance_ix(alice, nonce_pk);
+        let mut transfer_data = vec![0u8];
+        transfer_data.extend_from_slice(&Account::molt_to_shells(1).to_le_bytes());
+        let transfer_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, bob],
+            data: transfer_data,
+        };
+
+        let msg = crate::transaction::Message::new(vec![advance_ix, transfer_ix], genesis_hash);
+        let mut durable_tx = Transaction::new(msg);
+        durable_tx
+            .signatures
+            .push(alice_kp.sign(&durable_tx.message.serialize()));
+
+        let durable_result = processor.process_transaction(&durable_tx, &validator);
+        assert!(
+            durable_result.success,
+            "Durable nonce tx should succeed: {:?}",
+            durable_result.error,
+        );
+
+        // Bob should have received 1 MOLT
+        assert_eq!(state.get_balance(&bob).unwrap(), Account::molt_to_shells(1));
+
+        // Nonce should be advanced to latest blockhash
+        let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
+        let ns = TxProcessor::decode_nonce_state(&nonce_acct.data).unwrap();
+        assert_eq!(ns.blockhash, prev_hash);
+    }
+
+    #[test]
+    fn test_nonce_withdraw() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        // Initialize nonce
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Withdraw funds to bob
+        let mut withdraw_data = vec![28u8, 2u8];
+        withdraw_data.extend_from_slice(&NONCE_ACCOUNT_MIN_BALANCE.to_le_bytes());
+        let withdraw_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, nonce_pk, bob],
+            data: withdraw_data,
+        };
+        let msg2 = crate::transaction::Message::new(vec![withdraw_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r = processor.process_transaction(&tx2, &validator);
+        assert!(r.success, "Withdraw failed: {:?}", r.error);
+
+        // Bob should have received the nonce balance
+        let bob_balance = state.get_balance(&bob).unwrap();
+        assert_eq!(bob_balance, NONCE_ACCOUNT_MIN_BALANCE);
+
+        // Nonce account data should be cleared (closed)
+        let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
+        assert!(nonce_acct.data.is_empty());
+    }
+
+    #[test]
+    fn test_nonce_authorize() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+        let new_auth = Pubkey([77u8; 32]);
+
+        // Initialize nonce with alice as authority
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Change authority to new_auth
+        let mut auth_data = vec![28u8, 3u8];
+        auth_data.extend_from_slice(&new_auth.0);
+        let auth_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, nonce_pk],
+            data: auth_data,
+        };
+        let msg2 = crate::transaction::Message::new(vec![auth_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r = processor.process_transaction(&tx2, &validator);
+        assert!(r.success, "Authorize failed: {:?}", r.error);
+
+        // Verify authority changed
+        let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
+        let ns = TxProcessor::decode_nonce_state(&nonce_acct.data).unwrap();
+        assert_eq!(ns.authority, new_auth);
+    }
+
+    #[test]
+    fn test_nonce_authorize_rejects_zero_authority() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        // Initialize
+        let ix = make_nonce_init_ix(alice, nonce_pk, alice);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Try to set zero authority
+        let mut auth_data = vec![28u8, 3u8];
+        auth_data.extend_from_slice(&[0u8; 32]);
+        let auth_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, nonce_pk],
+            data: auth_data,
+        };
+        let msg2 = crate::transaction::Message::new(vec![auth_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r = processor.process_transaction(&tx2, &validator);
+        assert!(!r.success);
+        assert!(r.error.as_ref().unwrap().contains("zero pubkey"));
+    }
+
+    #[test]
+    fn test_decode_nonce_state_invalid_data() {
+        // Empty data
+        assert!(TxProcessor::decode_nonce_state(&[]).is_err());
+        // Wrong marker
+        assert!(TxProcessor::decode_nonce_state(&[0x00, 0x01]).is_err());
+        // Correct marker but garbage
+        assert!(TxProcessor::decode_nonce_state(&[NONCE_ACCOUNT_MARKER, 0xFF]).is_err());
+    }
+
+    #[test]
+    fn test_nonce_unknown_sub_opcode() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let nonce_pk = Pubkey([99u8; 32]);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, nonce_pk],
+            data: vec![28u8, 99u8], // unknown sub-opcode
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(r.error.as_ref().unwrap().contains("unknown sub-opcode"));
+    }
+
+    // ── Governance parameter change tests (system instruction type 29) ──
+
+    /// Helper: build a governance param change instruction
+    fn make_gov_param_ix(signer: Pubkey, param_id: u8, value: u64) -> Instruction {
+        let mut data = vec![29u8, param_id];
+        data.extend_from_slice(&value.to_le_bytes());
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![signer],
+            data,
+        }
+    }
+
+    #[test]
+    fn test_governance_param_change_base_fee() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Set alice as governance authority
+        state.set_governance_authority(&alice).unwrap();
+
+        // Change base_fee to 2,000,000 shells (0.002 MOLT)
+        let new_base_fee = 2_000_000u64;
+        let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, new_base_fee);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "failed: {:?}", r.error);
+
+        // Verify it's queued but not yet applied
+        let pending = state.get_pending_governance_changes().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0], (GOV_PARAM_BASE_FEE, new_base_fee));
+
+        // Apply pending changes (simulating epoch boundary)
+        let applied = state.apply_pending_governance_changes().unwrap();
+        assert_eq!(applied, 1);
+
+        // Verify the fee config was updated
+        let fee_config = state.get_fee_config().unwrap();
+        assert_eq!(fee_config.base_fee, new_base_fee);
+
+        // Pending changes should be cleared
+        let pending = state.get_pending_governance_changes().unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_governance_param_change_fee_percentages() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // Change burn percent to 50% and producer percent to 20%
+        let ix1 = make_gov_param_ix(alice, GOV_PARAM_FEE_BURN_PERCENT, 50);
+        let ix2 = make_gov_param_ix(alice, GOV_PARAM_FEE_PRODUCER_PERCENT, 20);
+
+        // Submit both in one tx
+        let msg = crate::transaction::Message::new(vec![ix1, ix2], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "failed: {:?}", r.error);
+
+        let pending = state.get_pending_governance_changes().unwrap();
+        assert_eq!(pending.len(), 2);
+
+        let applied = state.apply_pending_governance_changes().unwrap();
+        assert_eq!(applied, 2);
+
+        let fee_config = state.get_fee_config().unwrap();
+        assert_eq!(fee_config.fee_burn_percent, 50);
+        assert_eq!(fee_config.fee_producer_percent, 20);
+    }
+
+    #[test]
+    fn test_governance_param_change_min_validator_stake() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // Change min_validator_stake to 100 MOLT
+        let new_stake = 100_000_000_000u64; // 100 MOLT in shells
+        let ix = make_gov_param_ix(alice, GOV_PARAM_MIN_VALIDATOR_STAKE, new_stake);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "failed: {:?}", r.error);
+
+        let applied = state.apply_pending_governance_changes().unwrap();
+        assert_eq!(applied, 1);
+
+        let stored = state.get_min_validator_stake().unwrap();
+        assert_eq!(stored, Some(new_stake));
+    }
+
+    #[test]
+    fn test_governance_param_change_epoch_slots() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // Change epoch_slots to 100,000
+        let new_epoch = 100_000u64;
+        let ix = make_gov_param_ix(alice, GOV_PARAM_EPOCH_SLOTS, new_epoch);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "failed: {:?}", r.error);
+
+        let applied = state.apply_pending_governance_changes().unwrap();
+        assert_eq!(applied, 1);
+
+        let stored = state.get_epoch_slots().unwrap();
+        assert_eq!(stored, Some(new_epoch));
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_non_authority() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Set a different pubkey as governance authority (not alice)
+        let gov_auth = Pubkey([77u8; 32]);
+        state.set_governance_authority(&gov_auth).unwrap();
+
+        // Alice tries to submit governance change — should be rejected
+        let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, 2_000_000);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error
+                .as_ref()
+                .unwrap()
+                .contains("not the governance authority"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_no_authority_configured() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // No governance authority configured
+        let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, 2_000_000);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error
+                .as_ref()
+                .unwrap()
+                .contains("no governance authority configured"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_invalid_base_fee() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // base_fee = 0 (too low)
+        let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, 0);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("base_fee must be"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_invalid_percentage() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // fee_burn_percent = 101 (too high)
+        let ix = make_gov_param_ix(alice, GOV_PARAM_FEE_BURN_PERCENT, 101);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("fee percentage must be"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_rejects_unknown_param() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // param_id = 99 (unknown)
+        let ix = make_gov_param_ix(alice, 99, 1000);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("unknown param_id"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_change_data_too_short() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // Only 2 bytes (no value)
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: vec![29u8, 0u8],
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("data too short"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_governance_param_overwrite_pending() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        state.set_governance_authority(&alice).unwrap();
+
+        // Queue base_fee = 2M
+        let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, 2_000_000);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "failed: {:?}", r.error);
+
+        // Overwrite with base_fee = 3M
+        let ix2 = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, 3_000_000);
+        let msg2 = crate::transaction::Message::new(vec![ix2], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(alice_kp.sign(&tx2.message.serialize()));
+        let r2 = processor.process_transaction(&tx2, &validator);
+        assert!(r2.success, "failed: {:?}", r2.error);
+
+        // Only 1 pending change (overwritten), and it's the latest value
+        let pending = state.get_pending_governance_changes().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0], (GOV_PARAM_BASE_FEE, 3_000_000));
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Compute-unit metering tests (Task 2.12)
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cu_lookup_transfer() {
+        assert_eq!(compute_units_for_system_ix(0), CU_TRANSFER);
+        // Multi-transfer variants (types 2-5) should match
+        for t in 2..=5u8 {
+            assert_eq!(compute_units_for_system_ix(t), CU_TRANSFER);
+        }
+    }
+
+    #[test]
+    fn test_cu_lookup_stake_unstake() {
+        assert_eq!(compute_units_for_system_ix(9), CU_STAKE);
+        assert_eq!(compute_units_for_system_ix(10), CU_UNSTAKE);
+        assert_eq!(compute_units_for_system_ix(11), CU_CLAIM_UNSTAKE);
+    }
+
+    #[test]
+    fn test_cu_lookup_nft() {
+        assert_eq!(compute_units_for_system_ix(7), CU_MINT_NFT);
+        assert_eq!(compute_units_for_system_ix(8), CU_TRANSFER_NFT);
+    }
+
+    #[test]
+    fn test_cu_lookup_zk() {
+        assert_eq!(compute_units_for_system_ix(23), CU_ZK_SHIELD);
+        assert_eq!(compute_units_for_system_ix(24), CU_ZK_TRANSFER);
+        assert_eq!(compute_units_for_system_ix(25), CU_ZK_TRANSFER);
+    }
+
+    #[test]
+    fn test_cu_lookup_deploy_contract() {
+        assert_eq!(compute_units_for_system_ix(17), CU_DEPLOY_CONTRACT);
+    }
+
+    #[test]
+    fn test_cu_lookup_governance() {
+        assert_eq!(compute_units_for_system_ix(29), CU_GOVERNANCE_PARAM);
+    }
+
+    #[test]
+    fn test_cu_lookup_unknown_defaults_to_100() {
+        assert_eq!(compute_units_for_system_ix(200), 100);
+        assert_eq!(compute_units_for_system_ix(255), 100);
+    }
+
+    #[test]
+    fn test_cu_for_tx_single_transfer() {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1; 32]), Pubkey([2; 32])],
+            data: vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0], // type 0 = transfer
+        };
+        let msg = crate::transaction::Message::new(vec![ix], Hash::default());
+        let tx = Transaction::new(msg);
+        assert_eq!(compute_units_for_tx(&tx), CU_TRANSFER);
+    }
+
+    #[test]
+    fn test_cu_for_tx_multi_ix_sums() {
+        let ix_transfer = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1; 32]), Pubkey([2; 32])],
+            data: vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let ix_stake = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1; 32])],
+            data: vec![9u8, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let msg = crate::transaction::Message::new(vec![ix_transfer, ix_stake], Hash::default());
+        let tx = Transaction::new(msg);
+        assert_eq!(compute_units_for_tx(&tx), CU_TRANSFER + CU_STAKE);
+    }
+
+    #[test]
+    fn test_cu_for_tx_ignores_contract_ix() {
+        let ix_system = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1; 32]), Pubkey([2; 32])],
+            data: vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let ix_contract = Instruction {
+            program_id: Pubkey([0xFF; 32]), // CONTRACT_PROGRAM_ID
+            accounts: vec![Pubkey([3; 32])],
+            data: vec![1, 2, 3],
+        };
+        let msg = crate::transaction::Message::new(vec![ix_system, ix_contract], Hash::default());
+        let tx = Transaction::new(msg);
+        // Only the system instruction counts — contract CU is tracked by WASM runtime
+        assert_eq!(compute_units_for_tx(&tx), CU_TRANSFER);
+    }
+
+    #[test]
+    fn test_tx_result_has_compute_units_after_transfer() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let result = processor.process_transaction(&tx, &validator);
+
+        assert!(
+            result.success,
+            "transfer should succeed: {:?}",
+            result.error
+        );
+        assert_eq!(result.compute_units_used, CU_TRANSFER);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Task 3.6 — Oracle Multi-Source Attestation Tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Helper: build an oracle attestation instruction
+    fn make_oracle_attestation_ix(signer: Pubkey, asset: &str, price: u64, decimals: u8) -> Instruction {
+        let asset_bytes = asset.as_bytes();
+        let mut data = vec![30u8, asset_bytes.len() as u8];
+        data.extend_from_slice(asset_bytes);
+        data.extend_from_slice(&price.to_le_bytes());
+        data.push(decimals);
+        Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![signer],
+            data,
+        }
+    }
+
+    /// Helper: set up a validator with active stake in the stake pool
+    fn setup_active_validator(state: &StateStore, pubkey: &Pubkey, stake_shells: u64) {
+        let mut pool = state.get_stake_pool().unwrap_or_else(|_| crate::consensus::StakePool::new());
+        // Use stake() which requires >= MIN_VALIDATOR_STAKE
+        pool.stake(*pubkey, stake_shells, 0).unwrap();
+        state.put_stake_pool(&pool).unwrap();
+    }
+
+    #[test]
+    fn test_oracle_attestation_basic_submit() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Make alice an active validator
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // Submit price attestation: MOLT = 1.50 (150_000_000 at 8 decimals)
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 150_000_000, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "Attestation should succeed: {:?}", r.error);
+
+        // Verify attestation was stored
+        let attestations = state
+            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+            .unwrap();
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations[0].price, 150_000_000);
+        assert_eq!(attestations[0].decimals, 8);
+        assert_eq!(attestations[0].validator, alice);
+    }
+
+    #[test]
+    fn test_oracle_attestation_rejects_non_validator() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Alice is NOT a validator (no stake)
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 150_000_000, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("no stake"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_attestation_rejects_zero_price() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 0, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("price must be > 0"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_attestation_rejects_invalid_decimals() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 100, 19);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("decimals must be"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_attestation_rejects_empty_asset() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // Build manually with asset_len = 0
+        let mut data = vec![30u8, 0u8]; // asset_len = 0
+        data.extend_from_slice(&100u64.to_le_bytes());
+        data.push(8);
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("asset name length"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_attestation_rejects_too_long_asset() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // Asset name = 17 bytes (over max 16)
+        let long_asset = "ABCDEFGHIJKLMNOPQ"; // 17 chars
+        let ix = make_oracle_attestation_ix(alice, long_asset, 100, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("asset name length"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_attestation_data_too_short() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // Only 3 bytes (opcode + asset_len + 1 byte of asset, missing price + decimals)
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: vec![30u8, 4u8, b'M', b'O'],
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(!r.success);
+        assert!(
+            r.error.as_ref().unwrap().contains("data too short"),
+            "unexpected: {:?}",
+            r.error
+        );
+    }
+
+    #[test]
+    fn test_oracle_quorum_consensus_price() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        // Need three validators with different stakes
+        // Alice already has an account, create two more
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let carol_kp = Keypair::generate();
+        let carol = carol_kp.pubkey();
+
+        // Fund bob and carol
+        state.put_account(&bob, &Account::new(1000, bob)).unwrap();
+        state.put_account(&carol, &Account::new(1000, carol)).unwrap();
+
+        // Equal stake for all three validators
+        let stake = MIN_VALIDATOR_STAKE;
+        {
+            let mut pool = crate::consensus::StakePool::new();
+            pool.stake(alice, stake, 0).unwrap();
+            pool.stake(bob, stake, 0).unwrap();
+            pool.stake(carol, stake, 0).unwrap();
+            state.put_stake_pool(&pool).unwrap();
+        }
+
+        let block_producer = Pubkey([42u8; 32]);
+
+        // Alice attests: MOLT = 150 (1 of 3, not quorum)
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 150, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &block_producer);
+        assert!(r.success, "Alice attestation failed: {:?}", r.error);
+
+        // No consensus yet
+        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        assert!(cp.is_none(), "No consensus with 1/3 attestations");
+
+        // Bob attests: MOLT = 160 (2 of 3, exactly 2/3 — NOT strictly >2/3, no quorum yet)
+        let ix = make_oracle_attestation_ix(bob, "MOLT", 160, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(bob_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &block_producer);
+        assert!(r.success, "Bob attestation failed: {:?}", r.error);
+
+        // 2/3 exactly is NOT >2/3 supermajority (Tendermint convention)
+        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        assert!(cp.is_none(), "2/3 exactly should NOT reach quorum (need >2/3)");
+
+        // Carol attests: MOLT = 155 (3 of 3 = 100% > 2/3, quorum reached)
+        let ix = make_oracle_attestation_ix(carol, "MOLT", 155, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(carol_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &block_producer);
+        assert!(r.success, "Carol attestation failed: {:?}", r.error);
+
+        // Now 3/3 = 100% > 2/3 — consensus reached
+        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        assert!(cp.is_some(), "Should have consensus with 3/3 stake");
+        let cp = cp.unwrap();
+        assert_eq!(cp.attestation_count, 3);
+        // Sorted prices: [150, 155, 160]. With equal stakes, median = 155
+        assert_eq!(cp.price, 155, "Stake-weighted median of [150,155,160] with equal stakes");
+    }
+
+    #[test]
+    fn test_oracle_validator_replaces_own_attestation() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // First attestation: price = 100
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 100, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "first: {:?}", r.error);
+
+        // Second attestation: price = 200 (should replace)
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 200, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "second: {:?}", r.error);
+
+        // Should only have 1 attestation (replaced, not appended)
+        let atts = state.get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS).unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].price, 200);
+    }
+
+    #[test]
+    fn test_oracle_multi_asset_independence() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
+
+        // Attest MOLT
+        let ix = make_oracle_attestation_ix(alice, "MOLT", 150, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "MOLT: {:?}", r.error);
+
+        // Attest wETH
+        let ix = make_oracle_attestation_ix(alice, "wETH", 345_000, 8);
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "wETH: {:?}", r.error);
+
+        // Check each asset independently
+        let molt_atts = state.get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS).unwrap();
+        let weth_atts = state.get_oracle_attestations("wETH", 0, ORACLE_STALENESS_SLOTS).unwrap();
+        assert_eq!(molt_atts.len(), 1);
+        assert_eq!(weth_atts.len(), 1);
+        assert_eq!(molt_atts[0].price, 150);
+        assert_eq!(weth_atts[0].price, 345_000);
+    }
+
+    #[test]
+    fn test_oracle_compute_units() {
+        assert_eq!(compute_units_for_system_ix(30), CU_ORACLE_ATTESTATION);
+    }
+
+    #[test]
+    fn test_stake_weighted_median_single() {
+        let atts = vec![OracleAttestation {
+            validator: Pubkey([1u8; 32]),
+            price: 100,
+            decimals: 8,
+            stake: 1000,
+            slot: 0,
+        }];
+        assert_eq!(compute_stake_weighted_median(&atts), 100);
+    }
+
+    #[test]
+    fn test_stake_weighted_median_equal_stakes() {
+        let atts = vec![
+            OracleAttestation { validator: Pubkey([1u8; 32]), price: 100, decimals: 8, stake: 1000, slot: 0 },
+            OracleAttestation { validator: Pubkey([2u8; 32]), price: 200, decimals: 8, stake: 1000, slot: 0 },
+            OracleAttestation { validator: Pubkey([3u8; 32]), price: 300, decimals: 8, stake: 1000, slot: 0 },
+        ];
+        // Sorted: [100, 200, 300], total=3000, half=1500
+        // Cumulative: 1000, 2000, 3000 → crosses at 200
+        assert_eq!(compute_stake_weighted_median(&atts), 200);
+    }
+
+    #[test]
+    fn test_stake_weighted_median_unequal_stakes() {
+        let atts = vec![
+            OracleAttestation { validator: Pubkey([1u8; 32]), price: 100, decimals: 8, stake: 100, slot: 0 },
+            OracleAttestation { validator: Pubkey([2u8; 32]), price: 200, decimals: 8, stake: 100, slot: 0 },
+            OracleAttestation { validator: Pubkey([3u8; 32]), price: 300, decimals: 8, stake: 800, slot: 0 },
+        ];
+        // Sorted: [100, 200, 300], total=1000, half=500
+        // Cumulative: 100, 200, 1000 → crosses at 300 (the whale's price dominates)
+        assert_eq!(compute_stake_weighted_median(&atts), 300);
+    }
+
+    #[test]
+    fn test_stake_weighted_median_empty() {
+        let atts: Vec<OracleAttestation> = vec![];
+        assert_eq!(compute_stake_weighted_median(&atts), 0);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Task 3.3 — Contract Upgrade Timelock Tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Helper: deploy a minimal WASM contract and return the contract address and loaded ContractAccount.
+    fn deploy_test_contract(
+        processor: &TxProcessor,
+        state: &StateStore,
+        deployer_kp: &crate::Keypair,
+        deployer: Pubkey,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+    ) -> Pubkey {
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        let code_hash = Hash::hash(&code);
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[..16].copy_from_slice(&deployer.0[..16]);
+        addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
+        let contract_addr = Pubkey(addr_bytes);
+
+        let contract_ix = crate::ContractInstruction::Deploy {
+            code,
+            init_data: Vec::new(),
+        };
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: vec![deployer, contract_addr],
+            data: contract_ix.serialize().unwrap(),
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(deployer_kp.sign(&tx.message.serialize()));
+        let result = processor.process_transaction(&tx, validator);
+        assert!(result.success, "deploy should succeed: {:?}", result.error);
+        // Verify created
+        let acct = state.get_account(&contract_addr).unwrap();
+        assert!(acct.is_some() && acct.unwrap().executable);
+        contract_addr
+    }
+
+    /// Helper: build and submit a contract instruction tx.
+    fn submit_contract_ix(
+        processor: &TxProcessor,
+        signer_kp: &crate::Keypair,
+        accounts: Vec<Pubkey>,
+        contract_ix: crate::ContractInstruction,
+        genesis_hash: Hash,
+        validator: &Pubkey,
+    ) -> crate::TxResult {
+        let ix = Instruction {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts,
+            data: contract_ix.serialize().unwrap(),
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(signer_kp.sign(&tx.message.serialize()));
+        processor.process_transaction(&tx, validator)
+    }
+
+    /// Helper: build a valid minimal WASM module distinct from the base module.
+    /// Appends a custom section with the given tag byte so each call produces a
+    /// different (but valid) WASM binary.
+    fn valid_wasm_code(tag: u8) -> Vec<u8> {
+        // magic + version + custom section (id=0, payload_len=2, name_len=1, name=tag)
+        vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, tag]
+    }
+
+    #[test]
+    fn test_upgrade_timelock_set_and_stage() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Deploy contract
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set 3-epoch timelock
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 3 },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success, "SetUpgradeTimelock should succeed: {:?}", result.error);
+
+        // Verify timelock is stored
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert_eq!(ca.upgrade_timelock_epochs, Some(3));
+        assert!(ca.pending_upgrade.is_none());
+
+        // Submit upgrade — should be staged, not applied immediately
+        let new_code = valid_wasm_code(0x01);
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: new_code.clone() },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success, "Timelocked upgrade should succeed (staged): {:?}", result.error);
+
+        // Verify pending upgrade exists but code not applied yet
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert!(ca.pending_upgrade.is_some(), "Should have pending upgrade");
+        assert_eq!(ca.version, 1, "Version should NOT have bumped yet");
+        let pending = ca.pending_upgrade.unwrap();
+        assert_eq!(pending.code, new_code);
+        assert_eq!(pending.execute_after_epoch, pending.submitted_epoch + 3);
+    }
+
+    #[test]
+    fn test_upgrade_without_timelock_is_instant() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // No timelock set — upgrade should be instant
+        let new_code = valid_wasm_code(0x02);
+        let result = submit_contract_ix(
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: new_code.clone() },
+            genesis_hash,
+            &validator,
+        );
+        assert!(result.success, "Instant upgrade should succeed: {:?}", result.error);
+
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert_eq!(ca.version, 2, "Version should be bumped immediately");
+        assert!(ca.pending_upgrade.is_none());
+        assert_eq!(ca.code, new_code);
+    }
+
+    #[test]
+    fn test_upgrade_timelock_rejects_double_stage() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set timelock
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // First upgrade → staged
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x03) },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Second upgrade while first is pending → should fail
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x04) },
+            genesis_hash, &validator,
+        );
+        assert!(!r.success, "Double-stage should be rejected");
+        assert!(r.error.as_deref().unwrap_or("").contains("already has a pending upgrade"));
+    }
+
+    #[test]
+    fn test_execute_upgrade_before_timelock_expires_fails() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set 5-epoch timelock (current slot = 0 → epoch 0, needs > epoch 5)
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 5 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Stage upgrade
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x05) },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Try execute immediately (epoch 0, needs > epoch 5) → should fail
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::ExecuteUpgrade,
+            genesis_hash, &validator,
+        );
+        assert!(!r.success, "Should fail: timelock not expired");
+        assert!(r.error.as_deref().unwrap_or("").contains("Timelock has not expired"));
+    }
+
+    #[test]
+    fn test_execute_upgrade_no_pending_fails() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Try execute with no pending upgrade → should fail
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::ExecuteUpgrade,
+            genesis_hash, &validator,
+        );
+        assert!(!r.success, "Should fail: no pending upgrade");
+        assert!(r.error.as_deref().unwrap_or("").contains("No pending upgrade"));
+    }
+
+    #[test]
+    fn test_veto_upgrade_by_governance_authority() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set governance authority
+        let gov_kp = crate::Keypair::generate();
+        let gov = gov_kp.pubkey();
+        state.set_governance_authority(&gov).unwrap();
+        // Fund governance account (10 MOLT)
+        let gov_acct = crate::Account::new(10, gov);
+        state.put_account(&gov, &gov_acct).unwrap();
+
+        // Set timelock + stage upgrade
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x06) },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Verify pending exists
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert!(ca.pending_upgrade.is_some());
+
+        // Governance authority vetoes
+        let r = submit_contract_ix(
+            &processor, &gov_kp, vec![gov, contract_addr],
+            crate::ContractInstruction::VetoUpgrade,
+            genesis_hash, &validator,
+        );
+        assert!(r.success, "Veto should succeed: {:?}", r.error);
+
+        // Verify pending is cleared
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert!(ca.pending_upgrade.is_none(), "Pending upgrade should be cleared");
+        assert_eq!(ca.version, 1, "Version should NOT change after veto");
+    }
+
+    #[test]
+    fn test_veto_by_non_governance_fails() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set governance authority to someone else
+        let gov_kp = crate::Keypair::generate();
+        let gov = gov_kp.pubkey();
+        state.set_governance_authority(&gov).unwrap();
+
+        // Set timelock + stage upgrade
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 1 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x07) },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Alice (not governance) tries to veto → should fail
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::VetoUpgrade,
+            genesis_hash, &validator,
+        );
+        assert!(!r.success, "Non-governance should not be able to veto");
+        assert!(r.error.as_deref().unwrap_or("").contains("governance authority"));
+    }
+
+    #[test]
+    fn test_cannot_remove_timelock_while_upgrade_pending() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set timelock
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Stage upgrade
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x08) },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        // Try to remove timelock while upgrade is pending → should fail
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 0 },
+            genesis_hash, &validator,
+        );
+        assert!(!r.success, "Should not remove timelock while upgrade pending");
+        assert!(r.error.as_deref().unwrap_or("").contains("pending"));
+    }
+
+    #[test]
+    fn test_set_timelock_zero_removes_it() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let contract_addr = deploy_test_contract(
+            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+        );
+
+        // Set timelock
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 5 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success);
+
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert_eq!(ca.upgrade_timelock_epochs, Some(5));
+
+        // Remove timelock (no pending upgrade)
+        let r = submit_contract_ix(
+            &processor, &alice_kp, vec![alice, contract_addr],
+            crate::ContractInstruction::SetUpgradeTimelock { epochs: 0 },
+            genesis_hash, &validator,
+        );
+        assert!(r.success, "Remove timelock should succeed: {:?}", r.error);
+
+        let acct = state.get_account(&contract_addr).unwrap().unwrap();
+        let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert_eq!(ca.upgrade_timelock_epochs, None);
+    }
+
+    #[test]
+    fn test_contract_account_serde_backward_compat_no_timelock() {
+        // Legacy contract data without timelock fields should deserialize with defaults
+        let owner_bytes: Vec<u8> = vec![1u8; 32];
+        let hash_bytes: Vec<u8> = vec![0u8; 32];
+        let json = serde_json::json!({
+            "code": [0, 0x61, 0x73, 0x6D],
+            "storage": {},
+            "owner": owner_bytes,
+            "code_hash": hash_bytes,
+            "version": 1
+        });
+        let ca: crate::ContractAccount = serde_json::from_value(json).unwrap();
+        assert_eq!(ca.upgrade_timelock_epochs, None);
+        assert!(ca.pending_upgrade.is_none());
     }
 }

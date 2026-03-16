@@ -1,6 +1,7 @@
 // P2P Network Manager
 
 use crate::gossip::GossipManager;
+use crate::kademlia::{KademliaTable, NodeId};
 use crate::message::{
     validator_announcement_signing_message, MessageType, P2PMessage, SnapshotKind,
 };
@@ -287,6 +288,9 @@ pub struct P2PNetwork {
     /// AUDIT-FIX H11: Track last announcement slot per validator pubkey
     /// to reject stale/replayed validator announcements.
     last_announce_slot: std::sync::Mutex<std::collections::HashMap<[u8; 32], u64>>,
+
+    /// Kademlia DHT routing table for structured peer discovery (H-8/H-9).
+    dht: Arc<std::sync::Mutex<KademliaTable>>,
 }
 
 impl P2PNetwork {
@@ -370,6 +374,19 @@ impl P2PNetwork {
             config.listen_addr,
         ));
 
+        // Create Kademlia DHT routing table for structured peer discovery (H-8/H-9).
+        // Node ID derived from SHA-256 of the listen address for uniqueness.
+        let local_node_id: NodeId = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(config.listen_addr.to_string().as_bytes());
+            let hash = hasher.finalize();
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&hash);
+            id
+        };
+        let dht = Arc::new(std::sync::Mutex::new(KademliaTable::new(local_node_id)));
+
         Ok(P2PNetwork {
             peer_manager,
             gossip_manager,
@@ -396,6 +413,7 @@ impl P2PNetwork {
             prevote_tx,
             precommit_tx,
             last_announce_slot: std::sync::Mutex::new(std::collections::HashMap::new()),
+            dht,
         })
     }
 
@@ -434,6 +452,7 @@ impl P2PNetwork {
                     | MessageType::ValidatorAnnounce { .. }
                     | MessageType::SlashingEvidence(_)
                     | MessageType::CompactBlockMsg(_)
+                    | MessageType::CertRotation { .. }
             )
         {
             self.peer_manager
@@ -527,6 +546,20 @@ impl P2PNetwork {
                     peer_addr,
                     peer_infos.len()
                 );
+                // Update DHT with received peer addresses
+                {
+                    use sha2::{Digest, Sha256};
+                    if let Ok(mut table) = self.dht.lock() {
+                        for pi in &peer_infos {
+                            let mut hasher = Sha256::new();
+                            hasher.update(pi.address.to_string().as_bytes());
+                            let hash = hasher.finalize();
+                            let mut node_id = [0u8; 32];
+                            node_id.copy_from_slice(&hash);
+                            table.insert(node_id, pi.address);
+                        }
+                    }
+                }
                 let gm = self.gossip_manager.clone();
                 tokio::spawn(async move {
                     gm.handle_peer_info(peer_infos).await;
@@ -537,19 +570,50 @@ impl P2PNetwork {
                 debug!("P2P: Received peer request from {}", peer_addr);
                 // AUDIT-FIX M3: Use actual peer scores, not hardcoded 500
                 let peer_infos_raw = self.peer_manager.get_peer_infos();
-                let peer_infos = peer_infos_raw
+                let mut seen_addrs: std::collections::HashSet<SocketAddr> =
+                    std::collections::HashSet::new();
+                let mut peer_infos: Vec<crate::message::PeerInfoMsg> = peer_infos_raw
                     .iter()
-                    .take(50) // Cap response size
-                    .map(|(addr, score)| crate::message::PeerInfoMsg {
-                        address: *addr,
-                        last_seen: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                        reputation: ((*score as i128 + 20) * 1000 / 40).clamp(0, 1000) as u64,
-                        validator_pubkey: None, // Populated when validator identity is known
+                    .take(40) // Leave room for DHT nodes
+                    .map(|(addr, score)| {
+                        seen_addrs.insert(*addr);
+                        crate::message::PeerInfoMsg {
+                            address: *addr,
+                            last_seen: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                            reputation: ((*score as i128 + 20) * 1000 / 40).clamp(0, 1000) as u64,
+                            validator_pubkey: None,
+                        }
                     })
                     .collect();
+
+                // Supplement with DHT nodes not already in peer manager
+                if let Ok(table) = self.dht.lock() {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(peer_addr.to_string().as_bytes());
+                    let hash = hasher.finalize();
+                    let mut target_id = [0u8; 32];
+                    target_id.copy_from_slice(&hash);
+                    for entry in table.closest(&target_id, 10) {
+                        if peer_infos.len() >= 50 {
+                            break;
+                        }
+                        if !seen_addrs.contains(&entry.address) {
+                            peer_infos.push(crate::message::PeerInfoMsg {
+                                address: entry.address,
+                                last_seen: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                                reputation: 500,
+                                validator_pubkey: None,
+                            });
+                        }
+                    }
+                }
 
                 let response = P2PMessage::new(MessageType::PeerInfo(peer_infos), self.local_addr);
                 let pm = self.peer_manager.clone();
@@ -939,6 +1003,11 @@ impl P2PNetwork {
                 );
                 // P3-5: Tag the peer as a validator in the peer manager
                 self.peer_manager.mark_validator(&peer_addr, pubkey);
+
+                // Update DHT with validator's peer address (use pubkey as node ID)
+                if let Ok(mut table) = self.dht.lock() {
+                    table.insert(pubkey.0, peer_addr);
+                }
                 let announcement = ValidatorAnnouncement {
                     pubkey,
                     stake,
@@ -1187,6 +1256,46 @@ impl P2PNetwork {
                         );
                     }
                 });
+            }
+
+            // M-9: Certificate rotation — a peer announces it has generated a new
+            // TLS certificate. Validate and update TOFU fingerprint store.
+            MessageType::CertRotation {
+                old_fingerprint,
+                new_fingerprint,
+                new_cert_der,
+                rotation_proof: _,
+                timestamp,
+            } => {
+                match self.peer_manager.handle_cert_rotation(
+                    &peer_addr,
+                    &old_fingerprint,
+                    &new_fingerprint,
+                    &new_cert_der,
+                    timestamp,
+                ) {
+                    Ok(()) => {
+                        info!(
+                            "P2P: Certificate rotation accepted from {}",
+                            peer_addr
+                        );
+                        // Re-gossip the rotation to other peers
+                        let relay_msg = P2PMessage::new(
+                            MessageType::CertRotation {
+                                old_fingerprint,
+                                new_fingerprint,
+                                new_cert_der,
+                                rotation_proof: vec![],
+                                timestamp,
+                            },
+                            self.local_addr,
+                        );
+                        self.peer_manager.broadcast(relay_msg).await;
+                    }
+                    Err(e) => {
+                        warn!("P2P: Certificate rotation rejected from {}: {}", peer_addr, e);
+                    }
+                }
             }
         }
 

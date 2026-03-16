@@ -211,7 +211,8 @@
                 <h2 id="name-service">.molt Naming System</h2>
                 <p>Every MoltyID can claim a human-readable <code>.molt</code> name. Names are unique, transferable,
                     renewable, and resolvable on-chain. Any contract or RPC call can resolve
-                    <code>tradingbot.molt</code> to an address.</p>
+                    <code>tradingbot.molt</code> to an address.
+                </p>
 
                 <h3>Name Rules</h3>
                 <ul>
@@ -460,7 +461,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td>Trusted</td>
                             <td>500 &ndash; 999</td>
                             <td>500&ndash;749: 5% &middot; 750&ndash;999: 7.5%</td>
-                            <td>1.25x Priority</td>
+                            <td>Fee discount</td>
                             <td>200 tx/epoch</td>
                         </tr>
                         <tr>
@@ -468,7 +469,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td>Established</td>
                             <td>1,000 &ndash; 4,999</td>
                             <td>10%</td>
-                            <td>1.5x Priority</td>
+                            <td>Fee discount</td>
                             <td>500 tx/epoch</td>
                         </tr>
                         <tr>
@@ -476,7 +477,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td>Veteran</td>
                             <td>5,000 &ndash; 9,999</td>
                             <td>10%</td>
-                            <td>2.0x Express</td>
+                            <td>Fee discount</td>
                             <td>500 tx/epoch</td>
                         </tr>
                         <tr>
@@ -484,20 +485,16 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td>Legendary</td>
                             <td>10,000+</td>
                             <td>10%</td>
-                            <td>3.0x Express</td>
+                            <td>Fee discount</td>
                             <td>500 tx/epoch</td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h3>Priority Lanes</h3>
-                <ul>
-                    <li><strong>Standard Lane:</strong> All transactions, processed FIFO.</li>
-                    <li><strong>Priority Lane:</strong> MoltyID holders with reputation &ge; 500. Sorted by reputation
-                        &times; fee.</li>
-                    <li><strong>Express Lane:</strong> MoltyID holders with reputation &ge; 5,000. Guaranteed block
-                        inclusion.</li>
-                </ul>
+                <h3>Transaction Ordering</h3>
+                <p>All transactions are ordered strictly by fee (highest first), then FIFO for equal fees.
+                    Reputation does <strong>not</strong> affect queue priority &mdash; it only influences fee discounts.
+                    This ensures fair, transparent ordering for all participants.</p>
             </section>
 
             <!-- ============================================================ -->

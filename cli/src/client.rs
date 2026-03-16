@@ -364,11 +364,11 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        // Serialize transaction
-        let tx_bytes =
-            bincode::serialize(&transaction).context("Failed to serialize transaction")?;
+        // Serialize transaction (M-6 wire envelope)
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         // Send transaction via RPC
@@ -419,9 +419,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);
@@ -466,9 +467,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);
@@ -528,9 +530,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);
@@ -581,9 +584,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);
@@ -726,10 +730,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes =
-            bincode::serialize(&transaction).context("Failed to serialize transaction")?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);
@@ -767,10 +771,10 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-        };
+                    tx_type: Default::default(),
+};
 
-        let tx_bytes =
-            bincode::serialize(&transaction).context("Failed to serialize transaction")?;
+        let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
 
         let params = json!([tx_base64]);

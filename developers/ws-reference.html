@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,9 +10,12 @@
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 </head>
+
 <body>
     <nav class="nav">
         <div class="nav-container">
@@ -37,7 +41,8 @@
                 <select id="devNetworkSelect" class="network-select">
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle"
+                aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -108,14 +113,17 @@
             </div>
 
             <h1>WebSocket Reference</h1>
-            <p>MoltChain provides a WebSocket server for real-time event streaming. Subscribe to chain events — slots, blocks, transactions, account changes, contract logs, NFT activity, and marketplace events — and receive push notifications as they happen.</p>
+            <p>MoltChain provides a WebSocket server for real-time event streaming. Subscribe to chain events — slots,
+                blocks, transactions, account changes, contract logs, NFT activity, and marketplace events — and receive
+                push notifications as they happen.</p>
 
             <!-- Connection -->
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
                     <p><strong>Default endpoint:</strong> <code>ws://localhost:8900</code></p>
-                    <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0 format.</p>
+                    <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
+                        format.</p>
                 </div>
 
                 <div class="lang-tabs">
@@ -126,7 +134,8 @@
 
                 <div class="lang-tab-content active" data-lang="js">
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>import { Connection } from '@moltchain/sdk';
 
 const conn = new Connection(
@@ -146,7 +155,8 @@ await conn.offSlot(subId);</code></pre>
 
                 <div class="lang-tab-content" data-lang="python">
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">Python</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>import asyncio
 from moltchain import Connection
 
@@ -170,7 +180,8 @@ asyncio.run(main())</code></pre>
 
                 <div class="lang-tab-content" data-lang="curl">
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">wscat</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">wscat</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code># Install: npm install -g wscat
 wscat -c ws://localhost:8900
 
@@ -250,7 +261,8 @@ wscat -c ws://localhost:8900
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onSlot((slot) => {
   console.log('Slot:', slot);
 });
@@ -283,7 +295,8 @@ await conn.offSlot(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onBlock((block) => {
   console.log(`Block #${block.slot} — ${block.transactions} txs`);
 });
@@ -314,7 +327,8 @@ await conn.offBlock(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onTransaction((tx) => {
   console.log('TX:', tx.signatures[0]);
 });
@@ -330,9 +344,21 @@ await conn.offTransaction(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>pubkey</td><td><span class="param-type">string</span></td><td>Yes</td><td>Base58-encoded public key to watch</td></tr>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key to watch</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -350,7 +376,8 @@ await conn.offTransaction(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const pubkey = new PublicKey('7xKXtg2CW87d...');
 const subId = await conn.onAccountChange(pubkey, (account) => {
   console.log('New balance:', account.molt, 'MOLT');
@@ -363,13 +390,26 @@ await conn.offAccountChange(subId);</code></pre>
             <!-- subscribeLogs -->
             <div class="method-card" id="subscribeLogs">
                 <h3 class="method-name">subscribeLogs / unsubscribeLogs</h3>
-                <p class="method-desc">Stream contract execution logs. Optionally filter by a specific contract address; pass <code>null</code> for all contracts.</p>
+                <p class="method-desc">Stream contract execution logs. Optionally filter by a specific contract address;
+                    pass <code>null</code> for all contracts.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>contractId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Contract pubkey to filter, or null for all</td></tr>
+                            <tr>
+                                <td>contractId</td>
+                                <td><span class="param-type">string | null</span></td>
+                                <td>No</td>
+                                <td>Contract pubkey to filter, or null for all</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -386,7 +426,8 @@ await conn.offAccountChange(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>// All logs
 const subId = await conn.onLogs((log) => {
   console.log(`[${log.contract}] ${log.message}`);
@@ -425,9 +466,21 @@ const subId2 = await conn.onLogs((log) => {
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>programId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Program pubkey to filter, or null for all</td></tr>
+                            <tr>
+                                <td>programId</td>
+                                <td><span class="param-type">string | null</span></td>
+                                <td>No</td>
+                                <td>Program pubkey to filter, or null for all</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -443,13 +496,26 @@ const subId2 = await conn.onLogs((log) => {
             <!-- subscribeNftMints -->
             <div class="method-card" id="subscribeNftMints">
                 <h3 class="method-name">subscribeNftMints / unsubscribeNftMints</h3>
-                <p class="method-desc">Receive a notification each time an NFT is minted. Optionally filter by collection.</p>
+                <p class="method-desc">Receive a notification each time an NFT is minted. Optionally filter by
+                    collection.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>collectionId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Collection pubkey to filter, or null for all</td></tr>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string | null</span></td>
+                                <td>No</td>
+                                <td>Collection pubkey to filter, or null for all</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -469,9 +535,21 @@ const subId2 = await conn.onLogs((log) => {
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>collectionId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Collection pubkey to filter, or null for all</td></tr>
+                            <tr>
+                                <td>collectionId</td>
+                                <td><span class="param-type">string | null</span></td>
+                                <td>No</td>
+                                <td>Collection pubkey to filter, or null for all</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -514,7 +592,8 @@ const subId2 = await conn.onLogs((log) => {
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onMarketListings((event) => {
   console.log(`Listed: token #${event.token_id} for ${event.price_molt} MOLT`);
 });
@@ -554,7 +633,8 @@ await conn.offMarketListings(subId);</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                                class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onMarketSales((event) => {
   console.log(`Sold: token #${event.token_id} for ${event.price_molt} MOLT`);
 });
@@ -575,7 +655,8 @@ await conn.offMarketSales(subId);</code></pre>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "BridgeLock",
   "chain": "ethereum",
@@ -599,7 +680,8 @@ await conn.offMarketSales(subId);</code></pre>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "BridgeMint",
   "chain": "ethereum",
@@ -616,16 +698,27 @@ await conn.offMarketSales(subId);</code></pre>
             <!-- subscribeSignatureStatus -->
             <div class="method-card" id="subscribeSignatureStatus">
                 <h3 class="method-name">subscribeSignatureStatus / signatureSubscribe</h3>
-                <p class="method-desc">Track the confirmation status of a specific transaction signature through processed → confirmed → finalized.</p>
+                <p class="method-desc">Track the confirmation status of a specific transaction signature through
+                    processed → confirmed → finalized.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table"><tr><th>Name</th><th>Type</th><th>Description</th></tr>
-                        <tr><td>signature</td><td>string</td><td>Transaction signature hex string</td></tr>
+                    <table class="param-table">
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td>signature</td>
+                            <td>string</td>
+                            <td>Transaction signature hex string</td>
+                        </tr>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "SignatureStatus",
   "signature": "abc123...",
@@ -637,7 +730,8 @@ await conn.offMarketSales(subId);</code></pre>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">SDK Usage</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JavaScript</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span></div>
                         <pre><code>const subId = await conn.onSignatureStatus(txSig, (status) => {
   console.log(`TX ${status.status} at slot ${status.slot}`);
 });
@@ -649,14 +743,16 @@ await conn.offSignatureStatus(subId);</code></pre>
             <!-- subscribeValidators -->
             <div class="method-card" id="subscribeValidators">
                 <h3 class="method-name">subscribeValidators / validatorSubscribe</h3>
-                <p class="method-desc">Receive notifications when the validator set changes — new validators joining, leaving, becoming delinquent, or stake changes.</p>
+                <p class="method-desc">Receive notifications when the validator set changes — new validators joining,
+                    leaving, becoming delinquent, or stake changes.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>None</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "ValidatorUpdate",
   "pubkey": "8GCKfyj...",
@@ -672,17 +768,32 @@ await conn.offSignatureStatus(subId);</code></pre>
             <!-- subscribeTokenBalance -->
             <div class="method-card" id="subscribeTokenBalance">
                 <h3 class="method-name">subscribeTokenBalance / tokenBalanceSubscribe</h3>
-                <p class="method-desc">Track token balance changes for a specific owner, optionally filtered by mint address.</p>
+                <p class="method-desc">Track token balance changes for a specific owner, optionally filtered by mint
+                    address.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
-                    <table class="param-table"><tr><th>Name</th><th>Type</th><th>Description</th></tr>
-                        <tr><td>owner</td><td>string</td><td>Owner public key (required)</td></tr>
-                        <tr><td>mint</td><td>string?</td><td>Token mint address (optional — omit for all tokens)</td></tr>
+                    <table class="param-table">
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td>owner</td>
+                            <td>string</td>
+                            <td>Owner public key (required)</td>
+                        </tr>
+                        <tr>
+                            <td>mint</td>
+                            <td>string?</td>
+                            <td>Token mint address (optional — omit for all tokens)</td>
+                        </tr>
                     </table>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "TokenBalanceChange",
   "owner": "UserPub...",
@@ -706,7 +817,8 @@ await conn.offSignatureStatus(subId);</code></pre>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "EpochChange",
   "epoch": 5,
@@ -722,14 +834,16 @@ await conn.offSignatureStatus(subId);</code></pre>
             <!-- subscribeGovernance -->
             <div class="method-card" id="subscribeGovernance">
                 <h3 class="method-name">subscribeGovernance / governanceSubscribe</h3>
-                <p class="method-desc">Receive notifications for on-chain governance events: proposal creation, votes, execution, and cancellation.</p>
+                <p class="method-desc">Receive notifications for on-chain governance events: proposal creation, votes,
+                    execution, and cancellation.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>None</p>
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Notification Payload</h4>
-                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "event": "GovernanceEvent",
   "proposal_id": 7,
@@ -811,7 +925,8 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <div class="method-card" id="event-market">
                 <h3 class="method-name">MarketListing / MarketSale Event</h3>
-                <p class="method-desc">Emitted for marketplace activity. Both events share the same structure with an <code>event</code> discriminator field.</p>
+                <p class="method-desc">Emitted for marketplace activity. Both events share the same structure with an
+                    <code>event</code> discriminator field.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
                     <pre><code>{
@@ -838,7 +953,8 @@ await conn.offSignatureStatus(subId);</code></pre>
             <!-- ═══════════════════════════════════════════════════════ -->
             <section id="live-channels" class="ws-live-channels">
                 <h2>Additional Implemented Live Channels</h2>
-                <p>These subscription families are implemented in the WebSocket server (`rpc/src/ws.rs`) and channel parsing in `rpc/src/dex_ws.rs`.</p>
+                <p>These subscription families are implemented in the WebSocket server (`rpc/src/ws.rs`) and channel
+                    parsing in `rpc/src/dex_ws.rs`.</p>
 
                 <h3>DEX Multiplexed Channels</h3>
                 <p><code>subscribeDex</code> / <code>unsubscribeDex</code></p>
@@ -872,7 +988,7 @@ await conn.offSignatureStatus(subId);</code></pre>
 
                 <h3>Prediction Multiplexed Channels</h3>
                 <p><code>subscribePrediction</code> / <code>unsubscribePrediction</code><br>
-                Aliases: <code>subscribePredictionMarket</code> / <code>unsubscribePredictionMarket</code></p>
+                    Aliases: <code>subscribePredictionMarket</code> / <code>unsubscribePredictionMarket</code></p>
                 <div class="method-section">
                     <h4 class="method-section-title">Channel Param Format</h4>
                     <ul>
@@ -901,14 +1017,28 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <section id="keepalive">
                 <h3>Keepalive (Ping/Pong)</h3>
-                <p>The WebSocket server supports standard <strong>ping/pong</strong> frames for connection keepalive. If your client library supports automatic pong responses (most do), no action is needed. For manual implementations:</p>
+                <p>The WebSocket server implements standard RFC 6455 <strong>ping/pong</strong> keepalive with
+                    dead-connection detection.</p>
                 <ul>
-                    <li>The server sends a <strong>ping</strong> frame periodically (every 30s by default).</li>
-                    <li>Your client must respond with a <strong>pong</strong> frame within the timeout window.</li>
-                    <li>Connections that fail to respond to 3 consecutive pings are automatically closed.</li>
+                    <li>The server sends a <strong>ping</strong> frame every <strong>30 seconds</strong>.</li>
+                    <li>Your client must respond with a <strong>pong</strong> frame before the next ping (30s window).
+                        Most WebSocket libraries handle this automatically.</li>
+                    <li>If a pong is <strong>not received</strong> before the next ping fires, the server considers the
+                        connection dead and <strong>closes it immediately</strong>.</li>
+                    <li>Alternatively, clients can send <code>{"method":"ping"}</code> as a JSON message. The server
+                        responds with <code>{"result":"pong"}</code>.</li>
                 </ul>
+                <div class="callout callout-warning">
+                    <p><strong>Important:</strong> Unlike some WebSocket servers that tolerate multiple missed pongs,
+                        MoltChain uses strict single-pong timeout. If your client's pong response is delayed beyond 30
+                        seconds, the connection will be terminated. Ensure your client library has pong auto-response
+                        enabled (this is the default for most libraries).</p>
+                </div>
                 <div class="callout callout-info">
-                    <p><strong>Notification wrapper difference:</strong> Core subscriptions (slots, blocks, accounts, etc.) use <code>"method": "subscription"</code> in push messages. DEX and Prediction channel notifications use <code>"method": "notification"</code> instead. Check both wrappers when parsing events.</p>
+                    <p><strong>Notification wrapper difference:</strong> Core subscriptions (slots, blocks, accounts,
+                        etc.) use <code>"method": "subscription"</code> in push messages. DEX and Prediction channel
+                        notifications use <code>"method": "notification"</code> instead. Check both wrappers when
+                        parsing events.</p>
                 </div>
             </section>
 
@@ -919,9 +1049,11 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <section id="reconnection">
                 <h3>Reconnection Handling</h3>
-                <p>WebSocket connections can drop due to network issues, server restarts, or idle timeouts. Implement automatic reconnection with exponential backoff:</p>
+                <p>WebSocket connections can drop due to network issues, server restarts, or idle timeouts. Implement
+                    automatic reconnection with exponential backoff:</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">JavaScript</span><button
+                            class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                     <pre><code>class ResilientConnection {
   constructor(rpcUrl, wsUrl) {
     this.rpcUrl = rpcUrl;
@@ -953,7 +1085,9 @@ await conn.offSignatureStatus(subId);</code></pre>
 }</code></pre>
                 </div>
                 <div class="callout callout-tip">
-                    <p><strong>Tip:</strong> Store subscription parameters so you can restore them after reconnection. The SDK's <code>Connection</code> class will automatically reconnect the WebSocket when you call an <code>on*</code> method.</p>
+                    <p><strong>Tip:</strong> Store subscription parameters so you can restore them after reconnection.
+                        The SDK's <code>Connection</code> class will automatically reconnect the WebSocket when you call
+                        an <code>on*</code> method.</p>
                 </div>
             </section>
 
@@ -961,14 +1095,18 @@ await conn.offSignatureStatus(subId);</code></pre>
                 <h3>Rate Limits &amp; Subscription Limits</h3>
                 <div class="callout callout-warning">
                     <p><strong>Max subscriptions per connection:</strong> 100</p>
-                    <p>If you exceed this limit, the server returns error code <code>-32005</code>: <em>"Subscription limit reached"</em>.</p>
+                    <p>If you exceed this limit, the server returns error code <code>-32005</code>: <em>"Subscription
+                            limit reached"</em>.</p>
                 </div>
                 <p>Best practices:</p>
                 <ul>
                     <li>Unsubscribe from channels you no longer need.</li>
-                    <li>Use filtered subscriptions (e.g., <code>subscribeLogs</code> with a contract ID) instead of subscribing to all events and filtering client-side.</li>
-                    <li>For high-throughput scenarios, consider using multiple WebSocket connections and distributing subscriptions across them.</li>
-                    <li>The broadcast channel has a buffer of 1000 events. If your consumer falls behind, events may be dropped.</li>
+                    <li>Use filtered subscriptions (e.g., <code>subscribeLogs</code> with a contract ID) instead of
+                        subscribing to all events and filtering client-side.</li>
+                    <li>For high-throughput scenarios, consider using multiple WebSocket connections and distributing
+                        subscriptions across them.</li>
+                    <li>The broadcast channel has a buffer of 1000 events. If your consumer falls behind, events may be
+                        dropped.</li>
                 </ul>
             </section>
         </main>
@@ -978,7 +1116,8 @@ await conn.offSignatureStatus(subId);</code></pre>
     <footer class="dev-footer">
         <div class="container">
             <div class="dev-footer-links">
-                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                    GitHub</a>
                 <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
                 <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
                 <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
@@ -992,4 +1131,5 @@ await conn.offSignatureStatus(subId);</code></pre>
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>
+
 </html>

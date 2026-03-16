@@ -46,6 +46,8 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
         owner,
         executable: false,
         rent_epoch: 0,
+        dormant: false,
+        missed_rent_epochs: 0,
     }
 }
 
@@ -389,7 +391,8 @@ fn test_processor_applies_cross_call_changes() {
     let tx = Transaction {
         signatures: vec![signature],
         message,
-    };
+            tx_type: Default::default(),
+};
 
     let result = processor.process_transaction(&tx, &validator_pubkey);
 

@@ -315,7 +315,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
 #[tokio::test]
 async fn test_health_endpoint() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
+    let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
     assert_eq!(response["result"], "ok");
 }
 
@@ -326,7 +326,7 @@ async fn test_health_endpoint() {
 #[tokio::test]
 async fn test_get_version() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana", "getVersion").await.unwrap();
+    let response = rpc_call(&app, "/solana-compat", "getVersion").await.unwrap();
     // Should contain a "solana-core" or similar version field
     let result = &response["result"];
     assert!(result.is_object(), "getVersion should return an object");
@@ -339,7 +339,7 @@ async fn test_get_version() {
 #[tokio::test]
 async fn test_get_slot() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana", "getSlot").await.unwrap();
+    let response = rpc_call(&app, "/solana-compat", "getSlot").await.unwrap();
     // Slot should be a number (0 or greater for fresh state)
     let result = &response["result"];
     assert!(
@@ -359,7 +359,7 @@ async fn test_get_balance_nonexistent_account() {
     // Use a random base58 address that won't exist
     let response = rpc_call_with_params(
         &app,
-        "/solana",
+        "/solana-compat",
         "getBalance",
         json!(["11111111111111111111111111111111"]),
     )
@@ -380,7 +380,7 @@ async fn test_get_balance_nonexistent_account() {
 #[tokio::test]
 async fn test_get_block_slot_zero() {
     let app = create_test_app();
-    let response = rpc_call_with_params(&app, "/solana", "getBlock", json!([0]))
+    let response = rpc_call_with_params(&app, "/solana-compat", "getBlock", json!([0]))
         .await
         .unwrap();
     // Slot 0 may or may not exist; we just check the response format
@@ -398,7 +398,7 @@ async fn test_get_block_slot_zero() {
 #[tokio::test]
 async fn test_jsonrpc_response_format() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
+    let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
 
     // All JSON-RPC responses should have "jsonrpc" and "id"
     assert_eq!(
@@ -414,7 +414,7 @@ async fn test_jsonrpc_response_format() {
 #[tokio::test]
 async fn test_unknown_method_returns_error() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana", "nonExistentMethod")
+    let response = rpc_call(&app, "/solana-compat", "nonExistentMethod")
         .await
         .unwrap();
 

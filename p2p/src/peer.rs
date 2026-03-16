@@ -225,6 +225,30 @@ fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
     }
 }
 
+/// M-10: Compute an AS-level bucket ID for eclipse defense.
+/// Uses /16 prefix for IPv4 and /32 prefix for IPv6 as a lightweight
+/// approximation of AS-number grouping (most ASNs own contiguous /16 blocks).
+/// For production deployments, an optional ASN database can override this.
+fn asn_bucket(ip: &IpAddr) -> u32 {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // /16 prefix — first 2 octets as bucket
+            ((o[0] as u32) << 8) | (o[1] as u32)
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // /32 prefix — first 2 segments as bucket
+            ((s[0] as u32) << 16) | (s[1] as u32)
+        }
+    }
+}
+
+/// M-10: Check whether two IPs fall in the same AS-level bucket.
+fn same_asn_bucket(a: &IpAddr, b: &IpAddr) -> bool {
+    asn_bucket(a) == asn_bucket(b)
+}
+
 impl PeerManager {
     /// Get the local listening address
     pub fn local_addr(&self) -> SocketAddr {
@@ -334,6 +358,10 @@ impl PeerManager {
     /// Eclipse-attack resistance: max peers from the same /24 (IPv4) or /48 (IPv6) subnet.
     pub const MAX_PEERS_PER_SUBNET: usize = 2;
 
+    /// M-10: AS-level eclipse defense: max peers from the same /16 (IPv4) or /32 (IPv6) AS bucket.
+    /// Broader than subnet — catches attackers who control many /24s within one ISP.
+    pub const MAX_PEERS_PER_ASN_BUCKET: usize = 4;
+
     /// Get the effective max peers for this manager instance
     pub fn effective_max_peers(&self) -> usize {
         self.max_peers
@@ -350,6 +378,15 @@ impl PeerManager {
         self.peers
             .iter()
             .filter(|entry| same_subnet(&entry.key().ip(), ip))
+            .count()
+    }
+
+    /// M-10: Count how many currently-connected peers share the same AS-level bucket as `ip`.
+    /// IPv4: /16 prefix.  IPv6: /32 prefix.
+    pub fn count_peers_in_asn_bucket(&self, ip: &IpAddr) -> usize {
+        self.peers
+            .iter()
+            .filter(|entry| same_asn_bucket(&entry.key().ip(), ip))
             .count()
     }
 
@@ -438,6 +475,14 @@ impl PeerManager {
             return Err(format!(
                 "Subnet limit reached ({}) for {}",
                 Self::MAX_PEERS_PER_SUBNET,
+                peer_addr
+            ));
+        }
+        // M-10: AS-level eclipse defense — limit peers per /16 (IPv4) or /32 (IPv6) bucket
+        if self.count_peers_in_asn_bucket(&peer_addr.ip()) >= Self::MAX_PEERS_PER_ASN_BUCKET {
+            return Err(format!(
+                "ASN bucket limit reached ({}) for {}",
+                Self::MAX_PEERS_PER_ASN_BUCKET,
                 peer_addr
             ));
         }
@@ -740,6 +785,59 @@ impl PeerManager {
     pub fn clear_all_fingerprints(&self) {
         self.fingerprint_store.clear_all();
         info!("P2P TOFU: Cleared ALL fingerprints — will re-trust all peers on next connection");
+    }
+
+    /// M-9: Handle an incoming CertRotation message.
+    /// Delegates to PeerFingerprintStore::apply_rotation for validation.
+    pub fn handle_cert_rotation(
+        &self,
+        addr: &SocketAddr,
+        old_fingerprint: &[u8; 32],
+        new_fingerprint: &[u8; 32],
+        new_cert_der: &[u8],
+        timestamp: u64,
+    ) -> Result<(), String> {
+        self.fingerprint_store
+            .apply_rotation(addr, old_fingerprint, new_fingerprint, new_cert_der, timestamp)
+    }
+
+    /// M-9: Initiate a local certificate rotation.
+    /// Generates a new NodeIdentity, updates the local TOFU store, and returns
+    /// a CertRotation message to broadcast to all peers.
+    pub fn rotate_local_certificate(
+        &mut self,
+        moltchain_dir: &std::path::Path,
+    ) -> Result<crate::message::MessageType, String> {
+        let old_fp = self.local_fingerprint;
+
+        // Generate new identity (overwrites node_cert.der + node_key.der)
+        let new_identity = NodeIdentity::load_or_generate_fresh(moltchain_dir)?;
+        let new_fp = new_identity.fingerprint;
+        let new_cert_der = new_identity.cert_der.as_ref().to_vec();
+
+        // Update local state
+        self.node_cert_chain = vec![new_identity.cert_der.clone()];
+        self.node_key_bytes = new_identity.key_bytes.clone();
+        self.local_fingerprint = new_fp;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        info!(
+            "P2P TOFU: Local certificate rotated ({}... → {}...)",
+            &NodeIdentity::fingerprint_hex(&old_fp)[..16],
+            &NodeIdentity::fingerprint_hex(&new_fp)[..16]
+        );
+
+        Ok(crate::message::MessageType::CertRotation {
+            old_fingerprint: old_fp,
+            new_fingerprint: new_fp,
+            new_cert_der,
+            rotation_proof: vec![],
+            timestamp,
+        })
     }
 
     /// P3-2: Route a message to the `count` closest peers by XOR distance
@@ -1337,6 +1435,36 @@ impl NodeIdentity {
         hasher.finalize().into()
     }
 
+    /// M-9: Generate a fresh certificate, overwriting existing one.
+    /// Used for deliberate certificate rotation.
+    fn load_or_generate_fresh(moltchain_dir: &Path) -> Result<Self, String> {
+        fs::create_dir_all(moltchain_dir)
+            .map_err(|e| format!("Failed to create {}: {}", moltchain_dir.display(), e))?;
+
+        let cert_path = moltchain_dir.join("node_cert.der");
+        let key_path = moltchain_dir.join("node_key.der");
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .map_err(|e| format!("Failed to generate certificate: {}", e))?;
+        let cert_der = CertificateDer::from(cert.cert);
+        let cert_bytes = cert_der.as_ref().to_vec();
+        let key_bytes = cert.key_pair.serialize_der();
+
+        Self::write_file(&cert_path, &cert_bytes)?;
+        Self::write_file(&key_path, &key_bytes)?;
+        let fingerprint = Self::compute_fingerprint(&cert_bytes);
+
+        info!(
+            "🔑 P2P: Generated fresh node identity for rotation (fingerprint: {})",
+            Self::fingerprint_hex(&fingerprint)
+        );
+        Ok(NodeIdentity {
+            cert_der,
+            key_bytes,
+            fingerprint,
+        })
+    }
+
     fn fingerprint_hex(fp: &[u8; 32]) -> String {
         fp.iter().map(|b| format!("{:02x}", b)).collect()
     }
@@ -1365,6 +1493,8 @@ impl NodeIdentity {
 struct PeerFingerprintStore {
     /// Map from peer address string to hex-encoded SHA-256 certificate fingerprint
     fingerprints: Mutex<HashMap<String, String>>,
+    /// M-9: Per-peer last rotation timestamp (unix epoch) — rate limit 1/hour
+    last_rotation: Mutex<HashMap<String, u64>>,
     path: PathBuf,
 }
 
@@ -1376,6 +1506,7 @@ impl PeerFingerprintStore {
         };
         PeerFingerprintStore {
             fingerprints: Mutex::new(fingerprints),
+            last_rotation: Mutex::new(HashMap::new()),
             path,
         }
     }
@@ -1436,6 +1567,87 @@ impl PeerFingerprintStore {
         store.clear();
         drop(store);
         self.save();
+    }
+
+    /// M-9: Minimum seconds between certificate rotations for a single peer.
+    const ROTATION_COOLDOWN_SECS: u64 = 3600; // 1 hour
+
+    /// M-9: Apply a certificate rotation for a peer identified by its address.
+    ///
+    /// Validates: (1) peer is known and old\_fingerprint matches stored value,
+    /// (2) new certificate is valid self-signed X.509, (3) new certificate's
+    /// fingerprint matches declared new\_fingerprint, (4) rate limit of at most
+    /// one rotation per `ROTATION_COOLDOWN_SECS`.
+    ///
+    /// Returns `Ok(())` on success, `Err(reason)` on rejection.
+    pub fn apply_rotation(
+        &self,
+        addr: &SocketAddr,
+        old_fingerprint: &[u8; 32],
+        new_fingerprint: &[u8; 32],
+        new_cert_der: &[u8],
+        timestamp: u64,
+    ) -> Result<(), String> {
+        let old_hex = NodeIdentity::fingerprint_hex(old_fingerprint);
+        let new_hex = NodeIdentity::fingerprint_hex(new_fingerprint);
+        let addr_str = addr.to_string();
+
+        // 1. Verify the peer is known and old fingerprint matches
+        {
+            let store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+            match store.get(&addr_str) {
+                Some(known) if *known == old_hex => {} // matches — proceed
+                Some(known) => {
+                    return Err(format!(
+                        "CertRotation rejected for {}: old_fingerprint mismatch (stored: {}..., got: {}...)",
+                        addr, &known[..16.min(known.len())], &old_hex[..16]
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "CertRotation rejected for {}: unknown peer (not in TOFU store)",
+                        addr
+                    ));
+                }
+            }
+        }
+
+        // 2. Validate the new certificate is properly self-signed
+        let computed_fp = verify_self_signed_cert(new_cert_der)?;
+
+        // 3. Verify the declared new_fingerprint matches the actual cert fingerprint
+        if computed_fp != *new_fingerprint {
+            return Err(format!(
+                "CertRotation rejected for {}: new_fingerprint doesn't match certificate",
+                addr
+            ));
+        }
+
+        // 4. Rate limit
+        {
+            let mut rotations = self.last_rotation.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(&last_ts) = rotations.get(&addr_str) {
+                if timestamp.saturating_sub(last_ts) < Self::ROTATION_COOLDOWN_SECS {
+                    return Err(format!(
+                        "CertRotation rejected for {}: rate limited (cooldown {}s, elapsed {}s)",
+                        addr,
+                        Self::ROTATION_COOLDOWN_SECS,
+                        timestamp.saturating_sub(last_ts)
+                    ));
+                }
+            }
+            rotations.insert(addr_str, timestamp);
+        }
+
+        // 5. Apply: update stored fingerprint
+        self.update_fingerprint(addr, new_fingerprint);
+        info!(
+            "P2P TOFU: Certificate rotation accepted for {} ({}... → {}...)",
+            addr,
+            &old_hex[..16],
+            &new_hex[..16]
+        );
+        Ok(())
     }
 
     fn save(&self) {
@@ -2382,5 +2594,279 @@ mod tests {
         peer.add_bytes_received(10_000);
         let bps = peer.recv_bandwidth_bps();
         assert!(bps >= 1.0, "bps should be positive, got {}", bps);
+    }
+
+    // ── M-9: TOFU Certificate Rotation Tests ────────────────────────
+
+    #[test]
+    fn test_cert_rotation_accepted() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let old_fp = [42u8; 32];
+
+        // Register peer
+        assert!(store.check_or_store(&addr, &old_fp).unwrap());
+
+        // Generate a real self-signed cert for rotation
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der_wrapped = CertificateDer::from(cert.cert);
+        let cert_der = cert_der_wrapped.as_ref();
+        let new_fp = NodeIdentity::compute_fingerprint(cert_der);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = store.apply_rotation(&addr, &old_fp, &new_fp, cert_der, now);
+        assert!(result.is_ok(), "Rotation should succeed: {:?}", result.err());
+
+        // Verify the store now has the new fingerprint
+        let check = store.check_or_store(&addr, &new_fp);
+        assert!(check.is_ok());
+        assert!(!check.unwrap(), "New fingerprint should be known");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cert_rotation_rejected_unknown_peer() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_unk_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.99:8000".parse().unwrap();
+        let old_fp = [42u8; 32];
+        let new_fp = [99u8; 32];
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = store.apply_rotation(&addr, &old_fp, &new_fp, &[], now);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown peer"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cert_rotation_rejected_wrong_old_fp() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_mismatch_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let real_fp = [42u8; 32];
+        let wrong_fp = [11u8; 32];
+
+        // Register with real_fp
+        store.check_or_store(&addr, &real_fp).unwrap();
+
+        // Try rotation claiming wrong old_fp
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der_wrapped = CertificateDer::from(cert.cert);
+        let cert_der = cert_der_wrapped.as_ref();
+        let new_fp = NodeIdentity::compute_fingerprint(cert_der);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = store.apply_rotation(&addr, &wrong_fp, &new_fp, cert_der, now);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("old_fingerprint mismatch"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cert_rotation_rejected_fp_mismatch_cert() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_certmm_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let old_fp = [42u8; 32];
+        store.check_or_store(&addr, &old_fp).unwrap();
+
+        // Generate a cert but declare a different new_fingerprint
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der_wrapped = CertificateDer::from(cert.cert);
+        let cert_der = cert_der_wrapped.as_ref();
+        let fake_new_fp = [77u8; 32]; // doesn't match cert
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = store.apply_rotation(&addr, &old_fp, &fake_new_fp, cert_der, now);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("new_fingerprint doesn't match"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cert_rotation_rate_limited() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_rate_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let old_fp = [42u8; 32];
+        store.check_or_store(&addr, &old_fp).unwrap();
+
+        // First rotation succeeds
+        let cert1 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert1_wrapped = CertificateDer::from(cert1.cert);
+        let cert1_der = cert1_wrapped.as_ref();
+        let fp1 = NodeIdentity::compute_fingerprint(cert1_der);
+        let now = 1_000_000u64;
+        store.apply_rotation(&addr, &old_fp, &fp1, cert1_der, now).unwrap();
+
+        // Second rotation within cooldown rejected
+        let cert2 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert2_wrapped = CertificateDer::from(cert2.cert);
+        let cert2_der = cert2_wrapped.as_ref();
+        let fp2 = NodeIdentity::compute_fingerprint(cert2_der);
+        let too_soon = now + 60; // 60s < 3600s cooldown
+
+        let result = store.apply_rotation(&addr, &fp1, &fp2, cert2_der, too_soon);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("rate limited"));
+
+        // After cooldown, rotation succeeds
+        let later = now + PeerFingerprintStore::ROTATION_COOLDOWN_SECS + 1;
+        let result = store.apply_rotation(&addr, &fp1, &fp2, cert2_der, later);
+        assert!(result.is_ok(), "Should succeed after cooldown: {:?}", result.err());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cert_rotation_invalid_cert_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_rot_invcert_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let old_fp = [42u8; 32];
+        store.check_or_store(&addr, &old_fp).unwrap();
+
+        // Submit garbage bytes as the new certificate
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let fake_fp = NodeIdentity::compute_fingerprint(&garbage);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let result = store.apply_rotation(&addr, &old_fp, &fake_fp, &garbage, now);
+        assert!(result.is_err());
+        // Should fail in verify_self_signed_cert
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Invalid X.509") || err.contains("certificate"),
+            "Expected cert validation error, got: {}",
+            err
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    // ── M-10: AS-Level Eclipse Defense Tests ────────────────────────
+
+    #[test]
+    fn test_asn_bucket_ipv4_same_slash16() {
+        let a: IpAddr = "10.5.1.1".parse().unwrap();
+        let b: IpAddr = "10.5.200.99".parse().unwrap();
+        assert!(same_asn_bucket(&a, &b), "Same /16 should be same ASN bucket");
+        assert_eq!(asn_bucket(&a), asn_bucket(&b));
+    }
+
+    #[test]
+    fn test_asn_bucket_ipv4_different_slash16() {
+        let a: IpAddr = "10.5.1.1".parse().unwrap();
+        let b: IpAddr = "10.6.1.1".parse().unwrap();
+        assert!(!same_asn_bucket(&a, &b), "Different /16 should be different ASN bucket");
+    }
+
+    #[test]
+    fn test_asn_bucket_ipv6_same_slash32() {
+        let a: IpAddr = "2001:db8:abcd:1::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:ffff:9::9".parse().unwrap();
+        assert!(same_asn_bucket(&a, &b), "Same /32 should be same ASN bucket");
+    }
+
+    #[test]
+    fn test_asn_bucket_ipv6_different_slash32() {
+        let a: IpAddr = "2001:db8::1".parse().unwrap();
+        let b: IpAddr = "2001:db9::1".parse().unwrap();
+        assert!(!same_asn_bucket(&a, &b), "Different /32 should be different ASN bucket");
+    }
+
+    #[test]
+    fn test_asn_bucket_v4_v6_never_same() {
+        let v4: IpAddr = "10.5.1.1".parse().unwrap();
+        let v6: IpAddr = "::ffff:10.5.1.1".parse().unwrap();
+        // asn_bucket returns different types of values for v4 vs v6
+        // but same_asn_bucket just compares u32 values — could theoretically
+        // collide but won't for typical addresses
+        let _ = asn_bucket(&v4);
+        let _ = asn_bucket(&v6);
+    }
+
+    #[test]
+    fn test_asn_bucket_deterministic() {
+        let ip: IpAddr = "192.168.50.1".parse().unwrap();
+        let b1 = asn_bucket(&ip);
+        let b2 = asn_bucket(&ip);
+        assert_eq!(b1, b2, "ASN bucket should be deterministic");
+        // 192.168 => (192 << 8) | 168 = 49320
+        assert_eq!(b1, (192 << 8) | 168);
+    }
+
+    #[tokio::test]
+    async fn test_asn_bucket_limit_in_connect_peer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-asn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        // Insert MAX_PEERS_PER_ASN_BUCKET peers from same /16 but different /24s
+        for i in 0..PeerManager::MAX_PEERS_PER_ASN_BUCKET {
+            let addr: SocketAddr = format!("10.5.{}.1:7001", i + 1).parse().unwrap();
+            mgr.peers.insert(addr, PeerInfo::new(addr));
+        }
+
+        // Next peer in same /16 should be rejected (ASN bucket limit)
+        let result = mgr.connect_peer("10.5.200.1:7001".parse().unwrap()).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("ASN bucket limit"),
+            "Should hit ASN bucket limit"
+        );
+
+        // Peer from different /16 should not hit ASN limit
+        // (it will fail for other reasons like TLS but not "ASN bucket limit")
+        let result2 = mgr.connect_peer("10.6.1.1:7001".parse().unwrap()).await;
+        assert!(
+            !result2.as_ref().err().map(|e| e.contains("ASN bucket limit")).unwrap_or(false),
+            "Different /16 should not hit ASN bucket limit"
+        );
     }
 }

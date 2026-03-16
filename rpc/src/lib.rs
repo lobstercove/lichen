@@ -55,9 +55,10 @@ use moltchain_core::account::Keypair as TreasuryKeypair;
 use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
 use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use moltchain_core::{
-    decode_evm_transaction, shells_to_u256, simulate_evm_call, FinalityTracker, Hash, Instruction,
-    MarketActivityKind, Message, Pubkey, StakePool, StateStore, SymbolRegistryEntry, Transaction,
-    TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
+    compute_units_for_tx, decode_evm_transaction, shells_to_u256, simulate_evm_call,
+    FinalityTracker, Hash, Instruction, MarketActivityKind, Message, Pubkey, StakePool, StateStore,
+    SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID,
+    SYSTEM_PROGRAM_ID,
 };
 
 // RPC-H05: keep tx listing endpoints under ~600 DB reads/page by bounding page size.
@@ -77,31 +78,21 @@ const PROGRAM_LIST_CACHE_MAX_ENTRIES: usize = 512;
 /// the contract-deploy datasize limit enforced by `validate_structure()`.
 const MAX_TX_BINCODE_SIZE: u64 = 4 * 1024 * 1024;
 
-/// P9-RPC-02: Bounded bincode deserialization for Transaction.
-/// Uses `bincode::options().with_limit()` to reject payloads that
-/// exceed `MAX_TX_BINCODE_SIZE` before allocating memory.
-/// Wrapped in `catch_unwind` because bincode 1.x can panic on
-/// adversarial inputs (e.g. JSON bytes interpreted as huge Vec lengths).
-fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Error> {
-    use bincode::Options;
-    // catch_unwind prevents a rogue payload from killing the HTTP handler task.
-    match std::panic::catch_unwind(|| {
-        bincode::options()
-            .with_limit(MAX_TX_BINCODE_SIZE)
-            .with_fixint_encoding()
-            .allow_trailing_bytes()
-            .deserialize(bytes)
-    }) {
-        Ok(result) => result,
-        Err(_) => Err(Box::new(bincode::ErrorKind::Custom(
-            "bincode panicked during deserialization".to_string(),
-        ))),
-    }
+/// Decode raw bytes into a Transaction using the wire-format envelope (M-6).
+/// Supports V1 envelope, legacy bincode, JSON (serde), and wallet JSON format.
+pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcError> {
+    Transaction::from_wire(bytes, MAX_TX_BINCODE_SIZE)
+        .or_else(|_| {
+            // Fall back to wallet-specific JSON (array-of-numbers signatures, multi-key formats)
+            parse_json_transaction(bytes).map_err(|e| e.message)
+        })
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid transaction: {}", e),
+        })
 }
 use dashmap::DashMap;
-use moltchain_core::consensus::{
-    decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD,
-};
+use moltchain_core::consensus::{compute_block_reward, ValidatorInfo, GENESIS_SUPPLY_SHELLS};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
@@ -655,6 +646,7 @@ fn classify_method(method: &str) -> MethodTier {
         // Writes / simulations
         "sendTransaction"
         | "simulateTransaction"
+        | "estimateTransactionFee"
         | "deployContract"
         | "upgradeContract"
         | "stake"
@@ -669,6 +661,8 @@ fn classify_method(method: &str) -> MethodTier {
         | "getTransactionHistory"
         | "getRecentTransactions"
         | "getBlock"
+        | "getBlockCommit"
+        | "getAccountProof"
         | "callContract"
         | "getTokenHolders"
         | "getTokenTransfers"
@@ -1695,9 +1689,11 @@ fn tx_to_rpc_json(
         .unwrap_or(0.0);
 
     let fee = TxProcessor::compute_transaction_fee(tx, fee_config);
+    let compute_units = compute_units_for_tx(tx);
 
     serde_json::json!({
         "signature": tx.signature().to_hex(),
+        "message_hash": tx.message_hash().to_hex(),
         "signatures": signatures,
         "slot": slot,
         "block_time": timestamp,
@@ -1710,6 +1706,7 @@ fn tx_to_rpc_json(
         "fee": fee,
         "fee_shells": fee,
         "fee_molt": fee as f64 / 1_000_000_000.0,
+        "compute_units": compute_units,
         "type": tx_type,
         "from": from,
         "to": to,
@@ -1936,7 +1933,8 @@ pub fn build_rpc_router(
 
     Router::new()
         .route("/", post(handle_rpc))
-        .route("/solana", post(handle_solana_rpc))
+        .route("/solana-compat", post(handle_solana_rpc))
+        .route("/solana", post(handle_solana_rpc)) // backward-compat alias
         .route("/evm", post(handle_evm_rpc))
         // DEX REST API — /api/v1/*
         .nest("/api/v1", dex::build_dex_router())
@@ -2020,7 +2018,10 @@ async fn handle_rpc(
         // Basic queries (canonical Molt endpoints)
         "getBalance" => handle_get_balance(&state, req.params).await,
         "getAccount" => handle_get_account(&state, req.params).await,
+        "getAccountAtSlot" => handle_get_account_at_slot(&state, req.params).await,
         "getBlock" => handle_get_block(&state, req.params).await,
+        "getBlockCommit" => handle_get_block_commit(&state, req.params).await,
+        "getAccountProof" => handle_get_account_proof(&state, req.params).await,
         "getLatestBlock" => handle_get_latest_block(&state).await,
         "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
@@ -2062,6 +2063,7 @@ async fn handle_rpc(
         // Fee and rent config endpoints
         "getFeeConfig" => handle_get_fee_config(&state).await,
         "setFeeConfig" => handle_set_fee_config(&state, req.params).await,
+        "estimateTransactionFee" => handle_estimate_transaction_fee(&state, req.params).await,
         "getRentParams" => handle_get_rent_params(&state).await,
         "setRentParams" => handle_set_rent_params(&state, req.params).await,
 
@@ -2848,6 +2850,89 @@ async fn handle_get_account(
     }
 }
 
+/// Get historical account state at a specific slot (Task 3.9: Archive Mode)
+async fn handle_get_account_at_slot(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [pubkey, slot]".to_string(),
+    })?;
+
+    let pubkey_str = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected pubkey as first argument".to_string(),
+        })?;
+
+    let target_slot = arr
+        .get(1)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected slot number as second argument".to_string(),
+        })?;
+
+    let pubkey =
+        moltchain_core::account::Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid pubkey: {}", e),
+        })?;
+
+    if !state.state.is_archive_mode() {
+        return Err(RpcError {
+            code: -32003,
+            message: "Archive mode is not enabled on this node".to_string(),
+        });
+    }
+
+    let account = state
+        .state
+        .get_account_at_slot(&pubkey, target_slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    match account {
+        Some(acc) => {
+            let to_molt_str =
+                |shells: u64| -> String { format!("{:.4}", shells as f64 / 1_000_000_000.0) };
+
+            Ok(serde_json::json!({
+                "pubkey": pubkey.to_base58(),
+                "slot": target_slot,
+                "shells": acc.shells,
+                "molt": to_molt_str(acc.shells),
+                "spendable": acc.spendable,
+                "spendable_molt": to_molt_str(acc.spendable),
+                "staked": acc.staked,
+                "staked_molt": to_molt_str(acc.staked),
+                "locked": acc.locked,
+                "locked_molt": to_molt_str(acc.locked),
+                "owner": acc.owner.to_base58(),
+                "executable": acc.executable,
+                "data_len": acc.data.len(),
+            }))
+        }
+        None => Err(RpcError {
+            code: -32001,
+            message: format!(
+                "No snapshot found for account {} at or before slot {}",
+                pubkey_str, target_slot
+            ),
+        }),
+    }
+}
+
 /// Get block
 async fn handle_get_block(
     state: &RpcState,
@@ -2875,7 +2960,10 @@ async fn handle_get_block(
                 })
                 .collect();
 
-            // Protocol-level block reward (coinbase) — deterministic, not a transaction
+            // Protocol-level block reward — epoch-based inflation model
+            // Actual rewards are distributed at epoch boundaries to ALL stakers
+            // proportionally, NOT per-block to the producer. The per-slot rate
+            // is included as a projection for APY calculations.
             let has_user_txs = block.transactions.iter().any(|tx| {
                 tx.message
                     .instructions
@@ -2883,18 +2971,17 @@ async fn handle_get_block(
                     .map(|ix| !matches!(ix.data.first(), Some(2) | Some(3)))
                     .unwrap_or(true)
             });
-            let base_reward = if block.header.slot == 0 || block.header.validator == [0u8; 32] {
-                0
-            } else if has_user_txs {
-                TRANSACTION_BLOCK_REWARD
-            } else {
-                HEARTBEAT_BLOCK_REWARD
-            };
-            let reward_amount = if base_reward > 0 {
-                decayed_reward(base_reward, block.header.slot)
-            } else {
-                0
-            };
+            let projected_per_slot =
+                if block.header.slot == 0 || block.header.validator == [0u8; 32] {
+                    0
+                } else {
+                    let total_supply = GENESIS_SUPPLY_SHELLS
+                        .saturating_add(state.state.get_total_minted().unwrap_or(0))
+                        .saturating_sub(state.state.get_total_burned().unwrap_or(0));
+                    compute_block_reward(block.header.slot, total_supply)
+                };
+
+            let current_epoch = moltchain_core::consensus::slot_to_epoch(block.header.slot);
 
             Ok(serde_json::json!({
                 "slot": block.header.slot,
@@ -2907,11 +2994,22 @@ async fn handle_get_block(
                 "transaction_count": block.transactions.len(),
                 "transactions": transactions,
                 "block_reward": {
-                    "amount": reward_amount,
-                    "amount_molt": reward_amount as f64 / 1_000_000_000.0,
+                    "amount": 0,
+                    "amount_molt": 0.0,
+                    "projected_per_slot": projected_per_slot,
+                    "projected_per_slot_molt": projected_per_slot as f64 / 1_000_000_000.0,
+                    "distribution": "epoch",
+                    "epoch": current_epoch,
                     "type": if has_user_txs { "transaction" } else { "heartbeat" },
                     "recipient": Pubkey(block.header.validator).to_base58(),
                 },
+                "commit_signatures": block.commit_signatures.iter().map(|cs| {
+                    serde_json::json!({
+                        "validator": Pubkey(cs.validator).to_base58(),
+                        "signature": hex::encode(cs.signature),
+                    })
+                }).collect::<Vec<_>>(),
+                "commit_validator_count": block.commit_signatures.len(),
             }))
         }
         None => Err(RpcError {
@@ -2919,6 +3017,100 @@ async fn handle_get_block(
             message: "Block not found".to_string(),
         }),
     }
+}
+
+/// Get block commit certificate (commit signatures only)
+async fn handle_get_block_commit(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let slot = parse_get_block_slot_param(params.as_ref(), false)?;
+
+    let block = state.state.get_block_by_slot(slot).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
+    match block {
+        Some(block) => {
+            let block_hash = block.hash();
+            let sigs: Vec<serde_json::Value> = block
+                .commit_signatures
+                .iter()
+                .map(|cs| {
+                    serde_json::json!({
+                        "validator": Pubkey(cs.validator).to_base58(),
+                        "signature": hex::encode(cs.signature),
+                        "timestamp": cs.timestamp,
+                    })
+                })
+                .collect();
+
+            Ok(serde_json::json!({
+                "slot": block.header.slot,
+                "block_hash": block_hash.to_hex(),
+                "commit_signatures": sigs,
+                "commit_validator_count": sigs.len(),
+                "bft_timestamp": block.header.timestamp,
+            }))
+        }
+        None => Err(RpcError {
+            code: -32001,
+            message: "Block not found".to_string(),
+        }),
+    }
+}
+
+/// Get Merkle inclusion proof for an account (Task 1.3)
+///
+/// Params: [pubkey_base58]
+/// Returns: { pubkey, account, proof: { leaf_hash, siblings, path }, state_root }
+async fn handle_get_account_proof(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey_str = params
+        .as_ref()
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            params
+                .as_ref()
+                .and_then(|p| p.as_object())
+                .and_then(|o| o.get("pubkey"))
+                .and_then(|v| v.as_str())
+        })
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing pubkey parameter".to_string(),
+        })?;
+
+    let pubkey = Pubkey::from_base58(pubkey_str).map_err(|_| RpcError {
+        code: -32602,
+        message: "Invalid pubkey".to_string(),
+    })?;
+
+    let proof = state
+        .state
+        .get_account_proof(&pubkey)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Account not found or proof unavailable".to_string(),
+        })?;
+
+    let siblings_hex: Vec<String> = proof.proof.siblings.iter().map(|h| h.to_hex()).collect();
+
+    Ok(serde_json::json!({
+        "pubkey": pubkey_str,
+        "account": hex::encode(&proof.account_data),
+        "proof": {
+            "leaf_hash": proof.proof.leaf_hash.to_hex(),
+            "siblings": siblings_hex,
+            "path": proof.proof.path,
+        },
+        "state_root": proof.state_root.to_hex(),
+    }))
 }
 
 /// Get current slot (supports optional commitment level)
@@ -3179,6 +3371,57 @@ async fn handle_set_rent_params(
         })?;
 
     Ok(serde_json::json!({"status": "ok"}))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEE ESTIMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Estimate the fee and compute units for a transaction without executing it.
+/// Params: [transaction_base64]
+async fn handle_estimate_transaction_fee(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let tx_base64 = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [transaction_base64]".to_string(),
+        })?;
+
+    use base64::{engine::general_purpose, Engine as _};
+    let tx_bytes = general_purpose::STANDARD
+        .decode(tx_base64)
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid base64: {}", e),
+        })?;
+
+    let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
+
+    validate_incoming_transaction_limits(&tx)?;
+
+    let fee_config = state
+        .state
+        .get_fee_config()
+        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+
+    let fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+    let compute_units = compute_units_for_tx(&tx);
+
+    Ok(serde_json::json!({
+        "fee_shells": fee,
+        "fee_molt": fee as f64 / 1_000_000_000.0,
+        "compute_units": compute_units,
+    }))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3933,19 +4176,7 @@ fn decode_solana_transaction(
         }
     };
 
-    // Route by first-byte heuristic to avoid bincode panicking on JSON
-    if tx_bytes.first() == Some(&b'{') {
-        parse_json_transaction(&tx_bytes).or_else(|_| {
-            bounded_bincode_deserialize(&tx_bytes).map_err(|e: bincode::Error| RpcError {
-                code: -32602,
-                message: format!("Invalid transaction: {}", e),
-            })
-        })
-    } else {
-        bounded_bincode_deserialize(&tx_bytes)
-            .or_else(|_| parse_json_transaction(&tx_bytes))
-            .map_err(|e: RpcError| e)
-    }
+    decode_transaction_bytes(&tx_bytes)
 }
 
 /// Parse a JSON-format transaction from the wallet into a native Transaction.
@@ -4110,6 +4341,7 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
             instructions,
             recent_blockhash,
         },
+        tx_type: moltchain_core::TransactionType::Native,
     })
 }
 
@@ -4150,35 +4382,19 @@ async fn handle_send_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // Deserialize transaction — detect format by first byte.
-    // JSON payloads (from wallet/SDK JSON mode) start with '{';
-    // bincode payloads are raw binary.  Trying bincode on JSON bytes
-    // can trigger panics in bincode 1.x, so we route by heuristic first.
-    let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-        // Looks like JSON — try JSON first, fall back to bincode
-        parse_json_transaction(&tx_bytes).or_else(|_| {
-            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid transaction: {}", e),
-            })
-        })?
-    } else {
-        // Looks like binary — try bincode first, fall back to JSON
-        bounded_bincode_deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?
-    };
+    // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
+    let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
     validate_incoming_transaction_limits(&tx)?;
 
     // ── Pre-mempool validation ──────────────────────────────────
     // Reject structurally invalid transactions BEFORE entering mempool.
 
-    // P9-RPC-01: Reject EVM sentinel blockhash via sendTransaction.
-    // Only eth_sendRawTransaction may create TXs with the sentinel — external
-    // callers must never be allowed to submit sentinel-tagged TXs directly.
-    if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+    // Reject EVM transactions via native sendTransaction (must use /evm endpoint).
+    if tx.is_evm() {
         return Err(RpcError {
             code: -32003,
-            message: "EVM sentinel blockhash is not allowed via sendTransaction".to_string(),
+            message: "EVM transactions are not allowed via sendTransaction".to_string(),
         });
     }
 
@@ -4343,20 +4559,7 @@ async fn handle_simulate_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // Deserialize transaction — same heuristic as sendTransaction
-    let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-        parse_json_transaction(&tx_bytes).or_else(|_| {
-            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid transaction: {}", e),
-            })
-        })?
-    } else {
-        bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid transaction: {}", e),
-        })?
-    };
+    let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
     validate_incoming_transaction_limits(&tx)?;
 
@@ -5091,11 +5294,11 @@ async fn handle_solana_send_transaction(
 
     validate_incoming_transaction_limits(&tx)?;
 
-    // P9-RPC-01: Reject EVM sentinel blockhash via Solana sendTransaction
-    if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+    // Reject EVM transactions submitted via Solana-compat endpoint
+    if tx.is_evm() {
         return Err(RpcError {
             code: -32003,
-            message: "EVM sentinel blockhash is not allowed via sendTransaction".to_string(),
+            message: "EVM transactions are not allowed via sendTransaction".to_string(),
         });
     }
 
@@ -5374,6 +5577,18 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
     let slot_duration_ms = state.state.get_slot_duration_ms();
 
+    // Projected supply: include theoretical inflation accrued since last epoch boundary.
+    // Actual minting happens at epoch boundaries, but this projection gives live feedback.
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let current_epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
+    let epoch_start = moltchain_core::consensus::epoch_start_slot(current_epoch);
+    let slots_into_epoch = current_slot.saturating_sub(epoch_start);
+    let per_slot_reward = compute_block_reward(current_slot, metrics.total_supply);
+    let projected_unminted = per_slot_reward as u128 * slots_into_epoch as u128;
+    let projected_supply = metrics
+        .total_supply
+        .saturating_add(projected_unminted as u64);
+
     Ok(serde_json::json!({
         "tps": metrics.tps,
         "peak_tps": metrics.peak_tps,
@@ -5386,8 +5601,10 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "total_accounts": metrics.total_accounts,
         "active_accounts": metrics.active_accounts,
         "total_supply": metrics.total_supply,
+        "projected_supply": projected_supply,
         "circulating_supply": circulating_supply,
         "total_burned": metrics.total_burned,
+        "total_minted": metrics.total_minted,
         "total_staked": total_staked,
         "treasury_balance": treasury_balance,
         "treasury_pubkey": treasury_pubkey_b58,
@@ -5398,6 +5615,9 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "distribution_wallets": dist_wallets_json,
         "slot_duration_ms": slot_duration_ms,
         "fee_burn_percent": fee_config.fee_burn_percent,
+        "current_epoch": current_epoch,
+        "slots_into_epoch": slots_into_epoch,
+        "inflation_rate_bps": moltchain_core::consensus::inflation_rate_bps(current_slot),
     }))
 }
 
@@ -5791,10 +6011,19 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
     };
     let metrics = state.state.get_metrics();
 
-    // Calculate epoch (assuming 432 slots per epoch at 400ms = ~3 minutes)
-    let epoch = current_slot / 432;
+    // Calculate epoch from consensus constant (SLOTS_PER_EPOCH = 432,000)
+    let epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
     // Block height is same as slot for now (1 block per slot)
     let block_height = current_slot;
+
+    // Projected supply: include theoretical inflation accrued since last epoch
+    let epoch_start = moltchain_core::consensus::epoch_start_slot(epoch);
+    let slots_into_epoch = current_slot.saturating_sub(epoch_start);
+    let per_slot_reward = compute_block_reward(current_slot, metrics.total_supply);
+    let projected_unminted = per_slot_reward as u128 * slots_into_epoch as u128;
+    let projected_supply = metrics
+        .total_supply
+        .saturating_add(projected_unminted as u64);
 
     // Check chain health: stale if no block in 120 seconds
     let is_healthy = if let Ok(Some(block)) = state.state.get_block_by_slot(current_slot) {
@@ -5828,11 +6057,14 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
         "average_block_time": metrics.average_block_time,
         "block_time_ms": metrics.average_block_time * 1000.0,
         "total_supply": metrics.total_supply,
+        "projected_supply": projected_supply,
         "total_burned": metrics.total_burned,
+        "total_minted": metrics.total_minted,
         "peer_count": if let Some(ref p2p) = state.p2p { p2p.peer_count() } else { 0 },
         "chain_id": state.chain_id,
         "network": state.network_id,
         "is_healthy": is_healthy,
+        "inflation_rate_bps": moltchain_core::consensus::inflation_rate_bps(current_slot),
     }))
 }
 
@@ -5872,19 +6104,7 @@ async fn handle_stake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-            parse_json_transaction(&tx_bytes).or_else(|_| {
-                bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid transaction: {}", e),
-                })
-            })?
-        } else {
-            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid transaction: {}", e),
-            })?
-        };
+        let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
         let instruction = tx.message.instructions.first().ok_or_else(|| RpcError {
             code: -32602,
@@ -5940,19 +6160,7 @@ async fn handle_unstake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = if tx_bytes.first() == Some(&b'{') {
-            parse_json_transaction(&tx_bytes).or_else(|_| {
-                bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                    code: -32602,
-                    message: format!("Invalid transaction: {}", e),
-                })
-            })?
-        } else {
-            bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
-                code: -32602,
-                message: format!("Invalid transaction: {}", e),
-            })?
-        };
+        let tx: Transaction = decode_transaction_bytes(&tx_bytes)?;
 
         let instruction = tx.message.instructions.first().ok_or_else(|| RpcError {
             code: -32602,
@@ -6122,10 +6330,33 @@ async fn handle_get_staking_rewards(
             let pending = stake_info.rewards_earned;
             let claimed = stake_info.total_claimed;
 
-            // Reward rate: MOLT per block for this validator (with decay)
+            // Epoch-based reward projection: compute this validator's estimated
+            // share of the next epoch distribution based on current stake weight.
             let current_slot = state.state.get_last_slot().unwrap_or(0);
-            let decayed_base = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
-            let base_rate_molt = decayed_base as f64 / 1_000_000_000.0;
+            let total_supply = GENESIS_SUPPLY_SHELLS
+                .saturating_add(state.state.get_total_minted().unwrap_or(0))
+                .saturating_sub(state.state.get_total_burned().unwrap_or(0));
+
+            let current_epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
+            let epoch_start = moltchain_core::consensus::epoch_start_slot(current_epoch);
+            let slots_into_epoch = current_slot.saturating_sub(epoch_start);
+            let total_pool_stake = pool_guard.total_stake().max(1);
+            let validator_stake = stake_info.total_stake();
+            let stake_share = validator_stake as f64 / total_pool_stake as f64;
+
+            // Projected pending: this validator's proportional share of inflation
+            // that has theoretically accrued since the current epoch started.
+            let per_slot_reward = compute_block_reward(current_slot, total_supply);
+            let epoch_accrued = per_slot_reward as u128 * slots_into_epoch as u128;
+            let projected_pending = (epoch_accrued as f64 * stake_share) as u64;
+
+            // Full epoch projection (what they'd earn at next boundary)
+            let epoch_mint =
+                moltchain_core::consensus::compute_epoch_mint(epoch_start, total_supply);
+            let projected_epoch_reward = (epoch_mint as f64 * stake_share) as u64;
+
+            let current_reward = per_slot_reward;
+            let base_rate_molt = current_reward as f64 / 1_000_000_000.0;
             let reward_rate = if stake_info.is_active {
                 if stake_info.bootstrap_debt > 0 {
                     // During vesting: 50% goes to debt repayment, 50% liquid
@@ -6149,6 +6380,8 @@ async fn handle_get_staking_rewards(
             return Ok(serde_json::json!({
                 "total_rewards": total_earned,
                 "pending_rewards": pending,
+                "projected_pending": projected_pending,
+                "projected_epoch_reward": projected_epoch_reward,
                 "claimed_rewards": claimed,
                 "reward_rate": reward_rate,
                 "bootstrap_debt": stake_info.bootstrap_debt,
@@ -9924,19 +10157,13 @@ async fn handle_eth_send_raw_transaction(
 
     let message = moltchain_core::Message {
         instructions: vec![instruction],
-        // P9-RPC-01: Use the named constant for the EVM sentinel blockhash.
-        // The processor recognises this sentinel and routes directly to the
-        // EVM execution path, skipping native blockhash + sig verification
-        // (the EVM layer provides its own replay protection via nonces + ECDSA).
+        // EVM transactions use the sentinel blockhash for backward compatibility.
+        // The Transaction::new_evm() constructor sets tx_type = Evm which is the
+        // primary detection path; the sentinel is kept as a legacy fallback.
         recent_blockhash: moltchain_core::EVM_SENTINEL_BLOCKHASH,
     };
 
-    let tx = Transaction {
-        // AUDIT-FIX 2.15: Placeholder signature so downstream code doesn't reject
-        // as malformed. The actual ECDSA signature is inside the EVM transaction data.
-        signatures: vec![[0u8; 64]],
-        message,
-    };
+    let tx = Transaction::new_evm(message);
 
     submit_transaction(state, tx)?;
 
@@ -10067,6 +10294,31 @@ async fn handle_eth_get_transaction_receipt(
             .contract_address
             .map(|addr| format!("0x{}", hex::encode(addr)));
 
+        // Task 3.4: Return structured EVM logs in receipt
+        let receipt_logs: Vec<serde_json::Value> = receipt
+            .structured_logs
+            .iter()
+            .enumerate()
+            .map(|(i, log)| {
+                let topics: Vec<serde_json::Value> = log
+                    .topics
+                    .iter()
+                    .map(|t| serde_json::Value::String(format!("0x{}", hex::encode(t))))
+                    .collect();
+                serde_json::json!({
+                    "address": format!("0x{}", hex::encode(log.address)),
+                    "topics": topics,
+                    "data": format!("0x{}", hex::encode(&log.data)),
+                    "logIndex": format!("0x{:x}", i),
+                    "blockNumber": block_number,
+                    "blockHash": block_hash,
+                    "transactionHash": format!("0x{}", hex::encode(receipt.evm_hash)),
+                    "transactionIndex": "0x0",
+                    "removed": false,
+                })
+            })
+            .collect();
+
         return Ok(serde_json::json!({
             "transactionHash": format!("0x{}", hex::encode(receipt.evm_hash)),
             "status": status,
@@ -10074,6 +10326,8 @@ async fn handle_eth_get_transaction_receipt(
             "blockNumber": block_number,
             "blockHash": block_hash,
             "contractAddress": contract_address,
+            "logs": receipt_logs,
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         }));
     }
 
@@ -10472,7 +10726,9 @@ async fn handle_eth_get_block_by_hash(
 }
 
 /// eth_getLogs — return contract event logs matching a filter.
-/// Scans events by slot range and optionally filters by address.
+/// Task 3.4: Reads from structured EVM log index first, then native contract events.
+/// Supports EIP-1474 topics filtering: each position can be null (wildcard),
+/// a single topic hash, or an array of topic hashes (OR matching).
 async fn handle_eth_get_logs(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -10511,24 +10767,56 @@ async fn handle_eth_get_logs(
         from_slot
     };
 
-    // Optional address filter
-    let filter_address: Option<[u8; 20]> = filter
-        .get("address")
-        .and_then(|v| v.as_str())
-        .map(moltchain_core::StateStore::parse_evm_address)
-        .transpose()
-        .map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid address filter: {}", e),
-        })?;
+    // Optional address filter (single address or array of addresses)
+    let filter_addresses: Vec<[u8; 20]> = match filter.get("address") {
+        Some(serde_json::Value::String(s)) => {
+            vec![
+                moltchain_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
+                    code: -32602,
+                    message: format!("Invalid address filter: {}", e),
+                })?,
+            ]
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            let mut addrs = Vec::with_capacity(arr.len());
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    addrs.push(
+                        moltchain_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
+                            code: -32602,
+                            message: format!("Invalid address in array: {}", e),
+                        })?,
+                    );
+                }
+            }
+            addrs
+        }
+        _ => Vec::new(),
+    };
 
-    // Optional topics filter (array of topic hashes)
-    let filter_topics: Vec<Option<String>> = filter
+    // Task 3.4: Parse EIP-1474 topics filter.
+    // Each position can be: null (wildcard), "0x..." (single), or ["0x...", "0x..."] (OR).
+    let filter_topics: Vec<Option<Vec<[u8; 32]>>> = filter
         .get("topics")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .map(|t| t.as_str().map(|s| s.to_string()))
+                .map(|t| match t {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => parse_topic_hash(s).map(|h| vec![h]),
+                    serde_json::Value::Array(sub) => {
+                        let hashes: Vec<[u8; 32]> = sub
+                            .iter()
+                            .filter_map(|v| v.as_str().and_then(parse_topic_hash))
+                            .collect();
+                        if hashes.is_empty() {
+                            None
+                        } else {
+                            Some(hashes)
+                        }
+                    }
+                    _ => None,
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -10540,77 +10828,118 @@ async fn handle_eth_get_logs(
     for slot in effective_from..=to_slot {
         // AUDIT-FIX F-5: Reset logIndex per block (EVM spec requires per-block indexing)
         let mut log_index: u64 = 0;
+
+        // Cache block hash for this slot (used by both EVM logs and native events)
+        let block_hash_str = state
+            .state
+            .get_block_by_slot(slot)
+            .ok()
+            .flatten()
+            .map(|b| format!("0x{}", hex::encode(b.hash().0)))
+            .unwrap_or_else(|| format!("0x{:064x}", slot));
+
+        // ── Phase 1: Structured EVM logs (from actual EVM execution) ──
+        if let Ok(evm_logs) = state.state.get_evm_logs_for_slot(slot) {
+            for entry in &evm_logs {
+                // Address filter
+                if !filter_addresses.is_empty() && !filter_addresses.contains(&entry.log.address) {
+                    continue;
+                }
+
+                // Topic filter (EIP-1474)
+                if !moltchain_core::topics_match(&entry.log.topics, &filter_topics) {
+                    continue;
+                }
+
+                let topics_json: Vec<serde_json::Value> = entry
+                    .log
+                    .topics
+                    .iter()
+                    .map(|t| serde_json::Value::String(format!("0x{}", hex::encode(t))))
+                    .collect();
+
+                logs.push(serde_json::json!({
+                    "address": format!("0x{}", hex::encode(entry.log.address)),
+                    "topics": topics_json,
+                    "data": format!("0x{}", hex::encode(&entry.log.data)),
+                    "blockNumber": format!("0x{:x}", slot),
+                    "blockHash": block_hash_str,
+                    "transactionHash": format!("0x{}", hex::encode(entry.tx_hash)),
+                    "transactionIndex": format!("0x{:x}", entry.tx_index),
+                    "logIndex": format!("0x{:x}", log_index),
+                    "removed": false,
+                }));
+                log_index += 1;
+
+                if logs.len() >= MAX_LOG_RESULTS {
+                    break;
+                }
+            }
+        }
+
+        if logs.len() >= MAX_LOG_RESULTS {
+            break;
+        }
+
+        // ── Phase 2: Native MoltChain contract events (backward compat) ──
         let events = state
             .state
             .get_events_by_slot(slot, 10_000)
             .unwrap_or_default();
 
         for event in &events {
-            // If address filter is set, resolve the event program to an EVM address and compare
-            if let Some(ref addr_filter) = filter_address {
-                // Look up native program's EVM address
-                if let Ok(Some(evm_addr)) = state.state.lookup_native_to_evm(&event.program) {
-                    if &evm_addr != addr_filter {
-                        continue;
-                    }
-                } else {
-                    // Program has no EVM mapping — use last 20 bytes of pubkey
-                    if &event.program.0[12..32] != addr_filter.as_slice() {
-                        continue;
-                    }
+            // Address filter: resolve native program to EVM address
+            if !filter_addresses.is_empty() {
+                let evm_addr =
+                    if let Ok(Some(addr)) = state.state.lookup_native_to_evm(&event.program) {
+                        addr
+                    } else {
+                        let mut addr = [0u8; 20];
+                        addr.copy_from_slice(&event.program.0[12..32]);
+                        addr
+                    };
+                if !filter_addresses.contains(&evm_addr) {
+                    continue;
                 }
             }
 
             // Build topics from event name + data keys
             let mut topics = Vec::new();
-            // AUDIT-FIX A11-02: topic[0] = keccak256(event_name) — standard EVM topic format.
-            // Previously used SHA-256, which breaks all EVM tooling (Ethers.js, web3.py, The Graph).
+            // AUDIT-FIX A11-02: topic[0] = keccak256(event_name)
             let event_hash = {
                 use sha3::{Digest, Keccak256};
                 let mut hasher = Keccak256::new();
                 hasher.update(event.name.as_bytes());
                 let result = hasher.finalize();
-                format!("0x{}", hex::encode(result))
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&result);
+                h
             };
-            topics.push(serde_json::Value::String(event_hash));
+            topics.push(event_hash);
 
             // Additional topics from indexed data fields
             for value in event.data.values() {
                 if topics.len() >= 4 {
                     break;
                 }
-                // Pad value to 32 bytes (topic size)
-                let padded = format!("0x{:0>64}", hex::encode(value.as_bytes()));
-                topics.push(serde_json::Value::String(padded));
+                let v_bytes = value.as_bytes();
+                let mut padded = [0u8; 32];
+                let start = 32usize.saturating_sub(v_bytes.len());
+                let copy_len = v_bytes.len().min(32);
+                padded[start..start + copy_len].copy_from_slice(&v_bytes[..copy_len]);
+                topics.push(padded);
             }
 
-            // Apply topics filter
-            let mut topics_match = true;
-            for (i, filter_topic) in filter_topics.iter().enumerate() {
-                if let Some(ref ft) = filter_topic {
-                    if let Some(event_topic) = topics.get(i).and_then(|t| t.as_str()) {
-                        if !event_topic.eq_ignore_ascii_case(ft) {
-                            topics_match = false;
-                            break;
-                        }
-                    } else {
-                        topics_match = false;
-                        break;
-                    }
-                }
-                // None = wildcard, matches anything
-            }
-            if !topics_match {
+            // Apply EIP-1474 topics filter
+            if !moltchain_core::topics_match(&topics, &filter_topics) {
                 continue;
             }
 
-            // AUDIT-FIX P10-RPC-03: ABI-encode data values (each left-padded to 32 bytes).
-            // Raw concatenation of UTF-8 bytes breaks EVM ABI decoding in ethers.js / web3.py.
+            // AUDIT-FIX P10-RPC-03: ABI-encode data values
             let data_hex = {
                 let mut data_bytes = Vec::new();
                 for v in event.data.values() {
                     let v_bytes = v.as_bytes();
-                    // ABI encoding: each value is left-padded to 32 bytes
                     if v_bytes.len() < 32 {
                         let padding = 32 - v_bytes.len();
                         data_bytes.extend(std::iter::repeat_n(0u8, padding));
@@ -10627,22 +10956,15 @@ async fn handle_eth_get_logs(
                     format!("0x{}", hex::encode(&event.program.0[12..32]))
                 };
 
-            // AUDIT-FIX P10-RPC-01: Use actual block hash, not state_root.
-            let block_hash = state
-                .state
-                .get_block_by_slot(slot)
-                .ok()
-                .flatten()
-                .map(|b| format!("0x{}", hex::encode(b.hash().0)))
-                .unwrap_or_else(|| format!("0x{:064x}", slot));
+            let topics_json: Vec<serde_json::Value> = topics
+                .iter()
+                .map(|t| serde_json::Value::String(format!("0x{}", hex::encode(t))))
+                .collect();
 
-            // AUDIT-FIX P10-RPC-02: Derive deterministic transactionHash from
-            // keccak256(block_hash_bytes || log_index). The previous code used
-            // a sequential counter (log_index) formatted as hex, which fabricated
-            // colliding "transaction hashes" across different blocks.
+            // AUDIT-FIX P10-RPC-02: Derive deterministic transactionHash
             let tx_hash = {
                 use sha3::{Digest, Keccak256};
-                let block_hash_hex = block_hash.strip_prefix("0x").unwrap_or(&block_hash);
+                let block_hash_hex = block_hash_str.strip_prefix("0x").unwrap_or(&block_hash_str);
                 let bh_bytes = hex::decode(block_hash_hex).unwrap_or_default();
                 let mut hasher = Keccak256::new();
                 hasher.update(&bh_bytes);
@@ -10652,10 +10974,10 @@ async fn handle_eth_get_logs(
 
             logs.push(serde_json::json!({
                 "address": contract_addr,
-                "topics": topics,
+                "topics": topics_json,
                 "data": data_hex,
                 "blockNumber": format!("0x{:x}", slot),
-                "blockHash": block_hash,
+                "blockHash": block_hash_str,
                 "transactionHash": tx_hash,
                 "transactionIndex": "0x0",
                 "logIndex": format!("0x{:x}", log_index),
@@ -10663,18 +10985,28 @@ async fn handle_eth_get_logs(
             }));
             log_index += 1;
 
-            // AUDIT-FIX F-13: Stop collecting once we hit the cap
             if logs.len() >= MAX_LOG_RESULTS {
                 break;
             }
         }
-        // AUDIT-FIX F-13: Also break the outer slot loop if cap reached
         if logs.len() >= MAX_LOG_RESULTS {
             break;
         }
     }
 
     Ok(serde_json::json!(logs))
+}
+
+/// Parse a hex topic hash string to [u8; 32]
+fn parse_topic_hash(s: &str) -> Option<[u8; 32]> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Some(arr)
 }
 
 /// eth_getStorageAt — read a storage slot from an EVM contract.
@@ -10858,7 +11190,7 @@ async fn handle_get_staking_position(
 
 /// Handle getReefStakePoolInfo: Get global ReefStake pool info
 async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    use moltchain_core::consensus::{decayed_reward, SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD};
+    use moltchain_core::consensus::SLOTS_PER_YEAR;
 
     let pool = state.state.get_reefstake_pool().map_err(|e| RpcError {
         code: -32603,
@@ -10870,9 +11202,12 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         let sp = sp_arc.read().await;
         let stats = sp.get_stats();
         let slots_per_day = SLOTS_PER_YEAR / 365;
-        // Apply 20% annual reward decay based on current slot
+        // Use inflation-curve block reward based on current slot
         let current_slot = state.state.get_last_slot().unwrap_or(0);
-        let current_reward = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
+        let total_supply = GENESIS_SUPPLY_SHELLS
+            .saturating_add(state.state.get_total_minted().unwrap_or(0))
+            .saturating_sub(state.state.get_total_burned().unwrap_or(0));
+        let current_reward = compute_block_reward(current_slot, total_supply);
         let apy_bp = pool.calculate_apy_bp(slots_per_day, current_reward);
         (stats.active_validators, apy_bp as f64 / 100.0)
     } else {
@@ -10962,8 +11297,9 @@ async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
     use moltchain_core::consensus::{
-        decayed_reward, ANNUAL_REWARD_DECAY_BPS, BOOTSTRAP_GRANT_AMOUNT, HEARTBEAT_BLOCK_REWARD,
-        MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD,
+        compute_block_reward, compute_epoch_mint, inflation_rate_bps, BOOTSTRAP_GRANT_AMOUNT,
+        GENESIS_SUPPLY_SHELLS, INFLATION_DECAY_RATE_BPS, INITIAL_INFLATION_RATE_BPS,
+        MIN_VALIDATOR_STAKE, SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
     };
 
     let stake_pool_arc = state.stake_pool.as_ref().ok_or_else(|| RpcError {
@@ -10975,20 +11311,39 @@ async fn handle_get_reward_adjustment_info(
     let active_count = stats.active_validators;
     let total_staked = stats.total_staked;
 
-    // Apply reward decay for current slot
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let current_tx_reward = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
-    let current_hb_reward = decayed_reward(HEARTBEAT_BLOCK_REWARD, current_slot);
+    let total_minted = state.state.get_total_minted().unwrap_or(0);
+    let total_burned = state.state.get_total_burned().unwrap_or(0);
+    let total_supply = GENESIS_SUPPLY_SHELLS
+        .saturating_add(total_minted)
+        .saturating_sub(total_burned);
 
-    // Calculate effective APY using decayed reward
-    let annual_tx_rewards = current_tx_reward as f64 * SLOTS_PER_YEAR as f64;
+    let current_inflation_bps = inflation_rate_bps(current_slot);
+    let block_reward = compute_block_reward(current_slot, total_supply);
+    let epoch_mint = compute_epoch_mint(current_slot, total_supply);
+    let epochs_per_year = SLOTS_PER_YEAR / SLOTS_PER_EPOCH;
+
+    // Price-adjusted reward (informational — epoch rewards use inflation curve directly)
+    let reward_config = moltchain_core::consensus::RewardConfig::new();
+    let molt_price = moltchain_core::consensus::molt_price_from_state(&state.state);
+    let adjusted_reward = reward_config.get_adjusted_reward(current_slot, total_supply, molt_price);
+
+    // Estimate APY: all inflation goes to stakers proportionally at epoch boundaries
+    let annual_inflation = epoch_mint as f64 * epochs_per_year as f64;
     let apy = if total_staked > 0 {
-        (annual_tx_rewards / total_staked as f64) * 100.0
+        (annual_inflation / total_staked as f64) * 100.0
     } else {
         0.0
     };
 
-    let decay_year = current_slot / SLOTS_PER_YEAR;
+    let inflation_year = current_slot / SLOTS_PER_YEAR;
+
+    // Projected supply: include theoretical inflation accrued since last epoch
+    let current_epoch = current_slot / SLOTS_PER_EPOCH;
+    let epoch_start = current_epoch * SLOTS_PER_EPOCH;
+    let slots_into_epoch = current_slot.saturating_sub(epoch_start);
+    let projected_unminted = block_reward as u128 * slots_into_epoch as u128;
+    let projected_supply = total_supply.saturating_add(projected_unminted as u64);
 
     // Load wallet pubkeys and balances for full transparency
     let wallet_info = |role: &str| -> serde_json::Value {
@@ -11013,14 +11368,29 @@ async fn handle_get_reward_adjustment_info(
     };
 
     Ok(serde_json::json!({
-        "currentMultiplier": 1.0,
-        "priceOracleActive": true,
-        "transactionBlockReward": current_tx_reward,
-        "transactionBlockRewardBase": TRANSACTION_BLOCK_REWARD,
-        "heartbeatBlockReward": current_hb_reward,
-        "heartbeatBlockRewardBase": HEARTBEAT_BLOCK_REWARD,
-        "annualRewardDecayBps": ANNUAL_REWARD_DECAY_BPS,
-        "decayYear": decay_year,
+        "supplyModel": "inflationary_with_burn",
+        "genesisSupply": GENESIS_SUPPLY_SHELLS,
+        "totalMinted": total_minted,
+        "totalBurned": total_burned,
+        "totalSupply": total_supply,
+        "projectedSupply": projected_supply,
+        "inflationRateBps": current_inflation_bps,
+        "inflationRatePercent": format!("{:.4}", current_inflation_bps as f64 / 100.0),
+        "inflationYear": inflation_year,
+        "initialInflationRateBps": INITIAL_INFLATION_RATE_BPS,
+        "inflationDecayRateBps": INFLATION_DECAY_RATE_BPS,
+        "terminalInflationRateBps": TERMINAL_INFLATION_RATE_BPS,
+        "blockReward": block_reward,
+        "adjustedBlockReward": adjusted_reward,
+        "epochMint": epoch_mint,
+        "slotsPerEpoch": SLOTS_PER_EPOCH,
+        "epochsPerYear": epochs_per_year,
+        "priceAdjustmentMultiplier": if molt_price > 0.0 {
+            format!("{:.4}", (0.10 / molt_price).clamp(0.1, 10.0))
+        } else {
+            "1.0000".to_string()
+        },
+        "moldPrice": molt_price,
         "slotsPerYear": SLOTS_PER_YEAR,
         "currentSlot": current_slot,
         "minValidatorStake": MIN_VALIDATOR_STAKE,
@@ -11053,7 +11423,7 @@ async fn handle_get_reward_adjustment_info(
             "ecosystem_partnerships": wallet_info("ecosystem_partnerships"),
             "reserve_pool": wallet_info("reserve_pool"),
         },
-        "note": "Oracle price feeds active: MOLT, wSOL, wETH via Binance WebSocket real-time feed"
+        "note": "Epoch-based staker rewards: inflation minted at epoch boundaries and distributed to all stakers proportionally by stake weight. Block producers earn transaction fees per-block. 40% fee burn provides counter-pressure."
     }))
 }
 
@@ -12836,9 +13206,9 @@ mod tests {
     use super::{
         classify_method, classify_solana_method_tier, encode_rpc_response,
         filter_signatures_for_address, parse_get_block_slot_param, parse_rpc_request,
-        parse_rpc_tier_probe, validate_incoming_transaction_limits, validate_solana_encoding,
-        validate_solana_transaction_details, AirdropCooldowns, MethodTier, RpcError, RpcResponse,
-        AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
+        parse_rpc_tier_probe, parse_topic_hash, validate_incoming_transaction_limits,
+        validate_solana_encoding, validate_solana_transaction_details, AirdropCooldowns,
+        MethodTier, RpcError, RpcResponse, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
     };
     use axum::http::HeaderMap;
     use moltchain_core::Hash;
@@ -12971,6 +13341,7 @@ mod tests {
                 ],
                 recent_blockhash: moltchain_core::Hash([7u8; 32]),
             },
+            tx_type: Default::default(),
         };
 
         let err = validate_incoming_transaction_limits(&tx)
@@ -12991,6 +13362,7 @@ mod tests {
                 }],
                 recent_blockhash: moltchain_core::Hash([9u8; 32]),
             },
+            tx_type: Default::default(),
         };
 
         let err = validate_incoming_transaction_limits(&tx)
@@ -13050,7 +13422,9 @@ mod tests {
         let fn_start = source
             .find("async fn handle_eth_get_logs")
             .expect("fn not found");
-        let fn_body = &source[fn_start..std::cmp::min(fn_start + 5000, source.len())];
+        // Task 3.4: Increased scan window from 5000 to 10000 to cover
+        // both EVM log section and native event section of the expanded function.
+        let fn_body = &source[fn_start..std::cmp::min(fn_start + 10000, source.len())];
 
         // Must use Keccak256
         assert!(
@@ -13179,5 +13553,56 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert_eq!(ct, "application/msgpack");
+    }
+
+    // ── Task 3.4: parse_topic_hash tests ──
+
+    #[test]
+    fn test_parse_topic_hash_valid_with_prefix() {
+        let hex = format!("0x{}", "ab".repeat(32));
+        let result = parse_topic_hash(&hex);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), [0xAB; 32]);
+    }
+
+    #[test]
+    fn test_parse_topic_hash_valid_without_prefix() {
+        let hex = "cd".repeat(32);
+        let result = parse_topic_hash(&hex);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), [0xCD; 32]);
+    }
+
+    #[test]
+    fn test_parse_topic_hash_wrong_length() {
+        // Too short (31 bytes)
+        let hex = format!("0x{}", "ab".repeat(31));
+        assert!(parse_topic_hash(&hex).is_none());
+
+        // Too long (33 bytes)
+        let hex = format!("0x{}", "ab".repeat(33));
+        assert!(parse_topic_hash(&hex).is_none());
+    }
+
+    #[test]
+    fn test_parse_topic_hash_invalid_hex() {
+        let hex = format!("0x{}", "zz".repeat(32));
+        assert!(parse_topic_hash(&hex).is_none());
+    }
+
+    #[test]
+    fn test_parse_topic_hash_empty() {
+        assert!(parse_topic_hash("").is_none());
+        assert!(parse_topic_hash("0x").is_none());
+    }
+
+    #[test]
+    fn test_parse_topic_hash_known_evm_transfer() {
+        // Standard ERC-20 Transfer event topic: keccak256("Transfer(address,address,uint256)")
+        let hex = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+        let result = parse_topic_hash(hex).expect("should parse transfer topic");
+        assert_eq!(result[0], 0xdd);
+        assert_eq!(result[1], 0xf2);
+        assert_eq!(result[31], 0xef);
     }
 }

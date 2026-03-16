@@ -109,10 +109,11 @@ pub async fn transfer(
     let transaction = Transaction {
         signatures: vec![signature],
         message,
-    };
+            tx_type: Default::default(),
+};
     
-    // Serialize with bincode
-    let tx_bytes = bincode::serialize(&transaction)?;
+    // Serialize with wire envelope (M-6)
+    let tx_bytes = transaction.to_wire();
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
     
     println!("   Transaction size: {} bytes", tx_bytes.len());

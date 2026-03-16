@@ -125,12 +125,12 @@ pub struct DistributionWallet {
 /// Whitepaper genesis distribution (ordered: validator_rewards first for backward compat)
 /// Updated: 10/25/35/10/10/10 split for sustainable treasury runway.
 pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
-    ("validator_rewards", 100_000_000, 10),
-    ("community_treasury", 250_000_000, 25),
-    ("builder_grants", 350_000_000, 35),
-    ("founding_moltys", 100_000_000, 10),
-    ("ecosystem_partnerships", 100_000_000, 10),
-    ("reserve_pool", 100_000_000, 10),
+    ("validator_rewards", 50_000_000, 10),
+    ("community_treasury", 125_000_000, 25),
+    ("builder_grants", 175_000_000, 35),
+    ("founding_moltys", 50_000_000, 10),
+    ("ecosystem_partnerships", 50_000_000, 10),
+    ("reserve_pool", 50_000_000, 10),
 ];
 
 /// Genesis wallet keypair bundle (saved to disk)
@@ -148,7 +148,7 @@ pub struct GenesisWallet {
     pub treasury_keypair_path: Option<String>,
     /// Multi-sig configuration
     pub multisig: Option<MultiSigConfig>,
-    /// Whitepaper distribution wallets (6 allocations totaling 1B MOLT)
+    /// Whitepaper distribution wallets (6 allocations totaling 500M MOLT)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribution_wallets: Option<Vec<DistributionWallet>>,
     /// Creation timestamp
@@ -200,7 +200,7 @@ impl GenesisWallet {
             None
         };
 
-        // Generate distribution keypairs per whitepaper (6 wallets totaling 1B MOLT)
+        // Generate distribution keypairs per whitepaper (6 wallets totaling 500M MOLT)
         let mut distribution_keypairs = Vec::new();
         let mut distribution_wallets = Vec::new();
 
@@ -366,13 +366,13 @@ mod tests {
         let dist = wallet.distribution_wallets.as_ref().unwrap();
         assert_eq!(dist.len(), 6);
         assert_eq!(dist[0].role, "validator_rewards");
-        assert_eq!(dist[0].amount_molt, 100_000_000);
+        assert_eq!(dist[0].amount_molt, 50_000_000);
         assert_eq!(dist[1].role, "community_treasury");
-        assert_eq!(dist[1].amount_molt, 250_000_000);
+        assert_eq!(dist[1].amount_molt, 125_000_000);
 
-        // Total = 1B
+        // Total = 500M
         let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
-        assert_eq!(total, 1_000_000_000);
+        assert_eq!(total, 500_000_000);
 
         // Treasury = validator_rewards
         assert_eq!(wallet.treasury_pubkey, Some(dist[0].pubkey));
@@ -396,7 +396,7 @@ mod tests {
         let dist = wallet.distribution_wallets.as_ref().unwrap();
         assert_eq!(dist.len(), 6);
         let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
-        assert_eq!(total, 1_000_000_000);
+        assert_eq!(total, 500_000_000);
     }
 
     #[test]

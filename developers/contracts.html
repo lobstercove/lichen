@@ -110,7 +110,10 @@
                             <li>Compile target: <code>wasm32-unknown-unknown</code></li>
                             <li>Runtime: Wasmer sandbox with deterministic execution</li>
                             <li>Storage: Key-value byte store per contract</li>
-                            <li>Entry points: <code>#[no_mangle] pub extern "C" fn</code></li>
+                            <li>Entry points: <code>#[no_mangle] pub extern "C" fn</code> (named exports, recommended)
+                            </li>
+                            <li>Legacy DEX contracts use opcode dispatch via <code>call()</code> — see <a
+                                    href="contract-reference.html">Contract Reference</a> for details</li>
                             <li>Return codes: <code>1</code> = success, <code>0</code> = failure</li>
                         </ul>
                     </div>
@@ -524,8 +527,9 @@ pub extern "C" fn get_value() -> u32 {
                         <span class="method-badge get">READ</span>
                     </div>
                     <div class="method-body">
-                        <p>Get the current slot number. MoltChain produces ~2 slots/second. Used for slot-based timing
-                            (e.g., name expiry at ~63M slots/year).</p>
+                        <p>Get the current slot number. MoltChain produces ~2.5 slots/second (400ms per slot). Used for
+                            slot-based timing
+                            (e.g., name expiry at ~78.8M slots/year).</p>
                     </div>
                 </div>
 
@@ -1221,18 +1225,28 @@ molt contract register &lt;address&gt; --symbol MYTK --name "My Token" --templat
                     <div>
                         <strong>Deploy Flags Reference</strong>
                         <ul>
-                            <li><code>--symbol</code> — Token ticker (e.g. MYTK). Registered in the on-chain symbol registry.</li>
-                            <li><code>--name</code> — Human-readable name (e.g. "My Token"). Shown in explorer and wallet.</li>
-                            <li><code>--template</code> — Contract type: <code>token</code>, <code>nft</code>, <code>defi</code>,
+                            <li><code>--symbol</code> — Token ticker (e.g. MYTK). Registered in the on-chain symbol
+                                registry.</li>
+                            <li><code>--name</code> — Human-readable name (e.g. "My Token"). Shown in explorer and
+                                wallet.</li>
+                            <li><code>--template</code> — Contract type: <code>token</code>, <code>nft</code>,
+                                <code>defi</code>,
                                 <code>dex</code>, <code>governance</code>, <code>wrapped</code>, <code>bridge</code>,
-                                <code>oracle</code>, <code>lending</code>, <code>marketplace</code>, <code>auction</code>,
-                                <code>identity</code>, <code>launchpad</code>, <code>vault</code>, <code>payments</code>, etc.</li>
+                                <code>oracle</code>, <code>lending</code>, <code>marketplace</code>,
+                                <code>auction</code>,
+                                <code>identity</code>, <code>launchpad</code>, <code>vault</code>,
+                                <code>payments</code>, etc.
+                            </li>
                             <li><code>--decimals</code> — Token decimal places (default: 9 for MOLT-compatible).</li>
-                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to shells via decimals).</li>
-                            <li><code>--metadata</code> — JSON object with arbitrary metadata (website, logo, description, etc.).</li>
+                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to shells
+                                via decimals).</li>
+                            <li><code>--metadata</code> — JSON object with arbitrary metadata (website, logo,
+                                description, etc.).</li>
                         </ul>
-                        <p><strong>Fee:</strong> 25.001 MOLT (25 MOLT deploy premium + 0.001 MOLT base fee). If deploy fails, the 25 MOLT premium is automatically refunded.</p>
-                        <p><strong>Auto-register:</strong> If the symbol doesn't appear in the registry after deploy, the CLI automatically sends a fallback register-symbol transaction.</p>
+                        <p><strong>Fee:</strong> 25.001 MOLT (25 MOLT deploy premium + 0.001 MOLT base fee). If deploy
+                            fails, the 25 MOLT premium is automatically refunded.</p>
+                        <p><strong>Auto-register:</strong> If the symbol doesn't appear in the registry after deploy,
+                            the CLI automatically sends a fallback register-symbol transaction.</p>
                     </div>
                 </div>
 

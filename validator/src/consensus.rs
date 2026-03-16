@@ -16,19 +16,21 @@
 // different values at the same height.
 
 use moltchain_core::{
-    Block, Hash, Keypair, Precommit, Prevote, Proposal, Pubkey, RoundStep, StakePool, ValidatorSet,
-    MIN_VALIDATOR_STAKE,
+    Block, CommitSignature, Hash, Keypair, Precommit, Prevote, Proposal, Pubkey, RoundStep,
+    StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
 };
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-/// Base timeout for the Propose step (ms). Actual = base * (round + 1).
+/// Base timeout for the Propose step (ms).
 const PROPOSE_TIMEOUT_BASE_MS: u64 = 2000;
 /// Base timeout for the Prevote step (ms).
 const PREVOTE_TIMEOUT_BASE_MS: u64 = 1000;
 /// Base timeout for the Precommit step (ms).
 const PRECOMMIT_TIMEOUT_BASE_MS: u64 = 1000;
+/// Maximum timeout for any phase (60 seconds). Prevents unbounded growth.
+const MAX_TIMEOUT_MS: u64 = 60_000;
 
 /// Actions emitted by the consensus engine for the caller to execute.
 ///
@@ -99,6 +101,8 @@ pub struct ConsensusEngine {
     seen_prevotes: HashMap<(u32, Pubkey), bool>,
     /// Precommits we've already processed: (round, validator) → true.
     seen_precommits: HashMap<(u32, Pubkey), bool>,
+    /// Precommit signatures retained for commit certificates: (round, validator) → (signature, timestamp).
+    precommit_sigs: HashMap<(u32, Pubkey), ([u8; 64], u64)>,
     /// Rounds for which we already signed a prevote, to prevent equivocation.
     signed_prevote_rounds: HashMap<u32, Option<Hash>>,
     /// Rounds for which we already signed a precommit, to prevent equivocation.
@@ -124,6 +128,7 @@ impl ConsensusEngine {
             proposal_blocks: HashMap::new(),
             seen_prevotes: HashMap::new(),
             seen_precommits: HashMap::new(),
+            precommit_sigs: HashMap::new(),
             signed_prevote_rounds: HashMap::new(),
             signed_precommit_rounds: HashMap::new(),
         }
@@ -144,6 +149,7 @@ impl ConsensusEngine {
         self.proposal_blocks.clear();
         self.seen_prevotes.clear();
         self.seen_precommits.clear();
+        self.precommit_sigs.clear();
         self.signed_prevote_rounds.clear();
         self.signed_precommit_rounds.clear();
         info!("🔷 BFT: Starting height {} round 0", height);
@@ -256,6 +262,21 @@ impl ConsensusEngine {
         // Verify block signature
         if !proposal.block.verify_signature() {
             warn!("🚨 BFT: Invalid block signature in proposal");
+            return ConsensusAction::None;
+        }
+
+        // BFT timestamp validation: reject blocks with timestamps too far in the future.
+        // Tolerance: 30 seconds (matches CometBFT PBTS precision + message delay).
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let proposed_ts = proposal.block.header.timestamp;
+        if proposed_ts > now_secs + 30 {
+            warn!(
+                "🚨 BFT: Proposal timestamp {} is too far in the future (now={}, delta={}s)",
+                proposed_ts, now_secs, proposed_ts - now_secs
+            );
             return ConsensusAction::None;
         }
 
@@ -455,6 +476,10 @@ impl ConsensusEngine {
             .or_default()
             .push(precommit.validator);
 
+        // Retain precommit signature + timestamp for commit certificate
+        self.precommit_sigs
+            .insert((precommit.round, precommit.validator), (precommit.signature, precommit.timestamp));
+
         let round = precommit.round;
         let mut actions = Vec::new();
 
@@ -473,10 +498,12 @@ impl ConsensusEngine {
                             hex::encode(&bh.0[..4])
                         );
                         self.step = RoundStep::Commit;
+                        let mut committed = block.clone();
+                        committed.commit_signatures = self.collect_commit_signatures(round, bh);
                         return ConsensusAction::CommitBlock {
                             height: self.height,
                             round,
-                            block: block.clone(),
+                            block: committed,
                             block_hash: *bh,
                         };
                     }
@@ -713,7 +740,12 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
 
-        let msg = Precommit::signable_bytes(self.height, self.round, &block_hash);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let msg = Precommit::signable_bytes(self.height, self.round, &block_hash, timestamp);
         let signature = self.keypair.sign(&msg);
 
         let precommit = Precommit {
@@ -722,6 +754,7 @@ impl ConsensusEngine {
             block_hash,
             validator: self.validator_pubkey,
             signature,
+            timestamp,
         };
 
         self.signed_precommit_rounds.insert(self.round, block_hash);
@@ -731,6 +764,9 @@ impl ConsensusEngine {
             .entry((self.round, block_hash))
             .or_default()
             .push(self.validator_pubkey);
+        // Retain own signature + timestamp for commit certificate
+        self.precommit_sigs
+            .insert((self.round, self.validator_pubkey), (signature, timestamp));
 
         debug!(
             "🗳️ BFT: Precommit height={} round={} hash={:?}",
@@ -758,12 +794,14 @@ impl ConsensusEngine {
                         hex::encode(&bh.0[..4])
                     );
                     self.step = RoundStep::Commit;
+                    let mut committed = block.clone();
+                    committed.commit_signatures = self.collect_commit_signatures(round, &bh);
                     return ConsensusAction::Multiple(vec![
                         broadcast,
                         ConsensusAction::CommitBlock {
                             height: self.height,
                             round,
-                            block: block.clone(),
+                            block: committed,
                             block_hash: bh,
                         },
                     ]);
@@ -825,6 +863,31 @@ impl ConsensusEngine {
 
         // 2/3 threshold: vote_stake * 3 >= total_eligible_stake * 2
         vote_stake * 3 >= total_eligible_stake * 2
+    }
+
+    /// Collect commit signatures for the given round and block hash.
+    ///
+    /// Gathers all retained precommit signatures from validators that voted
+    /// for `block_hash` in `round`, returning them as `CommitSignature` entries
+    /// suitable for inclusion in the committed block.
+    fn collect_commit_signatures(&self, round: u32, block_hash: &Hash) -> Vec<CommitSignature> {
+        let voters = match self.precommits.get(&(round, Some(*block_hash))) {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        voters
+            .iter()
+            .filter_map(|pk| {
+                self.precommit_sigs
+                    .get(&(round, *pk))
+                    .map(|(sig, ts)| CommitSignature {
+                        validator: pk.0,
+                        signature: *sig,
+                        timestamp: *ts,
+                    })
+            })
+            .collect()
     }
 
     /// Check if there's a polka (2/3+ prevotes) for a given value at a given round.
@@ -1016,18 +1079,28 @@ impl ConsensusEngine {
         ConsensusAction::None
     }
 
-    // ── Timeouts (linear backoff) ──────────────────────────────────
+    // ── Timeouts (exponential backoff with 1.5x multiplier, capped at 60s) ──
+
+    /// Compute exponential timeout: base × 1.5^round, capped at MAX_TIMEOUT_MS.
+    /// Uses integer arithmetic (×3/2 per round) to avoid floating-point.
+    fn exponential_timeout(base_ms: u64, round: u32) -> Duration {
+        let mut timeout = base_ms;
+        for _ in 0..round.min(20) {
+            timeout = (timeout * 3 / 2).min(MAX_TIMEOUT_MS);
+        }
+        Duration::from_millis(timeout.min(MAX_TIMEOUT_MS))
+    }
 
     fn propose_timeout(&self) -> Duration {
-        Duration::from_millis(PROPOSE_TIMEOUT_BASE_MS * (self.round as u64 + 1))
+        Self::exponential_timeout(PROPOSE_TIMEOUT_BASE_MS, self.round)
     }
 
     pub fn prevote_timeout(&self) -> Duration {
-        Duration::from_millis(PREVOTE_TIMEOUT_BASE_MS * (self.round as u64 + 1))
+        Self::exponential_timeout(PREVOTE_TIMEOUT_BASE_MS, self.round)
     }
 
     pub fn precommit_timeout(&self) -> Duration {
-        Duration::from_millis(PRECOMMIT_TIMEOUT_BASE_MS * (self.round as u64 + 1))
+        Self::exponential_timeout(PRECOMMIT_TIMEOUT_BASE_MS, self.round)
     }
 
     /// Determine if this validator is the proposer for (height, round)
@@ -1116,7 +1189,8 @@ mod tests {
     fn test_precommit_signature_roundtrip() {
         let (kp, pk) = make_validator(2);
         let block_hash = Some(Hash::hash(b"another block"));
-        let msg = Precommit::signable_bytes(50, 1, &block_hash);
+        let ts = 5000u64;
+        let msg = Precommit::signable_bytes(50, 1, &block_hash, ts);
         let sig = kp.sign(&msg);
         let precommit = Precommit {
             height: 50,
@@ -1124,6 +1198,7 @@ mod tests {
             block_hash,
             validator: pk,
             signature: sig,
+            timestamp: ts,
         };
         assert!(precommit.verify_signature());
     }
@@ -1139,7 +1214,7 @@ mod tests {
     fn test_prevote_precommit_different_tags() {
         let h = Some(Hash::hash(b"block"));
         let prevote_bytes = Prevote::signable_bytes(10, 0, &h);
-        let precommit_bytes = Precommit::signable_bytes(10, 0, &h);
+        let precommit_bytes = Precommit::signable_bytes(10, 0, &h, 0);
         // They should differ because of the tag byte (0x01 vs 0x02)
         assert_ne!(prevote_bytes, precommit_bytes);
     }
@@ -1168,5 +1243,215 @@ mod tests {
         // 1 out of 3 should NOT be supermajority
         let one_voter = vec![validators[0].1];
         assert!(!engine.has_supermajority_voters(&one_voter, &vs, &sp));
+    }
+
+    #[test]
+    fn test_exponential_timeout_propose() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+
+        // Round 0: base = 2000ms
+        engine.round = 0;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(2000));
+
+        // Round 1: 2000 * 1.5 = 3000ms
+        engine.round = 1;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(3000));
+
+        // Round 2: 3000 * 1.5 = 4500ms
+        engine.round = 2;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(4500));
+
+        // Round 3: 4500 * 1.5 = 6750ms
+        engine.round = 3;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(6750));
+    }
+
+    #[test]
+    fn test_exponential_timeout_prevote() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+
+        // Round 0: base = 1000ms
+        engine.round = 0;
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(1000));
+
+        // Round 1: 1000 * 1.5 = 1500ms
+        engine.round = 1;
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(1500));
+
+        // Round 2: 1500 * 1.5 = 2250ms
+        engine.round = 2;
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(2250));
+    }
+
+    #[test]
+    fn test_exponential_timeout_caps_at_max() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+
+        // At very high rounds, should cap at 60 seconds
+        engine.round = 50;
+        assert_eq!(engine.propose_timeout(), Duration::from_millis(60_000));
+        assert_eq!(engine.prevote_timeout(), Duration::from_millis(60_000));
+        assert_eq!(engine.precommit_timeout(), Duration::from_millis(60_000));
+    }
+
+    // ─── Commit certificate tests (Task 1.2) ────────────────────────
+
+    #[test]
+    fn test_commit_block_includes_commit_signatures() {
+        // Setup: 3 validators, equal stake. Validators vote until 2/3+ triggers commit.
+        let (kp1, pk1) = make_validator(1);
+        let (kp2, pk2) = make_validator(2);
+        let (kp3, pk3) = make_validator(3);
+        // Recreate kp1 from seed so we can still sign with it after moving into engine
+        let mut seed1 = [0u8; 32];
+        seed1[0] = 1;
+        let kp1_sign = Keypair::from_seed(&seed1);
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        for (_kp, pk) in [(&kp1, &pk1), (&kp2, &pk2), (&kp3, &pk3)] {
+            let vi = moltchain_core::ValidatorInfo {
+                pubkey: *pk,
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake: 100_000_000_000_000,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            };
+            vs.add_validator(vi);
+            sp.stake(*pk, 100_000_000_000_000, 0).ok();
+        }
+
+        let mut engine = ConsensusEngine::new(kp1, pk1);
+        engine.start_height(1);
+
+        // Build a block and register it
+        let block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"state"),
+            pk1.0,
+            Vec::new(),
+            1000,
+        );
+        let block_hash = block.hash();
+        engine.proposal_blocks.insert(block_hash, block);
+
+        // kp2 precommits
+        let ts2 = 1000u64;
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), ts2);
+        let pc2 = Precommit {
+            height: 1,
+            round: 0,
+            block_hash: Some(block_hash),
+            validator: pk2,
+            signature: kp2.sign(&signable),
+            timestamp: ts2,
+        };
+        let _ = engine.on_precommit(pc2, &vs, &sp);
+
+        // kp3 precommits — should trigger commit (kp1's self-vote isn't in yet)
+        let ts3 = 1001u64;
+        let signable3 = Precommit::signable_bytes(1, 0, &Some(block_hash), ts3);
+        let pc3 = Precommit {
+            height: 1,
+            round: 0,
+            block_hash: Some(block_hash),
+            validator: pk3,
+            signature: kp3.sign(&signable3),
+            timestamp: ts3,
+        };
+        // First, let engine vote itself (step must be Precommit)
+        engine.step = RoundStep::Precommit;
+        engine
+            .precommits
+            .entry((0, Some(block_hash)))
+            .or_default()
+            .push(pk1);
+        engine.seen_precommits.insert((0, pk1), true);
+        let ts1 = 999u64;
+        let signable1 = Precommit::signable_bytes(1, 0, &Some(block_hash), ts1);
+        engine
+            .precommit_sigs
+            .insert((0, pk1), (kp1_sign.sign(&signable1), ts1));
+        engine.signed_precommit_rounds.insert(0, Some(block_hash));
+
+        let action = engine.on_precommit(pc3, &vs, &sp);
+
+        // Should produce CommitBlock with commit_signatures
+        match action {
+            ConsensusAction::CommitBlock { block, .. } => {
+                assert!(
+                    !block.commit_signatures.is_empty(),
+                    "CommitBlock should include commit signatures"
+                );
+                // Should have 3 signatures (kp1 + kp2 + kp3)
+                assert_eq!(block.commit_signatures.len(), 3);
+            }
+            other => panic!("Expected CommitBlock, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_precommit_sigs_cleared_on_new_height() {
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new(kp, pk);
+        engine.start_height(1);
+
+        // Insert a fake signature + timestamp
+        engine.precommit_sigs.insert((0, pk), ([42u8; 64], 1000));
+        assert!(!engine.precommit_sigs.is_empty());
+
+        // Start new height
+        engine.start_height(2);
+        assert!(
+            engine.precommit_sigs.is_empty(),
+            "Precommit signatures should be cleared on new height"
+        );
+    }
+
+    #[test]
+    fn test_self_precommit_retains_signature() {
+        let (kp1, pk1) = make_validator(1);
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let vi = moltchain_core::ValidatorInfo {
+            pubkey: pk1,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+        };
+        vs.add_validator(vi);
+        sp.stake(pk1, 100_000_000_000_000, 0).ok();
+
+        let mut engine = ConsensusEngine::new(kp1, pk1);
+        engine.start_height(1);
+        engine.step = RoundStep::Precommit;
+
+        let block_hash = Hash::hash(b"test_block");
+        engine.do_precommit(Some(block_hash), &vs, &sp);
+
+        // Verify our own signature was retained
+        assert!(
+            engine.precommit_sigs.contains_key(&(0, pk1)),
+            "Self-precommit signature should be retained"
+        );
+        // Verify timestamp is present in the retained entry
+        let (_, ts) = engine.precommit_sigs.get(&(0, pk1)).unwrap();
+        assert!(*ts > 0, "Precommit timestamp should be non-zero");
     }
 }

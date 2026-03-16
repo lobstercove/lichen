@@ -79,6 +79,8 @@ const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
 const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
+const CF_EVM_LOGS_BY_SLOT: &str = "evm_logs_by_slot"; // slot(8,BE) -> Vec<EvmLogEntry> (Task 3.4)
+const CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots"; // pubkey(32)+slot(8,BE) -> Account (Task 3.9 archive mode)
 
 // ─── P2-3: Cold storage column family names ─────────────────────────────────
 // Cold DB mirrors a subset of hot CFs for archival data (old blocks, txns).
@@ -137,6 +139,7 @@ pub struct Metrics {
     pub active_accounts: u64, // Accounts with non-zero balance
     pub total_supply: u64,
     pub total_burned: u64,
+    pub total_minted: u64,
     /// Transactions counted since midnight UTC (server-side, same for all)
     pub daily_transactions: u64,
 }
@@ -292,6 +295,7 @@ impl MetricsStore {
         &self,
         total_supply: u64,
         total_burned: u64,
+        total_minted: u64,
         total_accounts: u64,
         active_accounts: u64,
     ) -> Metrics {
@@ -349,6 +353,7 @@ impl MetricsStore {
             active_accounts, // Use provided active count from DB
             total_supply,
             total_burned,
+            total_minted,
             daily_transactions: *self
                 .daily_transactions
                 .lock()
@@ -631,12 +636,19 @@ pub struct StateStore {
     /// P10-CORE-01: Mutex to serialize add_burned read-modify-write operations,
     /// preventing lost updates under concurrent access.
     burned_lock: Arc<std::sync::Mutex<()>>,
+    /// Mutex to serialize add_minted read-modify-write operations,
+    /// preventing lost updates under concurrent access.
+    minted_lock: Arc<std::sync::Mutex<()>>,
     /// AUDIT-FIX B-1: Mutex to serialize treasury read-modify-write in charge_fee_direct,
     /// preventing lost-update race when parallel TX groups credit fees concurrently.
     treasury_lock: Arc<std::sync::Mutex<()>>,
     /// AUDIT-FIX C-7: Per-instance blockhash cache (was previously a static global).
     /// Populated lazily on first `get_recent_blockhashes`, kept warm by `push_blockhash_cache`.
     blockhash_cache: Arc<Mutex<Option<BlockhashCache>>>,
+    /// Task 3.9: When true, every `put_account` also writes a snapshot to
+    /// CF_ACCOUNT_SNAPSHOTS keyed by `pubkey(32) + slot(8,BE)`, enabling
+    /// historical state queries via `get_account_at_slot`.
+    archive_mode: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -663,6 +675,8 @@ pub struct StateBatch {
     active_account_delta: i64,
     /// Accumulated burned amount delta (applied atomically on commit)
     burned_delta: u64,
+    /// Accumulated minted amount delta (applied atomically on commit)
+    minted_delta: u64,
     /// AUDIT-FIX 1.15: Track NFT token_ids indexed within this batch for TOCTOU-safe uniqueness
     nft_token_id_overlay: std::collections::HashSet<Vec<u8>>,
     /// AUDIT-FIX CP-7: Track symbols registered within this batch to catch duplicates
@@ -677,8 +691,165 @@ pub struct StateBatch {
     new_programs: i64,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
+    /// Task 3.9: Slot number for archive snapshots (0 = archive disabled for this batch)
+    archive_slot: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
     db: Arc<DB>,
+}
+
+// ─── Merkle proof types and helpers (Task 1.3) ─────────────────────────
+
+/// Merkle inclusion proof for an account in the state tree.
+///
+/// The proof consists of sibling hashes at each level from leaf to root,
+/// along with path bits indicating whether the proven node is the left (true)
+/// or right (false) child at each level. Proof size is O(log N) where N is
+/// the number of accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerkleProof {
+    /// The leaf hash being proven: SHA256(pubkey || account_bytes)
+    pub leaf_hash: Hash,
+    /// Sibling hashes from leaf level up to just below the root
+    pub siblings: Vec<Hash>,
+    /// For each level, true if the proven node is the left child
+    pub path: Vec<bool>,
+}
+
+impl MerkleProof {
+    /// Verify this proof recomputes to the expected root hash.
+    pub fn verify(&self, expected_root: &Hash) -> bool {
+        if self.siblings.len() != self.path.len() {
+            return false;
+        }
+        let mut current = self.leaf_hash;
+        let mut combined = [0u8; 64];
+        for (sibling, &is_left) in self.siblings.iter().zip(self.path.iter()) {
+            if is_left {
+                // We are left child
+                combined[..32].copy_from_slice(&current.0);
+                combined[32..].copy_from_slice(&sibling.0);
+            } else {
+                // We are right child
+                combined[..32].copy_from_slice(&sibling.0);
+                combined[32..].copy_from_slice(&current.0);
+            }
+            current = Hash::hash(&combined);
+        }
+        current == *expected_root
+    }
+
+    /// Verify a proof given raw account data (recomputes the leaf hash).
+    pub fn verify_account(
+        &self,
+        expected_root: &Hash,
+        pubkey: &Pubkey,
+        account_data: &[u8],
+    ) -> bool {
+        let computed_leaf = Hash::hash_two_parts(&pubkey.0, account_data);
+        if computed_leaf != self.leaf_hash {
+            return false;
+        }
+        self.verify(expected_root)
+    }
+}
+
+/// Full account proof returned by `get_account_proof`, suitable for RPC responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountProof {
+    /// The account's public key
+    pub pubkey: Pubkey,
+    /// Serialized account data (bincode)
+    pub account_data: Vec<u8>,
+    /// The Merkle inclusion proof
+    pub proof: MerkleProof,
+    /// The state root this proof was generated against
+    pub state_root: Hash,
+}
+
+/// Build a full Merkle tree from sorted leaves, returning all levels.
+///
+/// Level 0 = input leaves, level 1 = first hash layer, ..., last level = \[root\].
+/// Odd-length levels duplicate the last element (CVE-2012-2459 mitigation).
+fn build_merkle_tree(leaves: &[Hash]) -> Vec<Vec<Hash>> {
+    if leaves.is_empty() {
+        return vec![vec![Hash::default()]];
+    }
+    if leaves.len() == 1 {
+        return vec![leaves.to_vec()];
+    }
+
+    let mut levels: Vec<Vec<Hash>> = Vec::new();
+    levels.push(leaves.to_vec());
+    let mut combined = [0u8; 64];
+
+    loop {
+        let prev = levels.last().unwrap();
+        if prev.len() == 1 {
+            break;
+        }
+        let mut next = Vec::with_capacity(prev.len().div_ceil(2));
+        for pair in prev.chunks(2) {
+            combined[..32].copy_from_slice(&pair[0].0);
+            if pair.len() == 2 {
+                combined[32..].copy_from_slice(&pair[1].0);
+            } else {
+                // Odd leaf: hash with itself
+                combined[32..].copy_from_slice(&pair[0].0);
+            }
+            next.push(Hash::hash(&combined));
+        }
+        levels.push(next);
+    }
+
+    levels
+}
+
+/// Generate a Merkle proof for a leaf at the given index.
+///
+/// The proof contains sibling hashes and path bits from leaf to root.
+fn generate_proof(tree: &[Vec<Hash>], leaf_index: usize) -> Option<MerkleProof> {
+    if tree.is_empty() || tree[0].is_empty() {
+        return None;
+    }
+    if leaf_index >= tree[0].len() {
+        return None;
+    }
+    // Single leaf: no siblings needed
+    if tree.len() == 1 {
+        return Some(MerkleProof {
+            leaf_hash: tree[0][leaf_index],
+            siblings: Vec::new(),
+            path: Vec::new(),
+        });
+    }
+
+    let leaf_hash = tree[0][leaf_index];
+    let mut siblings = Vec::with_capacity(tree.len() - 1);
+    let mut path = Vec::with_capacity(tree.len() - 1);
+    let mut idx = leaf_index;
+
+    // Walk from leaf level (0) up to one below the root
+    for level in tree.iter().take(tree.len() - 1) {
+        let is_left = idx.is_multiple_of(2);
+        let sibling_idx = if is_left { idx + 1 } else { idx - 1 };
+
+        let sibling = if sibling_idx < level.len() {
+            level[sibling_idx]
+        } else {
+            // Odd level: sibling is self (same as in tree construction)
+            level[idx]
+        };
+
+        siblings.push(sibling);
+        path.push(is_left);
+        idx /= 2;
+    }
+
+    Some(MerkleProof {
+        leaf_hash,
+        siblings,
+        path,
+    })
 }
 
 impl StateStore {
@@ -901,6 +1072,10 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,LE)->commitment(32)
             ColumnFamilyDescriptor::new(CF_SHIELDED_NULLIFIERS, point_lookup_opts(32)), // key=nullifier(32)->0x01
             ColumnFamilyDescriptor::new(CF_SHIELDED_POOL, small_cf_opts()), // singleton pool state
+            // Task 3.4: Per-slot EVM log index for eth_getLogs
+            ColumnFamilyDescriptor::new(CF_EVM_LOGS_BY_SLOT, prefix_scan_opts(8)), // key=slot(8,BE) -> Vec<EvmLogEntry>
+            // Task 3.9: Historical account snapshots (archive mode)
+            ColumnFamilyDescriptor::new(CF_ACCOUNT_SNAPSHOTS, archival_opts(32)), // key=pubkey(32)+slot(8,BE) -> Account
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -920,8 +1095,10 @@ impl StateStore {
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
             tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
             burned_lock: Arc::new(std::sync::Mutex::new(())),
+            minted_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
             blockhash_cache: Arc::new(Mutex::new(None)),
+            archive_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -1461,6 +1638,20 @@ impl StateStore {
             .put_cf(&cf, pubkey.0, &value)
             .map_err(|e| format!("Failed to store account: {}", e))?;
 
+        // Task 3.9: Write archive snapshot when archive mode is enabled
+        if self.is_archive_mode() {
+            let slot = self.get_last_slot().unwrap_or(0);
+            if slot > 0 {
+                if let Some(snap_cf) = self.db.cf_handle(CF_ACCOUNT_SNAPSHOTS) {
+                    let mut snap_key = [0u8; 40];
+                    snap_key[..32].copy_from_slice(&pubkey.0);
+                    snap_key[32..].copy_from_slice(&slot.to_be_bytes());
+                    // Reuse already-serialized value
+                    let _ = self.db.put_cf(&snap_cf, snap_key, &value);
+                }
+            }
+        }
+
         // PERF-OPT 2: Update in-memory counters only — do NOT persist metrics
         // here. The caller (block processor / commit_batch) is responsible for
         // calling flush_metrics() once after the full block is processed.
@@ -1478,6 +1669,70 @@ impl StateStore {
         self.mark_account_dirty_with_key(pubkey);
 
         Ok(())
+    }
+
+    /// Generate an inclusion proof for the given account.
+    ///
+    /// Returns `None` if the account doesn't exist. The proof can be verified
+    /// against the returned `state_root` using `MerkleProof::verify()`.
+    pub fn get_account_proof(&self, pubkey: &Pubkey) -> Option<AccountProof> {
+        // 1. Check account exists and get serialized data
+        let cf_accounts = self.db.cf_handle(CF_ACCOUNTS)?;
+        let account_data = self.db.get_cf(&cf_accounts, pubkey.0).ok()??;
+
+        // 2. Load all leaf hashes from CF_MERKLE_LEAVES (sorted by pubkey)
+        let cf_leaves = self.db.cf_handle(CF_MERKLE_LEAVES)?;
+        let mut leaf_hashes: Vec<Hash> = Vec::new();
+        let mut leaf_keys: Vec<[u8; 32]> = Vec::new();
+        let iter = self
+            .db
+            .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start);
+        for item in iter.flatten() {
+            let (key, value) = item;
+            if key.len() == 32 && value.len() == 32 {
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&key);
+                leaf_keys.push(pk);
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&value);
+                leaf_hashes.push(Hash(h));
+            }
+        }
+
+        // 3. Find the index of our pubkey in the sorted leaf list
+        let target_leaf = Hash::hash_two_parts(&pubkey.0, &account_data);
+        let leaf_index = leaf_keys.iter().position(|k| k == &pubkey.0)?;
+
+        // Verify the cached leaf matches
+        if leaf_hashes[leaf_index] != target_leaf {
+            // Leaf cache is stale — recompute
+            let recomputed = Hash::hash_two_parts(&pubkey.0, &account_data);
+            if leaf_hashes[leaf_index] != recomputed {
+                return None; // Cache mismatch, proof would be invalid
+            }
+        }
+
+        // 4. Build the tree and generate proof
+        let tree = build_merkle_tree(&leaf_hashes);
+        let root = *tree.last()?.first()?;
+        let proof = generate_proof(&tree, leaf_index)?;
+
+        Some(AccountProof {
+            pubkey: *pubkey,
+            account_data,
+            proof,
+            state_root: root,
+        })
+    }
+
+    /// Verify an account proof against a known state root (standalone, no state access needed).
+    pub fn verify_account_proof(
+        root: &Hash,
+        pubkey: &Pubkey,
+        account_data: &[u8],
+        proof: &MerkleProof,
+    ) -> bool {
+        proof.verify_account(root, pubkey, account_data)
     }
 
     /// Compute state root hash using **incremental** sparse Merkle tree.
@@ -1542,10 +1797,15 @@ impl StateStore {
         for pk in &dirty_keys {
             match self.db.get_cf(&cf_accounts, pk) {
                 Ok(Some(value)) => {
-                    // Account exists: H(pubkey || account_bytes)
-                    // PERF-OPT 7: Use hash_two_parts to avoid heap allocation
-                    let leaf = Hash::hash_two_parts(pk, &value);
-                    batch.put_cf(&cf_leaves, pk, leaf.0);
+                    // Check if account is dormant — exclude from state root
+                    let is_dormant = Self::deserialize_account_check_dormant(&value);
+                    if is_dormant {
+                        batch.delete_cf(&cf_leaves, pk);
+                    } else {
+                        // Account exists and is active: H(pubkey || account_bytes)
+                        let leaf = Hash::hash_two_parts(pk, &value);
+                        batch.put_cf(&cf_leaves, pk, leaf.0);
+                    }
                 }
                 Ok(None) => {
                     // Account deleted: remove from leaf cache
@@ -1615,7 +1875,10 @@ impl StateStore {
             .iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start);
         for item in iter.flatten() {
             let (key, value) = item;
-            // PERF-OPT 7: hash_two_parts avoids alloc per leaf
+            // Skip dormant accounts — excluded from active state root
+            if Self::deserialize_account_check_dormant(&value) {
+                continue;
+            }
             let leaf = Hash::hash_two_parts(&key, &value);
             leaves.push(leaf);
             batch.put_cf(&cf_leaves, &*key, leaf.0);
@@ -1652,7 +1915,10 @@ impl StateStore {
         let mut leaves: Vec<Hash> = Vec::new();
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         for (key, value) in iter.flatten() {
-            // PERF-OPT 7: hash_two_parts avoids alloc per leaf
+            // Skip dormant accounts — excluded from active state root
+            if Self::deserialize_account_check_dormant(&value) {
+                continue;
+            }
             leaves.push(Hash::hash_two_parts(&key, &value));
         }
 
@@ -1671,6 +1937,21 @@ impl StateStore {
         }
 
         root
+    }
+
+    /// Check if a raw account value from CF_ACCOUNTS represents a dormant account.
+    /// Attempts deserialization; returns false on failure (treat unknown as active).
+    fn deserialize_account_check_dormant(raw: &[u8]) -> bool {
+        // Account bytes are prefixed with 0xBC marker
+        let data = if raw.first() == Some(&0xBC) {
+            &raw[1..]
+        } else {
+            raw
+        };
+        match bincode::deserialize::<Account>(data) {
+            Ok(account) => account.dormant,
+            Err(_) => false,
+        }
     }
 
     /// Build a Merkle root from a sorted list of leaf hashes
@@ -1918,20 +2199,28 @@ impl StateStore {
 
     /// Get current blockchain metrics
     pub fn get_metrics(&self) -> Metrics {
-        // Get total burned
+        // Get total burned and minted
         let total_burned = self.get_total_burned().unwrap_or(0);
+        let total_minted = self.get_total_minted().unwrap_or(0);
 
-        // Calculate total supply: initial supply (1B MOLT in shells) minus burned
-        // 1 MOLT = 1_000_000_000 shells, so 1B MOLT = 1_000_000_000_000_000_000 shells
-        const INITIAL_SUPPLY_SHELLS: u64 = 1_000_000_000_000_000_000; // 1B MOLT
-        let total_supply = INITIAL_SUPPLY_SHELLS.saturating_sub(total_burned);
+        // Calculate total supply: genesis supply + minted - burned
+        // 1 MOLT = 1_000_000_000 shells, so 500M MOLT = 500_000_000_000_000_000 shells
+        use crate::consensus::GENESIS_SUPPLY_SHELLS;
+        let total_supply = GENESIS_SUPPLY_SHELLS
+            .saturating_add(total_minted)
+            .saturating_sub(total_burned);
 
         // Use incremental counters — NO full DB scans
         let total_accounts = self.metrics.get_total_accounts();
         let active_accounts = self.metrics.get_active_accounts();
 
-        self.metrics
-            .get_metrics(total_supply, total_burned, total_accounts, active_accounts)
+        self.metrics.get_metrics(
+            total_supply,
+            total_burned,
+            total_minted,
+            total_accounts,
+            active_accounts,
+        )
     }
 
     /// Count total number of accounts (DEPRECATED - use metrics counter instead)
@@ -2064,6 +2353,12 @@ impl StateStore {
         // Credit spendable balance
         to_account.add_spendable(shells)?;
 
+        // Reactivate dormant accounts upon receiving funds
+        if to_account.dormant {
+            to_account.dormant = false;
+            to_account.missed_rent_epochs = 0;
+        }
+
         // Save both accounts atomically (H5 fix: use WriteBatch for crash safety)
         let cf = self
             .db
@@ -2192,6 +2487,95 @@ impl StateStore {
         Ok(())
     }
 
+    /// Atomically persist multiple account mutations and a mint-counter
+    /// increment in a single RocksDB WriteBatch.
+    ///
+    /// Used by the validator reward pipeline to credit minted block rewards.
+    /// The mint counter is protected by `minted_lock` analogous to how
+    /// `atomic_put_accounts` protects the burn counter.
+    pub fn atomic_mint_accounts(
+        &self,
+        accounts: &[(&Pubkey, &Account)],
+        mint_delta: u64,
+    ) -> Result<(), String> {
+        if accounts.is_empty() && mint_delta == 0 {
+            return Ok(());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+
+        let mut meta: Vec<(&Pubkey, bool, u64, u64)> = Vec::with_capacity(accounts.len());
+
+        for (pubkey, account) in accounts {
+            let (is_new, old_balance) = {
+                let old = self
+                    .db
+                    .get_cf(&cf, pubkey.0)
+                    .map_err(|e| format!("Failed to read account: {}", e))?;
+                let old_bal = old
+                    .as_ref()
+                    .and_then(|data| {
+                        if data.first() == Some(&0xBC) {
+                            bincode::deserialize::<Account>(&data[1..]).ok()
+                        } else {
+                            serde_json::from_slice::<Account>(data).ok()
+                        }
+                    })
+                    .map(|a| a.shells)
+                    .unwrap_or(0);
+                (old.is_none(), old_bal)
+            };
+
+            let mut value = Vec::with_capacity(256);
+            value.push(0xBC);
+            bincode::serialize_into(&mut value, account)
+                .map_err(|e| format!("Failed to serialize account: {}", e))?;
+            batch.put_cf(&cf, pubkey.0, &value);
+            meta.push((pubkey, is_new, old_balance, account.shells));
+        }
+
+        // Fold mint counter into the same WriteBatch
+        let _minted_guard = if mint_delta > 0 {
+            let guard = self
+                .minted_lock
+                .lock()
+                .map_err(|e| format!("minted_lock poisoned: {}", e))?;
+            let cf_stats = self
+                .db
+                .cf_handle(CF_STATS)
+                .ok_or_else(|| "Stats CF not found".to_string())?;
+            let current_minted = self.get_total_minted()?;
+            let new_total = current_minted.saturating_add(mint_delta);
+            batch.put_cf(&cf_stats, b"total_minted", new_total.to_le_bytes());
+            Some(guard)
+        } else {
+            None
+        };
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Atomic mint account write failed: {}", e))?;
+
+        for (pubkey, is_new, old_balance, new_balance) in meta {
+            if is_new {
+                self.metrics.increment_accounts();
+            }
+            if old_balance == 0 && new_balance > 0 {
+                self.metrics.increment_active_accounts();
+            } else if old_balance > 0 && new_balance == 0 {
+                self.metrics.decrement_active_accounts();
+            }
+            self.mark_account_dirty_with_key(pubkey);
+        }
+
+        Ok(())
+    }
+
     /// L4-01 fix: Atomically persist an account mutation together with a
     /// ReefStake pool update. The treasury debit and pool reward distribution
     /// land in a single WriteBatch to prevent partial updates on crash.
@@ -2259,6 +2643,51 @@ impl StateStore {
             self.metrics.decrement_active_accounts();
         }
         self.mark_account_dirty_with_key(acct_key);
+
+        Ok(())
+    }
+
+    /// Atomically update a ReefStake pool and increment the mint counter.
+    ///
+    /// Used when minting the ReefStake share of block rewards: the new shells
+    /// go directly into the pool (increasing exchange rate) and the mint
+    /// counter is incremented — no intermediate account involved.
+    pub fn atomic_mint_reefstake(
+        &self,
+        pool: &ReefStakePool,
+        mint_delta: u64,
+    ) -> Result<(), String> {
+        let cf_reef = self
+            .db
+            .cf_handle(CF_REEFSTAKE)
+            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+
+        let pool_bytes = serde_json::to_vec(pool)
+            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
+        batch.put_cf(&cf_reef, b"pool", &pool_bytes);
+
+        let _minted_guard = if mint_delta > 0 {
+            let guard = self
+                .minted_lock
+                .lock()
+                .map_err(|e| format!("minted_lock poisoned: {}", e))?;
+            let cf_stats = self
+                .db
+                .cf_handle(CF_STATS)
+                .ok_or_else(|| "Stats CF not found".to_string())?;
+            let current_minted = self.get_total_minted()?;
+            let new_total = current_minted.saturating_add(mint_delta);
+            batch.put_cf(&cf_stats, b"total_minted", new_total.to_le_bytes());
+            Some(guard)
+        } else {
+            None
+        };
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Atomic mint+reefstake write failed: {}", e))?;
 
         Ok(())
     }
@@ -3408,11 +3837,161 @@ impl StateStore {
         Ok(items)
     }
 
+    // ─── Archive Mode (Task 3.9: Historical State Queries) ──────────
+
+    /// Enable or disable archive mode. When enabled, every `put_account` also
+    /// writes a snapshot to `CF_ACCOUNT_SNAPSHOTS` keyed by `pubkey(32) + slot(8,BE)`.
+    pub fn set_archive_mode(&self, enabled: bool) {
+        self.archive_mode
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Check if archive mode is enabled.
+    pub fn is_archive_mode(&self) -> bool {
+        self.archive_mode.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Write a point-in-time snapshot of an account at the given slot.
+    pub fn put_account_snapshot(
+        &self,
+        pubkey: &Pubkey,
+        account: &Account,
+        slot: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_SNAPSHOTS)
+            .ok_or_else(|| "Account snapshots CF not found".to_string())?;
+
+        let mut key = [0u8; 40];
+        key[..32].copy_from_slice(&pubkey.0);
+        key[32..].copy_from_slice(&slot.to_be_bytes());
+
+        let mut value = Vec::with_capacity(256);
+        value.push(0xBC);
+        bincode::serialize_into(&mut value, account)
+            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+
+        self.db
+            .put_cf(&cf, key, &value)
+            .map_err(|e| format!("Failed to store account snapshot: {}", e))
+    }
+
+    /// Retrieve the state of an account at (or just before) the given slot.
+    ///
+    /// Uses `seek_for_prev` semantics: seeks to `pubkey + target_slot` and
+    /// returns the entry at or before that key if the pubkey prefix matches.
+    /// O(1) via a single RocksDB seek — no scanning required.
+    pub fn get_account_at_slot(
+        &self,
+        pubkey: &Pubkey,
+        target_slot: u64,
+    ) -> Result<Option<Account>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_SNAPSHOTS)
+            .ok_or_else(|| "Account snapshots CF not found".to_string())?;
+
+        // Build compound seek key: pubkey(32) + target_slot(8, BE)
+        let mut seek_key = [0u8; 40];
+        seek_key[..32].copy_from_slice(&pubkey.0);
+        seek_key[32..].copy_from_slice(&target_slot.to_be_bytes());
+
+        // Use iterator from the seek key going backwards to find latest slot <= target
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
+        );
+
+        for item in iter.flatten() {
+            let (key, value) = item;
+            if key.len() != 40 || key[..32] != pubkey.0 {
+                break; // Moved past this pubkey's range
+            }
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&key[32..40]);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if slot > target_slot {
+                continue; // Should not happen with reverse seek, but defensive
+            }
+            // Found the latest snapshot at or before target_slot
+            if value.first() == Some(&0xBC) {
+                let mut account: Account = bincode::deserialize(&value[1..])
+                    .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+                account.fixup_legacy();
+                return Ok(Some(account));
+            }
+            break;
+        }
+
+        Ok(None)
+    }
+
+    /// Remove all account snapshots older than `before_slot`.
+    /// Returns the number of entries pruned.
+    pub fn prune_account_snapshots(&self, before_slot: u64) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_SNAPSHOTS)
+            .ok_or_else(|| "Account snapshots CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+        let mut count = 0u64;
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if key.len() != 40 {
+                continue;
+            }
+            let mut slot_bytes = [0u8; 8];
+            slot_bytes.copy_from_slice(&key[32..40]);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if slot < before_slot {
+                batch.delete_cf(&cf, &key);
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            self.db
+                .write(batch)
+                .map_err(|e| format!("Snapshot prune failed: {}", e))?;
+        }
+
+        Ok(count)
+    }
+
+    /// Return the oldest slot that has at least one account snapshot, or `None`
+    /// if the snapshot CF is empty.
+    pub fn get_oldest_snapshot_slot(&self) -> Result<Option<u64>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNT_SNAPSHOTS)
+            .ok_or_else(|| "Account snapshots CF not found".to_string())?;
+
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        for item in iter.flatten() {
+            let (key, _) = item;
+            if key.len() == 40 {
+                let mut slot_bytes = [0u8; 8];
+                slot_bytes.copy_from_slice(&key[32..40]);
+                return Ok(Some(u64::from_be_bytes(slot_bytes)));
+            }
+        }
+        Ok(None)
+    }
+
     // ─── Atomic Batch API (T1.4 / T3.1) ─────────────────────────────
 
     /// Begin an atomic write batch. All mutations go into the batch's in-memory
     /// `WriteBatch` and account overlay. Nothing touches disk until `commit_batch()`.
     pub fn begin_batch(&self) -> StateBatch {
+        let archive_slot = if self.is_archive_mode() {
+            self.get_last_slot().unwrap_or(0)
+        } else {
+            0
+        };
         StateBatch {
             batch: WriteBatch::default(),
             account_overlay: std::collections::HashMap::new(),
@@ -3421,6 +4000,7 @@ impl StateStore {
             new_accounts: 0,
             active_account_delta: 0,
             burned_delta: 0,
+            minted_delta: 0,
             nft_token_id_overlay: std::collections::HashSet::new(),
             symbol_overlay: std::collections::HashSet::new(),
             spent_nullifier_overlay: std::collections::HashSet::new(),
@@ -3428,6 +4008,7 @@ impl StateStore {
             governed_proposal_counter: None,
             new_programs: 0,
             event_seq: 0,
+            archive_slot,
             db: Arc::clone(&self.db),
         }
     }
@@ -3453,6 +4034,22 @@ impl StateStore {
                 let current = self.get_total_burned().unwrap_or(0);
                 let new_total = current.saturating_add(batch.burned_delta);
                 wb.put_cf(&cf, b"total_burned", new_total.to_le_bytes());
+            }
+            Some(guard)
+        } else {
+            None
+        };
+
+        // If mints accumulated, fold them into the same WriteBatch.
+        let _minted_guard = if batch.minted_delta > 0 {
+            let guard = self
+                .minted_lock
+                .lock()
+                .map_err(|e| format!("minted_lock poisoned: {}", e))?;
+            if let Some(cf) = self.db.cf_handle(CF_STATS) {
+                let current = self.get_total_minted().unwrap_or(0);
+                let new_total = current.saturating_add(batch.minted_delta);
+                wb.put_cf(&cf, b"total_minted", new_total.to_le_bytes());
             }
             Some(guard)
         } else {
@@ -3559,6 +4156,11 @@ impl StateBatch {
     /// Accumulate burned amount in this batch (committed atomically on commit_batch)
     pub fn add_burned(&mut self, amount: u64) {
         self.burned_delta = self.burned_delta.saturating_add(amount);
+    }
+
+    /// Accumulate minted amount in this batch (committed atomically on commit_batch)
+    pub fn add_minted(&mut self, amount: u64) {
+        self.minted_delta = self.minted_delta.saturating_add(amount);
     }
 
     /// H3 fix: Apply deferred EVM state changes atomically through this WriteBatch.
@@ -3721,6 +4323,17 @@ impl StateBatch {
 
         self.batch.put_cf(&cf, pubkey.0, &value);
         self.account_overlay.insert(*pubkey, account.clone());
+
+        // Task 3.9: Archive snapshot — write to CF_ACCOUNT_SNAPSHOTS when enabled
+        if self.archive_slot > 0 {
+            if let Some(snap_cf) = self.db.cf_handle(CF_ACCOUNT_SNAPSHOTS) {
+                let mut snap_key = [0u8; 40];
+                snap_key[..32].copy_from_slice(&pubkey.0);
+                snap_key[32..].copy_from_slice(&self.archive_slot.to_be_bytes());
+                self.batch.put_cf(&snap_cf, snap_key, &value);
+            }
+        }
+
         Ok(())
     }
 
@@ -3741,6 +4354,12 @@ impl StateBatch {
             .get_account(to)?
             .unwrap_or_else(|| Account::new(0, *to));
         to_account.add_spendable(shells)?;
+
+        // Reactivate dormant accounts upon receiving funds
+        if to_account.dormant {
+            to_account.dormant = false;
+            to_account.missed_rent_epochs = 0;
+        }
 
         self.put_account(from, &from_account)?;
         self.put_account(to, &to_account)?;
@@ -4107,6 +4726,32 @@ impl StateBatch {
         let value = bincode::serialize(receipt)
             .map_err(|e| format!("Failed to serialize EVM receipt: {}", e))?;
         self.batch.put_cf(&cf, key, &value);
+        Ok(())
+    }
+
+    /// Task 3.4: Store EVM logs for a slot in the batch.
+    pub fn put_evm_logs_for_slot(
+        &mut self,
+        slot: u64,
+        logs: &[crate::evm::EvmLogEntry],
+    ) -> Result<(), String> {
+        if logs.is_empty() {
+            return Ok(());
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_EVM_LOGS_BY_SLOT)
+            .ok_or_else(|| "EVM Logs CF not found".to_string())?;
+        let key = slot.to_be_bytes();
+        // Read existing logs (may already have some from earlier txs in this block)
+        let mut existing: Vec<crate::evm::EvmLogEntry> = match self.db.get_cf(&cf, key) {
+            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        existing.extend_from_slice(logs);
+        let data = bincode::serialize(&existing)
+            .map_err(|e| format!("Failed to serialize EVM logs: {}", e))?;
+        self.batch.put_cf(&cf, key, &data);
         Ok(())
     }
 
@@ -4585,6 +5230,53 @@ impl StateStore {
         self.db
             .write(batch)
             .map_err(|e| format!("Failed to store burned amount: {}", e))
+    }
+
+    /// Get total shells minted (block rewards)
+    pub fn get_total_minted(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, b"total_minted") {
+            Ok(Some(data)) => {
+                let bytes: [u8; 8] = data
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid minted data".to_string())?;
+                Ok(u64::from_le_bytes(bytes))
+            }
+            Ok(None) => Ok(0),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Add to total minted amount.
+    ///
+    /// Protected by `minted_lock` to prevent lost updates under concurrent
+    /// access. The primary mint path goes through `StateBatch::add_minted()`
+    /// (which accumulates a delta and commits atomically), but this direct
+    /// method is available for tests and non-batch code paths.
+    pub fn add_minted(&self, amount: u64) -> Result<(), String> {
+        let _guard = self
+            .minted_lock
+            .lock()
+            .map_err(|e| format!("minted_lock poisoned: {}", e))?;
+
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let current = self.get_total_minted()?;
+        let new_total = current.saturating_add(amount);
+
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&cf, b"total_minted", new_total.to_le_bytes());
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to store minted amount: {}", e))
     }
 
     /// Store treasury public key
@@ -5068,6 +5760,205 @@ impl StateStore {
                 u64::from_le_bytes(bytes)
             }
             _ => 400,
+        }
+    }
+
+    // ── Governance parameter changes (Task 2.11) ──
+
+    /// Store the governance authority pubkey (the account authorized to submit
+    /// GovernanceParamChange instructions — typically the MoltDAO contract or
+    /// a designated multisig).
+    pub fn set_governance_authority(&self, authority: &Pubkey) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"governance_authority", authority.0)
+            .map_err(|e| format!("Failed to store governance authority: {}", e))
+    }
+
+    /// Load the governance authority pubkey. Returns None if not set.
+    pub fn get_governance_authority(&self) -> Result<Option<Pubkey>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"governance_authority") {
+            Ok(Some(data)) if data.len() == 32 => {
+                let mut bytes = [0u8; 32];
+                bytes.copy_from_slice(&data);
+                Ok(Some(Pubkey(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load governance authority: {}", e)),
+        }
+    }
+
+    /// Queue a governance parameter change to take effect at the next epoch
+    /// boundary.  Each param_id can have at most one pending value; a newer
+    /// submission overwrites any previous pending value for the same param.
+    pub fn queue_governance_param_change(&self, param_id: u8, value: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("pending_gov_{}", param_id);
+        self.db
+            .put_cf(&cf, key.as_bytes(), value.to_le_bytes())
+            .map_err(|e| format!("Failed to queue governance param change: {}", e))
+    }
+
+    /// Retrieve all pending governance parameter changes.
+    /// Returns a list of (param_id, value) tuples.
+    pub fn get_pending_governance_changes(&self) -> Result<Vec<(u8, u64)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut changes = Vec::new();
+        // Governance param IDs 0–7 are defined; iterate them.
+        for param_id in 0..=7u8 {
+            let key = format!("pending_gov_{}", param_id);
+            if let Ok(Some(data)) = self.db.get_cf(&cf, key.as_bytes()) {
+                if data.len() == 8 {
+                    let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
+                    changes.push((param_id, u64::from_le_bytes(bytes)));
+                }
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Clear all pending governance parameter changes (called after applying
+    /// them at an epoch boundary).
+    pub fn clear_pending_governance_changes(&self) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let mut batch = rocksdb::WriteBatch::default();
+        for param_id in 0..=7u8 {
+            let key = format!("pending_gov_{}", param_id);
+            batch.delete_cf(&cf, key.as_bytes());
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to clear pending governance changes: {}", e))
+    }
+
+    /// Apply all pending governance parameter changes, updating the fee config
+    /// and consensus params in state. Called by the validator at epoch boundaries.
+    /// Returns the number of parameters changed.
+    pub fn apply_pending_governance_changes(&self) -> Result<usize, String> {
+        let changes = self.get_pending_governance_changes()?;
+        if changes.is_empty() {
+            return Ok(0);
+        }
+
+        let mut fee_config = self.get_fee_config()?;
+        let mut fee_changed = false;
+        let mut count = 0;
+
+        for (param_id, value) in &changes {
+            match *param_id {
+                crate::processor::GOV_PARAM_BASE_FEE => {
+                    fee_config.base_fee = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_FEE_BURN_PERCENT => {
+                    fee_config.fee_burn_percent = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_FEE_PRODUCER_PERCENT => {
+                    fee_config.fee_producer_percent = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_FEE_VOTERS_PERCENT => {
+                    fee_config.fee_voters_percent = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_FEE_TREASURY_PERCENT => {
+                    fee_config.fee_treasury_percent = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_FEE_COMMUNITY_PERCENT => {
+                    fee_config.fee_community_percent = *value;
+                    fee_changed = true;
+                }
+                crate::processor::GOV_PARAM_MIN_VALIDATOR_STAKE => {
+                    self.set_min_validator_stake(*value)?;
+                }
+                crate::processor::GOV_PARAM_EPOCH_SLOTS => {
+                    self.set_epoch_slots(*value)?;
+                }
+                _ => {} // Unknown param_id — skip silently
+            }
+            count += 1;
+        }
+
+        if fee_changed {
+            self.set_fee_config_full(&fee_config)?;
+        }
+
+        self.clear_pending_governance_changes()?;
+
+        Ok(count)
+    }
+
+    /// Store min_validator_stake in CF_STATS (governance-mutable).
+    pub fn set_min_validator_stake(&self, stake: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"min_validator_stake", stake.to_le_bytes())
+            .map_err(|e| format!("Failed to store min_validator_stake: {}", e))
+    }
+
+    /// Load min_validator_stake from CF_STATS.
+    /// Returns None if not explicitly set (caller should fall back to genesis default).
+    pub fn get_min_validator_stake(&self) -> Result<Option<u64>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"min_validator_stake") {
+            Ok(Some(data)) if data.len() == 8 => {
+                let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
+                Ok(Some(u64::from_le_bytes(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load min_validator_stake: {}", e)),
+        }
+    }
+
+    /// Store epoch_slots in CF_STATS (governance-mutable).
+    pub fn set_epoch_slots(&self, slots: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, b"epoch_slots", slots.to_le_bytes())
+            .map_err(|e| format!("Failed to store epoch_slots: {}", e))
+    }
+
+    /// Load epoch_slots from CF_STATS.
+    /// Returns None if not explicitly set (caller should fall back to SLOTS_PER_EPOCH).
+    pub fn get_epoch_slots(&self) -> Result<Option<u64>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"epoch_slots") {
+            Ok(Some(data)) if data.len() == 8 => {
+                let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
+                Ok(Some(u64::from_le_bytes(bytes)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Failed to load epoch_slots: {}", e)),
         }
     }
 
@@ -5732,6 +6623,166 @@ impl StateStore {
             Ok(Some(data)) => bincode::deserialize(&data)
                 .map(Some)
                 .map_err(|e| format!("Failed to deserialize EVM receipt: {}", e)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Task 3.4: Store EVM logs for a slot (append to existing logs if any)
+    pub fn put_evm_logs_for_slot(
+        &self,
+        slot: u64,
+        logs: &[crate::evm::EvmLogEntry],
+    ) -> Result<(), String> {
+        if logs.is_empty() {
+            return Ok(());
+        }
+        let cf = self
+            .db
+            .cf_handle(CF_EVM_LOGS_BY_SLOT)
+            .ok_or_else(|| "EVM Logs CF not found".to_string())?;
+        let key = slot.to_be_bytes();
+        // Append to existing logs for this slot (multiple EVM txs in one block)
+        let mut existing: Vec<crate::evm::EvmLogEntry> = match self.db.get_cf(&cf, key) {
+            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        existing.extend_from_slice(logs);
+        let data = bincode::serialize(&existing)
+            .map_err(|e| format!("Failed to serialize EVM logs: {}", e))?;
+        self.db
+            .put_cf(&cf, key, data)
+            .map_err(|e| format!("Failed to store EVM logs: {}", e))
+    }
+
+    /// Task 3.4: Get EVM logs for a slot range (used by eth_getLogs)
+    pub fn get_evm_logs_for_slot(&self, slot: u64) -> Result<Vec<crate::evm::EvmLogEntry>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_EVM_LOGS_BY_SLOT)
+            .ok_or_else(|| "EVM Logs CF not found".to_string())?;
+        let key = slot.to_be_bytes();
+        match self.db.get_cf(&cf, key) {
+            Ok(Some(data)) => bincode::deserialize(&data)
+                .map_err(|e| format!("Failed to deserialize EVM logs: {}", e)),
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Task 3.6: Store a single validator oracle price attestation.
+    ///
+    /// Key: "oracle_att_{asset}_{validator_hex}" in CF_STATS.
+    /// Value: JSON-serialized OracleAttestation.
+    pub fn put_oracle_attestation(
+        &self,
+        asset: &str,
+        validator: &Pubkey,
+        price: u64,
+        decimals: u8,
+        stake: u64,
+        slot: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let val_hex = hex::encode(validator.0);
+        let key = format!("oracle_att_{}_{}", asset, val_hex);
+
+        let att = crate::processor::OracleAttestation {
+            validator: *validator,
+            price,
+            decimals,
+            stake,
+            slot,
+        };
+        let data = serde_json::to_vec(&att)
+            .map_err(|e| format!("Failed to serialize oracle attestation: {}", e))?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), data)
+            .map_err(|e| format!("Failed to store oracle attestation: {}", e))
+    }
+
+    /// Task 3.6: Get all non-stale oracle attestations for an asset.
+    ///
+    /// Scans CF_STATS for keys matching "oracle_att_{asset}_*" and filters
+    /// out any older than `staleness_window` slots from `current_slot`.
+    pub fn get_oracle_attestations(
+        &self,
+        asset: &str,
+        current_slot: u64,
+        staleness_window: u64,
+    ) -> Result<Vec<crate::processor::OracleAttestation>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let prefix = format!("oracle_att_{}_", asset);
+        let mut results = Vec::new();
+
+        let iter = self.db.prefix_iterator_cf(&cf, prefix.as_bytes());
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("DB iterator error: {}", e))?;
+            let key_str = std::str::from_utf8(&key).unwrap_or("");
+            if !key_str.starts_with(&prefix) {
+                break;
+            }
+            if let Ok(att) = serde_json::from_slice::<crate::processor::OracleAttestation>(&value) {
+                if current_slot.saturating_sub(att.slot) <= staleness_window {
+                    results.push(att);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Task 3.6: Store the consensus oracle price for an asset.
+    ///
+    /// Key: "oracle_price_{asset}" in CF_STATS.
+    pub fn put_oracle_consensus_price(
+        &self,
+        asset: &str,
+        price: u64,
+        decimals: u8,
+        slot: u64,
+        attestation_count: u32,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("oracle_price_{}", asset);
+        let cp = crate::processor::OracleConsensusPrice {
+            asset: asset.to_string(),
+            price,
+            decimals,
+            slot,
+            attestation_count,
+        };
+        let data = serde_json::to_vec(&cp)
+            .map_err(|e| format!("Failed to serialize consensus price: {}", e))?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), data)
+            .map_err(|e| format!("Failed to store consensus price: {}", e))
+    }
+
+    /// Task 3.6: Get the consensus oracle price for an asset.
+    pub fn get_oracle_consensus_price(
+        &self,
+        asset: &str,
+    ) -> Result<Option<crate::processor::OracleConsensusPrice>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("oracle_price_{}", asset);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let cp = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize consensus price: {}", e))?;
+                Ok(Some(cp))
+            }
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
@@ -7883,5 +8934,747 @@ mod tests {
         assert!(cloned.has_cold_storage());
         let block = cloned.get_block_by_slot(0).unwrap();
         assert!(block.is_some(), "clone should read from shared cold DB");
+    }
+
+    // ─── Merkle proof tests (Task 1.3) ──────────────────────────────
+
+    #[test]
+    fn test_build_merkle_tree_empty() {
+        let tree = build_merkle_tree(&[]);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0][0], Hash::default());
+    }
+
+    #[test]
+    fn test_build_merkle_tree_single_leaf() {
+        let leaf = Hash::hash(b"single");
+        let tree = build_merkle_tree(&[leaf]);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0][0], leaf);
+    }
+
+    #[test]
+    fn test_build_merkle_tree_two_leaves() {
+        let a = Hash::hash(b"a");
+        let b = Hash::hash(b"b");
+        let tree = build_merkle_tree(&[a, b]);
+        assert_eq!(tree.len(), 2); // leaves + root
+        assert_eq!(tree[0].len(), 2);
+        assert_eq!(tree[1].len(), 1);
+        // Root = H(a || b)
+        let mut combined = [0u8; 64];
+        combined[..32].copy_from_slice(&a.0);
+        combined[32..].copy_from_slice(&b.0);
+        assert_eq!(tree[1][0], Hash::hash(&combined));
+    }
+
+    #[test]
+    fn test_build_merkle_tree_three_leaves_odd() {
+        let a = Hash::hash(b"a");
+        let b = Hash::hash(b"b");
+        let c = Hash::hash(b"c");
+        let tree = build_merkle_tree(&[a, b, c]);
+        // Level 0: [a, b, c]
+        // Level 1: [H(a||b), H(c||c)]  (odd leaf duplicated)
+        // Level 2: [H(H(a||b) || H(c||c))]
+        assert_eq!(tree.len(), 3);
+        assert_eq!(tree[0].len(), 3);
+        assert_eq!(tree[1].len(), 2);
+        assert_eq!(tree[2].len(), 1);
+    }
+
+    #[test]
+    fn test_build_merkle_tree_matches_merkle_root_from_leaves() {
+        // Verify build_merkle_tree root matches the existing merkle_root_from_leaves
+        let leaves: Vec<Hash> = (0..10u8).map(|i| Hash::hash(&[i])).collect();
+        let tree = build_merkle_tree(&leaves);
+        let tree_root = tree.last().unwrap()[0];
+        let existing_root = StateStore::merkle_root_from_leaves(&leaves);
+        assert_eq!(tree_root, existing_root);
+    }
+
+    #[test]
+    fn test_generate_proof_single_leaf() {
+        let leaf = Hash::hash(b"only");
+        let tree = build_merkle_tree(&[leaf]);
+        let proof = generate_proof(&tree, 0).unwrap();
+        assert_eq!(proof.leaf_hash, leaf);
+        assert!(proof.siblings.is_empty());
+        assert!(proof.path.is_empty());
+        assert!(proof.verify(&leaf)); // root == leaf when single
+    }
+
+    #[test]
+    fn test_proof_verify_two_leaves() {
+        let a = Hash::hash(b"left");
+        let b = Hash::hash(b"right");
+        let tree = build_merkle_tree(&[a, b]);
+        let root = tree.last().unwrap()[0];
+
+        // Proof for leaf 0 (left)
+        let proof_a = generate_proof(&tree, 0).unwrap();
+        assert!(proof_a.verify(&root));
+        assert_eq!(proof_a.siblings.len(), 1);
+        assert!(proof_a.path[0]); // left child
+
+        // Proof for leaf 1 (right)
+        let proof_b = generate_proof(&tree, 1).unwrap();
+        assert!(proof_b.verify(&root));
+        assert!(!proof_b.path[0]); // right child
+    }
+
+    #[test]
+    fn test_proof_verify_many_leaves() {
+        let leaves: Vec<Hash> = (0..17u8).map(|i| Hash::hash(&[i])).collect();
+        let tree = build_merkle_tree(&leaves);
+        let root = tree.last().unwrap()[0];
+
+        // Every leaf should produce a valid proof
+        for i in 0..leaves.len() {
+            let proof = generate_proof(&tree, i).unwrap();
+            assert!(proof.verify(&root), "Proof for leaf {} failed to verify", i);
+        }
+    }
+
+    #[test]
+    fn test_proof_verify_rejects_wrong_root() {
+        let a = Hash::hash(b"x");
+        let b = Hash::hash(b"y");
+        let tree = build_merkle_tree(&[a, b]);
+        let proof = generate_proof(&tree, 0).unwrap();
+        let wrong_root = Hash::hash(b"wrong");
+        assert!(!proof.verify(&wrong_root));
+    }
+
+    #[test]
+    fn test_proof_verify_account_data() {
+        let pk = Pubkey([42u8; 32]);
+        let data = b"account data";
+        let leaf = Hash::hash_two_parts(&pk.0, data);
+        let other_leaf = Hash::hash(b"other");
+        let tree = build_merkle_tree(&[leaf, other_leaf]);
+        let root = tree.last().unwrap()[0];
+
+        let proof = generate_proof(&tree, 0).unwrap();
+        assert!(proof.verify_account(&root, &pk, data));
+        // Wrong data should fail
+        assert!(!proof.verify_account(&root, &pk, b"wrong data"));
+        // Wrong pubkey should fail
+        let wrong_pk = Pubkey([99u8; 32]);
+        assert!(!proof.verify_account(&root, &wrong_pk, data));
+    }
+
+    #[test]
+    fn test_proof_out_of_bounds() {
+        let leaves = vec![Hash::hash(b"a"), Hash::hash(b"b")];
+        let tree = build_merkle_tree(&leaves);
+        assert!(generate_proof(&tree, 2).is_none());
+        assert!(generate_proof(&tree, 100).is_none());
+    }
+
+    #[test]
+    fn test_merkle_proof_serde_roundtrip() {
+        let proof = MerkleProof {
+            leaf_hash: Hash::hash(b"leaf"),
+            siblings: vec![Hash::hash(b"sib1"), Hash::hash(b"sib2")],
+            path: vec![true, false],
+        };
+        let json = serde_json::to_string(&proof).unwrap();
+        let restored: MerkleProof = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.leaf_hash, proof.leaf_hash);
+        assert_eq!(restored.siblings.len(), 2);
+        assert_eq!(restored.path, proof.path);
+    }
+
+    #[test]
+    fn test_get_account_proof_integration() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        // Create some accounts
+        let pk1 = Pubkey([1u8; 32]);
+        let pk2 = Pubkey([2u8; 32]);
+        let pk3 = Pubkey([3u8; 32]);
+
+        let mut a1 = Account::new(1_000_000, pk1);
+        a1.shells = 1_000_000;
+        let mut a2 = Account::new(2_000_000, pk2);
+        a2.shells = 2_000_000;
+        let mut a3 = Account::new(3_000_000, pk3);
+        a3.shells = 3_000_000;
+
+        state.put_account(&pk1, &a1).unwrap();
+        state.put_account(&pk2, &a2).unwrap();
+        state.put_account(&pk3, &a3).unwrap();
+
+        // Compute state root to populate leaf cache
+        let root = state.compute_state_root();
+        assert_ne!(root, Hash::default());
+
+        // Get proof for pk2
+        let proof = state.get_account_proof(&pk2);
+        assert!(proof.is_some(), "Should produce an account proof");
+
+        let ap = proof.unwrap();
+        assert_eq!(ap.pubkey, pk2);
+        assert_eq!(ap.state_root, root);
+
+        // Verify the proof
+        assert!(ap.proof.verify(&root));
+        assert!(ap.proof.verify_account(&root, &pk2, &ap.account_data));
+
+        // Standalone verification
+        assert!(StateStore::verify_account_proof(
+            &root,
+            &pk2,
+            &ap.account_data,
+            &ap.proof
+        ));
+    }
+
+    #[test]
+    fn test_get_account_proof_nonexistent() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        let pk = Pubkey([99u8; 32]);
+        assert!(state.get_account_proof(&pk).is_none());
+    }
+
+    #[test]
+    fn test_proof_consistency_after_state_change() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        let pk1 = Pubkey([10u8; 32]);
+        let pk2 = Pubkey([20u8; 32]);
+        state.put_account(&pk1, &Account::new(100, pk1)).unwrap();
+        state.put_account(&pk2, &Account::new(200, pk2)).unwrap();
+
+        let root1 = state.compute_state_root();
+        let proof1 = state.get_account_proof(&pk1).unwrap();
+        assert!(proof1.proof.verify(&root1));
+
+        // Modify pk2 — pk1's proof should now be invalid against new root
+        let mut a2 = Account::new(300, pk2);
+        a2.shells = 300;
+        state.put_account(&pk2, &a2).unwrap();
+        let root2 = state.compute_state_root();
+        assert_ne!(root1, root2);
+
+        // Old proof should NOT verify against new root
+        assert!(!proof1.proof.verify(&root2));
+
+        // New proof for pk1 should verify against new root
+        let proof1_new = state.get_account_proof(&pk1).unwrap();
+        assert!(proof1_new.proof.verify(&root2));
+    }
+
+    // ─── Dormancy Tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dormant_account_excluded_from_state_root() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let pk1 = Pubkey([1u8; 32]);
+        let pk2 = Pubkey([2u8; 32]);
+
+        // Create two active accounts
+        let a1 = Account::new(100, pk1);
+        let a2 = Account::new(200, pk2);
+        state.put_account(&pk1, &a1).unwrap();
+        state.put_account(&pk2, &a2).unwrap();
+        let root_both = state.compute_state_root();
+        assert_ne!(root_both, Hash::default());
+
+        // Mark pk2 as dormant
+        let mut a2_dormant = a2.clone();
+        a2_dormant.dormant = true;
+        state.put_account(&pk2, &a2_dormant).unwrap();
+        let root_one = state.compute_state_root();
+
+        // Root should change (dormant account excluded)
+        assert_ne!(root_both, root_one);
+
+        // Root should equal what you'd get with only pk1
+        let dir2 = tempdir().unwrap();
+        let state2 = StateStore::open(dir2.path()).unwrap();
+        state2.put_account(&pk1, &a1).unwrap();
+        let root_pk1_only = state2.compute_state_root();
+        assert_eq!(root_one, root_pk1_only);
+    }
+
+    #[test]
+    fn test_dormant_account_reactivated_on_transfer() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let funder = Pubkey([1u8; 32]);
+        let dormant_pk = Pubkey([2u8; 32]);
+
+        // Create funder with sufficient balance
+        let funder_acc = Account::new(1000, funder);
+        state.put_account(&funder, &funder_acc).unwrap();
+
+        // Create dormant account
+        let mut dormant_acc = Account::new(0, dormant_pk);
+        dormant_acc.dormant = true;
+        dormant_acc.missed_rent_epochs = 3;
+        state.put_account(&dormant_pk, &dormant_acc).unwrap();
+
+        // Transfer should reactivate
+        state.transfer(&funder, &dormant_pk, 500_000_000).unwrap();
+
+        let reactivated = state.get_account(&dormant_pk).unwrap().unwrap();
+        assert!(!reactivated.dormant);
+        assert_eq!(reactivated.missed_rent_epochs, 0);
+        assert_eq!(reactivated.spendable, 500_000_000);
+    }
+
+    #[test]
+    fn test_dormant_account_reactivated_included_in_state_root() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let funder = Pubkey([1u8; 32]);
+        let target = Pubkey([2u8; 32]);
+
+        let funder_acc = Account::new(1000, funder);
+        state.put_account(&funder, &funder_acc).unwrap();
+
+        // Start with dormant target
+        let mut target_acc = Account::new(0, target);
+        target_acc.dormant = true;
+        target_acc.missed_rent_epochs = 5;
+        state.put_account(&target, &target_acc).unwrap();
+        let root_dormant = state.compute_state_root();
+
+        // Transfer reactivates
+        state.transfer(&funder, &target, 100_000_000).unwrap();
+        let root_reactivated = state.compute_state_root();
+
+        // Roots differ because target is now included
+        assert_ne!(root_dormant, root_reactivated);
+    }
+
+    #[test]
+    fn test_batch_transfer_reactivates_dormant() {
+        let dir = tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let funder = Pubkey([1u8; 32]);
+        let dormant_pk = Pubkey([2u8; 32]);
+
+        let funder_acc = Account::new(1000, funder);
+        state.put_account(&funder, &funder_acc).unwrap();
+
+        let mut dormant_acc = Account::new(0, dormant_pk);
+        dormant_acc.dormant = true;
+        dormant_acc.missed_rent_epochs = 2;
+        state.put_account(&dormant_pk, &dormant_acc).unwrap();
+
+        // Use batch transfer
+        let mut batch = state.begin_batch();
+        batch.transfer(&funder, &dormant_pk, 200_000_000).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        let reactivated = state.get_account(&dormant_pk).unwrap().unwrap();
+        assert!(!reactivated.dormant);
+        assert_eq!(reactivated.missed_rent_epochs, 0);
+    }
+
+    #[test]
+    fn test_deserialize_account_check_dormant() {
+        // Active account
+        let active = Account::new(100, Pubkey([1u8; 32]));
+        let mut active_bytes = vec![0xBC];
+        bincode::serialize_into(&mut active_bytes, &active).unwrap();
+        assert!(!StateStore::deserialize_account_check_dormant(
+            &active_bytes
+        ));
+
+        // Dormant account
+        let mut dormant = Account::new(0, Pubkey([2u8; 32]));
+        dormant.dormant = true;
+        let mut dormant_bytes = vec![0xBC];
+        bincode::serialize_into(&mut dormant_bytes, &dormant).unwrap();
+        assert!(StateStore::deserialize_account_check_dormant(
+            &dormant_bytes
+        ));
+
+        // Invalid bytes — should return false (treat as active)
+        assert!(!StateStore::deserialize_account_check_dormant(&[
+            0xBC, 0xFF
+        ]));
+    }
+
+    // ── Task 3.4: EVM Log Storage tests ──
+
+    #[test]
+    fn test_put_get_evm_logs_for_slot_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let logs = vec![
+            crate::evm::EvmLogEntry {
+                tx_hash: [0xAA; 32],
+                tx_index: 0,
+                log_index: 0,
+                log: crate::evm::EvmLog {
+                    address: [0x11; 20],
+                    topics: vec![[0x01; 32], [0x02; 32]],
+                    data: vec![0xFF, 0xFE],
+                },
+            },
+            crate::evm::EvmLogEntry {
+                tx_hash: [0xAA; 32],
+                tx_index: 0,
+                log_index: 1,
+                log: crate::evm::EvmLog {
+                    address: [0x22; 20],
+                    topics: vec![[0x03; 32]],
+                    data: vec![],
+                },
+            },
+        ];
+
+        state.put_evm_logs_for_slot(100, &logs).unwrap();
+        let retrieved = state.get_evm_logs_for_slot(100).unwrap();
+        assert_eq!(retrieved.len(), 2);
+        assert_eq!(retrieved[0].tx_hash, [0xAA; 32]);
+        assert_eq!(retrieved[0].log.address, [0x11; 20]);
+        assert_eq!(retrieved[0].log.topics.len(), 2);
+        assert_eq!(retrieved[1].log_index, 1);
+        assert_eq!(retrieved[1].log.address, [0x22; 20]);
+    }
+
+    #[test]
+    fn test_evm_logs_empty_slot_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let logs = state.get_evm_logs_for_slot(999).unwrap();
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn test_evm_logs_append_multiple_txs_in_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        // First tx with 1 log
+        let logs1 = vec![crate::evm::EvmLogEntry {
+            tx_hash: [0x01; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: crate::evm::EvmLog {
+                address: [0xAA; 20],
+                topics: vec![[0x10; 32]],
+                data: vec![1],
+            },
+        }];
+        state.put_evm_logs_for_slot(50, &logs1).unwrap();
+
+        // Second tx with 2 logs (appends to same slot)
+        let logs2 = vec![
+            crate::evm::EvmLogEntry {
+                tx_hash: [0x02; 32],
+                tx_index: 1,
+                log_index: 1,
+                log: crate::evm::EvmLog {
+                    address: [0xBB; 20],
+                    topics: vec![[0x20; 32]],
+                    data: vec![2],
+                },
+            },
+            crate::evm::EvmLogEntry {
+                tx_hash: [0x02; 32],
+                tx_index: 1,
+                log_index: 2,
+                log: crate::evm::EvmLog {
+                    address: [0xCC; 20],
+                    topics: vec![[0x30; 32]],
+                    data: vec![3],
+                },
+            },
+        ];
+        state.put_evm_logs_for_slot(50, &logs2).unwrap();
+
+        // Should have all 3 logs
+        let all = state.get_evm_logs_for_slot(50).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].tx_hash, [0x01; 32]);
+        assert_eq!(all[1].tx_hash, [0x02; 32]);
+        assert_eq!(all[2].tx_hash, [0x02; 32]);
+    }
+
+    #[test]
+    fn test_evm_logs_empty_vec_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        // Storing empty logs should be a no-op
+        state.put_evm_logs_for_slot(200, &[]).unwrap();
+        let logs = state.get_evm_logs_for_slot(200).unwrap();
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn test_evm_logs_different_slots_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateStore::open(dir.path()).unwrap();
+
+        let log_a = vec![crate::evm::EvmLogEntry {
+            tx_hash: [0xAA; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: crate::evm::EvmLog {
+                address: [0x11; 20],
+                topics: vec![[0x01; 32]],
+                data: vec![0xAA],
+            },
+        }];
+        let log_b = vec![crate::evm::EvmLogEntry {
+            tx_hash: [0xBB; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: crate::evm::EvmLog {
+                address: [0x22; 20],
+                topics: vec![[0x02; 32]],
+                data: vec![0xBB],
+            },
+        }];
+
+        state.put_evm_logs_for_slot(10, &log_a).unwrap();
+        state.put_evm_logs_for_slot(20, &log_b).unwrap();
+
+        let slot10 = state.get_evm_logs_for_slot(10).unwrap();
+        let slot20 = state.get_evm_logs_for_slot(20).unwrap();
+        assert_eq!(slot10.len(), 1);
+        assert_eq!(slot20.len(), 1);
+        assert_eq!(slot10[0].log.data, vec![0xAA]);
+        assert_eq!(slot20[0].log.data, vec![0xBB]);
+    }
+
+    // ─── Task 3.9: Archive Mode Tests ───────────────────────────────
+
+    #[test]
+    fn test_archive_put_and_get_account_at_slot() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x01; 32]);
+        let acc_v1 = Account::new(1, pk); // 1 MOLT = 1_000_000_000 shells
+        let acc_v2 = Account::new(2, pk); // 2 MOLT
+        let acc_v3 = Account::new(3, pk); // 3 MOLT
+
+        // Write snapshots at slots 10, 20, 30
+        state.put_account_snapshot(&pk, &acc_v1, 10).unwrap();
+        state.put_account_snapshot(&pk, &acc_v2, 20).unwrap();
+        state.put_account_snapshot(&pk, &acc_v3, 30).unwrap();
+
+        // Exact slot lookups
+        let r = state.get_account_at_slot(&pk, 10).unwrap().unwrap();
+        assert_eq!(r.shells, 1_000_000_000);
+        let r = state.get_account_at_slot(&pk, 20).unwrap().unwrap();
+        assert_eq!(r.shells, 2_000_000_000);
+        let r = state.get_account_at_slot(&pk, 30).unwrap().unwrap();
+        assert_eq!(r.shells, 3_000_000_000);
+
+        // Intermediate slot: slot 25 → should return snapshot at slot 20
+        let r = state.get_account_at_slot(&pk, 25).unwrap().unwrap();
+        assert_eq!(r.shells, 2_000_000_000);
+
+        // Future slot: slot 100 → should return latest snapshot at slot 30
+        let r = state.get_account_at_slot(&pk, 100).unwrap().unwrap();
+        assert_eq!(r.shells, 3_000_000_000);
+    }
+
+    #[test]
+    fn test_archive_no_snapshot_before_slot() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x02; 32]);
+        let acc = Account::new(5, pk); // 5 MOLT
+        state.put_account_snapshot(&pk, &acc, 50).unwrap();
+
+        // Before any snapshot exists → None
+        let r = state.get_account_at_slot(&pk, 49).unwrap();
+        assert!(r.is_none());
+
+        // At slot 50 → found
+        let r = state.get_account_at_slot(&pk, 50).unwrap();
+        assert!(r.is_some());
+    }
+
+    #[test]
+    fn test_archive_unknown_pubkey() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let unknown = Pubkey([0xFF; 32]);
+        let r = state.get_account_at_slot(&unknown, 999).unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_archive_mode_toggle() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        assert!(!state.is_archive_mode());
+        state.set_archive_mode(true);
+        assert!(state.is_archive_mode());
+        state.set_archive_mode(false);
+        assert!(!state.is_archive_mode());
+    }
+
+    #[test]
+    fn test_archive_put_account_writes_snapshot_when_enabled() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x03; 32]);
+        let acc = Account::new(10, pk); // 10 MOLT
+
+        // Set slot to 42
+        state.set_last_slot(42).unwrap();
+
+        // Without archive mode → no snapshot
+        state.put_account(&pk, &acc).unwrap();
+        let r = state.get_account_at_slot(&pk, 42).unwrap();
+        assert!(r.is_none());
+
+        // Enable archive mode
+        state.set_archive_mode(true);
+
+        let acc2 = Account::new(20, pk); // 20 MOLT
+        state.put_account(&pk, &acc2).unwrap();
+        let r = state.get_account_at_slot(&pk, 42).unwrap().unwrap();
+        assert_eq!(r.shells, 20_000_000_000);
+    }
+
+    #[test]
+    fn test_archive_batch_writes_snapshot_when_enabled() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x04; 32]);
+
+        // Set slot and enable archive
+        state.set_last_slot(100).unwrap();
+        state.set_archive_mode(true);
+
+        let acc = Account::new(50, pk); // 50 MOLT
+        let mut batch = state.begin_batch();
+        batch.put_account(&pk, &acc).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        // Snapshot should exist at slot 100
+        let r = state.get_account_at_slot(&pk, 100).unwrap().unwrap();
+        assert_eq!(r.shells, 50_000_000_000);
+    }
+
+    #[test]
+    fn test_archive_batch_no_snapshot_when_disabled() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x05; 32]);
+        state.set_last_slot(200).unwrap();
+        // archive_mode defaults to false
+
+        let acc = Account::new(30, pk); // 30 MOLT
+        let mut batch = state.begin_batch();
+        batch.put_account(&pk, &acc).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        // No snapshot expected
+        let r = state.get_account_at_slot(&pk, 200).unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_archive_prune_snapshots() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x06; 32]);
+        for slot in (10..=100).step_by(10) {
+            let acc = Account::new(slot, pk); // slot MOLT each
+            state.put_account_snapshot(&pk, &acc, slot).unwrap();
+        }
+
+        // Prune everything before slot 50
+        let pruned = state.prune_account_snapshots(50).unwrap();
+        assert_eq!(pruned, 4); // slots 10, 20, 30, 40
+
+        // Slot 40 should be gone
+        let r = state.get_account_at_slot(&pk, 40).unwrap();
+        assert!(r.is_none());
+
+        // Slot 50 should still exist
+        let r = state.get_account_at_slot(&pk, 50).unwrap().unwrap();
+        assert_eq!(r.shells, 50_000_000_000); // 50 MOLT
+
+        // Oldest snapshot should be 50
+        let oldest = state.get_oldest_snapshot_slot().unwrap().unwrap();
+        assert_eq!(oldest, 50);
+    }
+
+    #[test]
+    fn test_archive_oldest_snapshot_slot_empty() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let oldest = state.get_oldest_snapshot_slot().unwrap();
+        assert!(oldest.is_none());
+    }
+
+    #[test]
+    fn test_archive_multiple_accounts_isolation() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk_a = Pubkey([0x0A; 32]);
+        let pk_b = Pubkey([0x0B; 32]);
+
+        let acc_a = Account::new(1, pk_a); // 1 MOLT
+        let acc_b = Account::new(2, pk_b); // 2 MOLT
+
+        state.put_account_snapshot(&pk_a, &acc_a, 10).unwrap();
+        state.put_account_snapshot(&pk_b, &acc_b, 10).unwrap();
+
+        let r_a = state.get_account_at_slot(&pk_a, 10).unwrap().unwrap();
+        let r_b = state.get_account_at_slot(&pk_b, 10).unwrap().unwrap();
+        assert_eq!(r_a.shells, 1_000_000_000);
+        assert_eq!(r_b.shells, 2_000_000_000);
+
+        // Cross-account isolation: querying pk_a at slot 10 should not return pk_b's data
+        assert_eq!(r_a.owner, pk_a);
+        assert_eq!(r_b.owner, pk_b);
+    }
+
+    #[test]
+    fn test_archive_seek_for_prev_boundary() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x07; 32]);
+
+        // Only one snapshot at slot 1000
+        state
+            .put_account_snapshot(&pk, &Account::new(1, pk), 1000)
+            .unwrap();
+
+        // Querying any slot >= 1000 returns it
+        assert!(state.get_account_at_slot(&pk, 1000).unwrap().is_some());
+        assert!(state.get_account_at_slot(&pk, u64::MAX).unwrap().is_some());
+
+        // Querying slot < 1000 returns None
+        assert!(state.get_account_at_slot(&pk, 999).unwrap().is_none());
+        assert!(state.get_account_at_slot(&pk, 0).unwrap().is_none());
     }
 }

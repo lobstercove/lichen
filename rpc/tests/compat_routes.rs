@@ -55,6 +55,28 @@ async fn test_solana_health_route() {
         None,
     );
 
+    let response = rpc_call(&app, "/solana-compat", "getHealth").await.unwrap();
+    assert_eq!(response["result"], "ok");
+}
+
+#[tokio::test]
+async fn test_solana_legacy_alias_route() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
     let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
     assert_eq!(response["result"], "ok");
 }

@@ -60,6 +60,28 @@ impl Message {
     }
 }
 
+/// Transaction type discriminator — replaces sentinel-based detection.
+///
+/// - `Native`: Standard MoltChain transaction (Ed25519 signed, blockhash replay protection)
+/// - `Evm`: EVM-wrapped transaction (ECDSA signed, EVM nonce replay protection)
+/// - `SolanaCompat`: Submitted via Solana-format RPC (same as Native but tagged for metrics)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TransactionType {
+    #[default]
+    Native,
+    Evm,
+    SolanaCompat,
+}
+
+/// Wire-format magic bytes identifying a MoltChain transaction envelope.
+/// "MT" = MoltTransaction. The pair `[0x4D, 0x54]` cannot appear as the first
+/// two bytes of a legacy bincode Transaction (that would imply 0x544D = 21,581
+/// signatures, which is impossible).
+pub const TX_WIRE_MAGIC: [u8; 2] = [0x4D, 0x54];
+
+/// Current wire-format version.
+pub const TX_WIRE_VERSION: u8 = 1;
+
 /// Signed transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
@@ -72,6 +94,11 @@ pub struct Transaction {
 
     /// Transaction message
     pub message: Message,
+
+    /// Transaction type — determines processing path.
+    /// Defaults to `Native` for backward compatibility with existing serialized transactions.
+    #[serde(default)]
+    pub tx_type: TransactionType,
 }
 
 // Helper functions for signature serialization.
@@ -208,12 +235,44 @@ impl Transaction {
         Transaction {
             signatures: Vec::new(),
             message,
+            tx_type: TransactionType::Native,
         }
+    }
+
+    /// Create a new EVM-typed transaction.
+    pub fn new_evm(message: Message) -> Self {
+        Transaction {
+            signatures: vec![[0u8; 64]],
+            message,
+            tx_type: TransactionType::Evm,
+        }
+    }
+
+    /// Check if this is an EVM transaction (by type field or legacy sentinel).
+    pub fn is_evm(&self) -> bool {
+        self.tx_type == TransactionType::Evm
+            || self.message.recent_blockhash == crate::Hash([0xEE; 32])
+    }
+
+    /// Check if this is a Solana-compat transaction.
+    pub fn is_solana_compat(&self) -> bool {
+        self.tx_type == TransactionType::SolanaCompat
     }
 
     /// Get transaction signature (first signature's identifier)
     pub fn signature(&self) -> Hash {
         self.hash()
+    }
+
+    /// Get the message-only hash (signing hash).
+    ///
+    /// This is the hash that signers commit to via Ed25519. It does NOT include
+    /// signatures, so it is predictable before signing — useful for multi-sig
+    /// coordination and client-side txid tracking before broadcast.
+    ///
+    /// See also: `hash()` which includes signatures and serves as the canonical txid.
+    pub fn message_hash(&self) -> Hash {
+        self.message.hash()
     }
 
     /// Get the sender/fee-payer (first account of first instruction)
@@ -222,9 +281,18 @@ impl Transaction {
     }
 
     /// Get transaction hash (includes signatures for unique deduplication).
-    /// T3.4 fix: Hash now covers both message AND signatures,
-    /// so two transactions with the same message but different signatures
-    /// produce different hashes.
+    ///
+    /// This is the **canonical transaction ID** stored in `CF_TRANSACTIONS` and
+    /// returned by RPC methods. It equals `SHA-256(bincode(message) || sig_0 || sig_1 || ...)`.
+    ///
+    /// Including signatures prevents txid-malleability: two transactions with the
+    /// same message but different signatures produce different hashes, matching
+    /// Bitcoin's post-SegWit wtxid approach and Cosmos/CometBFT's `SHA-256(tx_bytes)`.
+    ///
+    /// Determinism guarantee: for any `Transaction` value, `hash()` always returns
+    /// the same `Hash`. Bincode serialization of `Message` is deterministic (no
+    /// maps, no unordered collections), and Ed25519 signatures are fixed-size byte
+    /// arrays concatenated in order.
     pub fn hash(&self) -> Hash {
         let mut data = self.message.serialize();
         for sig in &self.signatures {
@@ -278,6 +346,82 @@ impl Transaction {
         }
         Ok(())
     }
+
+    // ── Wire-format envelope (M-6) ─────────────────────────────
+
+    /// Serialize to the V1 wire envelope: `[magic_0, magic_1, version, type, ...bincode]`.
+    ///
+    /// Callers that need base64 transport can encode the returned bytes with
+    /// `base64::encode(&tx.to_wire())`.
+    pub fn to_wire(&self) -> Vec<u8> {
+        let payload = bincode::serialize(self).expect("Transaction bincode serialization failed");
+        let mut buf = Vec::with_capacity(4 + payload.len());
+        buf.extend_from_slice(&TX_WIRE_MAGIC);
+        buf.push(TX_WIRE_VERSION);
+        buf.push(self.tx_type as u8);
+        buf.extend_from_slice(&payload);
+        buf
+    }
+
+    /// Deserialize from wire bytes, supporting three formats:
+    ///
+    /// 1. **V1 envelope** — starts with `TX_WIRE_MAGIC` (`[0x4D, 0x54]`)
+    /// 2. **Legacy bincode** — raw `bincode::serialize(&Transaction)` output
+    /// 3. **JSON** — `{ "signatures": [...], "message": {...} }` from browser wallets
+    ///
+    /// The `max_bincode_bytes` parameter caps the bincode deserialization buffer
+    /// to prevent OOM from adversarial payloads.
+    pub fn from_wire(data: &[u8], max_bincode_bytes: u64) -> Result<Self, String> {
+        // --- V1 envelope ---
+        if data.len() >= 4 && data[0..2] == TX_WIRE_MAGIC {
+            let version = data[2];
+            if version != TX_WIRE_VERSION {
+                return Err(format!("Unsupported wire version: {}", version));
+            }
+            let type_byte = data[3];
+            let tx_type = match type_byte {
+                0 => TransactionType::Native,
+                1 => TransactionType::Evm,
+                2 => TransactionType::SolanaCompat,
+                _ => return Err(format!("Unknown transaction type byte: {}", type_byte)),
+            };
+            let payload = &data[4..];
+            let mut tx: Self = bounded_bincode_deser(payload, max_bincode_bytes)?;
+            // Envelope type is authoritative
+            tx.tx_type = tx_type;
+            return Ok(tx);
+        }
+
+        // --- Legacy: JSON vs bincode ---
+        if data.first() == Some(&b'{') {
+            // Looks like JSON — try JSON first, fall back to bincode
+            json_deser(data).or_else(|_| bounded_bincode_deser(data, max_bincode_bytes))
+        } else {
+            // Try bincode first, fall back to JSON
+            bounded_bincode_deser(data, max_bincode_bytes).or_else(|_| json_deser(data))
+        }
+    }
+}
+
+/// Bounded bincode deserialization with panic catch (bincode 1.x safety).
+fn bounded_bincode_deser(bytes: &[u8], limit: u64) -> Result<Transaction, String> {
+    use bincode::Options;
+    match std::panic::catch_unwind(|| {
+        bincode::options()
+            .with_limit(limit)
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .deserialize(bytes)
+    }) {
+        Ok(Ok(tx)) => Ok(tx),
+        Ok(Err(e)) => Err(format!("bincode: {}", e)),
+        Err(_) => Err("bincode panicked during deserialization".to_string()),
+    }
+}
+
+/// Attempt JSON deserialization of a wallet-format transaction.
+fn json_deser(bytes: &[u8]) -> Result<Transaction, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("JSON: {}", e))
 }
 
 #[cfg(test)]
@@ -527,6 +671,7 @@ mod tests {
         let tx = Transaction {
             signatures: vec![sig],
             message: msg,
+            tx_type: Default::default(),
         };
 
         let bytes = bincode::serialize(&tx).expect("tx serialization");
@@ -534,7 +679,7 @@ mod tests {
 
         let sig_hex = "bb".repeat(64); // 64 bytes = 128 hex chars
         let expected = format!(
-            "{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}",
             "0100000000000000", // Vec<[u8;64]> len = 1
             sig_hex,            // sig (64 bytes)
             // -- Message bytes (same as golden vector above) --
@@ -544,6 +689,7 @@ mod tests {
             "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
             "040000000000000000010203", // Vec<u8> len=4 + data
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
+            "00000000",         // tx_type: Native (enum variant 0)
         );
 
         assert_eq!(

@@ -8,7 +8,8 @@ use moltchain_core::{
     Account, Block, FeeConfig, ForkChoice, Hash, Instruction, Keypair, Mempool, Message, Pubkey,
     SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, StateStore, Transaction,
     TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE,
-    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
+    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, GENESIS_SUPPLY_SHELLS, MIN_VALIDATOR_STAKE,
+    SYSTEM_PROGRAM_ID,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
@@ -50,6 +51,8 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
         owner,
         executable: false,
         rent_epoch: 0,
+        dormant: false,
+        missed_rent_epochs: 0,
     }
 }
 
@@ -63,7 +66,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-    }
+            tx_type: Default::default(),
+}
 }
 
 fn now_ms() -> u64 {
@@ -375,7 +379,8 @@ fn test_multiple_instructions_in_one_tx() {
     let tx = Transaction {
         signatures: vec![signature],
         message,
-    };
+            tx_type: Default::default(),
+};
     let result = processor.process_transaction(&tx, &validator.pubkey());
     assert!(
         result.success,
@@ -1254,24 +1259,33 @@ fn test_balance_molt_utility() {
 
 #[test]
 fn test_stakepool_block_reward_distribution() {
+    // Epoch-based model: distribute_block_reward returns 0 (tracking only).
+    // Staker rewards are distributed via distribute_epoch_staker_rewards.
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
-    let reward = pool.distribute_block_reward(&v1.pubkey(), 1, false);
-    assert!(reward > 0, "Block reward should be positive");
+    let reward = pool.distribute_block_reward(&v1.pubkey(), 1, false, GENESIS_SUPPLY_SHELLS);
+    assert_eq!(reward, 0, "Per-slot block reward should be zero in epoch model");
+    // Epoch-based distribution should produce positive rewards
+    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+    assert!(total_minted > 0, "Epoch staker rewards should be positive");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, v1.pubkey());
 }
 
 #[test]
 fn test_stakepool_claim_rewards() {
+    // Epoch-based model: rewards come from distribute_epoch_staker_rewards,
+    // which internally calls add_reward + claim_rewards.
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
-    pool.distribute_block_reward(&v1.pubkey(), 1, false);
-    let (claimed_block, claimed_fee) = pool.claim_rewards(&v1.pubkey(), 1);
-    assert!(
-        claimed_block > 0 || claimed_fee > 0,
-        "Should have rewards to claim"
-    );
+    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+    assert!(total_minted > 0, "Should have epoch rewards");
+    // The liquid portion was already claimed inside distribute_epoch_staker_rewards
+    let (_pubkey, reward, liquid, _debt) = results[0];
+    assert!(reward > 0, "Reward should be positive");
+    assert!(liquid > 0, "Liquid portion should be positive");
 }
 
 #[test]
@@ -1338,7 +1352,7 @@ fn test_stakepool_delegation_after_graduation() {
         .unwrap();
     // Produce many blocks and distribute rewards to fully vest the validator
     for slot in 1..=500 {
-        pool.distribute_block_reward(&validator.pubkey(), slot, false);
+        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SHELLS);
         pool.record_block_produced(&validator.pubkey());
     }
     // Try delegation — should succeed once fully vested
@@ -1359,7 +1373,7 @@ fn test_stakepool_undelegate() {
         .unwrap();
     // Fully vest validator through block production
     for slot in 1..=500 {
-        pool.distribute_block_reward(&validator.pubkey(), slot, false);
+        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SHELLS);
         pool.record_block_produced(&validator.pubkey());
     }
     let delegate_result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);

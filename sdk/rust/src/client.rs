@@ -125,10 +125,9 @@ impl Client {
             .ok_or(Error::ParseError("Invalid transaction hash".to_string()))
     }
     
-    /// Send transaction (serializes and encodes automatically)
+    /// Send transaction (serializes with wire envelope and encodes automatically)
     pub async fn send_transaction(&self, tx: &crate::types::Transaction) -> Result<String> {
-        let tx_bytes = bincode::serialize(tx)
-            .map_err(|e| Error::SerializationError(e.to_string()))?;
+        let tx_bytes = tx.to_wire();
         let tx_base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx_bytes);
         self.send_raw_transaction(&tx_base64).await
     }

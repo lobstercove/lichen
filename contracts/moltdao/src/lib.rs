@@ -161,7 +161,7 @@ pub extern "C" fn initialize_dao(
     let caller = get_caller();
     storage_set(b"dao_owner", &caller.0);
     // Store initial total supply for quorum calculation (updatable by governance)
-    storage_set(b"total_supply", &u64_to_bytes(1_000_000_000_000_000_000)); // 1B MOLT in shells
+    storage_set(b"total_supply", &u64_to_bytes(500_000_000_000_000_000)); // 500M MOLT in shells
     
     log_info("DAO initialized!");
     log_info("   Voting period: 3 days");
@@ -737,7 +737,7 @@ pub extern "C" fn execute_proposal(
         let veto_votes = bytes_to_u64(&proposal[196..204]);
         let total_supply = storage_get(b"total_supply")
             .map(|d| bytes_to_u64(&d))
-            .unwrap_or(1_000_000_000_000_000_000);
+            .unwrap_or(500_000_000_000_000_000);
         // Veto threshold: 20% of sqrt(total_supply) * 3.0 (max governance power)
         let max_governance_power = isqrt(total_supply) * 3;
         let veto_threshold = max_governance_power * VETO_THRESHOLD_PERCENT / 100;
@@ -758,7 +758,7 @@ pub extern "C" fn execute_proposal(
     if quorum_pct > 0 {
         let total_supply = storage_get(b"total_supply")
             .map(|d| bytes_to_u64(&d))
-            .unwrap_or(1_000_000_000_000_000_000);
+            .unwrap_or(500_000_000_000_000_000);
         // Quorum based on sqrt(total_supply) to match quadratic voting
         let quorum = isqrt(total_supply) * quorum_pct / 100;
         

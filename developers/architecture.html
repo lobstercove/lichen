@@ -317,6 +317,13 @@ contribution_score = (
                         <td>Varies</td>
                         <td>Chain config, genesis hash, epoch info</td>
                     </tr>
+                    <tr>
+                        <td><code>account_snapshots</code></td>
+                        <td>Address (32) + Slot (8, BE)</td>
+                        <td>Account struct</td>
+                        <td>Historical account snapshots (archive mode). Enable with
+                            <code>set_archive_mode(true)</code>. Query via <code>getAccountAtSlot</code> RPC.</td>
+                    </tr>
                 </tbody>
             </table>
 
@@ -542,8 +549,8 @@ contribution_score = (
             <h3>How Reputation Affects the Stack</h3>
 
             <ul>
-                <li><strong>Mempool:</strong> Transaction priority = <code>fee × tier_multiplier</code>. Tier 4+
-                    transactions enter the express lane, which the block leader processes before the regular queue.</li>
+                <li><strong>Mempool:</strong> All transactions are ordered strictly by fee (highest first),
+                    then FIFO for equal fees. Reputation does <strong>not</strong> affect queue priority.</li>
                 <li><strong>Gas Pricing:</strong> Higher-tier accounts receive fee discounts applied at the protocol
                     level. A Tier 5 account paying a 0.001 MOLT fee effectively pays 0.0009 MOLT.</li>
                 <li><strong>Rate Limiting:</strong> Each account is allowed a maximum number of transactions per epoch

@@ -50,7 +50,8 @@ fn test_mempool_basic() {
     let tx = Transaction {
         signatures: vec![[1u8; 64]],
         message: msg,
-    };
+            tx_type: Default::default(),
+};
 
     assert!(mempool.add_transaction(tx, 1000, 0).is_ok());
     assert_eq!(mempool.size(), 1);

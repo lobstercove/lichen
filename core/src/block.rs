@@ -30,6 +30,42 @@ mod sig_serde {
     }
 }
 
+/// Custom serde for [u8; 32] (validator pubkeys in commit signatures)
+mod pubkey_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(key: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+        key.as_slice().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        let v: Vec<u8> = Vec::deserialize(d)?;
+        let arr: [u8; 32] = v
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("expected 32 bytes for pubkey"))?;
+        Ok(arr)
+    }
+}
+
+/// A validator's precommit signature included in the block's commit certificate.
+///
+/// After 2/3+ stake-weighted precommits are collected for a block, their
+/// signatures are bundled into the block so any node (including light clients)
+/// can verify finality without replaying consensus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitSignature {
+    /// Validator public key (Ed25519).
+    #[serde(with = "pubkey_serde")]
+    pub validator: [u8; 32],
+    /// Ed25519 signature over `(0x02 || height || round || block_hash || timestamp)`.
+    #[serde(with = "sig_serde")]
+    pub signature: [u8; 64],
+    /// Validator's wall-clock timestamp when casting the precommit vote.
+    /// Used to compute BFT Time (weighted median) for deterministic block timestamps.
+    #[serde(default)]
+    pub timestamp: u64,
+}
+
 /// Block header
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
@@ -91,6 +127,17 @@ pub struct Block {
     /// meaning no oracle update for that block (backward compatible).
     #[serde(default)]
     pub oracle_prices: Vec<(String, u64)>,
+
+    /// Commit certificate: precommit signatures from 2/3+ of stake that
+    /// finalized this block. Each entry contains the validator pubkey and
+    /// their Ed25519 signature over `(0x02 || height || round || block_hash)`.
+    ///
+    /// Light clients verify finality by checking these signatures sum to
+    /// ≥2/3 of the total stake. Genesis block (slot 0) has no commit.
+    ///
+    /// Legacy blocks without this field deserialize to an empty vec.
+    #[serde(default)]
+    pub commit_signatures: Vec<CommitSignature>,
 }
 
 impl Block {
@@ -110,6 +157,7 @@ impl Block {
             transactions,
             tx_fees_paid: Vec::new(),
             oracle_prices: Vec::new(),
+            commit_signatures: Vec::new(),
         }
     }
 
@@ -135,6 +183,7 @@ impl Block {
             transactions,
             tx_fees_paid: Vec::new(),
             oracle_prices: Vec::new(),
+            commit_signatures: Vec::new(),
         }
     }
 
@@ -161,6 +210,7 @@ impl Block {
             transactions,
             tx_fees_paid: Vec::new(),
             oracle_prices: Vec::new(),
+            commit_signatures: Vec::new(),
         }
     }
 
@@ -201,6 +251,157 @@ impl Block {
     pub fn hash(&self) -> Hash {
         self.signable_hash()
     }
+
+    /// Verify the block's commit certificate against a validator set and stake pool.
+    ///
+    /// Returns `Ok(())` if the commit signatures represent ≥2/3 of the total
+    /// eligible stake. Genesis block (slot 0) always passes (no commit required).
+    ///
+    /// Each signature is verified as Ed25519 over `Precommit::signable_bytes`
+    /// (tag 0x02 || height || round || block_hash). Duplicate validators or
+    /// validators not in the set are silently skipped.
+    pub fn verify_commit(
+        &self,
+        round: u32,
+        validator_set: &crate::consensus::ValidatorSet,
+        stake_pool: &crate::consensus::StakePool,
+    ) -> Result<(), String> {
+        // Genesis block has no commit
+        if self.header.slot == 0 {
+            return Ok(());
+        }
+
+        if self.commit_signatures.is_empty() {
+            return Err("Block has no commit signatures".to_string());
+        }
+
+        let block_hash = self.hash();
+        // NOTE: Each CommitSignature carries its own timestamp, so signable_bytes
+        // must be computed per-signature (not once for the whole block).
+
+        let mut committed_stake: u128 = 0;
+        let mut total_stake: u128 = 0;
+        let mut seen = std::collections::HashSet::new();
+
+        for vi in validator_set.validators() {
+            let pubkey = vi.pubkey;
+            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
+            total_stake += stake as u128;
+        }
+
+        if total_stake == 0 {
+            return Err("No staked validators in set".to_string());
+        }
+
+        for cs in &self.commit_signatures {
+            let pubkey = crate::Pubkey(cs.validator);
+
+            // Skip duplicates
+            if !seen.insert(cs.validator) {
+                continue;
+            }
+
+            // Skip validators not in the set
+            if validator_set.get_validator(&pubkey).is_none() {
+                continue;
+            }
+
+            // Verify signature — each precommit includes its own timestamp
+            let signable = crate::consensus::Precommit::signable_bytes(
+                self.header.slot,
+                round,
+                &Some(block_hash),
+                cs.timestamp,
+            );
+            if !crate::Keypair::verify(&pubkey, &signable, &cs.signature) {
+                continue;
+            }
+
+            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
+            committed_stake += stake as u128;
+        }
+
+        // Check 2/3+ supermajority: committed_stake * 3 >= total_stake * 2
+        if committed_stake * 3 >= total_stake * 2 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Insufficient commit stake: {} / {} (need 2/3+)",
+                committed_stake, total_stake
+            ))
+        }
+    }
+}
+
+/// Compute BFT Time: stake-weighted median of precommit timestamps.
+///
+/// Matches CometBFT behavior: the block timestamp is the weighted median of
+/// the commit vote timestamps, where each vote is weighted by the validator's
+/// stake. This ensures that no single validator (even the block proposer) can
+/// manipulate the block timestamp unilaterally.
+///
+/// If `min_timestamp` is provided (typically parent block's timestamp),
+/// the result is clamped to be at least `min_timestamp + 1` to guarantee
+/// strict monotonic increase.
+///
+/// Returns `None` if there are no commit signatures (genesis block).
+pub fn compute_bft_timestamp(
+    commit_signatures: &[CommitSignature],
+    validator_set: &crate::consensus::ValidatorSet,
+    stake_pool: &crate::consensus::StakePool,
+    min_timestamp: Option<u64>,
+) -> Option<u64> {
+    if commit_signatures.is_empty() {
+        return None;
+    }
+
+    // Collect (timestamp, stake) pairs for valid commit voters
+    let mut weighted: Vec<(u64, u64)> = commit_signatures
+        .iter()
+        .filter(|cs| {
+            let pubkey = crate::Pubkey(cs.validator);
+            validator_set.get_validator(&pubkey).is_some()
+        })
+        .map(|cs| {
+            let pubkey = crate::Pubkey(cs.validator);
+            let stake = stake_pool
+                .get_stake(&pubkey)
+                .map(|s| s.amount)
+                .unwrap_or(0);
+            (cs.timestamp, stake)
+        })
+        .filter(|(_, stake)| *stake > 0)
+        .collect();
+
+    if weighted.is_empty() {
+        return None;
+    }
+
+    // Sort by timestamp ascending
+    weighted.sort_by_key(|(ts, _)| *ts);
+
+    // Find the weighted median: the timestamp where cumulative stake reaches 50%+
+    let total_stake: u128 = weighted.iter().map(|(_, s)| *s as u128).sum();
+    let half = total_stake / 2;
+    let mut cumulative: u128 = 0;
+    let mut median_ts = weighted[0].0;
+
+    for (ts, stake) in &weighted {
+        cumulative += *stake as u128;
+        if cumulative > half {
+            median_ts = *ts;
+            break;
+        }
+    }
+
+    // Enforce monotonicity: BFT time must be > parent time
+    if let Some(min_ts) = min_timestamp {
+        if median_ts <= min_ts {
+            median_ts = min_ts + 1;
+        }
+    }
+
+    Some(median_ts)
 }
 
 fn compute_tx_root(transactions: &[Transaction]) -> Hash {
@@ -575,5 +776,430 @@ mod tests {
         let block =
             Block::new_with_timestamp(100, Hash::default(), Hash::default(), [0u8; 32], vec![], ts);
         assert_eq!(block.header.timestamp, ts);
+    }
+
+    // ─── Commit certificate tests (Task 1.2) ────────────────────────
+
+    #[test]
+    fn test_commit_signature_serde_roundtrip() {
+        let cs = CommitSignature {
+            validator: [42u8; 32],
+            signature: [17u8; 64],
+            timestamp: 1000,
+        };
+        let json = serde_json::to_string(&cs).unwrap();
+        let deserialized: CommitSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.validator, cs.validator);
+        assert_eq!(deserialized.signature, cs.signature);
+        assert_eq!(deserialized.timestamp, cs.timestamp);
+    }
+
+    #[test]
+    fn test_block_commit_signatures_default_empty() {
+        // Legacy blocks without commit_signatures should deserialize with empty vec
+        let block = Block::genesis(Hash::hash(b"state"), 1, Vec::new());
+        let mut json_val: serde_json::Value = serde_json::to_value(&block).unwrap();
+        json_val
+            .as_object_mut()
+            .unwrap()
+            .remove("commit_signatures");
+        let json = json_val.to_string();
+        let deserialized: Block = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.commit_signatures.is_empty());
+    }
+
+    #[test]
+    fn test_block_with_commit_signatures_serde() {
+        let kp = crate::Keypair::generate();
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp);
+
+        // Add fake commit signatures
+        block.commit_signatures = vec![
+            CommitSignature {
+                validator: [1u8; 32],
+                signature: [2u8; 64],
+                timestamp: 2000,
+            },
+            CommitSignature {
+                validator: [3u8; 32],
+                signature: [4u8; 64],
+                timestamp: 2001,
+            },
+        ];
+
+        let json = serde_json::to_string(&block).unwrap();
+        let deserialized: Block = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.commit_signatures.len(), 2);
+        assert_eq!(deserialized.commit_signatures[0].validator, [1u8; 32]);
+        assert_eq!(deserialized.commit_signatures[1].validator, [3u8; 32]);
+    }
+
+    #[test]
+    fn test_genesis_block_verify_commit_passes() {
+        let block = Block::genesis(Hash::hash(b"state"), 1, Vec::new());
+        let vs = crate::consensus::ValidatorSet::new();
+        let sp = crate::consensus::StakePool::new();
+        assert!(block.verify_commit(0, &vs, &sp).is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_empty_signatures_fails() {
+        let block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            [1u8; 32],
+            Vec::new(),
+            2000,
+        );
+        let vs = crate::consensus::ValidatorSet::new();
+        let sp = crate::consensus::StakePool::new();
+        let result = block.verify_commit(0, &vs, &sp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no commit signatures"));
+    }
+
+    #[test]
+    fn test_verify_commit_valid_supermajority() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        // Create 3 validators with equal stake
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let kp3 = crate::Keypair::generate();
+
+        let mut vs = ValidatorSet::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            let vi = ValidatorInfo {
+                pubkey: kp.pubkey(),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake: 100_000_000_000_000,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            };
+            vs.add_validator(vi);
+        }
+
+        let mut sp = StakePool::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            sp.stake(kp.pubkey(), 100_000_000_000_000, 0).ok();
+        }
+
+        // Create a block at slot 5
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp1.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp1);
+
+        let block_hash = block.hash();
+        let round = 0u32;
+
+        // Sign precommits from 2 of 3 validators (2/3+)
+        let ts = 2000u64;
+        let signable = crate::consensus::Precommit::signable_bytes(5, round, &Some(block_hash), ts);
+        let sig1 = kp1.sign(&signable);
+        let sig2 = kp2.sign(&signable);
+
+        block.commit_signatures = vec![
+            CommitSignature {
+                validator: kp1.pubkey().0,
+                signature: sig1,
+                timestamp: ts,
+            },
+            CommitSignature {
+                validator: kp2.pubkey().0,
+                signature: sig2,
+                timestamp: ts,
+            },
+        ];
+
+        assert!(block.verify_commit(round, &vs, &sp).is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_insufficient_stake_fails() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+        let kp3 = crate::Keypair::generate();
+
+        let mut vs = ValidatorSet::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            let vi = ValidatorInfo {
+                pubkey: kp.pubkey(),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake: 100_000_000_000_000,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            };
+            vs.add_validator(vi);
+        }
+
+        let mut sp = StakePool::new();
+        for kp in [&kp1, &kp2, &kp3] {
+            sp.stake(kp.pubkey(), 100_000_000_000_000, 0).ok();
+        }
+
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp1.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp1);
+
+        let block_hash = block.hash();
+        let round = 0u32;
+
+        // Only 1 of 3 validators signed (1/3, need 2/3+)
+        let ts = 2000u64;
+        let signable = crate::consensus::Precommit::signable_bytes(5, round, &Some(block_hash), ts);
+        let sig1 = kp1.sign(&signable);
+
+        block.commit_signatures = vec![CommitSignature {
+            validator: kp1.pubkey().0,
+            signature: sig1,
+            timestamp: ts,
+        }];
+
+        let result = block.verify_commit(round, &vs, &sp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Insufficient commit stake"));
+    }
+
+    #[test]
+    fn test_verify_commit_bad_signature_skipped() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let kp1 = crate::Keypair::generate();
+        let kp2 = crate::Keypair::generate();
+
+        let mut vs = ValidatorSet::new();
+        for kp in [&kp1, &kp2] {
+            let vi = ValidatorInfo {
+                pubkey: kp.pubkey(),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake: 100_000_000_000_000,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            };
+            vs.add_validator(vi);
+        }
+
+        let mut sp = StakePool::new();
+        for kp in [&kp1, &kp2] {
+            sp.stake(kp.pubkey(), 100_000_000_000_000, 0).ok();
+        }
+
+        let mut block = Block::new_with_timestamp(
+            5,
+            Hash::default(),
+            Hash::hash(b"state"),
+            kp1.pubkey().0,
+            Vec::new(),
+            2000,
+        );
+        block.sign(&kp1);
+
+        let block_hash = block.hash();
+        let round = 0u32;
+
+        // kp1 signed correctly, kp2 has garbage signature
+        let ts = 2000u64;
+        let signable = crate::consensus::Precommit::signable_bytes(5, round, &Some(block_hash), ts);
+        let sig1 = kp1.sign(&signable);
+
+        block.commit_signatures = vec![
+            CommitSignature {
+                validator: kp1.pubkey().0,
+                signature: sig1,
+                timestamp: ts,
+            },
+            CommitSignature {
+                validator: kp2.pubkey().0,
+                signature: [0xAA; 64], // garbage
+                timestamp: ts,
+            },
+        ];
+
+        // Only 1 valid out of 2 = 50%, need 2/3+ → should fail
+        let result = block.verify_commit(round, &vs, &sp);
+        assert!(result.is_err());
+    }
+
+    // ─── BFT timestamp tests (Task 3.2) ─────────────────────────────
+
+    #[test]
+    fn test_bft_timestamp_weighted_median_equal_stake() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let keys: Vec<[u8; 32]> = (1..=3u8)
+            .map(|i| {
+                let mut k = [0u8; 32];
+                k[0] = i;
+                k
+            })
+            .collect();
+
+        for k in &keys {
+            vs.add_validator(ValidatorInfo {
+                pubkey: crate::Pubkey(*k),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake: 100_000_000_000_000,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            });
+            sp.stake(crate::Pubkey(*k), 100_000_000_000_000, 0).ok();
+        }
+
+        // Timestamps: [1000, 1002, 1004] — median with equal stake = 1002
+        let sigs = vec![
+            CommitSignature { validator: keys[0], signature: [0u8; 64], timestamp: 1000 },
+            CommitSignature { validator: keys[1], signature: [0u8; 64], timestamp: 1002 },
+            CommitSignature { validator: keys[2], signature: [0u8; 64], timestamp: 1004 },
+        ];
+
+        let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
+        assert_eq!(result, Some(1002));
+    }
+
+    #[test]
+    fn test_bft_timestamp_weighted_median_unequal_stake() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+
+        // Validator A: 60% stake, ts=1000 | B: 25%, ts=1005 | C: 15%, ts=1010
+        let ka = { let mut k = [0u8; 32]; k[0] = 1; k };
+        let kb = { let mut k = [0u8; 32]; k[0] = 2; k };
+        let kc = { let mut k = [0u8; 32]; k[0] = 3; k };
+
+        // Stakes proportional: 60%, 25%, 15% above MIN_VALIDATOR_STAKE
+        let base = 100_000_000_000_000u64; // 100K MOLT
+        for (k, stake) in [(ka, base * 6), (kb, base * 25 / 10), (kc, base * 15 / 10)] {
+            vs.add_validator(ValidatorInfo {
+                pubkey: crate::Pubkey(k),
+                reputation: 100,
+                blocks_proposed: 0,
+                votes_cast: 0,
+                correct_votes: 0,
+                stake,
+                joined_slot: 0,
+                last_active_slot: 0,
+                commission_rate: 500,
+                transactions_processed: 0,
+            });
+            sp.stake(crate::Pubkey(k), stake, 0).ok();
+        }
+
+        let sigs = vec![
+            CommitSignature { validator: ka, signature: [0u8; 64], timestamp: 1000 },
+            CommitSignature { validator: kb, signature: [0u8; 64], timestamp: 1005 },
+            CommitSignature { validator: kc, signature: [0u8; 64], timestamp: 1010 },
+        ];
+
+        // Sorted: (1000, 60%), (1005, 25%), (1010, 15%)
+        // Cumulative at 1000: 600K/1000K = 60% > 50% → median = 1000
+        let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
+        assert_eq!(result, Some(1000));
+    }
+
+    #[test]
+    fn test_bft_timestamp_monotonicity_enforcement() {
+        use crate::consensus::{StakePool, ValidatorInfo, ValidatorSet};
+
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        let k = {
+            let mut k = [0u8; 32];
+            k[0] = 1;
+            k
+        };
+
+        let stake = 100_000_000_000_000u64; // 100K MOLT
+        vs.add_validator(ValidatorInfo {
+            pubkey: crate::Pubkey(k),
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+        });
+        sp.stake(crate::Pubkey(k), stake, 0).ok();
+
+        let sigs = vec![
+            CommitSignature { validator: k, signature: [0u8; 64], timestamp: 500 },
+        ];
+
+        // Parent timestamp is 1000, BFT median is 500 → clamps to 1001
+        let result = compute_bft_timestamp(&sigs, &vs, &sp, Some(1000));
+        assert_eq!(result, Some(1001));
+    }
+
+    #[test]
+    fn test_bft_timestamp_empty_commit_returns_none() {
+        let vs = crate::consensus::ValidatorSet::new();
+        let sp = crate::consensus::StakePool::new();
+        let result = compute_bft_timestamp(&[], &vs, &sp, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_commit_signature_timestamp_serde_default() {
+        // Legacy CommitSignature without timestamp field should default to 0.
+        // Our custom serde serialises [u8; N] as JSON arrays of numbers.
+        let cs = CommitSignature {
+            validator: [0u8; 32],
+            signature: [0u8; 64],
+            timestamp: 42,
+        };
+        let json = serde_json::to_string(&cs).unwrap();
+        // Re-parse *without* the timestamp key → should default to 0
+        let without_ts = json.replace(",\"timestamp\":42", "");
+        let cs2: CommitSignature = serde_json::from_str(&without_ts).unwrap();
+        assert_eq!(cs2.timestamp, 0);
     }
 }

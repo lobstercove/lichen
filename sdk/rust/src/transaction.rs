@@ -51,7 +51,8 @@ impl TransactionBuilder {
         Ok(CoreTransaction {
             signatures: vec![signature],
             message,
-        })
+                    tx_type: Default::default(),
+})
     }
 }
 

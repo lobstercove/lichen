@@ -52,7 +52,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-    }
+            tx_type: Default::default(),
+}
 }
 
 fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
@@ -65,6 +66,8 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
         owner,
         executable: false,
         rent_epoch: 0,
+        dormant: false,
+        missed_rent_epochs: 0,
     }
 }
 
@@ -217,6 +220,8 @@ fn test_overflow_attack() {
         owner: target.pubkey(),
         executable: false,
         rent_epoch: 0,
+        dormant: false,
+        missed_rent_epochs: 0,
     };
     state
         .put_account(&target.pubkey(), &target_account)
@@ -481,7 +486,8 @@ fn test_empty_transaction() {
     let tx = Transaction {
         signatures: vec![signature],
         message,
-    };
+            tx_type: Default::default(),
+};
 
     let result = processor.process_transaction(&tx, &validator.pubkey());
     // Should fail: zero blockhash OR no instructions
@@ -587,6 +593,7 @@ fn test_byzantine_block_production() {
         transactions: vec![],
         tx_fees_paid: vec![],
         oracle_prices: vec![],
+        commit_signatures: vec![],
     };
 
     let block2 = Block {
@@ -602,6 +609,7 @@ fn test_byzantine_block_production() {
         transactions: vec![],
         tx_fees_paid: vec![],
         oracle_prices: vec![],
+        commit_signatures: vec![],
     };
 
     // Store first block

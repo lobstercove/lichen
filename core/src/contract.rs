@@ -42,8 +42,11 @@ thread_local! {
 /// use 2-3M instructions. 10M provides ample headroom for legitimate contracts
 /// while still preventing infinite loops.
 const MAX_WASM_COMPUTE_UNITS: u64 = 10_000_000;
-/// Maximum WASM memory pages (1 page = 64KB, 256 pages = 16MB) (T1.9)
-const MAX_WASM_MEMORY_PAGES: u32 = 256;
+/// Maximum WASM memory pages (1 page = 64KB, 1024 pages = 64MB) (T1.9, Task 3.5)
+pub const MAX_WASM_MEMORY_PAGES: u32 = 1024;
+/// Default minimum WASM memory pages (16 pages = 1MB) (Task 3.5)
+/// Contracts with less memory will be grown to this minimum after instantiation.
+pub const DEFAULT_WASM_MEMORY_PAGES: u32 = 16;
 
 // ============================================================================
 // Contract ABI / IDL Schema
@@ -277,6 +280,27 @@ pub struct ContractAccount {
     /// Code hash of the previous version (for rollback reference)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_code_hash: Option<Hash>,
+    /// Optional upgrade timelock: number of epochs that must elapse between
+    /// submitting an upgrade and executing it. `None` = instant upgrades (legacy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_timelock_epochs: Option<u32>,
+    /// Staged upgrade awaiting timelock expiry. Set when an upgrade is submitted
+    /// on a timelocked contract; cleared on execute or veto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_upgrade: Option<PendingUpgrade>,
+}
+
+/// A staged contract upgrade waiting for the timelock to expire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingUpgrade {
+    /// New WASM bytecode
+    pub code: Vec<u8>,
+    /// SHA-256 hash of the new code (pre-validated at submission time)
+    pub code_hash: Hash,
+    /// Epoch when the upgrade was submitted
+    pub submitted_epoch: u64,
+    /// Epoch at which the upgrade becomes executable
+    pub execute_after_epoch: u64,
 }
 
 fn default_version() -> u32 {
@@ -334,6 +358,8 @@ impl ContractAccount {
             abi,
             version: 1,
             previous_code_hash: None,
+            upgrade_timelock_epochs: None,
+            pending_upgrade: None,
         }
     }
 
@@ -429,6 +455,9 @@ pub struct ContractContext {
     /// StateBatch by the processor after execution, preventing the split-brain
     /// between direct state_store writes and the batch overlay.
     pub pending_ccc_value_deltas: Arc<Mutex<HashMap<Pubkey, i64>>>,
+    /// Current total storage bytes (keys + values). Tracked live during execution
+    /// for protocol-level enforcement of MAX_TOTAL_STORAGE_BYTES (Task 4.3 M-4).
+    pub storage_bytes_used: usize,
 }
 
 impl ContractContext {
@@ -454,6 +483,7 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            storage_bytes_used: 0,
         }
     }
 
@@ -465,6 +495,7 @@ impl ContractContext {
         slot: u64,
         storage: HashMap<Vec<u8>, Vec<u8>>,
     ) -> Self {
+        let storage_bytes_used = storage.iter().map(|(k, v)| k.len() + v.len()).sum();
         Self {
             caller,
             contract,
@@ -486,6 +517,7 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            storage_bytes_used,
         }
     }
 
@@ -498,6 +530,7 @@ impl ContractContext {
         storage: HashMap<Vec<u8>, Vec<u8>>,
         args: Vec<u8>,
     ) -> Self {
+        let storage_bytes_used = storage.iter().map(|(k, v)| k.len() + v.len()).sum();
         Self {
             caller,
             contract,
@@ -519,6 +552,7 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            storage_bytes_used,
         }
     }
 }
@@ -594,8 +628,13 @@ const MAX_EVENT_DATA: usize = 8_192;
 pub const DEFAULT_COMPUTE_LIMIT: u64 = 10_000_000;
 /// Compute cost for a storage read
 const COMPUTE_STORAGE_READ: u64 = 100;
-/// Compute cost for a storage write
+/// Compute cost for a storage write (base, plus per-byte cost)
 const COMPUTE_STORAGE_WRITE: u64 = 200;
+/// Per-byte compute cost for storage writes (Task 4.3 M-4 protocol enforcement)
+const COMPUTE_STORAGE_WRITE_PER_BYTE: u64 = 1;
+/// Maximum total storage bytes per contract (10 MB). Enforced at the host
+/// function level to prevent unlimited state growth (Task 4.3 M-4).
+const MAX_TOTAL_STORAGE_BYTES: usize = 10 * 1024 * 1024;
 /// Compute cost for a storage delete
 const COMPUTE_STORAGE_DELETE: u64 = 100;
 /// Compute cost for emitting a log
@@ -630,8 +669,10 @@ const MAX_CCC_ARGS_LEN: u32 = 65_536;
 ///    infinite loops and DoS via compute exhaustion.
 ///
 /// 2. **Memory Limits**: WASM linear memory is capped at `MAX_WASM_MEMORY_PAGES`
-///    (256 pages = 16MB). Contracts declaring or growing memory beyond this
-///    limit are rejected at both deploy-time and post-execution.
+///    (1024 pages = 64MB). Contracts declaring or growing memory beyond this
+///    limit are rejected at both deploy-time and post-execution. Contracts with
+///    less than `DEFAULT_WASM_MEMORY_PAGES` (16 pages = 1MB) are grown to the
+///    minimum after instantiation.
 ///
 /// 3. **No WASI**: The runtime does NOT enable WASI. Contracts have zero access
 ///    to the host filesystem, network, environment variables, or system calls.
@@ -689,7 +730,7 @@ impl ContractRuntime {
     /// Security checks performed:
     /// - Rejects WASI imports (no filesystem/network/syscall access)
     /// - Rejects imports from unauthorized modules (only `"env"` allowed)
-    /// - Rejects memory declarations exceeding `MAX_WASM_MEMORY_PAGES` (16MB)
+    /// - Rejects memory declarations exceeding `MAX_WASM_MEMORY_PAGES` (64MB)
     pub fn deploy(&mut self, bytecode: &[u8]) -> Result<Hash, String> {
         let module = Module::new(&self.store, bytecode)
             .map_err(|e| format!("Invalid WASM bytecode: {}", e))?;
@@ -828,6 +869,13 @@ impl ContractRuntime {
                     "Contract memory exceeds limit: {} pages > {} max",
                     current_pages, MAX_WASM_MEMORY_PAGES
                 ));
+            }
+            // Task 3.5: Ensure minimum memory — grow to DEFAULT_WASM_MEMORY_PAGES
+            // if the contract declares less. This guarantees 1MB working memory
+            // for all contracts regardless of their declared initial pages.
+            if current_pages < DEFAULT_WASM_MEMORY_PAGES {
+                let grow_by = DEFAULT_WASM_MEMORY_PAGES - current_pages;
+                let _ = memory.grow(&mut self.store, grow_by);
             }
             env.as_mut(&mut self.store).memory = Some(memory.clone());
         }
@@ -1389,7 +1437,9 @@ fn host_storage_write(
 
     // Update live storage and track the change
     let ctx = env.data_mut();
-    deduct_compute(ctx, COMPUTE_STORAGE_WRITE);
+    // Task 4.3 (M-4): per-byte compute cost for storage writes
+    let write_cost = COMPUTE_STORAGE_WRITE + (val.len() as u64) * COMPUTE_STORAGE_WRITE_PER_BYTE;
+    deduct_compute(ctx, write_cost);
     // AUDIT-FIX 2.2 + H18: Enforce storage entry limit per contract.
     // Increased from 10K to 100K to support contracts with many entries
     // (e.g., DAO governance proposals, NFT collections).
@@ -1403,6 +1453,21 @@ fn host_storage_write(
         );
         return 0; // reject — storage full
     }
+    // Task 4.3 (M-4): Enforce total storage bytes limit at protocol level.
+    // Compute the delta from this write (new key+val adds bytes; overwrite adjusts by diff).
+    let new_bytes = key.len() + val.len();
+    let old_bytes = ctx.storage.get(&key).map_or(0, |old_val| key.len() + old_val.len());
+    let projected = ctx.storage_bytes_used + new_bytes - old_bytes;
+    if projected > MAX_TOTAL_STORAGE_BYTES {
+        tracing::warn!(
+            "Contract {} hit storage byte limit ({} > {} bytes) — rejecting write",
+            ctx.contract.to_base58(),
+            projected,
+            MAX_TOTAL_STORAGE_BYTES,
+        );
+        return 0; // reject — total bytes exceeded
+    }
+    ctx.storage_bytes_used = projected;
     ctx.storage.insert(key.clone(), val.clone());
     ctx.storage_changes.insert(key, Some(val));
     1
@@ -1439,7 +1504,10 @@ fn host_storage_delete(
 
     let ctx = env.data_mut();
     deduct_compute(ctx, COMPUTE_STORAGE_DELETE);
-    if ctx.storage.remove(&key).is_some() {
+    if let Some(old_val) = ctx.storage.remove(&key) {
+        // Task 4.3 (M-4): reclaim bytes on delete
+        let freed = key.len() + old_val.len();
+        ctx.storage_bytes_used = ctx.storage_bytes_used.saturating_sub(freed);
         ctx.storage_changes.insert(key, None);
         1
     } else {
@@ -1802,6 +1870,7 @@ fn host_cross_contract_call(
     let caller_remaining = env.data().compute_remaining;
 
     // ── Build callee context ─────────────────────────────────────────
+    let callee_storage_bytes: usize = callee_storage.iter().map(|(k, v)| k.len() + v.len()).sum();
     let callee_ctx = ContractContext {
         caller: caller_contract, // The calling contract is the caller
         contract: target,
@@ -1825,6 +1894,7 @@ fn host_cross_contract_call(
         // AUDIT-FIX C-2: Fresh delta map so nested CCC deltas can be
         // rolled back if this callee fails.
         pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+        storage_bytes_used: callee_storage_bytes,
     };
 
     // ── AUDIT-FIX C-2: Track value as deltas instead of direct DB writes ──
@@ -2410,5 +2480,192 @@ mod tests {
             cap,
             "cache capacity should match constant"
         );
+    }
+
+    // ── Task 3.5: WASM Memory Limits tests ──
+
+    #[test]
+    fn test_wasm_memory_constants() {
+        assert_eq!(MAX_WASM_MEMORY_PAGES, 1024, "Max should be 1024 pages (64MB)");
+        assert_eq!(DEFAULT_WASM_MEMORY_PAGES, 16, "Default should be 16 pages (1MB)");
+        assert!(
+            DEFAULT_WASM_MEMORY_PAGES < MAX_WASM_MEMORY_PAGES,
+            "Default must be less than max"
+        );
+    }
+
+    #[test]
+    fn test_wasm_memory_limit_sizes() {
+        // Verify the sizes are correct
+        let max_bytes = MAX_WASM_MEMORY_PAGES as u64 * 65536;
+        assert_eq!(max_bytes, 64 * 1024 * 1024, "Max should be 64MB");
+        let default_bytes = DEFAULT_WASM_MEMORY_PAGES as u64 * 65536;
+        assert_eq!(default_bytes, 1024 * 1024, "Default should be 1MB");
+    }
+
+    /// Build a minimal valid WASM module with a memory section (exported).
+    /// `min_pages` = initial memory, `max_pages` = optional max memory.
+    fn wasm_with_memory(min_pages: u32, max_pages: Option<u32>) -> Vec<u8> {
+        let mut wasm = vec![
+            0x00, 0x61, 0x73, 0x6D, // magic
+            0x01, 0x00, 0x00, 0x00, // version 1
+        ];
+
+        // Memory section (id=5)
+        let mut mem_data = vec![0x01]; // 1 memory
+        if let Some(max) = max_pages {
+            // Flags 0x01 = has maximum
+            mem_data.push(0x01);
+            // LEB128-encode min_pages
+            leb128_encode(&mut mem_data, min_pages);
+            // LEB128-encode max_pages
+            leb128_encode(&mut mem_data, max);
+        } else {
+            // Flags 0x00 = no maximum
+            mem_data.push(0x00);
+            leb128_encode(&mut mem_data, min_pages);
+        }
+        wasm.push(0x05); // section id (memory)
+        leb128_encode(&mut wasm, mem_data.len() as u32);
+        wasm.extend_from_slice(&mem_data);
+
+        // Export section (id=7) — export memory as "memory"
+        let name = b"memory";
+        let mut export_data = vec![0x01]; // 1 export
+        leb128_encode(&mut export_data, name.len() as u32);
+        export_data.extend_from_slice(name);
+        export_data.push(0x02); // export kind = memory
+        export_data.push(0x00); // memory index 0
+        wasm.push(0x07); // section id (export)
+        leb128_encode(&mut wasm, export_data.len() as u32);
+        wasm.extend_from_slice(&export_data);
+
+        wasm
+    }
+
+    /// LEB128 unsigned encoding for WASM integers.
+    fn leb128_encode(buf: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value == 0 {
+                buf.push(byte);
+                break;
+            } else {
+                buf.push(byte | 0x80);
+            }
+        }
+    }
+
+    #[test]
+    fn test_deploy_rejects_memory_exceeding_max() {
+        let mut rt = ContractRuntime::new();
+        // Create a WASM module with 1025 initial pages (exceeds 1024 max)
+        let wasm = wasm_with_memory(1025, None);
+        let result = rt.deploy(&wasm);
+        assert!(result.is_err(), "Deploy should reject >1024 pages initial memory");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeds limit"),
+            "Error should mention limit: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_deploy_rejects_max_memory_exceeding_limit() {
+        let mut rt = ContractRuntime::new();
+        // Create a WASM module with 1 initial page but 2000 max pages
+        let wasm = wasm_with_memory(1, Some(2000));
+        let result = rt.deploy(&wasm);
+        assert!(result.is_err(), "Deploy should reject max_pages > 1024");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeds limit"),
+            "Error should mention limit: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_deploy_accepts_memory_at_max() {
+        let mut rt = ContractRuntime::new();
+        // Create a WASM module with exactly 1024 initial pages and 1024 max
+        let wasm = wasm_with_memory(1024, Some(1024));
+        let result = rt.deploy(&wasm);
+        assert!(result.is_ok(), "Deploy should accept exactly 1024 pages: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_deploy_accepts_small_memory() {
+        let mut rt = ContractRuntime::new();
+        // Create a WASM module with 1 page (64KB)
+        let wasm = wasm_with_memory(1, None);
+        let result = rt.deploy(&wasm);
+        assert!(result.is_ok(), "Deploy should accept 1-page memory: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_deploy_accepts_default_memory() {
+        let mut rt = ContractRuntime::new();
+        // Create a WASM module with 16 pages (1MB = default)
+        let wasm = wasm_with_memory(DEFAULT_WASM_MEMORY_PAGES, Some(MAX_WASM_MEMORY_PAGES));
+        let result = rt.deploy(&wasm);
+        assert!(result.is_ok(), "Deploy should accept default memory: {:?}", result.err());
+    }
+
+    // ── Task 4.3 (M-4): Contract Storage Protocol Enforcement ───────
+
+    #[test]
+    fn test_storage_bytes_tracking_new_context() {
+        let ctx = ContractContext::new(
+            Pubkey([1u8; 32]),
+            Pubkey([2u8; 32]),
+            0,
+            0,
+        );
+        assert_eq!(ctx.storage_bytes_used, 0);
+    }
+
+    #[test]
+    fn test_storage_bytes_tracking_with_storage() {
+        let mut storage = HashMap::new();
+        storage.insert(b"key1".to_vec(), b"value1".to_vec()); // 4 + 6 = 10
+        storage.insert(b"key2".to_vec(), b"val".to_vec());    // 4 + 3 = 7
+        let ctx = ContractContext::with_storage(
+            Pubkey([1u8; 32]),
+            Pubkey([2u8; 32]),
+            0,
+            0,
+            storage,
+        );
+        assert_eq!(ctx.storage_bytes_used, 17);
+    }
+
+    #[test]
+    fn test_storage_bytes_tracking_with_args() {
+        let mut storage = HashMap::new();
+        storage.insert(b"k".to_vec(), b"v".to_vec()); // 1 + 1 = 2
+        let ctx = ContractContext::with_args(
+            Pubkey([1u8; 32]),
+            Pubkey([2u8; 32]),
+            0,
+            0,
+            storage,
+            vec![1, 2, 3],
+        );
+        assert_eq!(ctx.storage_bytes_used, 2);
+    }
+
+    #[test]
+    fn test_per_byte_storage_write_cost() {
+        // COMPUTE_STORAGE_WRITE (200) + val_len (100) * COMPUTE_STORAGE_WRITE_PER_BYTE (1) = 300
+        let expected = COMPUTE_STORAGE_WRITE + 100 * COMPUTE_STORAGE_WRITE_PER_BYTE;
+        assert_eq!(expected, 300);
+    }
+
+    #[test]
+    fn test_max_total_storage_bytes_constant() {
+        assert_eq!(MAX_TOTAL_STORAGE_BYTES, 10 * 1024 * 1024); // 10 MB
     }
 }

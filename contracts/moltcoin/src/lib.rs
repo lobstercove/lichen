@@ -8,13 +8,18 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-use moltchain_sdk::{Token, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_caller};
+use moltchain_sdk::{
+    bytes_to_u64, get_caller, log_info, storage_get, storage_set, u64_to_bytes, Address, Token,
+};
 
 // AUDIT-FIX: Reentrancy guard
 const REENTRANCY_KEY: &[u8] = b"molt_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
@@ -57,15 +62,17 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     }
 
     let mut owner_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32);
+    }
     let owner = Address::new(owner_array);
 
     // Persist admin to storage (unified key: molt_admin)
     storage_set(ADMIN_KEY, &owner.0);
 
-    // AUDIT-FIX GX-03: Initial supply must match genesis allocation (1B MOLT)
-    // 1B MOLT = 1_000_000_000 * 1_000_000_000 shells (9 decimal places)
-    let initial_supply: u64 = 1_000_000_000_000_000_000; // 1B MOLT in shells
+    // AUDIT-FIX GX-03: Initial supply must match genesis allocation (500M MOLT)
+    // 500M MOLT = 500_000_000 * 1_000_000_000 shells (9 decimal places)
+    let initial_supply: u64 = 500_000_000_000_000_000; // 500M MOLT in shells
     let mut token = make_token();
     if token.initialize(initial_supply, owner).is_err() {
         log_info("MoltCoin initialization failed");
@@ -80,7 +87,9 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
     let mut account_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(account_ptr, account_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(account_ptr, account_array.as_mut_ptr(), 32);
+    }
     let account = Address::new(account_array);
 
     make_token().balance_of(account)
@@ -90,11 +99,17 @@ pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
 /// AUDIT-FIX 1.8a: verify caller == from to prevent unauthorized transfers
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
     let mut from_array = [0u8; 32];
     let mut to_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
-    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX 1.8a: Only the account owner can initiate transfers
     let caller = get_caller();
@@ -122,17 +137,24 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
 }
 
 /// Mint new tokens (owner only)
-/// AUDIT-FIX GX-04: This function exists for the ERC-20 wrapper contract layer.
-/// The native MOLT supply is fixed at genesis (1B, deflationary via 50% fee burn).
-/// This mint is capped at 10B as a safety ceiling and restricted to the contract owner.
-/// Marketing material states "fixed supply" — this refers to the native layer.
+/// AUDIT-FIX GX-04: This function exists for the WASM token contract layer.
+/// The native MOLT supply is inflationary (4% initial rate, decaying to 0.15% floor)
+/// with 40% fee burn as counter-pressure. Genesis supply is 500M MOLT.
+/// Protocol-level minting (block rewards) happens at the state layer, not here.
+/// This contract mint is restricted to the contract owner.
 #[no_mangle]
 pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
     let mut caller_array = [0u8; 32];
     let mut to_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_array.as_mut_ptr(), 32); }
-    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller_array.as_mut_ptr(), 32);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify transaction signer matches claimed caller
     let real_caller = get_caller();
@@ -145,15 +167,6 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
     let caller = Address::new(caller_array);
     let to = Address::new(to_array);
     let owner = get_owner();
-
-    // AUDIT-FIX P2: Enforce supply cap — max 10 billion MOLT (10B * 1e9 decimals)
-    const MAX_SUPPLY: u64 = 10_000_000_000_000_000_000; // 10B MOLT in shells
-    let current_supply = total_supply();
-    if current_supply.saturating_add(amount) > MAX_SUPPLY {
-        log_info("Mint rejected: would exceed max supply of 10B MOLT");
-        reentrancy_exit();
-        return 0;
-    }
 
     let mut token = make_token();
     let result = match token.mint(to, amount, caller, owner) {
@@ -174,9 +187,13 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
 /// AUDIT-FIX 1.8b: verify caller == from to prevent unauthorized burns
 #[no_mangle]
 pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
     let mut from_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX 1.8b: Only the account owner can burn their tokens
     let caller = get_caller();
@@ -206,11 +223,17 @@ pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
 /// Approve spender
 #[no_mangle]
 pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
     let mut owner_array = [0u8; 32];
     let mut spender_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
-    unsafe { core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify transaction signer matches claimed owner
     let real_caller = get_caller();
@@ -237,14 +260,27 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: 
 /// Transfer from another account using allowance
 /// AUDIT-FIX P2: Missing function — approve was dead code without this
 #[no_mangle]
-pub extern "C" fn transfer_from(spender_ptr: *const u8, from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub extern "C" fn transfer_from(
+    spender_ptr: *const u8,
+    from_ptr: *const u8,
+    to_ptr: *const u8,
+    amount: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
     let mut spender_array = [0u8; 32];
     let mut from_array = [0u8; 32];
     let mut to_array = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32); }
-    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
-    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32);
+    }
 
     // Verify caller matches spender
     let caller = get_caller();
@@ -287,8 +323,8 @@ pub extern "C" fn total_supply() -> u64 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -308,7 +344,7 @@ mod tests {
         // Check total supply via unified key (molt_supply)
         let supply_bytes = test_mock::get_storage(b"molt_supply").unwrap();
         let supply = bytes_to_u64(&supply_bytes);
-        assert_eq!(supply, 1_000_000_000_000_000_000); // 1B MOLT
+        assert_eq!(supply, 500_000_000_000_000_000); // 500M MOLT
     }
 
     #[test]
@@ -319,7 +355,7 @@ mod tests {
         assert_eq!(result, 1);
 
         let bal = balance_of(owner.as_ptr());
-        assert_eq!(bal, 1_000_000_000_000_000_000); // 1B MOLT
+        assert_eq!(bal, 500_000_000_000_000_000); // 500M MOLT
     }
 
     #[test]
@@ -446,7 +482,10 @@ mod tests {
         // Spender transfers 50 from owner to recipient
         test_mock::set_caller(spender);
         let result = transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 50);
-        assert_eq!(result, 1, "transfer_from with valid allowance should succeed");
+        assert_eq!(
+            result, 1,
+            "transfer_from with valid allowance should succeed"
+        );
 
         // Verify recipient balance
         let recip_bal = balance_of(recipient.as_ptr());
@@ -474,23 +513,9 @@ mod tests {
         // Spender tries to transfer 200 — exceeds allowance
         test_mock::set_caller(spender);
         let result = transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 200);
-        assert_eq!(result, 0, "transfer_from must fail when exceeding allowance");
-    }
-
-    // AUDIT-FIX P2: Security regression test
-    #[test]
-    fn test_mint_supply_cap() {
-        setup();
-        let owner = [1u8; 32];
-        let recipient = [3u8; 32];
-        let _ = initialize(owner.as_ptr());
-
-        // Try to mint more than MAX_SUPPLY (10B MOLT = 10_000_000_000_000_000_000 shells)
-        // Current supply after init = 1_000_000_000_000_000 (1M MOLT)
-        // Attempt to mint exactly MAX_SUPPLY which would exceed cap with existing supply
-        test_mock::set_caller(owner);
-        let huge_amount: u64 = 10_000_000_000_000_000_000u64;
-        let result = mint(owner.as_ptr(), recipient.as_ptr(), huge_amount);
-        assert_eq!(result, 0, "mint must reject amounts that exceed MAX_SUPPLY");
+        assert_eq!(
+            result, 0,
+            "transfer_from must fail when exceeding allowance"
+        );
     }
 }

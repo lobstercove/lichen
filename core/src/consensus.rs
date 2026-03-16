@@ -17,33 +17,115 @@ use std::sync::Arc;
 /// giving a 25% buffer before deactivation after slashing.
 pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k MOLT in shells
 
-/// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators
+/// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators.
+/// Funded from the genesis treasury reserve (not from block reward minting).
 pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
 
-/// Transaction block reward (0.02 MOLT per block with transactions)
-/// Reduced from 0.1 MOLT for BFT adaptive timing (~200ms tx blocks, ~5× faster).
-/// At ~90,000 blocks/day with 3 validators, each earns ~30,000 blocks × 0.02 = 600 MOLT/day.
-pub const TRANSACTION_BLOCK_REWARD: u64 = 20_000_000; // 0.02 MOLT
+// ============================================================================
+// INFLATIONARY SUPPLY MODEL
+//
+// Block rewards are MINTED (new supply created), not drawn from a treasury pool.
+// Fee burns (40% of all transaction fees) act as deflationary counter-pressure.
+// Net supply change = minted_rewards - burned_fees.
+// When network is busy: burn > mint → net deflationary (like Ethereum EIP-1559).
+// When network is quiet: mint > burn → slight inflation that pays validators.
+// ============================================================================
 
-/// Heartbeat block reward (0.01 MOLT per heartbeat — 50% of transaction reward)
-/// Reduced from 0.05 MOLT for BFT adaptive timing (~800ms heartbeats, ~5× faster).
-pub const HEARTBEAT_BLOCK_REWARD: u64 = 10_000_000; // 0.01 MOLT
+/// Genesis supply: 500 million MOLT in shells (the starting supply at genesis block).
+pub const GENESIS_SUPPLY_SHELLS: u64 = 500_000_000_000_000_000; // 500M MOLT
 
-/// Legacy constant for backward compatibility (uses transaction reward)
-pub const BLOCK_REWARD: u64 = TRANSACTION_BLOCK_REWARD;
+/// Initial annual inflation rate in basis points (400 = 4.00%).
+/// At genesis supply of 500M MOLT, this mints ~20M MOLT in the first year.
+pub const INITIAL_INFLATION_RATE_BPS: u64 = 400;
 
-/// Target annual reward pool draw rate (informational only)
-/// MOLT is NOT inflationary — rewards are drawn from the validator rewards pool.
-/// With 0.02/0.01 MOLT rewards + 20% annual decay, the pool lasts 200+ years.
-pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
+/// Annual decay of the inflation rate in basis points (1500 = 15% decay per year).
+/// Year 0: 4.00%, Year 1: 3.40%, Year 2: 2.89%, Year 5: 1.77%, Year 10: 0.89%.
+pub const INFLATION_DECAY_RATE_BPS: u64 = 1500;
+
+/// Terminal (minimum) inflation rate in basis points (15 = 0.15%).
+/// The inflation rate will never drop below this floor, ensuring validators
+/// always earn meaningful rewards regardless of chain age.
+pub const TERMINAL_INFLATION_RATE_BPS: u64 = 15;
 
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 
-/// Annual reward decay rate in basis points (2000 = 20%).
-/// Block rewards decrease by 20% per year since genesis, computed deterministically.
-/// Year 0: 100%, Year 1: 80%, Year 5: 32.8%, Year 10: 10.7%, Year 50: ~0%.
-pub const ANNUAL_REWARD_DECAY_BPS: u64 = 2000;
+/// Compute the current annual inflation rate in basis points for a given slot.
+///
+/// Formula: rate = max(TERMINAL, INITIAL × ((10000 - DECAY) / 10000)^year)
+/// Uses integer arithmetic with u128 intermediates to avoid floating-point.
+///
+/// # Examples
+/// ```
+/// use moltchain_core::consensus::inflation_rate_bps;
+/// assert_eq!(inflation_rate_bps(0), 400);                       // year 0: 4.00%
+/// assert_eq!(inflation_rate_bps(78_840_000), 340);               // year 1: 3.40%
+/// assert_eq!(inflation_rate_bps(78_840_000 * 5), 177);           // year 5: 1.77%
+/// ```
+pub fn inflation_rate_bps(current_slot: u64) -> u64 {
+    let years = current_slot / SLOTS_PER_YEAR;
+    let mut rate: u128 = INITIAL_INFLATION_RATE_BPS as u128 * 10_000; // scale by 10000 for precision
+    let decay_factor: u128 = 10_000 - INFLATION_DECAY_RATE_BPS as u128; // 8500
+
+    for _ in 0..years.min(200) {
+        rate = rate * decay_factor / 10_000;
+        if rate < (TERMINAL_INFLATION_RATE_BPS as u128 * 10_000) {
+            return TERMINAL_INFLATION_RATE_BPS;
+        }
+    }
+
+    // Round back from scaled value
+    (rate / 10_000) as u64
+}
+
+/// Compute the per-slot block reward (in shells) for a given slot and total supply.
+///
+/// Formula: reward = (total_supply × inflation_rate_bps) / (10000 × SLOTS_PER_YEAR)
+/// Uses u128 intermediates to handle the large multiplication safely.
+///
+/// NOTE: This is the theoretical per-slot rate used for projections and APY display.
+/// Actual inflation rewards are distributed per-epoch to all stakers proportionally
+/// via [`StakePool::distribute_epoch_staker_rewards`], NOT per-slot to the block producer.
+///
+/// # Examples
+/// ```
+/// use moltchain_core::consensus::{compute_block_reward, GENESIS_SUPPLY_SHELLS};
+/// let reward = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
+/// // Year 0: 500M MOLT × 4% / 78.84M slots ≈ 0.254 MOLT per slot
+/// // 5e17 × 400 / (10000 × 78840000) = 253,678,335 shells
+/// assert!(reward > 250_000_000 && reward < 260_000_000);
+/// ```
+pub fn compute_block_reward(current_slot: u64, total_supply: u64) -> u64 {
+    let rate = inflation_rate_bps(current_slot);
+    // reward = total_supply * rate / (10000 * SLOTS_PER_YEAR)
+    // Use u128 to avoid overflow: 5e17 * 400 = 2e20, fits in u128
+    let numerator = total_supply as u128 * rate as u128;
+    let denominator = 10_000u128 * SLOTS_PER_YEAR as u128;
+    (numerator / denominator) as u64
+}
+
+/// Compute the total inflation mint (in shells) for one epoch.
+///
+/// This is the total new supply minted at each epoch boundary and distributed
+/// to all active stakers proportionally. Uses the inflation rate at the epoch's
+/// start slot for the entire epoch (constant within an epoch).
+///
+/// Formula: epoch_mint = total_supply × inflation_rate_bps / 10000 × (SLOTS_PER_EPOCH / SLOTS_PER_YEAR)
+///
+/// # Examples
+/// ```
+/// use moltchain_core::consensus::{compute_epoch_mint, GENESIS_SUPPLY_SHELLS};
+/// let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+/// // Year 0: 500M MOLT × 4% × (432K/78.84M) ≈ 109,589 MOLT per epoch
+/// assert!(mint > 109_000_000_000_000 && mint < 110_000_000_000_000);
+/// ```
+pub fn compute_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> u64 {
+    let rate = inflation_rate_bps(epoch_start_slot);
+    // epoch_mint = total_supply * rate * SLOTS_PER_EPOCH / (10000 * SLOTS_PER_YEAR)
+    let numerator = total_supply as u128 * rate as u128 * SLOTS_PER_EPOCH as u128;
+    let denominator = 10_000u128 * SLOTS_PER_YEAR as u128;
+    (numerator / denominator) as u64
+}
 
 // ============================================================================
 // FOUNDING MOLTYS VESTING
@@ -87,32 +169,6 @@ pub fn founding_vesting_unlocked(
     let elapsed = current_time - cliff_end;
     // Use u128 to avoid overflow on large amounts × elapsed
     (total_amount as u128 * elapsed as u128 / linear_period as u128) as u64
-}
-
-/// Compute the decayed block reward for a given slot.
-///
-/// Applies compound 20% annual decay: reward_year_n = base × (80/100)^n.
-/// Genesis is slot 0, so `current_slot` IS `slots_since_genesis`.
-/// Capped at 50 iterations (reward is effectively 0 past year 50).
-///
-/// # Examples
-/// ```
-/// use moltchain_core::consensus::decayed_reward;
-/// assert_eq!(decayed_reward(100_000_000, 0), 100_000_000); // year 0
-/// assert_eq!(decayed_reward(100_000_000, 78_840_000), 80_000_000); // year 1
-/// ```
-pub fn decayed_reward(base_reward: u64, current_slot: u64) -> u64 {
-    let years = current_slot / SLOTS_PER_YEAR;
-    let mut reward = base_reward;
-    // AUDIT-FIX L2: 20% decay per year → multiply by 80/100 each year
-    // Extended from 50 to 200 cap (reward reaches 0 by ~80 years anyway)
-    for _ in 0..years.min(200) {
-        reward = reward * 80 / 100;
-        if reward == 0 {
-            break;
-        }
-    }
-    reward
 }
 
 // ============================================================================
@@ -230,13 +286,12 @@ pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
     }
 }
 
-/// Reward configuration with price-based adjustment
+/// Reward configuration with price-based adjustment.
+///
+/// The base reward comes from the inflation curve (`compute_block_reward`).
+/// Price adjustment scales it up/down to maintain consistent USD value.
 #[derive(Debug, Clone)]
 pub struct RewardConfig {
-    /// Base transaction reward (0.02 MOLT)
-    pub base_transaction_reward: u64,
-    /// Base heartbeat reward (0.01 MOLT)
-    pub base_heartbeat_reward: u64,
     /// Reference USD price ($0.10 launch target)
     pub reference_price_usd: f64,
     /// Maximum reward multiplier (10x when price drops to $0.01)
@@ -248,47 +303,44 @@ pub struct RewardConfig {
 impl RewardConfig {
     pub fn new() -> Self {
         Self {
-            base_transaction_reward: TRANSACTION_BLOCK_REWARD,
-            base_heartbeat_reward: HEARTBEAT_BLOCK_REWARD,
             reference_price_usd: 0.10,
             max_adjustment_multiplier: 10.0,
             min_adjustment_multiplier: 0.1,
         }
     }
 
-    /// Calculate adjusted reward based on current price
-    /// Formula: reward = base_reward * (reference_price / current_price)
-    /// Maintains consistent USD value regardless of MOLT price
-    /// AUDIT-FIX 3.3: f64 is used because price inputs are inherently floating-point.
-    /// This is acceptable for oracle-driven reward adjustment; the base rewards
-    /// (HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD) used in consensus are u64 constants.
-    pub fn get_adjusted_transaction_reward(&self, current_price_usd: f64) -> u64 {
+    /// Calculate price-adjusted block reward for a given slot and total supply.
+    /// Formula: base_reward(inflation_curve) × (reference_price / current_price)
+    pub fn get_adjusted_reward(
+        &self,
+        current_slot: u64,
+        total_supply: u64,
+        current_price_usd: f64,
+    ) -> u64 {
+        let base_reward = compute_block_reward(current_slot, total_supply);
         if current_price_usd <= 0.0 {
-            return self.base_transaction_reward;
+            return base_reward;
         }
 
         let multiplier = (self.reference_price_usd / current_price_usd)
             .max(self.min_adjustment_multiplier)
             .min(self.max_adjustment_multiplier);
 
-        (self.base_transaction_reward as f64 * multiplier) as u64
+        (base_reward as f64 * multiplier) as u64
     }
 
-    /// Calculate adjusted heartbeat reward
-    pub fn get_adjusted_heartbeat_reward(&self, current_price_usd: f64) -> u64 {
-        if current_price_usd <= 0.0 {
-            return self.base_heartbeat_reward;
-        }
-
-        let multiplier = (self.reference_price_usd / current_price_usd)
-            .max(self.min_adjustment_multiplier)
-            .min(self.max_adjustment_multiplier);
-
-        (self.base_heartbeat_reward as f64 * multiplier) as u64
+    /// Get base reward without price adjustment (for display/logging)
+    pub fn get_base_reward(&self, current_slot: u64, total_supply: u64) -> u64 {
+        compute_block_reward(current_slot, total_supply)
     }
 
     /// Get reward adjustment info for display
-    pub fn get_adjustment_info(&self, current_price_usd: f64) -> RewardAdjustmentInfo {
+    pub fn get_adjustment_info(
+        &self,
+        current_slot: u64,
+        total_supply: u64,
+        current_price_usd: f64,
+    ) -> RewardAdjustmentInfo {
         let multiplier = if current_price_usd > 0.0 {
             (self.reference_price_usd / current_price_usd)
                 .max(self.min_adjustment_multiplier)
@@ -297,12 +349,15 @@ impl RewardConfig {
             1.0
         };
 
+        let base = compute_block_reward(current_slot, total_supply);
+        let adjusted = (base as f64 * multiplier) as u64;
+
         RewardAdjustmentInfo {
             current_price_usd,
             reference_price_usd: self.reference_price_usd,
             multiplier,
-            adjusted_transaction_reward: self.get_adjusted_transaction_reward(current_price_usd),
-            adjusted_heartbeat_reward: self.get_adjusted_heartbeat_reward(current_price_usd),
+            adjusted_block_reward: adjusted,
+            inflation_rate_bps: inflation_rate_bps(current_slot),
         }
     }
 }
@@ -313,8 +368,8 @@ pub struct RewardAdjustmentInfo {
     pub current_price_usd: f64,
     pub reference_price_usd: f64,
     pub multiplier: f64,
-    pub adjusted_transaction_reward: u64,
-    pub adjusted_heartbeat_reward: u64,
+    pub adjusted_block_reward: u64,
+    pub inflation_rate_bps: u64,
 }
 
 impl Default for RewardConfig {
@@ -665,19 +720,17 @@ impl StakeInfo {
 
     /// Calculate staking APY based on current stake, total staked, and current slot.
     ///
-    /// Applies the 20% annual reward decay to the block reward before computing APY.
-    /// `current_slot` is used to determine how many years of decay have elapsed.
+    /// Epoch-based rewards distribute inflation proportionally to all stakers.
+    /// APY = (annual_inflation × validator_stake / total_staked) / validator_stake × 100
+    ///     = annual_inflation / total_staked × 100
     pub fn calculate_apy(&self, total_staked: u64, current_slot: u64) -> f64 {
         if total_staked == 0 {
             return 0.0;
         }
-        // APY = (annual_inflation / total_staked) * 100
-        // Higher stake concentration = lower individual APY
-        // AUDIT-FIX 3.3: APY is display-only (not consensus-critical), f64 is acceptable
-        // AUDIT-FIX M8: u128 intermediate before f64 cast
-        let current_reward = decayed_reward(BLOCK_REWARD, current_slot);
-        let annual_rewards = (current_reward as u128 * SLOTS_PER_YEAR as u128) as f64;
-        (annual_rewards / total_staked as f64) * 100.0
+        // Annual inflation = inflation_rate × total_supply
+        let rate = inflation_rate_bps(current_slot);
+        let annual_inflation = GENESIS_SUPPLY_SHELLS as f64 * rate as f64 / 10_000.0;
+        (annual_inflation / total_staked as f64) * 100.0
     }
 
     /// Add additional stake (after graduation, up to 1M max)
@@ -1090,29 +1143,76 @@ impl StakePool {
         }
     }
 
-    /// Distribute block reward to validator, with 20% annual decay applied.
+    /// Distribute block reward to validator using the inflationary supply model.
     ///
-    /// The base reward (TX or heartbeat) is decayed by 20% per year since genesis.
-    /// Genesis is slot 0, so `slot` is used directly as `slots_since_genesis`.
+    /// **EPOCH-BASED REWARDS (Solana model):** Per-slot inflation rewards are NO
+    /// LONGER given to the block producer. Inflation is distributed at epoch
+    /// boundaries to ALL stakers proportionally via [`distribute_epoch_staker_rewards`].
+    ///
+    /// This method now only records the block production for achievement tracking.
+    /// The block producer still earns transaction **fees** per-block via `distribute_fees()`.
+    ///
+    /// Returns 0 (no per-slot inflation reward).
     pub fn distribute_block_reward(
         &mut self,
         validator: &Pubkey,
         slot: u64,
-        is_heartbeat: bool,
+        _is_heartbeat: bool,
+        _total_supply: u64,
     ) -> u64 {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
             if stake_info.is_active {
-                let base = if is_heartbeat {
-                    HEARTBEAT_BLOCK_REWARD
-                } else {
-                    TRANSACTION_BLOCK_REWARD
-                };
-                let reward = decayed_reward(base, slot);
-                stake_info.add_reward(reward, slot);
-                return reward;
+                stake_info.last_reward_slot = slot;
+                return 0;
             }
         }
         0
+    }
+
+    /// Distribute epoch inflation rewards to ALL active stakers proportionally.
+    ///
+    /// Called once at each epoch boundary. Computes the total epoch mint from the
+    /// inflation curve, splits it proportionally by active stake weight, then routes
+    /// each validator's share through the vesting pipeline (`add_reward` → `claim_rewards`).
+    ///
+    /// Returns a list of `(validator_pubkey, total_reward, liquid, debt_payment)` for
+    /// each validator that received rewards. The caller mints `total_epoch_mint` new
+    /// shells and credits each validator's `liquid` amount to their account.
+    ///
+    /// `epoch_start`: The first slot of the completed epoch.
+    /// `total_supply`: Current chain supply (genesis + minted - burned).
+    pub fn distribute_epoch_staker_rewards(
+        &mut self,
+        epoch_start: u64,
+        total_supply: u64,
+    ) -> (u64, Vec<(Pubkey, u64, u64, u64)>) {
+        let epoch_mint = compute_epoch_mint(epoch_start, total_supply);
+        if epoch_mint == 0 {
+            return (0, vec![]);
+        }
+
+        // Get proportional distribution to all active stakers
+        let distributions = self.distribute_epoch_rewards(epoch_mint);
+
+        let num_active: u64 = self.stakes.values().filter(|info| info.is_active).count() as u64;
+        let num_active = num_active.max(1);
+
+        let mut results = Vec::new();
+        let mut total_minted = 0u64;
+
+        for (validator, reward) in distributions {
+            if let Some(stake_info) = self.stakes.get_mut(&validator) {
+                // Route through vesting pipeline: add reward, then claim
+                stake_info.add_reward(reward, epoch_start);
+                let (liquid, debt_payment) = stake_info.claim_rewards(epoch_start, num_active);
+                total_minted = total_minted.saturating_add(liquid);
+                results.push((validator, reward, liquid, debt_payment));
+            }
+        }
+
+        // Sort deterministically by pubkey
+        results.sort_by_key(|(pk, _, _, _)| pk.0);
+        (total_minted, results)
     }
 
     /// Distribute transaction fees to validator
@@ -2100,18 +2200,32 @@ pub struct Precommit {
     pub block_hash: Option<Hash>,
     /// Validator who cast this precommit.
     pub validator: Pubkey,
-    /// Ed25519 signature over (height || round || block_hash_or_nil).
+    /// Ed25519 signature over (0x02 || height || round || block_hash_or_nil || timestamp).
     #[serde(
         serialize_with = "serialize_signature",
         deserialize_with = "deserialize_signature"
     )]
     pub signature: [u8; 64],
+    /// Validator's wall-clock timestamp (Unix seconds) when casting this precommit.
+    /// Used for BFT Time: weighted median of commit precommit timestamps.
+    #[serde(default)]
+    pub timestamp: u64,
 }
 
 impl Precommit {
     /// Construct the message bytes for signing/verification.
-    pub fn signable_bytes(height: u64, round: u32, block_hash: &Option<Hash>) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(48);
+    ///
+    /// Format: `0x02 || height (8 LE) || round (4 LE) || block_hash_or_nil (32) || timestamp (8 LE)`
+    ///
+    /// The timestamp is included in the signed message so validators cannot
+    /// forge timestamps after voting.
+    pub fn signable_bytes(
+        height: u64,
+        round: u32,
+        block_hash: &Option<Hash>,
+        timestamp: u64,
+    ) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(53);
         msg.push(0x02); // precommit tag
         msg.extend_from_slice(&height.to_le_bytes());
         msg.extend_from_slice(&round.to_le_bytes());
@@ -2119,12 +2233,13 @@ impl Precommit {
             Some(h) => msg.extend_from_slice(&h.0),
             None => msg.extend_from_slice(&[0u8; 32]),
         }
+        msg.extend_from_slice(&timestamp.to_le_bytes());
         msg
     }
 
     /// Verify the voter's Ed25519 signature.
     pub fn verify_signature(&self) -> bool {
-        let msg = Self::signable_bytes(self.height, self.round, &self.block_hash);
+        let msg = Self::signable_bytes(self.height, self.round, &self.block_hash, self.timestamp);
         crate::Keypair::verify(&self.validator, &msg, &self.signature)
     }
 }
@@ -5452,152 +5567,255 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // TOKENOMICS OVERHAUL: Block Reward Constants
+    // INFLATIONARY SUPPLY MODEL: Inflation Rate & Block Reward
     // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn test_block_reward_constants() {
-        // TX block reward: 0.02 MOLT = 20,000,000 shells
-        assert_eq!(TRANSACTION_BLOCK_REWARD, 20_000_000);
-        // Heartbeat block reward: 0.01 MOLT = 10,000,000 shells
-        assert_eq!(HEARTBEAT_BLOCK_REWARD, 10_000_000);
-        // BLOCK_REWARD alias = TRANSACTION_BLOCK_REWARD
-        assert_eq!(BLOCK_REWARD, TRANSACTION_BLOCK_REWARD);
-        // Heartbeat must be less than transaction reward
-        assert!(HEARTBEAT_BLOCK_REWARD < TRANSACTION_BLOCK_REWARD);
-        // Heartbeat is exactly 50% of transaction reward
-        assert_eq!(HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD / 2);
+    fn test_inflation_rate_year_0() {
+        // Year 0: full initial rate = 400 bps (4.00%)
+        assert_eq!(inflation_rate_bps(0), INITIAL_INFLATION_RATE_BPS);
+        assert_eq!(inflation_rate_bps(0), 400);
+        // Just before year 1: still year 0
+        assert_eq!(inflation_rate_bps(SLOTS_PER_YEAR - 1), 400);
     }
 
     #[test]
-    fn test_distribute_block_reward_values() {
+    fn test_inflation_rate_year_1() {
+        // Year 1: 400 × 8500/10000 = 340 bps (3.40%)
+        assert_eq!(inflation_rate_bps(SLOTS_PER_YEAR), 340);
+    }
+
+    #[test]
+    fn test_inflation_rate_year_5() {
+        // Year 5: 400 × (0.85)^5 = 400 × 0.4437... = 177 bps (1.77%)
+        let rate = inflation_rate_bps(SLOTS_PER_YEAR * 5);
+        assert_eq!(rate, 177);
+    }
+
+    #[test]
+    fn test_inflation_rate_year_10() {
+        // Year 10: decays further
+        let rate = inflation_rate_bps(SLOTS_PER_YEAR * 10);
+        assert!(
+            rate > TERMINAL_INFLATION_RATE_BPS,
+            "Year 10 should still be above terminal"
+        );
+        assert!(rate < 100, "Year 10 should be below 1%");
+    }
+
+    #[test]
+    fn test_inflation_rate_terminal() {
+        // After many years, rate should floor at terminal (15 bps = 0.15%)
+        let rate = inflation_rate_bps(SLOTS_PER_YEAR * 100);
+        assert_eq!(rate, TERMINAL_INFLATION_RATE_BPS);
+        // u64::MAX should also give terminal
+        let rate_max = inflation_rate_bps(u64::MAX);
+        assert_eq!(rate_max, TERMINAL_INFLATION_RATE_BPS);
+    }
+
+    #[test]
+    fn test_block_reward_year_0() {
+        // Year 0: 500M MOLT × 4% / SLOTS_PER_YEAR
+        let reward = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
+        // 500_000_000_000_000_000 * 400 / (10000 * 78_840_000)
+        assert!(reward > 250_000_000, "Year 0 reward should be > 0.25 MOLT");
+        assert!(reward < 260_000_000, "Year 0 reward should be < 0.26 MOLT");
+    }
+
+    #[test]
+    fn test_block_reward_year_1() {
+        // Year 1: rate decays from 400 to ~340 bps, same genesis supply
+        let reward_y0 = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
+        let reward = compute_block_reward(SLOTS_PER_YEAR, GENESIS_SUPPLY_SHELLS);
+        assert!(
+            reward < reward_y0,
+            "Year 1 reward should be less than year 0"
+        );
+        assert!(reward > 210_000_000, "Year 1 reward should be > 0.21 MOLT");
+        assert!(reward < 220_000_000, "Year 1 reward should be < 0.22 MOLT");
+    }
+
+    #[test]
+    fn test_block_reward_year_5() {
+        // Year 5: rate = 177 bps
+        let reward = compute_block_reward(SLOTS_PER_YEAR * 5, GENESIS_SUPPLY_SHELLS);
+        // 500M × 177 / (10000 × 78840000)
+        assert!(reward > 100_000_000 && reward < 125_000_000);
+    }
+
+    #[test]
+    fn test_block_reward_zero_supply() {
+        // Edge case: zero supply produces zero reward
+        assert_eq!(compute_block_reward(0, 0), 0);
+    }
+
+    #[test]
+    fn test_block_reward_overflow_safe() {
+        // Large slot values should not panic
+        let r = compute_block_reward(u64::MAX, GENESIS_SUPPLY_SHELLS);
+        assert!(r > 0, "Terminal inflation should still produce some reward");
+    }
+
+    #[test]
+    fn test_distribute_block_reward_returns_zero() {
+        // Per-slot inflation is now distributed at epoch boundaries.
+        // distribute_block_reward only updates last_reward_slot and returns 0.
         let mut pool = StakePool::new();
         let v1 = Pubkey::new([1u8; 32]);
         pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
 
-        // Transaction block reward should be 0.02 MOLT
-        let tx_reward = pool.distribute_block_reward(&v1, 1, false);
+        let reward = pool.distribute_block_reward(&v1, 1, false, GENESIS_SUPPLY_SHELLS);
         assert_eq!(
-            tx_reward, 20_000_000,
-            "TX block reward must be 0.02 MOLT (20M shells)"
+            reward, 0,
+            "distribute_block_reward must return 0 (epoch-based rewards)"
         );
 
-        // Heartbeat block reward should be 0.01 MOLT
-        let hb_reward = pool.distribute_block_reward(&v1, 2, true);
-        assert_eq!(
-            hb_reward, 10_000_000,
-            "Heartbeat reward must be 0.01 MOLT (10M shells)"
-        );
-    }
+        // Verify last_reward_slot was updated
+        let info = pool.get_stake(&v1).unwrap();
+        assert_eq!(info.last_reward_slot, 1);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // TOKENOMICS OVERHAUL: Reward Decay (20% Annual)
-    // ═══════════════════════════════════════════════════════════════════════
+        // Heartbeat also returns 0
+        let hb_reward = pool.distribute_block_reward(&v1, 2, true, GENESIS_SUPPLY_SHELLS);
+        assert_eq!(hb_reward, 0, "Heartbeat must also return 0");
 
-    #[test]
-    fn test_decayed_reward_year_0() {
-        // Year 0 (slot 0 through SLOTS_PER_YEAR-1): no decay, full base reward
-        assert_eq!(decayed_reward(20_000_000, 0), 20_000_000);
-        assert_eq!(decayed_reward(10_000_000, 0), 10_000_000);
-        // Just before the 1-year mark
-        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR - 1), 20_000_000);
+        let info = pool.get_stake(&v1).unwrap();
+        assert_eq!(info.last_reward_slot, 2);
     }
 
     #[test]
-    fn test_decayed_reward_year_1() {
-        // Year 1: 80% of base → 20M × 0.8 = 16M
-        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR), 16_000_000);
-        assert_eq!(decayed_reward(10_000_000, SLOTS_PER_YEAR), 8_000_000);
-        // Mid-year-1 (slot = 1.5 years → still year 1 since integer division)
-        assert_eq!(
-            decayed_reward(20_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2),
-            16_000_000
-        );
-    }
-
-    #[test]
-    fn test_decayed_reward_year_5() {
-        // Year 5: 0.8^5 = 0.32768 → 20M × 0.32768 = 6,553,600
-        // Integer arithmetic: 20M × (80/100)^5
-        let mut expected = 20_000_000u64;
-        for _ in 0..5 {
-            expected = expected * 80 / 100;
-        }
-        assert_eq!(decayed_reward(20_000_000, SLOTS_PER_YEAR * 5), expected);
-        assert_eq!(expected, 6_553_600); // verify exact value
-
-        // Heartbeat: 10M × 0.8^5 = 3,276,800
-        let mut hb_expected = 10_000_000u64;
-        for _ in 0..5 {
-            hb_expected = hb_expected * 80 / 100;
-        }
-        assert_eq!(decayed_reward(10_000_000, SLOTS_PER_YEAR * 5), hb_expected);
-        assert_eq!(hb_expected, 3_276_800);
-    }
-
-    #[test]
-    fn test_decayed_reward_year_50() {
-        // Year 50 (cap): 0.8^50 → effectively 0
-        // After 50 years of 20% decay, 20M becomes ~285 shells
-        let reward = decayed_reward(20_000_000, SLOTS_PER_YEAR * 50);
+    fn test_compute_epoch_mint_year0() {
+        // Year 0: 500M MOLT × 4% × (432K / 78.84M) ≈ 109,589 MOLT per epoch
+        let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        let expected_molt = 109_589.0;
+        let expected_shells = (expected_molt * 1_000_000_000.0) as u64;
+        // Allow 1% tolerance for integer rounding
         assert!(
-            reward < 500,
-            "Year 50 reward should be near zero, got {}",
-            reward
+            mint > expected_shells * 99 / 100 && mint < expected_shells * 101 / 100,
+            "Year 0 epoch mint {} should be close to {} shells",
+            mint,
+            expected_shells,
         );
-        // Still > 0 due to integer rounding
-        assert!(reward > 0, "Year 50 tx reward should not be exactly 0");
+    }
 
-        // Heartbeat: even smaller
-        let hb = decayed_reward(10_000_000, SLOTS_PER_YEAR * 50);
+    #[test]
+    fn test_compute_epoch_mint_consistent_with_block_reward() {
+        // Epoch mint should equal SLOTS_PER_EPOCH × per-slot block reward
+        let per_slot = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
+        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        let expected = per_slot * SLOTS_PER_EPOCH;
+        // Allow rounding error of up to SLOTS_PER_EPOCH shells
+        let diff = if epoch_mint > expected {
+            epoch_mint - expected
+        } else {
+            expected - epoch_mint
+        };
         assert!(
-            hb < 250,
-            "Year 50 heartbeat should be near zero, got {}",
-            hb
+            diff <= SLOTS_PER_EPOCH,
+            "Epoch mint {} should be within {} of {} (SLOTS_PER_EPOCH × per_slot)",
+            epoch_mint,
+            SLOTS_PER_EPOCH,
+            expected,
         );
     }
 
     #[test]
-    fn test_decayed_reward_overflow_safe() {
-        // Extremely large slot values should not panic or overflow
-        // AUDIT-FIX L2: reward decays to 0 past ~80 years, no cap needed
-        let r100 = decayed_reward(20_000_000, SLOTS_PER_YEAR * 100);
-        assert_eq!(r100, 0, "Year 100 reward should decay to 0");
-        let r_max = decayed_reward(20_000_000, u64::MAX);
-        assert_eq!(r_max, 0, "u64::MAX slot reward should decay to 0");
-        // Zero base reward stays zero
-        assert_eq!(decayed_reward(0, SLOTS_PER_YEAR * 10), 0);
-        // u64::MAX base reward with year 0 — no decay applied, no overflow
-        assert_eq!(decayed_reward(u64::MAX, 0), u64::MAX);
+    fn test_compute_epoch_mint_zero_supply() {
+        assert_eq!(compute_epoch_mint(0, 0), 0);
     }
 
     #[test]
-    fn test_distribute_block_reward_with_decay() {
-        // Verify distribute_block_reward applies decay at different slots
+    fn test_distribute_epoch_staker_rewards_proportional() {
+        // Two validators with 100k and 300k stake — should get 25%/75% of epoch mint
         let mut pool = StakePool::new();
         let v1 = Pubkey::new([1u8; 32]);
-        pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
+        let v2 = Pubkey::new([2u8; 32]);
+        // Use fully-vested validators (no bootstrap debt) for cleaner math
+        pool.stake(v1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        if let Some(si) = pool.stakes.get_mut(&v1) {
+            si.status = BootstrapStatus::FullyVested;
+            si.bootstrap_debt = 0;
+        }
+        pool.stake(v2, 300_000_000_000_000, 0).unwrap(); // 300k MOLT
+        if let Some(si) = pool.stakes.get_mut(&v2) {
+            si.status = BootstrapStatus::FullyVested;
+            si.bootstrap_debt = 0;
+        }
 
-        // Year 0: full reward
-        let r0 = pool.distribute_block_reward(&v1, 100, false);
-        assert_eq!(r0, 20_000_000, "Year 0 TX reward should be 0.02 MOLT");
+        let (total_minted, results) =
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
 
-        // Year 1: 80% reward
-        let r1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR, false);
-        assert_eq!(r1, 16_000_000, "Year 1 TX reward should be 0.016 MOLT");
+        // Epoch mint should be non-zero
+        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        assert!(epoch_mint > 0, "Epoch mint should be positive");
 
-        // Year 1 heartbeat: 80% of 10M = 8M
-        let h1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR + 1, true);
-        assert_eq!(h1, 8_000_000, "Year 1 heartbeat should be 0.008 MOLT");
+        // Results sorted by pubkey
+        assert_eq!(results.len(), 2);
+
+        // Find each validator's result
+        let r1 = results.iter().find(|(pk, _, _, _)| *pk == v1).unwrap();
+        let r2 = results.iter().find(|(pk, _, _, _)| *pk == v2).unwrap();
+
+        // v1 gets 25%, v2 gets 75% of epoch_mint
+        let expected_r1 = epoch_mint / 4; // 25%
+        let expected_r2 = epoch_mint * 3 / 4; // 75%
+        assert!(
+            (r1.1 as i64 - expected_r1 as i64).unsigned_abs() <= 1,
+            "v1 reward {} should be ~{}",
+            r1.1,
+            expected_r1
+        );
+        assert!(
+            (r2.1 as i64 - expected_r2 as i64).unsigned_abs() <= 1,
+            "v2 reward {} should be ~{}",
+            r2.1,
+            expected_r2
+        );
+
+        // For fully-vested validators, liquid == reward (no debt split)
+        assert_eq!(r1.2, r1.1, "Fully-vested v1: liquid should equal reward");
+        assert_eq!(r2.2, r2.1, "Fully-vested v2: liquid should equal reward");
+        assert_eq!(r1.3, 0, "Fully-vested v1: no debt payment");
+        assert_eq!(r2.3, 0, "Fully-vested v2: no debt payment");
+
+        // total_minted = sum of all liquid
+        assert_eq!(total_minted, r1.2 + r2.2);
     }
 
     #[test]
-    fn test_annual_reward_decay_constant() {
-        assert_eq!(
-            ANNUAL_REWARD_DECAY_BPS, 2000,
-            "Decay must be 20% (2000 bps)"
-        );
+    fn test_distribute_epoch_staker_rewards_with_bootstrap_debt() {
+        // A bootstrap validator should have rewards split: ~50% liquid, ~50% debt repayment
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        pool.stake_with_index(v1, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
+            .unwrap();
+
+        let info = pool.get_stake(&v1).unwrap();
+        assert!(info.bootstrap_debt > 0, "Must have bootstrap debt");
+
+        let (total_minted, results) =
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+
+        assert_eq!(results.len(), 1);
+        let (_, reward, liquid, debt_payment) = &results[0];
+
+        // Reward is routed through vesting: liquid + debt_payment = reward
+        assert_eq!(liquid + debt_payment, *reward, "liquid + debt = reward");
+
+        // With bootstrap debt, liquid should be roughly half
+        assert!(*liquid > 0, "Should have some liquid");
+        assert!(*debt_payment > 0, "Should have some debt payment");
+
+        // total_minted should equal liquid only (debt payment is not minted shells)
+        assert_eq!(total_minted, *liquid);
+    }
+
+    #[test]
+    fn test_distribute_epoch_staker_rewards_empty_pool() {
+        let mut pool = StakePool::new();
+        let (total_minted, results) =
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+        assert_eq!(total_minted, 0);
+        assert!(results.is_empty());
     }
 
     #[test]

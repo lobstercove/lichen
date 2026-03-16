@@ -89,13 +89,38 @@ pub struct EvmTx {
     pub chain_id: Option<u64>,
 }
 
+/// Structured EVM log matching the Ethereum log format.
+/// Stored in receipts and indexed per-slot for eth_getLogs queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmLog {
+    /// Contract address that emitted the log
+    pub address: [u8; 20],
+    /// Topic hashes (up to 4: topic[0] = event signature hash)
+    pub topics: Vec<[u8; 32]>,
+    /// ABI-encoded non-indexed data
+    pub data: Vec<u8>,
+}
+
+/// Entry in the per-slot EVM log index.
+/// Stored as Vec<EvmLogEntry> per slot in CF_EVM_LOGS_BY_SLOT.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmLogEntry {
+    pub tx_hash: [u8; 32],
+    pub tx_index: u32,
+    pub log_index: u32,
+    pub log: EvmLog,
+}
+
 #[derive(Debug, Clone)]
 pub struct EvmExecutionResult {
     pub success: bool,
     pub gas_used: u64,
     pub output: Vec<u8>,
     pub created_address: Option<[u8; 20]>,
+    /// Legacy raw log data (kept for backward compat)
     pub logs: Vec<Vec<u8>>,
+    /// Structured EVM logs with address + topics + data
+    pub structured_logs: Vec<EvmLog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +149,9 @@ pub struct EvmReceipt {
     pub block_hash: Option<[u8; 32]>,
     pub contract_address: Option<[u8; 20]>,
     pub logs: Vec<Vec<u8>>,
+    /// Structured EVM logs with full address + topics + data (Task 3.4)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub structured_logs: Vec<EvmLog>,
 }
 
 pub fn evm_tx_hash(raw: &[u8]) -> B256 {
@@ -609,6 +637,20 @@ pub fn execute_evm_transaction(
                     (data.to_vec(), address.map(revm_address_to_array))
                 }
             };
+            // Task 3.4: Extract structured logs with address + topics + data
+            let structured_logs: Vec<EvmLog> = logs
+                .iter()
+                .map(|log| EvmLog {
+                    address: revm_address_to_array(log.address),
+                    topics: log
+                        .data
+                        .topics()
+                        .iter()
+                        .map(|t| t.0)
+                        .collect(),
+                    data: log.data.data.to_vec(),
+                })
+                .collect();
             Ok((
                 EvmExecutionResult {
                     success: true,
@@ -619,6 +661,7 @@ pub fn execute_evm_transaction(
                         .iter()
                         .map(|log| log.data.data.clone().into())
                         .collect(),
+                    structured_logs,
                 },
                 evm_changes,
             ))
@@ -630,6 +673,7 @@ pub fn execute_evm_transaction(
                 output: output.to_vec(),
                 created_address: None,
                 logs: Vec::new(),
+                structured_logs: Vec::new(),
             },
             evm_changes,
         )),
@@ -640,6 +684,7 @@ pub fn execute_evm_transaction(
                 output: Vec::new(),
                 created_address: None,
                 logs: Vec::new(),
+                structured_logs: Vec::new(),
             },
             evm_changes,
         )),
@@ -880,6 +925,111 @@ fn build_revm_call_env(
         .map_err(|e| format!("Invalid EVM call: {:?}", e))
 }
 
+// ─── Task 3.4: Standard EVM precompile addresses ────────────────────────────
+// REVM's build_mainnet() with SpecId::PRAGUE includes all standard precompiles.
+// These constants document the addresses for reference and testing.
+
+/// ecRecover (ECDSARECOVER) precompile address
+pub const PRECOMPILE_ECRECOVER: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x01;
+    addr
+};
+
+/// SHA-256 hash precompile address
+pub const PRECOMPILE_SHA256: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x02;
+    addr
+};
+
+/// RIPEMD-160 hash precompile address
+pub const PRECOMPILE_RIPEMD160: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x03;
+    addr
+};
+
+/// Identity (data copy) precompile address
+pub const PRECOMPILE_IDENTITY: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x04;
+    addr
+};
+
+/// Modular exponentiation (MODEXP) precompile address
+pub const PRECOMPILE_MODEXP: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x05;
+    addr
+};
+
+/// BN256 point addition precompile address
+pub const PRECOMPILE_BN256_ADD: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x06;
+    addr
+};
+
+/// BN256 scalar multiplication precompile address
+pub const PRECOMPILE_BN256_MUL: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x07;
+    addr
+};
+
+/// BN256 pairing precompile address
+pub const PRECOMPILE_BN256_PAIRING: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x08;
+    addr
+};
+
+/// Blake2f compression precompile address
+pub const PRECOMPILE_BLAKE2F: [u8; 20] = {
+    let mut addr = [0u8; 20];
+    addr[19] = 0x09;
+    addr
+};
+
+/// List of all supported precompile addresses and their names.
+pub fn supported_precompiles() -> Vec<([u8; 20], &'static str)> {
+    vec![
+        (PRECOMPILE_ECRECOVER, "ecRecover"),
+        (PRECOMPILE_SHA256, "SHA-256"),
+        (PRECOMPILE_RIPEMD160, "RIPEMD-160"),
+        (PRECOMPILE_IDENTITY, "identity"),
+        (PRECOMPILE_MODEXP, "modexp"),
+        (PRECOMPILE_BN256_ADD, "bn256Add"),
+        (PRECOMPILE_BN256_MUL, "bn256Mul"),
+        (PRECOMPILE_BN256_PAIRING, "bn256Pairing"),
+        (PRECOMPILE_BLAKE2F, "blake2f"),
+    ]
+}
+
+/// Match topic filter against log topics per EIP-1474.
+/// Each position in filter_topics can be:
+/// - None: wildcard (matches any topic)
+/// - Some(single): exact match for that position
+/// - The caller handles OR-arrays by expanding before calling this.
+pub fn topics_match(log_topics: &[[u8; 32]], filter_topics: &[Option<Vec<[u8; 32]>>]) -> bool {
+    for (i, filter) in filter_topics.iter().enumerate() {
+        if let Some(candidates) = filter {
+            // Must match at least one candidate at this position
+            match log_topics.get(i) {
+                Some(log_topic) => {
+                    if !candidates.iter().any(|c| c == log_topic) {
+                        return false;
+                    }
+                }
+                None => return false, // Log doesn't have enough topics
+            }
+        }
+        // None = wildcard, always matches
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,5 +1136,274 @@ mod tests {
             changes.changes[0].native_balance_update.as_ref().unwrap().1,
             500
         );
+    }
+
+    // ── Task 3.4: EVM Precompiles + eth_getLogs tests ──
+
+    #[test]
+    fn test_evm_log_serde_roundtrip() {
+        let log = EvmLog {
+            address: [0xAB; 20],
+            topics: vec![[0x01; 32], [0x02; 32]],
+            data: vec![0xFF, 0xFE, 0xFD],
+        };
+        let bytes = bincode::serialize(&log).expect("serialize");
+        let decoded: EvmLog = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.address, [0xAB; 20]);
+        assert_eq!(decoded.topics.len(), 2);
+        assert_eq!(decoded.topics[0], [0x01; 32]);
+        assert_eq!(decoded.topics[1], [0x02; 32]);
+        assert_eq!(decoded.data, vec![0xFF, 0xFE, 0xFD]);
+    }
+
+    #[test]
+    fn test_evm_log_entry_serde_roundtrip() {
+        let entry = EvmLogEntry {
+            tx_hash: [0xAA; 32],
+            tx_index: 5,
+            log_index: 3,
+            log: EvmLog {
+                address: [0xCC; 20],
+                topics: vec![[0x11; 32]],
+                data: vec![0x42],
+            },
+        };
+        let bytes = bincode::serialize(&entry).expect("serialize");
+        let decoded: EvmLogEntry = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.tx_hash, [0xAA; 32]);
+        assert_eq!(decoded.tx_index, 5);
+        assert_eq!(decoded.log_index, 3);
+        assert_eq!(decoded.log.address, [0xCC; 20]);
+        assert_eq!(decoded.log.topics.len(), 1);
+        assert_eq!(decoded.log.data, vec![0x42]);
+    }
+
+    #[test]
+    fn test_evm_log_json_roundtrip() {
+        let log = EvmLog {
+            address: [0x00; 20],
+            topics: vec![],
+            data: vec![],
+        };
+        let json = serde_json::to_string(&log).expect("json serialize");
+        let decoded: EvmLog = serde_json::from_str(&json).expect("json deserialize");
+        assert_eq!(decoded.address, [0x00; 20]);
+        assert!(decoded.topics.is_empty());
+        assert!(decoded.data.is_empty());
+    }
+
+    #[test]
+    fn test_topics_match_wildcard() {
+        // All None = matches everything
+        let log_topics = vec![[0x01; 32], [0x02; 32]];
+        let filter: Vec<Option<Vec<[u8; 32]>>> = vec![None, None];
+        assert!(topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_empty_filter() {
+        // Empty filter = matches everything
+        let log_topics = vec![[0x01; 32]];
+        let filter: Vec<Option<Vec<[u8; 32]>>> = vec![];
+        assert!(topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_exact_single() {
+        let topic_a = [0xAA; 32];
+        let topic_b = [0xBB; 32];
+        let log_topics = vec![topic_a, topic_b];
+
+        // Match: filter matches topic[0]
+        let filter = vec![Some(vec![topic_a])];
+        assert!(topics_match(&log_topics, &filter));
+
+        // No match: filter at position 0 doesn't match
+        let filter = vec![Some(vec![topic_b])];
+        assert!(!topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_or_array() {
+        let topic_a = [0xAA; 32];
+        let topic_b = [0xBB; 32];
+        let topic_c = [0xCC; 32];
+        let log_topics = vec![topic_a];
+
+        // OR: topic_a OR topic_c at position 0 — matches because topic_a is present
+        let filter = vec![Some(vec![topic_a, topic_c])];
+        assert!(topics_match(&log_topics, &filter));
+
+        // OR: topic_b OR topic_c at position 0 — no match
+        let filter = vec![Some(vec![topic_b, topic_c])];
+        assert!(!topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_wildcard_then_exact() {
+        let topic_a = [0xAA; 32];
+        let topic_b = [0xBB; 32];
+        let log_topics = vec![topic_a, topic_b];
+
+        // Position 0: wildcard, Position 1: exact match on topic_b
+        let filter: Vec<Option<Vec<[u8; 32]>>> = vec![None, Some(vec![topic_b])];
+        assert!(topics_match(&log_topics, &filter));
+
+        // Position 0: wildcard, Position 1: wrong topic
+        let filter: Vec<Option<Vec<[u8; 32]>>> = vec![None, Some(vec![topic_a])];
+        assert!(!topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_insufficient_log_topics() {
+        let log_topics = vec![[0x01; 32]]; // Only 1 topic
+
+        // Filter requires topic at position 1 — log doesn't have it
+        let filter = vec![None, Some(vec![[0x02; 32]])];
+        assert!(!topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_topics_match_empty_log_topics() {
+        let log_topics: Vec<[u8; 32]> = vec![];
+
+        // Any non-wildcard filter should fail on empty log
+        let filter = vec![Some(vec![[0x01; 32]])];
+        assert!(!topics_match(&log_topics, &filter));
+
+        // All wildcards should match even empty logs
+        let filter: Vec<Option<Vec<[u8; 32]>>> = vec![None, None];
+        assert!(topics_match(&log_topics, &filter));
+    }
+
+    #[test]
+    fn test_supported_precompiles_returns_nine() {
+        let precompiles = supported_precompiles();
+        assert_eq!(precompiles.len(), 9, "Should return exactly 9 precompiles (0x01-0x09)");
+    }
+
+    #[test]
+    fn test_supported_precompiles_addresses_sequential() {
+        let precompiles = supported_precompiles();
+        for (i, (addr, _name)) in precompiles.iter().enumerate() {
+            // Each precompile address should be [0..0, N] where N = i+1
+            assert_eq!(addr[19], (i + 1) as u8, "Precompile {} should have addr byte 0x{:02x}", i, i + 1);
+            // First 19 bytes should be zero
+            assert_eq!(&addr[..19], &[0u8; 19], "Precompile prefix bytes should be zero");
+        }
+    }
+
+    #[test]
+    fn test_precompile_constants_match_ethereum() {
+        // Standard Ethereum precompile addresses per EIP-196, EIP-197, EIP-198, EIP-152
+        assert_eq!(PRECOMPILE_ECRECOVER[19], 0x01);
+        assert_eq!(PRECOMPILE_SHA256[19], 0x02);
+        assert_eq!(PRECOMPILE_RIPEMD160[19], 0x03);
+        assert_eq!(PRECOMPILE_IDENTITY[19], 0x04);
+        assert_eq!(PRECOMPILE_MODEXP[19], 0x05);
+        assert_eq!(PRECOMPILE_BN256_ADD[19], 0x06);
+        assert_eq!(PRECOMPILE_BN256_MUL[19], 0x07);
+        assert_eq!(PRECOMPILE_BN256_PAIRING[19], 0x08);
+        assert_eq!(PRECOMPILE_BLAKE2F[19], 0x09);
+    }
+
+    #[test]
+    fn test_precompile_constants_are_20_byte_addresses() {
+        let all = [
+            PRECOMPILE_ECRECOVER,
+            PRECOMPILE_SHA256,
+            PRECOMPILE_RIPEMD160,
+            PRECOMPILE_IDENTITY,
+            PRECOMPILE_MODEXP,
+            PRECOMPILE_BN256_ADD,
+            PRECOMPILE_BN256_MUL,
+            PRECOMPILE_BN256_PAIRING,
+            PRECOMPILE_BLAKE2F,
+        ];
+        for (i, addr) in all.iter().enumerate() {
+            assert_eq!(addr.len(), 20, "Precompile {} address must be 20 bytes", i);
+            // All leading bytes zero, only last byte nonzero
+            for j in 0..19 {
+                assert_eq!(addr[j], 0, "Precompile {} byte {} should be 0", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn test_evm_receipt_structured_logs_serde_default() {
+        // Backward compat: old receipts without structured_logs should deserialize
+        let receipt = EvmReceipt {
+            evm_hash: [0x01; 32],
+            status: true,
+            gas_used: 21000,
+            block_slot: None,
+            block_hash: None,
+            contract_address: None,
+            logs: vec![vec![0x01, 0x02]],
+            structured_logs: vec![], // Would be skipped in JSON
+        };
+        let json = serde_json::to_string(&receipt).expect("serialize");
+        // structured_logs is empty → should be omitted in JSON
+        assert!(
+            !json.contains("structured_logs"),
+            "Empty structured_logs should be omitted via skip_serializing_if"
+        );
+
+        // Deserialize without structured_logs field → should default to empty
+        let minimal = r#"{"evm_hash":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"status":true,"gas_used":21000,"block_slot":null,"block_hash":null,"contract_address":null,"logs":[[1,2]]}"#;
+        let decoded: EvmReceipt = serde_json::from_str(minimal).expect("deserialize");
+        assert!(decoded.structured_logs.is_empty());
+    }
+
+    #[test]
+    fn test_evm_receipt_with_structured_logs() {
+        let receipt = EvmReceipt {
+            evm_hash: [0x02; 32],
+            status: true,
+            gas_used: 50000,
+            block_slot: Some(42),
+            block_hash: None,
+            contract_address: Some([0xDD; 20]),
+            logs: vec![],
+            structured_logs: vec![
+                EvmLog {
+                    address: [0xDD; 20],
+                    topics: vec![[0x11; 32], [0x22; 32]],
+                    data: vec![0xAB, 0xCD],
+                },
+            ],
+        };
+        let bytes = bincode::serialize(&receipt).expect("serialize");
+        let decoded: EvmReceipt = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.structured_logs.len(), 1);
+        assert_eq!(decoded.structured_logs[0].address, [0xDD; 20]);
+        assert_eq!(decoded.structured_logs[0].topics.len(), 2);
+        assert_eq!(decoded.structured_logs[0].data, vec![0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn test_evm_execution_result_includes_structured_logs() {
+        let result = EvmExecutionResult {
+            success: true,
+            gas_used: 21000,
+            output: vec![],
+            created_address: None,
+            logs: vec![],
+            structured_logs: vec![
+                EvmLog {
+                    address: [0x01; 20],
+                    topics: vec![[0xAA; 32]],
+                    data: vec![1, 2, 3],
+                },
+                EvmLog {
+                    address: [0x02; 20],
+                    topics: vec![[0xBB; 32], [0xCC; 32]],
+                    data: vec![4, 5],
+                },
+            ],
+        };
+        assert_eq!(result.structured_logs.len(), 2);
+        assert_eq!(result.structured_logs[0].address, [0x01; 20]);
+        assert_eq!(result.structured_logs[1].topics.len(), 2);
     }
 }

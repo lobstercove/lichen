@@ -21,7 +21,7 @@
 #
 # First-boot behavior:
 #   If no existing blockchain state is found, the validator starts in genesis
-#   mode: it creates the chain, treasury keys (1B MOLT supply), and auto-runs
+#   mode: it creates the chain, treasury keys (500M MOLT supply), and auto-runs
 #   first-boot-deploy.sh to deploy all 26 smart contracts (DEX, wrapped tokens,
 #   core infrastructure), seed AMM pools, and fund the insurance reserve.
 #

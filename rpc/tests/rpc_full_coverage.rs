@@ -1312,14 +1312,18 @@ async fn test_native_unknown_method() {
 #[tokio::test]
 async fn test_solana_get_latest_blockhash() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getLatestBlockhash").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getLatestBlockhash")
+        .await
+        .unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
 async fn test_solana_get_recent_blockhash() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getRecentBlockhash").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getRecentBlockhash")
+        .await
+        .unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -1328,7 +1332,7 @@ async fn test_solana_get_balance() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
-        "/solana",
+        "/solana-compat",
         "getBalance",
         json!(["11111111111111111111111111111111"]),
     )
@@ -1342,7 +1346,7 @@ async fn test_solana_get_account_info() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
-        "/solana",
+        "/solana-compat",
         "getAccountInfo",
         json!(["11111111111111111111111111111111"]),
     )
@@ -1354,7 +1358,7 @@ async fn test_solana_get_account_info() {
 #[tokio::test]
 async fn test_solana_get_block() {
     let app = fresh_app();
-    let resp = rpc_p(&app, "/solana", "getBlock", json!([0]))
+    let resp = rpc_p(&app, "/solana-compat", "getBlock", json!([0]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -1363,7 +1367,7 @@ async fn test_solana_get_block() {
 #[tokio::test]
 async fn test_solana_get_block_height() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getBlockHeight").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getBlockHeight").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -1372,7 +1376,7 @@ async fn test_solana_get_signatures_for_address() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
-        "/solana",
+        "/solana-compat",
         "getSignaturesForAddress",
         json!(["11111111111111111111111111111111"]),
     )
@@ -1385,16 +1389,21 @@ async fn test_solana_get_signatures_for_address() {
 async fn test_solana_get_signature_statuses() {
     let app = fresh_app();
     let fake_sig = "a".repeat(64);
-    let resp = rpc_p(&app, "/solana", "getSignatureStatuses", json!([[fake_sig]]))
-        .await
-        .unwrap();
+    let resp = rpc_p(
+        &app,
+        "/solana-compat",
+        "getSignatureStatuses",
+        json!([[fake_sig]]),
+    )
+    .await
+    .unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
 async fn test_solana_get_slot() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getSlot").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getSlot").await.unwrap();
     assert_valid_rpc(&resp);
     assert!(resp["result"].is_number());
 }
@@ -1403,7 +1412,7 @@ async fn test_solana_get_slot() {
 async fn test_solana_get_transaction() {
     let app = fresh_app();
     let fake_sig = "a".repeat(64);
-    let resp = rpc_p(&app, "/solana", "getTransaction", json!([fake_sig]))
+    let resp = rpc_p(&app, "/solana-compat", "getTransaction", json!([fake_sig]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -1412,16 +1421,23 @@ async fn test_solana_get_transaction() {
 #[tokio::test]
 async fn test_solana_send_transaction_no_sender() {
     let app = fresh_app();
-    let resp = rpc_p(&app, "/solana", "sendTransaction", json!(["deadbeef"]))
-        .await
-        .unwrap();
+    let resp = rpc_p(
+        &app,
+        "/solana-compat",
+        "sendTransaction",
+        json!(["deadbeef"]),
+    )
+    .await
+    .unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
 async fn test_solana_unknown_method() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "totallyBogusMethod").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "totallyBogusMethod")
+        .await
+        .unwrap();
     assert!(resp.get("error").is_some());
     assert_eq!(resp["error"]["code"], -32601);
 }
@@ -1804,7 +1820,7 @@ async fn test_evm_invalid_address_format() {
 #[tokio::test]
 async fn test_solana_missing_params() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getBalance").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getBalance").await.unwrap();
     assert_valid_rpc(&resp);
     // Should error without address param
 }
@@ -1874,7 +1890,7 @@ async fn test_all_solana_methods_no_panic() {
         "getRecentBlockhash",
     ];
     for method in methods {
-        let resp = rpc(&app, "/solana", method).await.unwrap();
+        let resp = rpc(&app, "/solana-compat", method).await.unwrap();
         assert_valid_rpc(&resp);
     }
 }
@@ -1923,6 +1939,7 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
     let tx = Transaction {
         signatures: vec![[99u8; 64]],
         message: msg,
+        tx_type: Default::default(),
     };
     let tx_sig_hex = tx.signature().to_hex();
 
@@ -2193,12 +2210,33 @@ async fn test_native_get_transaction_found() {
     );
 }
 
+// ── getTransaction response includes message_hash (Task 4.1) ────────────────
+
+#[tokio::test]
+async fn test_get_transaction_includes_message_hash() {
+    let (app, _, _, _, _, tx_sig) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getTransaction", json!([tx_sig]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    if result.is_object() && result.get("signature").is_some() {
+        // Response has the transaction — verify message_hash is present and valid hex
+        let mh = result["message_hash"].as_str().expect("message_hash should be string");
+        assert_eq!(mh.len(), 64, "message_hash should be 64 hex chars (32 bytes)");
+        assert!(mh.chars().all(|c| c.is_ascii_hexdigit()), "message_hash must be hex");
+        // message_hash must differ from signature (tx hash)
+        let sig = result["signature"].as_str().unwrap();
+        assert_ne!(mh, sig, "message_hash should differ from tx hash (signatures not included)");
+    }
+}
+
 // ── Solana-compat getBalance with funded account ─────────────────────────────
 
 #[tokio::test]
 async fn test_solana_get_balance_funded() {
     let (app, _, addr, _, _, _) = app_with_rich_state();
-    let resp = rpc_p(&app, "/solana", "getBalance", json!([addr]))
+    let resp = rpc_p(&app, "/solana-compat", "getBalance", json!([addr]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -2219,7 +2257,7 @@ async fn test_solana_get_balance_unfunded() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
-        "/solana",
+        "/solana-compat",
         "getBalance",
         json!(["44444444444444444444444444444444"]),
     )
@@ -2239,7 +2277,7 @@ async fn test_solana_get_balance_unfunded() {
 #[tokio::test]
 async fn test_solana_get_slot_value() {
     let (app, _, _, _, _, _) = app_with_rich_state();
-    let resp = rpc(&app, "/solana", "getSlot").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getSlot").await.unwrap();
     assert_valid_rpc(&resp);
     let slot = resp["result"].as_u64().expect("getSlot must be u64");
     assert_eq!(slot, 1, "solana getSlot should be 1");
@@ -2250,7 +2288,7 @@ async fn test_solana_get_slot_value() {
 #[tokio::test]
 async fn test_solana_get_block_with_data() {
     let (app, _, _, _, _, _) = app_with_rich_state();
-    let resp = rpc_p(&app, "/solana", "getBlock", json!([1]))
+    let resp = rpc_p(&app, "/solana-compat", "getBlock", json!([1]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -2269,7 +2307,7 @@ async fn test_solana_get_block_with_data() {
 #[tokio::test]
 async fn test_solana_get_block_height_value() {
     let (app, _, _, _, _, _) = app_with_rich_state();
-    let resp = rpc(&app, "/solana", "getBlockHeight").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getBlockHeight").await.unwrap();
     assert_valid_rpc(&resp);
     let height = resp["result"].as_u64().expect("blockHeight must be u64");
     assert_eq!(height, 1, "block height should be 1");
@@ -2570,7 +2608,7 @@ async fn test_native_get_cluster_info_returns_data() {
 #[tokio::test]
 async fn test_solana_get_health_is_ok() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getHealth").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getHealth").await.unwrap();
     assert_valid_rpc(&resp);
     assert_eq!(resp["result"], "ok", "solana getHealth should return 'ok'");
 }
@@ -2580,7 +2618,7 @@ async fn test_solana_get_health_is_ok() {
 #[tokio::test]
 async fn test_solana_get_version_shape() {
     let app = fresh_app();
-    let resp = rpc(&app, "/solana", "getVersion").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getVersion").await.unwrap();
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(
@@ -2594,7 +2632,9 @@ async fn test_solana_get_version_shape() {
 #[tokio::test]
 async fn test_solana_get_latest_blockhash_shape() {
     let (app, _, _, _, _, _) = app_with_rich_state();
-    let resp = rpc(&app, "/solana", "getLatestBlockhash").await.unwrap();
+    let resp = rpc(&app, "/solana-compat", "getLatestBlockhash")
+        .await
+        .unwrap();
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     // Should have Solana-compat shape: { context: { slot }, value: { blockhash, lastValidBlockHeight } }
@@ -2616,7 +2656,7 @@ async fn test_solana_get_latest_blockhash_shape() {
 #[tokio::test]
 async fn test_solana_get_account_info_funded() {
     let (app, _, addr, _, _, _) = app_with_rich_state();
-    let resp = rpc_p(&app, "/solana", "getAccountInfo", json!([addr]))
+    let resp = rpc_p(&app, "/solana-compat", "getAccountInfo", json!([addr]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -2826,18 +2866,20 @@ async fn test_batch_solana_with_rich_state() {
         "getLatestBlockhash",
         "getRecentBlockhash",
     ] {
-        let resp = rpc(&app, "/solana", method).await.unwrap();
+        let resp = rpc(&app, "/solana-compat", method).await.unwrap();
         assert_valid_rpc(&resp);
     }
 
     // With addr
     for method in &["getBalance", "getAccountInfo", "getSignaturesForAddress"] {
-        let resp = rpc_p(&app, "/solana", method, json!([addr])).await.unwrap();
+        let resp = rpc_p(&app, "/solana-compat", method, json!([addr]))
+            .await
+            .unwrap();
         assert_valid_rpc(&resp);
     }
 
     // With slot
-    let resp = rpc_p(&app, "/solana", "getBlock", json!([0]))
+    let resp = rpc_p(&app, "/solana-compat", "getBlock", json!([0]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -2894,4 +2936,777 @@ async fn test_batch_evm_with_rich_state() {
     .unwrap();
     assert_valid_rpc(&resp);
     assert!(resp["result"].is_array());
+}
+
+#[tokio::test]
+async fn test_native_estimate_transaction_fee() {
+    let app = fresh_app();
+    // Call with no params should error gracefully
+    let resp = rpc(&app, "/", "estimateTransactionFee").await.unwrap();
+    assert!(resp.get("error").is_some(), "Missing params should error");
+}
+
+#[tokio::test]
+async fn test_native_estimate_transaction_fee_invalid_base64() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "estimateTransactionFee",
+        json!(["not-valid-base64!!!"]),
+    )
+    .await
+    .unwrap();
+    assert!(resp.get("error").is_some(), "Bad base64 should error");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Task 3.4: EVM Precompiles + eth_getLogs tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_with_stored_evm_logs() {
+    // Store structured EVM logs and verify eth_getLogs retrieves them
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0xAA; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![[0x01; 32], [0x02; 32]],
+                data: vec![0xFF, 0xFE],
+            },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x1", "toBlock": "0x1"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().expect("should be array");
+    assert!(result.len() >= 1, "Should return at least 1 EVM log");
+
+    // Verify the structured EVM log fields
+    let log = &result[0];
+    assert_eq!(log["address"], format!("0x{}", hex::encode([0x11; 20])));
+    assert_eq!(log["logIndex"], "0x0");
+    assert!(log["topics"].is_array());
+    let topics = log["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 2);
+    assert_eq!(topics[0], format!("0x{}", hex::encode([0x01; 32])));
+    assert_eq!(log["data"], format!("0x{}", hex::encode([0xFF, 0xFE])));
+    assert_eq!(log["removed"], false);
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_address_filter() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let addr_a = [0xAA; 20];
+    let addr_b = [0xBB; 20];
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0x01; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: EvmLog {
+                address: addr_a,
+                topics: vec![[0x10; 32]],
+                data: vec![1],
+            },
+        },
+        EvmLogEntry {
+            tx_hash: [0x02; 32],
+            tx_index: 1,
+            log_index: 1,
+            log: EvmLog {
+                address: addr_b,
+                topics: vec![[0x20; 32]],
+                data: vec![2],
+            },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // Filter by address A only
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{
+            "fromBlock": "0x1",
+            "toBlock": "0x1",
+            "address": format!("0x{}", hex::encode(addr_a))
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    // Should only have logs from addr_a
+    for log in result {
+        if log["address"].as_str().unwrap().contains("aaaa") {
+            // This is the EVM structured log from addr_a — good
+        }
+    }
+    let evm_only: Vec<_> = result
+        .iter()
+        .filter(|l| l["address"].as_str().unwrap() == format!("0x{}", hex::encode(addr_a)))
+        .collect();
+    assert_eq!(evm_only.len(), 1, "Should return only logs from addr_a");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_address_array_filter() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let addr_a = [0xAA; 20];
+    let addr_b = [0xBB; 20];
+    let addr_c = [0xCC; 20];
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0x01; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: EvmLog { address: addr_a, topics: vec![[0x10; 32]], data: vec![1] },
+        },
+        EvmLogEntry {
+            tx_hash: [0x02; 32],
+            tx_index: 1,
+            log_index: 1,
+            log: EvmLog { address: addr_b, topics: vec![[0x20; 32]], data: vec![2] },
+        },
+        EvmLogEntry {
+            tx_hash: [0x03; 32],
+            tx_index: 2,
+            log_index: 2,
+            log: EvmLog { address: addr_c, topics: vec![[0x30; 32]], data: vec![3] },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // Filter by [addr_a, addr_c]
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{
+            "fromBlock": "0x1",
+            "toBlock": "0x1",
+            "address": [
+                format!("0x{}", hex::encode(addr_a)),
+                format!("0x{}", hex::encode(addr_c))
+            ]
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    let evm_addrs: Vec<String> = result
+        .iter()
+        .map(|l| l["address"].as_str().unwrap().to_string())
+        .collect();
+    let a_hex = format!("0x{}", hex::encode(addr_a));
+    let b_hex = format!("0x{}", hex::encode(addr_b));
+    let c_hex = format!("0x{}", hex::encode(addr_c));
+    assert!(evm_addrs.contains(&a_hex), "Should include addr_a");
+    assert!(!evm_addrs.contains(&b_hex), "Should NOT include addr_b");
+    assert!(evm_addrs.contains(&c_hex), "Should include addr_c");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_topic_filter() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let topic_transfer = [0xDD; 32]; // Fake Transfer topic
+    let topic_approval = [0xEE; 32]; // Fake Approval topic
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0x01; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_transfer, [0xAA; 32]],
+                data: vec![1],
+            },
+        },
+        EvmLogEntry {
+            tx_hash: [0x02; 32],
+            tx_index: 1,
+            log_index: 1,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_approval, [0xBB; 32]],
+                data: vec![2],
+            },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // Filter by topic[0] = Transfer only
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{
+            "fromBlock": "0x1",
+            "toBlock": "0x1",
+            "topics": [format!("0x{}", hex::encode(topic_transfer))]
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    let evm_logs: Vec<_> = result
+        .iter()
+        .filter(|l| {
+            l["topics"]
+                .as_array()
+                .map(|t| {
+                    t.first()
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == format!("0x{}", hex::encode(topic_transfer)))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(evm_logs.len(), 1, "Should return only Transfer logs");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_topic_or_filter() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let topic_a = [0xAA; 32];
+    let topic_b = [0xBB; 32];
+    let topic_c = [0xCC; 32];
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
+            log: EvmLog { address: [0x11; 20], topics: vec![topic_a], data: vec![1] },
+        },
+        EvmLogEntry {
+            tx_hash: [0x02; 32], tx_index: 1, log_index: 1,
+            log: EvmLog { address: [0x11; 20], topics: vec![topic_b], data: vec![2] },
+        },
+        EvmLogEntry {
+            tx_hash: [0x03; 32], tx_index: 2, log_index: 2,
+            log: EvmLog { address: [0x11; 20], topics: vec![topic_c], data: vec![3] },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // OR filter: topic[0] = topic_a OR topic_c
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{
+            "fromBlock": "0x1",
+            "toBlock": "0x1",
+            "topics": [[
+                format!("0x{}", hex::encode(topic_a)),
+                format!("0x{}", hex::encode(topic_c))
+            ]]
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    // Should match topic_a and topic_c but not topic_b
+    let matched_data: Vec<String> = result
+        .iter()
+        .map(|l| l["data"].as_str().unwrap().to_string())
+        .collect();
+    let a_data = format!("0x{}", hex::encode([1u8]));
+    let c_data = format!("0x{}", hex::encode([3u8]));
+    let b_data = format!("0x{}", hex::encode([2u8]));
+    assert!(matched_data.contains(&a_data), "Should include topic_a log");
+    assert!(matched_data.contains(&c_data), "Should include topic_c log");
+    assert!(!matched_data.contains(&b_data), "Should NOT include topic_b log");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_wildcard_topic() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let topic_sig = [0xDD; 32];
+    let topic_from = [0xAA; 32];
+    let topic_to = [0xBB; 32];
+    let logs = vec![
+        EvmLogEntry {
+            tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_sig, topic_from, topic_to],
+                data: vec![0x42],
+            },
+        },
+    ];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // Wildcard at position 0, exact match at position 2 (topic_to)
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{
+            "fromBlock": "0x1",
+            "toBlock": "0x1",
+            "topics": [
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                format!("0x{}", hex::encode(topic_to))
+            ]
+        }]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    let evm_matches: Vec<_> = result
+        .iter()
+        .filter(|l| l["data"].as_str().unwrap() == format!("0x{}", hex::encode([0x42])))
+        .collect();
+    assert_eq!(evm_matches.len(), 1, "Wildcard + exact should match the log");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_block_range() {
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    // Put logs in slot 1 only (slot 0 is genesis)
+    let logs = vec![EvmLogEntry {
+        tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
+        log: EvmLog { address: [0x11; 20], topics: vec![[0xAA; 32]], data: vec![1] },
+    }];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    // Query only slot 0 — should NOT find the log
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x0", "toBlock": "0x0"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp["result"].as_array().unwrap();
+    // Slot 0 should have no EVM structured logs
+    let has_our_log = result
+        .iter()
+        .any(|l| l["data"].as_str().unwrap() == format!("0x{}", hex::encode([1u8])));
+    assert!(!has_our_log, "Slot 0 should not contain the slot-1 log");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_log_format_complete() {
+    // Verify all EIP-1474 required fields are present in each log entry
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+
+    let logs = vec![EvmLogEntry {
+        tx_hash: [0x42; 32],
+        tx_index: 3,
+        log_index: 7,
+        log: EvmLog {
+            address: [0xDE; 20],
+            topics: vec![[0x01; 32]],
+            data: vec![0xAB, 0xCD],
+        },
+    }];
+    state.put_evm_logs_for_slot(1, &logs).unwrap();
+
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x1", "toBlock": "0x1"}]),
+    )
+    .await
+    .unwrap();
+    let result = resp["result"].as_array().unwrap();
+    // Find our specific log
+    let our_log = result.iter().find(|l| {
+        l["transactionHash"].as_str().unwrap() == format!("0x{}", hex::encode([0x42; 32]))
+    });
+    assert!(our_log.is_some(), "Should find our structured EVM log");
+    let log = our_log.unwrap();
+
+    // Check all required EIP-1474 log fields
+    assert!(log.get("address").is_some(), "Must have address");
+    assert!(log.get("topics").is_some(), "Must have topics");
+    assert!(log.get("data").is_some(), "Must have data");
+    assert!(log.get("blockNumber").is_some(), "Must have blockNumber");
+    assert!(log.get("blockHash").is_some(), "Must have blockHash");
+    assert!(log.get("transactionHash").is_some(), "Must have transactionHash");
+    assert!(log.get("transactionIndex").is_some(), "Must have transactionIndex");
+    assert!(log.get("logIndex").is_some(), "Must have logIndex");
+    assert!(log.get("removed").is_some(), "Must have removed");
+
+    // Verify hex formatting
+    assert!(log["address"].as_str().unwrap().starts_with("0x"));
+    assert!(log["blockNumber"].as_str().unwrap().starts_with("0x"));
+    assert!(log["blockHash"].as_str().unwrap().starts_with("0x"));
+    assert!(log["transactionHash"].as_str().unwrap().starts_with("0x"));
+    assert_eq!(log["removed"], false);
+}
+
+#[tokio::test]
+async fn test_evm_precompile_addresses_discoverable() {
+    // Verify the supported_precompiles() function returns standard Ethereum precompiles
+    use moltchain_core::{
+        supported_precompiles,
+        PRECOMPILE_ECRECOVER, PRECOMPILE_SHA256, PRECOMPILE_RIPEMD160,
+        PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_BN256_ADD,
+        PRECOMPILE_BN256_MUL, PRECOMPILE_BN256_PAIRING, PRECOMPILE_BLAKE2F,
+    };
+
+    let precompiles = supported_precompiles();
+    assert_eq!(precompiles.len(), 9);
+
+    // Verify names match standard Ethereum precompile names
+    let names: Vec<&str> = precompiles.iter().map(|(_, name)| *name).collect();
+    assert!(names.contains(&"ecRecover"));
+    assert!(names.contains(&"SHA-256"));
+    assert!(names.contains(&"RIPEMD-160"));
+    assert!(names.contains(&"identity"));
+    assert!(names.contains(&"modexp"));
+    assert!(names.contains(&"bn256Add"));
+    assert!(names.contains(&"bn256Mul"));
+    assert!(names.contains(&"bn256Pairing"));
+    assert!(names.contains(&"blake2f"));
+
+    // Verify addresses are the standard ones
+    assert_eq!(precompiles[0].0, PRECOMPILE_ECRECOVER);
+    assert_eq!(precompiles[1].0, PRECOMPILE_SHA256);
+    assert_eq!(precompiles[2].0, PRECOMPILE_RIPEMD160);
+    assert_eq!(precompiles[3].0, PRECOMPILE_IDENTITY);
+    assert_eq!(precompiles[4].0, PRECOMPILE_MODEXP);
+    assert_eq!(precompiles[5].0, PRECOMPILE_BN256_ADD);
+    assert_eq!(precompiles[6].0, PRECOMPILE_BN256_MUL);
+    assert_eq!(precompiles[7].0, PRECOMPILE_BN256_PAIRING);
+    assert_eq!(precompiles[8].0, PRECOMPILE_BLAKE2F);
+}
+
+#[tokio::test]
+async fn test_evm_topics_match_integration() {
+    // Verify topics_match() works correctly as used by handle_eth_get_logs
+    use moltchain_core::topics_match;
+
+    let transfer_topic = [0xDD; 32];
+    let from_topic = [0xAA; 32];
+    let to_topic = [0xBB; 32];
+    let log_topics = vec![transfer_topic, from_topic, to_topic];
+
+    // Exact match on event signature
+    assert!(topics_match(&log_topics, &[Some(vec![transfer_topic])]));
+
+    // Wildcard + exact match on 'from'
+    assert!(topics_match(&log_topics, &[None, Some(vec![from_topic])]));
+
+    // Wildcard + wildcard + exact match on 'to'
+    assert!(topics_match(&log_topics, &[None, None, Some(vec![to_topic])]));
+
+    // OR filter: match transfer OR approval at position 0
+    let approval_topic = [0xEE; 32];
+    assert!(topics_match(&log_topics, &[Some(vec![transfer_topic, approval_topic])]));
+
+    // No match
+    assert!(!topics_match(&log_topics, &[Some(vec![approval_topic])]));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Task 3.9: Archive Mode — getAccountAtSlot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_native_get_account_at_slot_archive_disabled() {
+    let app = fresh_app();
+    // archive mode is off by default → should return error
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountAtSlot",
+        json!(["11111111111111111111111111111111", 10]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp.get("error").is_some(), "should error when archive disabled");
+}
+
+#[tokio::test]
+async fn test_native_get_account_at_slot_not_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    state.set_archive_mode(true);
+    let _ = Box::leak(Box::new(dir));
+    let app = build_rpc_router(
+        state,
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountAtSlot",
+        json!(["11111111111111111111111111111111", 10]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp.get("error").is_some(), "no snapshot → error");
+}
+
+#[tokio::test]
+async fn test_native_get_account_at_slot_found() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    state.set_archive_mode(true);
+
+    let pk = Pubkey([0x42; 32]);
+    let acc = Account::new(5, Pubkey([0u8; 32])); // 5 MOLT = 5_000_000_000 shells
+    state.put_account_snapshot(&pk, &acc, 100).unwrap();
+
+    let _ = Box::leak(Box::new(dir));
+    let app = build_rpc_router(
+        state,
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountAtSlot",
+        json!([pk.to_base58(), 100]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = resp.get("result").expect("should have result");
+    assert_eq!(result["shells"], 5_000_000_000u64);
+    assert_eq!(result["slot"], 100);
+}
+
+#[tokio::test]
+async fn test_native_get_account_at_slot_missing_params() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    state.set_archive_mode(true);
+    let _ = Box::leak(Box::new(dir));
+    let app = build_rpc_router(
+        state,
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+    // Missing slot parameter
+    let resp = rpc_p(&app, "/", "getAccountAtSlot", json!(["11111111111111111111111111111111"]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp.get("error").is_some());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// M-6: Wire-format envelope integration tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// sendTransaction accepts V1 wire-envelope encoded transaction.
+#[tokio::test]
+async fn test_send_transaction_wire_envelope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    // Fund a sender
+    let kp = moltchain_core::Keypair::generate();
+    let pk = kp.pubkey();
+    let mut sender = moltchain_core::Account::new(100, pk);
+    sender.spendable = sender.shells;
+    state.put_account(&pk, &sender);
+    state.set_last_slot(1);
+
+    let app = build_rpc_router(
+        state.clone(),
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+
+    // Build a transfer transaction
+    let receiver = moltchain_core::Pubkey([0x42; 32]);
+    let blockhash = moltchain_core::Hash::default();
+    let mut data = vec![0u8]; // transfer opcode
+    data.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // 1 MOLT
+    let ix = moltchain_core::Instruction {
+        program_id: moltchain_core::Pubkey([0; 32]),
+        accounts: vec![pk, receiver],
+        data,
+    };
+    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let sig = kp.sign(&msg.serialize());
+    let tx = moltchain_core::Transaction {
+        signatures: vec![sig],
+        message: msg,
+        tx_type: moltchain_core::TransactionType::Native,
+    };
+
+    // Encode with wire envelope
+    let wire = tx.to_wire();
+    assert_eq!(&wire[0..2], &moltchain_core::TX_WIRE_MAGIC);
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wire);
+
+    // Send via RPC — should decode successfully
+    let resp = rpc_p(&app, "/", "sendTransaction", json!([b64]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    // It may fail for blockhash expiry or other reasons but should NOT fail
+    // with "Invalid transaction" — the decode must succeed.
+    if let Some(err) = resp.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        assert!(
+            !msg.contains("Invalid transaction"),
+            "Wire envelope decode failed: {}",
+            msg
+        );
+    }
+}
+
+/// sendTransaction still accepts legacy bincode (no envelope).
+#[tokio::test]
+async fn test_send_transaction_legacy_bincode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let kp = moltchain_core::Keypair::generate();
+    let pk = kp.pubkey();
+    let mut sender = moltchain_core::Account::new(100, pk);
+    sender.spendable = sender.shells;
+    state.put_account(&pk, &sender);
+    state.set_last_slot(1);
+
+    let app = build_rpc_router(
+        state.clone(),
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+
+    let receiver = moltchain_core::Pubkey([0x42; 32]);
+    let blockhash = moltchain_core::Hash::default();
+    let mut data = vec![0u8];
+    data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+    let ix = moltchain_core::Instruction {
+        program_id: moltchain_core::Pubkey([0; 32]),
+        accounts: vec![pk, receiver],
+        data,
+    };
+    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let sig = kp.sign(&msg.serialize());
+    let tx = moltchain_core::Transaction {
+        signatures: vec![sig],
+        message: msg,
+        tx_type: moltchain_core::TransactionType::Native,
+    };
+
+    // Encode as legacy bincode (no envelope)
+    let legacy = bincode::serialize(&tx).unwrap();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &legacy);
+
+    let resp = rpc_p(&app, "/", "sendTransaction", json!([b64]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    if let Some(err) = resp.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        assert!(
+            !msg.contains("Invalid transaction"),
+            "Legacy bincode decode failed: {}",
+            msg
+        );
+    }
+}
+
+/// simulateTransaction accepts wire-envelope.
+#[tokio::test]
+async fn test_simulate_transaction_wire_envelope() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let kp = moltchain_core::Keypair::generate();
+    let pk = kp.pubkey();
+    let mut sender = moltchain_core::Account::new(100, pk);
+    sender.spendable = sender.shells;
+    state.put_account(&pk, &sender);
+    state.set_last_slot(1);
+
+    let app = build_rpc_router(
+        state.clone(),
+        None, None, None,
+        "moltchain-test".to_string(), "molt-test".to_string(),
+        None, None, None, None, None,
+    );
+
+    let receiver = moltchain_core::Pubkey([0x42; 32]);
+    let blockhash = moltchain_core::Hash::default();
+    let mut data = vec![0u8];
+    data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
+    let ix = moltchain_core::Instruction {
+        program_id: moltchain_core::Pubkey([0; 32]),
+        accounts: vec![pk, receiver],
+        data,
+    };
+    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let sig = kp.sign(&msg.serialize());
+    let tx = moltchain_core::Transaction {
+        signatures: vec![sig],
+        message: msg,
+        tx_type: moltchain_core::TransactionType::Native,
+    };
+
+    let wire = tx.to_wire();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wire);
+
+    let resp = rpc_p(&app, "/", "simulateTransaction", json!([b64]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    // Should not fail with decode error
+    if let Some(err) = resp.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        assert!(
+            !msg.contains("Invalid transaction"),
+            "Wire envelope decode in simulateTransaction failed: {}",
+            msg
+        );
+    }
 }

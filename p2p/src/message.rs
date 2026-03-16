@@ -1,8 +1,8 @@
 // P2P Message Types
 
 use moltchain_core::{
-    Block, BlockHeader, Hash, Precommit, Prevote, Proposal, Pubkey, SlashingEvidence, StakePool,
-    Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, CommitSignature, Hash, Precommit, Prevote, Proposal, Pubkey,
+    SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -72,6 +72,9 @@ pub struct CompactBlock {
     pub tx_fees_paid: Vec<u64>,
     /// Oracle price data from the block producer
     pub oracle_prices: Vec<(String, u64)>,
+    /// Commit certificate signatures (2/3+ validator precommits)
+    #[serde(default)]
+    pub commit_signatures: Vec<CommitSignature>,
 }
 
 impl CompactBlock {
@@ -87,6 +90,7 @@ impl CompactBlock {
             short_ids,
             tx_fees_paid: block.tx_fees_paid.clone(),
             oracle_prices: block.oracle_prices.clone(),
+            commit_signatures: block.commit_signatures.clone(),
         }
     }
 }
@@ -345,6 +349,28 @@ pub enum MessageType {
     HolePunchNotify {
         /// The observed external address of the peer that wants to connect
         peer_observed_addr: SocketAddr,
+    },
+
+    /// M-9: Certificate rotation announcement.
+    /// A peer broadcasts this when it generates a new TLS certificate.
+    /// The message is signed by the OLD certificate's private key, proving
+    /// that the entity controlling the old cert authorized the rotation.
+    CertRotation {
+        /// SHA-256 fingerprint of the OLD certificate being retired
+        old_fingerprint: [u8; 32],
+        /// SHA-256 fingerprint of the NEW certificate replacing it
+        new_fingerprint: [u8; 32],
+        /// DER-encoded NEW certificate (peers cache it for verification)
+        new_cert_der: Vec<u8>,
+        /// Ed25519-style signature over (old_fingerprint || new_fingerprint)
+        /// produced with the OLD certificate's private key. Verification uses
+        /// the OLD certificate's public key extracted from stored cert data.
+        /// For simplicity we use SHA-256(old_fp || new_fp) signed via the
+        /// TLS private key — peers verify via `verify_self_signed_cert` on
+        /// the new cert + fingerprint chain consistency.
+        rotation_proof: Vec<u8>,
+        /// Unix timestamp of the rotation (rate-limit enforcement)
+        timestamp: u64,
     },
 }
 

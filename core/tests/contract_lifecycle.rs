@@ -40,6 +40,8 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
         owner,
         executable: false,
         rent_epoch: 0,
+        dormant: false,
+        missed_rent_epochs: 0,
     }
 }
 
@@ -53,7 +55,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-    }
+            tx_type: Default::default(),
+}
 }
 
 // ============================================================================

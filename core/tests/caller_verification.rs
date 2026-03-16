@@ -350,12 +350,12 @@ fn a12_01_genesis_distribution_matches_multisig() {
 
     // Canonical allocations from multisig.rs GENESIS_DISTRIBUTION
     let canonical = [
-        ("validator_rewards", 100_000_000u64),
-        ("community_treasury", 250_000_000),
-        ("builder_grants", 350_000_000),
-        ("founding_moltys", 100_000_000),
-        ("ecosystem_partnerships", 100_000_000),
-        ("reserve_pool", 100_000_000),
+        ("validator_rewards", 50_000_000u64),
+        ("community_treasury", 125_000_000),
+        ("builder_grants", 175_000_000),
+        ("founding_moltys", 50_000_000),
+        ("ecosystem_partnerships", 50_000_000),
+        ("reserve_pool", 50_000_000),
     ];
 
     // Verify multisig.rs has the canonical values
@@ -399,11 +399,11 @@ fn a12_01_genesis_distribution_matches_multisig() {
         );
     }
 
-    // Verify totals: both should sum to 1B
+    // Verify totals: both should sum to 500M
     let total: u64 = canonical.iter().map(|(_, a)| a).sum();
     assert_eq!(
-        total, 1_000_000_000,
-        "REGRESSION A12-01: canonical genesis distribution sums to {} (expected 1,000,000,000)",
+        total, 500_000_000,
+        "REGRESSION A12-01: canonical genesis distribution sums to {} (expected 500,000,000)",
         total
     );
 }

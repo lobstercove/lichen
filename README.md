@@ -395,7 +395,7 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 Cryptographic on-chain identity with reputation tiers, skill attestations, and fee discounts. Agents build trust through verifiable contribution history.
 
 ### Ultra-Low Fees
-**$0.0001 per transaction (0.001 MOLT).** 40 % burned (deflationary), 30 % to block producer, 10 % to voters, 10 % to treasury, 10 % to community.
+**$0.0001 per transaction (0.001 MOLT).** 40 % burned (counter-pressure to inflation), 30 % to block producer, 10 % to voters, 10 % to treasury, 10 % to community.
 
 ### Smart Contracts
 Write WASM programs in Rust. Deploy with the CLI or the browser-based **Programs IDE**.
@@ -417,7 +417,7 @@ Native bridge support for Solana, Ethereum and BNB Chain assets (wSOL, wETH, wBN
 
 ## Tokenomics
 
-**$MOLT** — 1 billion fixed supply, no inflation.
+**$MOLT** — 500 million genesis supply with inflationary block rewards (4% initial, decaying 15%/yr to 0.15% floor) and 40% fee burn.
 
 | Allocation | Share |
 |---|---|

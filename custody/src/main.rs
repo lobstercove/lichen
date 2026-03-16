@@ -4151,7 +4151,7 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
     let mut tx = Transaction::new(message);
     tx.signatures.push(signature);
 
-    let tx_bytes = bincode::serialize(&tx).map_err(|e| format!("encode tx: {}", e))?;
+    let tx_bytes = tx.to_wire();
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(tx_bytes);
 
     let token_label = match job.source_asset.as_str() {
