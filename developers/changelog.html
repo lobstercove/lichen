@@ -79,6 +79,41 @@
         <!-- Timeline -->
         <div class="changelog-timeline">
 
+            <!-- ============ v0.4.0 ============ -->
+            <div class="changelog-entry">
+                <div class="changelog-header">
+                    <span class="changelog-version">v0.4.0</span>
+                    <span class="changelog-date">March 17, 2026</span>
+                </div>
+                <h3 class="changelog-title">Blockchain Alignment Complete &mdash; All 39 Findings Resolved, 3-Validator
+                    BFT Testnet Live</h3>
+
+                <div class="changelog-section" data-type="new">
+                    <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> Highlights</h4>
+                    <ul>
+                        <li><strong>All 39 Blockchain Alignment Findings Resolved</strong> &mdash; Phases 1&ndash;4
+                            complete: supply model overhaul (inflationary + burn), block commit certificates, Merkle
+                            state proofs, BFT timeout backoff, state growth management, durable nonces, EVM transaction
+                            envelope, governance parameter changes, oracle attestation, compute metering, deterministic
+                            BFT timestamps, contract upgrade timelocks, EVM precompiles + eth_getLogs, archive mode,
+                            wire envelope format, TOFU rotation, eclipse defense, IBC exploration, and more.</li>
+                        <li><strong>3-Validator BFT Testnet Deployed</strong> &mdash; US, EU, and SEA validators running
+                            Tendermint BFT consensus with round 0 commits, 29 contracts at genesis.</li>
+                        <li><strong>1,551 Tests Passing</strong> &mdash; Zero warnings, clean clippy across workspace.
+                        </li>
+                        <li><strong>New System Instructions 26&ndash;30</strong> &mdash; RegisterValidator (26),
+                            SlashValidator (27), DurableNonce (28, 4 sub-opcodes), GovernanceParamChange (29),
+                            OracleAttestation (30).</li>
+                        <li><strong>New RPC Methods</strong> &mdash; <code>getBlockCommit</code>,
+                            <code>getAccountProof</code>, <code>estimateTransactionFee</code>,
+                            <code>getAccountAtSlot</code>, <code>getOraclePrices</code>.</li>
+                        <li><strong>Explorer Updates</strong> &mdash; Supply metrics reordered (Total Supply first),
+                            reward rate label fix, block reward epoch display, compute units in transaction details.
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- ============ v0.3.7 ============ -->
             <div class="changelog-entry">
                 <div class="changelog-header">
@@ -94,7 +129,8 @@
                         <li><strong>Archive Mode &amp; Historical State Queries</strong> &mdash; new
                             <code>getAccountAtSlot</code> RPC method returns account state at any past slot.
                             Write-through snapshots stored in dedicated <code>CF_ACCOUNT_SNAPSHOTS</code> column family
-                            with pruning support (Task 3.9, M-16)</li>
+                            with pruning support (Task 3.9, M-16)
+                        </li>
                         <li><strong>Wire Envelope Format (Payload Type Envelope)</strong> &mdash; transactions now use a
                             4-byte header (<code>[0x4D, 0x54, version, type]</code>) followed by bincode payload.
                             Three-format decoder supports V1 envelope, legacy bincode, and JSON for full backward
@@ -154,16 +190,19 @@
                             <code>SHA-256(bincode(message) || sig_0 || sig_1 || ...)</code>. New
                             <code>Transaction::message_hash()</code> method returns the signature-independent message
                             digest. RPC <code>getTransaction</code> now includes <code>message_hash</code> field
-                            alongside the txid. 8 new wire-format determinism tests (Task 4.1, H-7)</li>
+                            alongside the txid. 8 new wire-format determinism tests (Task 4.1, H-7)
+                        </li>
                         <li><strong>Contract Storage Metering</strong> &mdash; per-byte compute cost on
                             <code>storage_write</code> (1 CU/byte) with 10 MB total storage cap per contract. Live byte
                             tracking via <code>ContractContext.storage_bytes_used</code>; <code>storage_delete</code>
-                            reclaims freed bytes. Prevents unbounded state growth (Task 4.3, M-4)</li>
+                            reclaims freed bytes. Prevents unbounded state growth (Task 4.3, M-4)
+                        </li>
                         <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; comprehensive research document at
                             <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing MoltChain
                             primitives (commit certificates, state proofs, BFT finality), gap analysis, and phased
                             implementation roadmap. Full IBC deferred; MoltBridge adequate for current phase (Task 4.4,
-                            H-14)</li>
+                            H-14)
+                        </li>
                     </ul>
                 </div>
 
@@ -173,7 +212,8 @@
                         <li><strong>Fee Discount MEV Vector Removed</strong> &mdash; deprecated
                             <code>apply_reputation_fee_discount()</code>; all transactions now pay the flat base fee
                             regardless of MoltyID reputation score. Eliminates identity-based fee manipulation and
-                            aligns with standard blockchain fee models (Task 4.2, M-7)</li>
+                            aligns with standard blockchain fee models (Task 4.2, M-7)
+                        </li>
                     </ul>
                 </div>
             </div>
