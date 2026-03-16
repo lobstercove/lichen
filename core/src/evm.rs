@@ -642,12 +642,7 @@ pub fn execute_evm_transaction(
                 .iter()
                 .map(|log| EvmLog {
                     address: revm_address_to_array(log.address),
-                    topics: log
-                        .data
-                        .topics()
-                        .iter()
-                        .map(|t| t.0)
-                        .collect(),
+                    topics: log.data.topics().iter().map(|t| t.0).collect(),
                     data: log.data.data.to_vec(),
                 })
                 .collect();
@@ -1279,7 +1274,11 @@ mod tests {
     #[test]
     fn test_supported_precompiles_returns_nine() {
         let precompiles = supported_precompiles();
-        assert_eq!(precompiles.len(), 9, "Should return exactly 9 precompiles (0x01-0x09)");
+        assert_eq!(
+            precompiles.len(),
+            9,
+            "Should return exactly 9 precompiles (0x01-0x09)"
+        );
     }
 
     #[test]
@@ -1287,9 +1286,19 @@ mod tests {
         let precompiles = supported_precompiles();
         for (i, (addr, _name)) in precompiles.iter().enumerate() {
             // Each precompile address should be [0..0, N] where N = i+1
-            assert_eq!(addr[19], (i + 1) as u8, "Precompile {} should have addr byte 0x{:02x}", i, i + 1);
+            assert_eq!(
+                addr[19],
+                (i + 1) as u8,
+                "Precompile {} should have addr byte 0x{:02x}",
+                i,
+                i + 1
+            );
             // First 19 bytes should be zero
-            assert_eq!(&addr[..19], &[0u8; 19], "Precompile prefix bytes should be zero");
+            assert_eq!(
+                &addr[..19],
+                &[0u8; 19],
+                "Precompile prefix bytes should be zero"
+            );
         }
     }
 
@@ -1365,13 +1374,11 @@ mod tests {
             block_hash: None,
             contract_address: Some([0xDD; 20]),
             logs: vec![],
-            structured_logs: vec![
-                EvmLog {
-                    address: [0xDD; 20],
-                    topics: vec![[0x11; 32], [0x22; 32]],
-                    data: vec![0xAB, 0xCD],
-                },
-            ],
+            structured_logs: vec![EvmLog {
+                address: [0xDD; 20],
+                topics: vec![[0x11; 32], [0x22; 32]],
+                data: vec![0xAB, 0xCD],
+            }],
         };
         let bytes = bincode::serialize(&receipt).expect("serialize");
         let decoded: EvmReceipt = bincode::deserialize(&bytes).expect("deserialize");

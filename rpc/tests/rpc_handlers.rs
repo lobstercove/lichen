@@ -326,7 +326,9 @@ async fn test_health_endpoint() {
 #[tokio::test]
 async fn test_get_version() {
     let app = create_test_app();
-    let response = rpc_call(&app, "/solana-compat", "getVersion").await.unwrap();
+    let response = rpc_call(&app, "/solana-compat", "getVersion")
+        .await
+        .unwrap();
     // Should contain a "solana-core" or similar version field
     let result = &response["result"];
     assert!(result.is_object(), "getVersion should return an object");

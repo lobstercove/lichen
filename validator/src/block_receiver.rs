@@ -4,7 +4,7 @@
 // engine (via proposals) or the sync manager (via block range responses).
 // This module contains pure validation logic — no state mutation.
 
-use moltchain_core::{Block, Pubkey, ValidatorSet, MIN_VALIDATOR_STAKE, StakePool};
+use moltchain_core::{Block, Pubkey, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE};
 
 /// Errors from block validation.
 #[derive(Debug)]
@@ -22,13 +22,22 @@ impl std::fmt::Display for BlockValidationError {
             Self::InvalidSignature => write!(f, "invalid block signature"),
             Self::InvalidStructure(msg) => write!(f, "invalid structure: {msg}"),
             Self::TimestampTooFarAhead { timestamp, now } => {
-                write!(f, "timestamp {timestamp} is {}s in the future", timestamp - now)
+                write!(
+                    f,
+                    "timestamp {timestamp} is {}s in the future",
+                    timestamp - now
+                )
             }
             Self::ProducerNotInValidatorSet(pk) => {
                 write!(f, "producer {} not in validator set", pk.to_base58())
             }
             Self::ProducerBelowMinStake { pubkey, stake } => {
-                write!(f, "producer {} stake {} below minimum", pubkey.to_base58(), stake)
+                write!(
+                    f,
+                    "producer {} stake {} below minimum",
+                    pubkey.to_base58(),
+                    stake
+                )
             }
         }
     }

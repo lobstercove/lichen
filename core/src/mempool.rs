@@ -352,7 +352,9 @@ mod tests {
         let tx_high_rep = create_test_transaction(2);
 
         // Both have fee=1000 — high reputation should NOT get priority
-        mempool.add_transaction(tx_low_rep.clone(), 1000, 0).unwrap();
+        mempool
+            .add_transaction(tx_low_rep.clone(), 1000, 0)
+            .unwrap();
         mempool.add_transaction(tx_high_rep, 1000, 10_000).unwrap();
 
         let top = mempool.get_top_transactions(1);
@@ -370,7 +372,9 @@ mod tests {
         let tx_high_rep = create_test_transaction(2);
 
         // High fee, no reputation
-        mempool.add_transaction(tx_high_fee.clone(), 100_000, 0).unwrap();
+        mempool
+            .add_transaction(tx_high_fee.clone(), 100_000, 0)
+            .unwrap();
         // Low fee, Tier 5 reputation — should NOT get express lane priority
         mempool.add_transaction(tx_high_rep, 100, 10_000).unwrap();
 

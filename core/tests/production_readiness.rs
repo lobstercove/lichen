@@ -66,8 +66,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-}
+        tx_type: Default::default(),
+    }
 }
 
 fn now_ms() -> u64 {
@@ -379,8 +379,8 @@ fn test_multiple_instructions_in_one_tx() {
     let tx = Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-};
+        tx_type: Default::default(),
+    };
     let result = processor.process_transaction(&tx, &validator.pubkey());
     assert!(
         result.success,
@@ -1265,7 +1265,10 @@ fn test_stakepool_block_reward_distribution() {
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
     let reward = pool.distribute_block_reward(&v1.pubkey(), 1, false, GENESIS_SUPPLY_SHELLS);
-    assert_eq!(reward, 0, "Per-slot block reward should be zero in epoch model");
+    assert_eq!(
+        reward, 0,
+        "Per-slot block reward should be zero in epoch model"
+    );
     // Epoch-based distribution should produce positive rewards
     let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
     assert!(total_minted > 0, "Epoch staker rewards should be positive");

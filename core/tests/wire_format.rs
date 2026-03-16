@@ -505,7 +505,11 @@ fn test_hash_determinism_same_tx() {
 fn test_hash_determinism_cloned_tx() {
     let tx = make_test_transaction();
     let tx2 = tx.clone();
-    assert_eq!(tx.hash(), tx2.hash(), "Cloned transaction must hash identically");
+    assert_eq!(
+        tx.hash(),
+        tx2.hash(),
+        "Cloned transaction must hash identically"
+    );
 }
 
 #[test]

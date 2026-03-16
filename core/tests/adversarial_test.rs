@@ -52,8 +52,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-}
+        tx_type: Default::default(),
+    }
 }
 
 fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
@@ -486,8 +486,8 @@ fn test_empty_transaction() {
     let tx = Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-};
+        tx_type: Default::default(),
+    };
 
     let result = processor.process_transaction(&tx, &validator.pubkey());
     // Should fail: zero blockhash OR no instructions

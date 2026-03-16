@@ -364,8 +364,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         // Serialize transaction (M-6 wire envelope)
         let tx_bytes = transaction.to_wire();
@@ -419,8 +419,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
@@ -467,8 +467,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
@@ -530,8 +530,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
@@ -584,8 +584,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
@@ -730,8 +730,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);
@@ -771,8 +771,8 @@ impl RpcClient {
         let transaction = Transaction {
             signatures: vec![signature],
             message,
-                    tx_type: Default::default(),
-};
+            tx_type: Default::default(),
+        };
 
         let tx_bytes = transaction.to_wire();
         let tx_base64 = base64_encode(&tx_bytes);

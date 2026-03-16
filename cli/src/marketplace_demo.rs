@@ -312,8 +312,8 @@ async fn send_tx(
     let tx = Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-};
+        tx_type: Default::default(),
+    };
 
     let tx_bytes = tx.to_wire();
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);

@@ -364,10 +364,7 @@ pub fn compute_bft_timestamp(
         })
         .map(|cs| {
             let pubkey = crate::Pubkey(cs.validator);
-            let stake = stake_pool
-                .get_stake(&pubkey)
-                .map(|s| s.amount)
-                .unwrap_or(0);
+            let stake = stake_pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(0);
             (cs.timestamp, stake)
         })
         .filter(|(_, stake)| *stake > 0)
@@ -1092,9 +1089,21 @@ mod tests {
 
         // Timestamps: [1000, 1002, 1004] — median with equal stake = 1002
         let sigs = vec![
-            CommitSignature { validator: keys[0], signature: [0u8; 64], timestamp: 1000 },
-            CommitSignature { validator: keys[1], signature: [0u8; 64], timestamp: 1002 },
-            CommitSignature { validator: keys[2], signature: [0u8; 64], timestamp: 1004 },
+            CommitSignature {
+                validator: keys[0],
+                signature: [0u8; 64],
+                timestamp: 1000,
+            },
+            CommitSignature {
+                validator: keys[1],
+                signature: [0u8; 64],
+                timestamp: 1002,
+            },
+            CommitSignature {
+                validator: keys[2],
+                signature: [0u8; 64],
+                timestamp: 1004,
+            },
         ];
 
         let result = compute_bft_timestamp(&sigs, &vs, &sp, None);
@@ -1109,9 +1118,21 @@ mod tests {
         let mut sp = StakePool::new();
 
         // Validator A: 60% stake, ts=1000 | B: 25%, ts=1005 | C: 15%, ts=1010
-        let ka = { let mut k = [0u8; 32]; k[0] = 1; k };
-        let kb = { let mut k = [0u8; 32]; k[0] = 2; k };
-        let kc = { let mut k = [0u8; 32]; k[0] = 3; k };
+        let ka = {
+            let mut k = [0u8; 32];
+            k[0] = 1;
+            k
+        };
+        let kb = {
+            let mut k = [0u8; 32];
+            k[0] = 2;
+            k
+        };
+        let kc = {
+            let mut k = [0u8; 32];
+            k[0] = 3;
+            k
+        };
 
         // Stakes proportional: 60%, 25%, 15% above MIN_VALIDATOR_STAKE
         let base = 100_000_000_000_000u64; // 100K MOLT
@@ -1132,9 +1153,21 @@ mod tests {
         }
 
         let sigs = vec![
-            CommitSignature { validator: ka, signature: [0u8; 64], timestamp: 1000 },
-            CommitSignature { validator: kb, signature: [0u8; 64], timestamp: 1005 },
-            CommitSignature { validator: kc, signature: [0u8; 64], timestamp: 1010 },
+            CommitSignature {
+                validator: ka,
+                signature: [0u8; 64],
+                timestamp: 1000,
+            },
+            CommitSignature {
+                validator: kb,
+                signature: [0u8; 64],
+                timestamp: 1005,
+            },
+            CommitSignature {
+                validator: kc,
+                signature: [0u8; 64],
+                timestamp: 1010,
+            },
         ];
 
         // Sorted: (1000, 60%), (1005, 25%), (1010, 15%)
@@ -1170,9 +1203,11 @@ mod tests {
         });
         sp.stake(crate::Pubkey(k), stake, 0).ok();
 
-        let sigs = vec![
-            CommitSignature { validator: k, signature: [0u8; 64], timestamp: 500 },
-        ];
+        let sigs = vec![CommitSignature {
+            validator: k,
+            signature: [0u8; 64],
+            timestamp: 500,
+        }];
 
         // Parent timestamp is 1000, BFT median is 500 → clamps to 1001
         let result = compute_bft_timestamp(&sigs, &vs, &sp, Some(1000));

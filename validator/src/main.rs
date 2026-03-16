@@ -5567,6 +5567,9 @@ async fn run_validator() {
             .unwrap_or(None)
             .map(|a| a.staked)
             .unwrap_or(0);
+        // Use current chain tip so snapshots shared with peers pass the
+        // slot-drift check (MAX_SLOT_DRIFT_FOR_NEW_VALIDATOR = 500).
+        let current_tip = state.get_last_slot().unwrap_or(0);
 
         if let Some(genesis_pubkey) = genesis_pubkey {
             if validator_pubkey != genesis_pubkey {
@@ -5584,8 +5587,8 @@ async fn run_validator() {
                         blocks_proposed: 0,
                         votes_cast: 0,
                         correct_votes: 0,
-                        last_active_slot: 0,
-                        joined_slot: 0,
+                        last_active_slot: current_tip,
+                        joined_slot: current_tip,
                         commission_rate: 500,
                         transactions_processed: 0,
                     });
@@ -5607,8 +5610,8 @@ async fn run_validator() {
                 blocks_proposed: 0,
                 votes_cast: 0,
                 correct_votes: 0,
-                last_active_slot: 0,
-                joined_slot: 0,
+                last_active_slot: current_tip,
+                joined_slot: current_tip,
                 commission_rate: 500,
                 transactions_processed: 0,
             });
@@ -6370,6 +6373,12 @@ async fn run_validator() {
             let mut fork_choice = ForkChoice::new();
             // Periodically prune old entries (keep last 1000 slots)
             let mut prune_below_slot: u64 = 0;
+            // Periodic sync check: every 5 seconds, check if we're behind peers
+            // and trigger sync even when no blocks are arriving. This prevents a
+            // stalled chain from permanently blocking catch-up (Tendermint-style
+            // "blockchain reactor" pattern — periodic peer polling).
+            let mut sync_check_interval = time::interval(Duration::from_secs(5));
+            sync_check_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             // Priority select: drain sync-response blocks (BlockRangeResponse /
             // BlockResponse) before live blocks so catch-up is never starved.
             loop {
@@ -6377,6 +6386,69 @@ async fn run_validator() {
                     biased;
                     Some(b) = sync_block_rx.recv() => b,
                     Some(b) = block_rx.recv() => b,
+                    // Periodic sync check: fires every 5s to trigger catch-up
+                    // when the chain is stalled and no blocks are arriving.
+                    _ = sync_check_interval.tick() => {
+                        let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
+                        if let Some((start, end)) = sync_mgr.should_sync(current_slot).await {
+                            let gap = end.saturating_sub(current_slot);
+                            if gap > sync::WARP_SYNC_THRESHOLD {
+                                sync_mgr.set_sync_mode(sync::SyncMode::Warp).await;
+                            } else if gap > sync::HEADER_SYNC_FULL_EXECUTION_WINDOW * 2 {
+                                sync_mgr.set_sync_mode(sync::SyncMode::HeaderOnly).await;
+                            } else {
+                                sync_mgr.set_sync_mode(sync::SyncMode::Full).await;
+                            }
+                            info!("🔄 Periodic sync check: behind by {} blocks ({} to {})", gap, start, end);
+                            sync_mgr.start_sync(start, end).await;
+                            let mut peer_infos = peer_mgr_for_sync.get_peer_infos();
+                            peer_infos.sort_by(|a, b| {
+                                b.1.cmp(&a.1)
+                                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                            });
+                            let all_peers: Vec<std::net::SocketAddr> = peer_infos
+                                .into_iter()
+                                .take(SYNC_REQUEST_FANOUT.max(1))
+                                .map(|(addr, _)| addr)
+                                .collect();
+                            let mut chunk_start = start;
+                            let mut chunk_idx: usize = 0;
+                            while chunk_start <= end {
+                                let chunk_end = std::cmp::min(
+                                    chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
+                                    end,
+                                );
+                                if all_peers.is_empty() {
+                                    let request_msg = P2PMessage::new(
+                                        MessageType::BlockRangeRequest {
+                                            start_slot: chunk_start,
+                                            end_slot: chunk_end,
+                                        },
+                                        local_addr,
+                                    );
+                                    peer_mgr_for_sync.broadcast(request_msg).await;
+                                } else {
+                                    let peer_addr = &all_peers[chunk_idx % all_peers.len()];
+                                    let request_msg = P2PMessage::new(
+                                        MessageType::BlockRangeRequest {
+                                            start_slot: chunk_start,
+                                            end_slot: chunk_end,
+                                        },
+                                        local_addr,
+                                    );
+                                    let _ = peer_mgr_for_sync
+                                        .send_to_peer(peer_addr, request_msg)
+                                        .await;
+                                }
+                                chunk_start = chunk_end + 1;
+                                chunk_idx += 1;
+                            }
+                            for slot in start..=end {
+                                sync_mgr.mark_requested(slot).await;
+                            }
+                        }
+                        continue;
+                    },
                     else => break,
                 };
                 let block_slot = block.header.slot;
@@ -10943,6 +11015,17 @@ async fn run_validator() {
     // or 100ms (pending TXs) to reduce QUIC stream pressure on P2P.
     let mut propose_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
 
+    // ── Height-frozen validator set snapshots ──
+    // Tendermint-style deferred activation: snapshot the validator set and
+    // stake pool at the START of each height. ALL consensus operations
+    // during that height use this frozen snapshot. New validators only
+    // enter the BFT quorum at the NEXT height. Without this, a concurrent
+    // P2P announcement adding a validator mid-height changes the quorum
+    // denominator (e.g., 3→4 validators), making 2/3 unreachable and
+    // stalling the chain.
+    let mut height_vs: ValidatorSet = validator_set.read().await.clone();
+    let mut height_pool: StakePool = stake_pool.read().await.clone();
+
     // ── Main BFT event loop ──
     loop {
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
@@ -10953,13 +11036,17 @@ async fn run_validator() {
             bft.start_height(new_height);
             parent_hash = get_parent_hash(&state);
 
-            let vs = validator_set.read().await;
-            let pool = stake_pool.read().await;
-            if bft.is_proposer(&vs, &pool, &parent_hash) {
+            // Re-snapshot for the new height (picks up validators added
+            // during the previous height — deferred activation).
+            height_vs = validator_set.read().await.clone();
+            height_pool = stake_pool.read().await.clone();
+
+            if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                 info!("👑 BFT: We are proposer for height={} round=0", new_height);
                 let mut mp = mempool.lock().await;
                 let oracle_snapshot = shared_oracle_prices.snapshot();
-                let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
+                let bft_ts =
+                    compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                 let (mut block, _) = block_producer::build_block(
                     &state,
                     &mut mp,
@@ -10972,9 +11059,7 @@ async fn run_validator() {
                 );
                 drop(mp);
                 block.sign(&validator_keypair);
-                let action = bft.create_proposal(block, &vs, &pool);
-                drop(pool);
-                drop(vs);
+                let action = bft.create_proposal(block, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -11030,8 +11115,6 @@ async fn run_validator() {
                     continue;
                 }
             } else {
-                drop(pool);
-                drop(vs);
                 timeout_handle = Some((
                     RoundStep::Propose,
                     bft.round,
@@ -11055,11 +11138,7 @@ async fn run_validator() {
         tokio::select! {
             // ── Incoming proposal ──
             Some(proposal) = proposal_rx.recv() => {
-                let vs = validator_set.read().await;
-                let pool = stake_pool.read().await;
-                let action = bft.on_proposal(proposal, &vs, &pool);
-                drop(pool);
-                drop(vs);
+                let action = bft.on_proposal(proposal, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -11087,11 +11166,7 @@ async fn run_validator() {
 
             // ── Incoming prevote ──
             Some(prevote) = prevote_rx.recv() => {
-                let vs = validator_set.read().await;
-                let pool = stake_pool.read().await;
-                let action = bft.on_prevote(prevote, &vs, &pool);
-                drop(pool);
-                drop(vs);
+                let action = bft.on_prevote(prevote, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -11119,11 +11194,7 @@ async fn run_validator() {
 
             // ── Incoming precommit ──
             Some(precommit) = precommit_rx.recv() => {
-                let vs = validator_set.read().await;
-                let pool = stake_pool.read().await;
-                let action = bft.on_precommit(precommit, &vs, &pool);
-                drop(pool);
-                drop(vs);
+                let action = bft.on_precommit(precommit, &height_vs, &height_pool);
                 execute_consensus_actions(
                     action,
                     &bft,
@@ -11165,17 +11236,16 @@ async fn run_validator() {
             } => {
                 propose_timer = None;
                 // Verify we're still in the Propose step and still current
-                if bft.step == RoundStep::Propose {
-                    let vs = validator_set.read().await;
-                    let pool = stake_pool.read().await;
-                    if bft.is_proposer(&vs, &pool, &parent_hash) {
+                if bft.step == RoundStep::Propose
+                    && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
+                {
                         info!(
                             "👑 BFT: We are proposer for height={} round={}",
                             bft.height, bft.round
                         );
                         let mut mp = mempool.lock().await;
                         let oracle_snapshot = shared_oracle_prices.snapshot();
-                        let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
+                        let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                         let (mut block, _) = block_producer::build_block(
                             &state,
                             &mut mp,
@@ -11188,9 +11258,7 @@ async fn run_validator() {
                         );
                         drop(mp);
                         block.sign(&validator_keypair);
-                        let proposal_action = bft.create_proposal(block, &vs, &pool);
-                        drop(pool);
-                        drop(vs);
+                        let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
                             proposal_action,
                             &bft,
@@ -11228,10 +11296,6 @@ async fn run_validator() {
                             )),
                             _ => None,
                         };
-                    } else {
-                        drop(pool);
-                        drop(vs);
-                    }
                 }
             }
 
@@ -11244,14 +11308,9 @@ async fn run_validator() {
                 }
             } => {
                 if let Some((step, round, _)) = timeout_handle.take() {
-                    // CONSISTENCY FIX: Snapshot vs/pool ONCE so on_timeout and the
-                    // subsequent is_proposer check use identical state. Without this,
-                    // P2P tasks can modify validator_set between the two reads, causing
-                    // leader election disagreement (on_timeout sees N eligible, but
-                    // is_proposer sees M eligible → different leader → nobody proposes).
-                    let vs_snap = validator_set.read().await.clone();
-                    let pool_snap = stake_pool.read().await.clone();
-                    let action = bft.on_timeout(step, round, &vs_snap, &pool_snap);
+                    // Height-frozen snapshots: use the same validator set for
+                    // the entire height. No live reads during consensus.
+                    let action = bft.on_timeout(step, round, &height_vs, &height_pool);
                     execute_consensus_actions(
                         action,
                         &bft,
@@ -11278,9 +11337,9 @@ async fn run_validator() {
 
                     // After timeout handling, if we moved to a new round's Propose step
                     // and we're the proposer, build and propose a block.
-                    // Uses the SAME snapshot to guarantee consistent leader election.
+                    // Uses the SAME height-frozen snapshot for consistent leader election.
                     if bft.step == RoundStep::Propose
-                        && bft.is_proposer(&vs_snap, &pool_snap, &parent_hash)
+                        && bft.is_proposer(&height_vs, &height_pool, &parent_hash)
                     {
                             info!(
                                 "👑 BFT: We are proposer for height={} round={}",
@@ -11288,7 +11347,7 @@ async fn run_validator() {
                             );
                             let mut mp = mempool.lock().await;
                             let oracle_snapshot = shared_oracle_prices.snapshot();
-                            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs_snap, &pool_snap);
+                            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                             let (mut block, _) = block_producer::build_block(
                                 &state,
                                 &mut mp,
@@ -11301,7 +11360,7 @@ async fn run_validator() {
                             );
                             drop(mp);
                             block.sign(&validator_keypair);
-                            let proposal_action = bft.create_proposal(block, &vs_snap, &pool_snap);
+                            let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                             execute_consensus_actions(
                                 proposal_action,
                                 &bft,
@@ -11383,11 +11442,11 @@ async fn run_validator() {
                     bft.start_height(new_height);
                     parent_hash = get_parent_hash(&state);
 
-                    let vs = validator_set.read().await;
-                    let pool = stake_pool.read().await;
-                    if bft.is_proposer(&vs, &pool, &parent_hash) {
-                        drop(pool);
-                        drop(vs);
+                    // Re-snapshot for the new height (deferred activation)
+                    height_vs = validator_set.read().await.clone();
+                    height_pool = stake_pool.read().await.clone();
+
+                    if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                         // Delay proposal to reduce QUIC stream pressure.
                         // 800ms for empty blocks (heartbeat), 100ms for blocks with TXs.
                         let has_pending_txs = {
@@ -11405,8 +11464,6 @@ async fn run_validator() {
                             Box::pin(tokio::time::sleep(bft.initial_propose_timeout())),
                         ));
                     } else {
-                        drop(pool);
-                        drop(vs);
                         timeout_handle = Some((
                             RoundStep::Propose,
                             bft.round,

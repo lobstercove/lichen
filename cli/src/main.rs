@@ -21,7 +21,8 @@ use wallet::WalletManager;
 #[command(name = "molt")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "MoltChain CLI - Economic freedom for agents 🦞⚡")]
-#[command(long_about = "MoltChain CLI — command-line interface for MoltChain, a Layer 1 blockchain\n\
+#[command(
+    long_about = "MoltChain CLI — command-line interface for MoltChain, a Layer 1 blockchain\n\
     built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
     WASM smart contracts, Ed25519 signing, ZK privacy (Groth16/BN254).\n\n\
     Native token: MOLT (1 MOLT = 1,000,000,000 shells)\n\
@@ -30,7 +31,8 @@ use wallet::WalletManager;
     Mainnet RPC: https://rpc.moltchain.network\n\
     Testnet RPC: https://testnet-rpc.moltchain.network\n\
     Explorer:    https://explorer.moltchain.network\n\
-    Docs:        https://developers.moltchain.network")]
+    Docs:        https://developers.moltchain.network"
+)]
 #[command(after_help = "EXAMPLES:\n\
     molt identity new                              Create a new keypair\n\
     molt airdrop 100                               Get 100 testnet MOLT\n\
@@ -43,7 +45,12 @@ use wallet::WalletManager;
     molt --rpc-url https://rpc.moltchain.network balance")]
 struct Cli {
     /// RPC server URL
-    #[arg(long, global = true, default_value = "http://localhost:8899", env = "MOLT_RPC_URL")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "http://localhost:8899",
+        env = "MOLT_RPC_URL"
+    )]
     rpc_url: String,
 
     /// Output format: human (default) or json (machine-readable for AI agents)
@@ -66,7 +73,10 @@ impl std::str::FromStr for OutputFormat {
         match s.to_lowercase().as_str() {
             "human" | "text" | "h" => Ok(OutputFormat::Human),
             "json" | "j" => Ok(OutputFormat::Json),
-            _ => Err(format!("Unknown output format '{}'. Use 'human' or 'json'.", s)),
+            _ => Err(format!(
+                "Unknown output format '{}'. Use 'human' or 'json'.",
+                s
+            )),
         }
     }
 }
@@ -734,7 +744,10 @@ fn molt_to_shells(molt: f64) -> u64 {
 
 /// Helper: print JSON or human output
 fn print_json(value: &serde_json::Value) {
-    println!("{}", serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string())
+    );
 }
 
 fn to_molt(shells: u64) -> f64 {
@@ -1732,24 +1745,15 @@ async fn main() -> Result<()> {
                     println!("   The deploy fee premium (25 MOLT) is refunded.");
                     println!("   Only the base fee (0.001 MOLT) is kept.");
                 } else {
-                    println!(
-                        "⚠️  Could not verify deploy transaction status: {}",
-                        err
-                    );
-                    println!(
-                        "   The transaction may have succeeded. Check the explorer:"
-                    );
+                    println!("⚠️  Could not verify deploy transaction status: {}", err);
+                    println!("   The transaction may have succeeded. Check the explorer:");
                     println!(
                         "   Explorer: https://explorer.moltchain.network/contract/{}",
                         contract_addr.to_base58()
                     );
                     println!("   Signature: {}", signature);
-                    println!(
-                        "   If the contract exists, no action is needed."
-                    );
-                    println!(
-                        "   If it does not exist, the 25 MOLT premium is refunded."
-                    );
+                    println!("   If the contract exists, no action is needed.");
+                    println!("   If it does not exist, the 25 MOLT premium is refunded.");
                 }
                 println!("   Check your balance: molt balance --keypair <keypair>");
             } else if tx_confirmed {
@@ -2400,7 +2404,9 @@ async fn main() -> Result<()> {
                 println!("Fees:");
                 println!("  Base:    0.001 MOLT    Deploy: 25 MOLT");
                 println!("  Upgrade: 10 MOLT       NFT Mint: 0.5 MOLT");
-                println!("  Split: 40% burn / 30% producer / 10% voters / 10% treasury / 10% community");
+                println!(
+                    "  Split: 40% burn / 30% producer / 10% voters / 10% treasury / 10% community"
+                );
                 println!();
                 println!("System program:   [0x00; 32]");
                 println!("Contract program: [0xFF; 32]");
@@ -2413,121 +2419,124 @@ async fn main() -> Result<()> {
         // ====================================================================
         // CONFIG
         // ====================================================================
-        Commands::Config(config_cmd) => {
-            match config_cmd {
-                ConfigCommands::Show => {
-                    let cfg = config::CliConfig::load(None, None)?;
-                    if json_output {
-                        print_json(&serde_json::json!({
-                            "rpc_url": cfg.rpc_url,
-                            "ws_url": cfg.ws_url,
-                            "keypair": cfg.keypair,
-                            "config_path": config::CliConfig::default_path().display().to_string(),
-                        }));
-                    } else {
-                        cfg.display();
-                    }
-                }
-                ConfigCommands::Set { key, value } => {
-                    let mut cfg = config::CliConfig::load(None, None)?;
-                    match key.as_str() {
-                        "rpc_url" | "rpc" => {
-                            cfg.rpc_url = value.clone();
-                            println!("✅ rpc_url set to: {}", value);
-                        }
-                        "ws_url" | "ws" => {
-                            cfg.ws_url = Some(value.clone());
-                            println!("✅ ws_url set to: {}", value);
-                        }
-                        "keypair" | "key" => {
-                            cfg.keypair = Some(PathBuf::from(&value));
-                            println!("✅ default keypair set to: {}", value);
-                        }
-                        _ => {
-                            anyhow::bail!("Unknown config key '{}'. Valid: rpc_url, ws_url, keypair", key);
-                        }
-                    }
-                    cfg.save()?;
-                }
-                ConfigCommands::Reset => {
-                    let cfg = config::CliConfig::default();
-                    cfg.save()?;
-                    println!("✅ Configuration reset to defaults");
+        Commands::Config(config_cmd) => match config_cmd {
+            ConfigCommands::Show => {
+                let cfg = config::CliConfig::load(None, None)?;
+                if json_output {
+                    print_json(&serde_json::json!({
+                        "rpc_url": cfg.rpc_url,
+                        "ws_url": cfg.ws_url,
+                        "keypair": cfg.keypair,
+                        "config_path": config::CliConfig::default_path().display().to_string(),
+                    }));
+                } else {
                     cfg.display();
                 }
             }
-        }
+            ConfigCommands::Set { key, value } => {
+                let mut cfg = config::CliConfig::load(None, None)?;
+                match key.as_str() {
+                    "rpc_url" | "rpc" => {
+                        cfg.rpc_url = value.clone();
+                        println!("✅ rpc_url set to: {}", value);
+                    }
+                    "ws_url" | "ws" => {
+                        cfg.ws_url = Some(value.clone());
+                        println!("✅ ws_url set to: {}", value);
+                    }
+                    "keypair" | "key" => {
+                        cfg.keypair = Some(PathBuf::from(&value));
+                        println!("✅ default keypair set to: {}", value);
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "Unknown config key '{}'. Valid: rpc_url, ws_url, keypair",
+                            key
+                        );
+                    }
+                }
+                cfg.save()?;
+            }
+            ConfigCommands::Reset => {
+                let cfg = config::CliConfig::default();
+                cfg.save()?;
+                println!("✅ Configuration reset to defaults");
+                cfg.display();
+            }
+        },
 
         // ====================================================================
         // SYMBOL REGISTRY
         // ====================================================================
         Commands::Symbol(sym_cmd) => match sym_cmd {
-            SymbolCommands::Lookup { symbol } => {
-                match client.get_symbol_registry(&symbol).await {
-                    Ok(entry) => {
-                        if json_output {
-                            print_json(&entry);
-                        } else {
-                            println!("🏷️  Symbol: {}", symbol.to_uppercase());
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-                                println!("Name:     {}", name);
-                            }
-                            if let Some(program) = entry.get("program").and_then(|v| v.as_str()) {
-                                println!("Address:  {}", program);
-                            }
-                            if let Some(owner) = entry.get("owner").and_then(|v| v.as_str()) {
-                                println!("Owner:    {}", owner);
-                            }
-                            if let Some(template) = entry.get("template").and_then(|v| v.as_str()) {
-                                println!("Template: {}", template);
-                            }
-                            if let Some(decimals) = entry.get("decimals").and_then(|v| v.as_u64()) {
-                                println!("Decimals: {}", decimals);
-                            }
+            SymbolCommands::Lookup { symbol } => match client.get_symbol_registry(&symbol).await {
+                Ok(entry) => {
+                    if json_output {
+                        print_json(&entry);
+                    } else {
+                        println!("🏷️  Symbol: {}", symbol.to_uppercase());
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                            println!("Name:     {}", name);
                         }
-                    }
-                    Err(e) => {
-                        if json_output {
-                            print_json(&serde_json::json!({"error": e.to_string(), "symbol": symbol}));
-                        } else {
-                            println!("Symbol '{}' not found: {}", symbol, e);
+                        if let Some(program) = entry.get("program").and_then(|v| v.as_str()) {
+                            println!("Address:  {}", program);
+                        }
+                        if let Some(owner) = entry.get("owner").and_then(|v| v.as_str()) {
+                            println!("Owner:    {}", owner);
+                        }
+                        if let Some(template) = entry.get("template").and_then(|v| v.as_str()) {
+                            println!("Template: {}", template);
+                        }
+                        if let Some(decimals) = entry.get("decimals").and_then(|v| v.as_u64()) {
+                            println!("Decimals: {}", decimals);
                         }
                     }
                 }
-            }
-            SymbolCommands::List => {
-                match client.get_all_symbol_registry().await {
-                    Ok(entries) => {
-                        if json_output {
-                            print_json(&entries);
-                        } else {
-                            println!("🏷️  Symbol Registry");
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            if let Some(arr) = entries.as_array() {
-                                println!("{:<12} {:<30} {:<10} Address", "Symbol", "Name", "Template");
-                                println!("{}", "─".repeat(90));
-                                for entry in arr {
-                                    let sym = entry.get("symbol").and_then(|v| v.as_str()).unwrap_or("-");
-                                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("-");
-                                    let tmpl = entry.get("template").and_then(|v| v.as_str()).unwrap_or("-");
-                                    let addr = entry.get("program").and_then(|v| v.as_str()).unwrap_or("-");
-                                    let addr_short = if addr.len() > 16 { &addr[..16] } else { addr };
-                                    println!("{:<12} {:<30} {:<10} {}...", sym, name, tmpl, addr_short);
-                                }
-                                println!("\nTotal: {} symbols registered", arr.len());
-                            }
-                        }
+                Err(e) => {
+                    if json_output {
+                        print_json(&serde_json::json!({"error": e.to_string(), "symbol": symbol}));
+                    } else {
+                        println!("Symbol '{}' not found: {}", symbol, e);
                     }
-                    Err(e) => {
-                        if json_output {
-                            print_json(&serde_json::json!({"error": e.to_string()}));
-                        } else {
-                            println!("Could not fetch symbol registry: {}", e);
+                }
+            },
+            SymbolCommands::List => match client.get_all_symbol_registry().await {
+                Ok(entries) => {
+                    if json_output {
+                        print_json(&entries);
+                    } else {
+                        println!("🏷️  Symbol Registry");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        if let Some(arr) = entries.as_array() {
+                            println!("{:<12} {:<30} {:<10} Address", "Symbol", "Name", "Template");
+                            println!("{}", "─".repeat(90));
+                            for entry in arr {
+                                let sym =
+                                    entry.get("symbol").and_then(|v| v.as_str()).unwrap_or("-");
+                                let name =
+                                    entry.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                                let tmpl = entry
+                                    .get("template")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("-");
+                                let addr =
+                                    entry.get("program").and_then(|v| v.as_str()).unwrap_or("-");
+                                let addr_short = if addr.len() > 16 { &addr[..16] } else { addr };
+                                println!("{:<12} {:<30} {:<10} {}...", sym, name, tmpl, addr_short);
+                            }
+                            println!("\nTotal: {} symbols registered", arr.len());
                         }
                     }
                 }
-            }
+                Err(e) => {
+                    if json_output {
+                        print_json(&serde_json::json!({"error": e.to_string()}));
+                    } else {
+                        println!("Could not fetch symbol registry: {}", e);
+                    }
+                }
+            },
             SymbolCommands::ByAddress { address } => {
                 match client.get_symbol_by_program(&address).await {
                     Ok(entry) => {
@@ -2536,14 +2545,19 @@ async fn main() -> Result<()> {
                         } else {
                             let sym = entry.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
                             let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let tmpl = entry.get("template").and_then(|v| v.as_str()).unwrap_or("?");
+                            let tmpl = entry
+                                .get("template")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
                             println!("🏷️  {} — {} ({})", sym, name, tmpl);
                             println!("Address: {}", address);
                         }
                     }
                     Err(e) => {
                         if json_output {
-                            print_json(&serde_json::json!({"error": e.to_string(), "address": address}));
+                            print_json(
+                                &serde_json::json!({"error": e.to_string(), "address": address}),
+                            );
                         } else {
                             println!("No symbol registered for {}: {}", address, e);
                         }
@@ -2555,50 +2569,50 @@ async fn main() -> Result<()> {
         // ====================================================================
         // TRANSACTION LOOKUP
         // ====================================================================
-        Commands::Tx { signature } => {
-            match client.get_transaction(&signature).await {
-                Ok(tx) => {
-                    if json_output {
-                        print_json(&tx);
-                    } else {
-                        println!("📝 Transaction {}", signature);
-                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                        if let Some(slot) = tx.get("slot").and_then(|v| v.as_u64()) {
-                            println!("Slot:   {}", slot);
-                        }
-                        if let Some(status) = tx.get("status").and_then(|v| v.as_str()) {
-                            println!("Status: {}", status);
-                        }
-                        if let Some(fee) = tx.get("fee").and_then(|v| v.as_u64()) {
-                            println!("Fee:    {} MOLT", to_molt(fee));
-                        }
-                        if let Some(from) = tx.get("from").and_then(|v| v.as_str()) {
-                            println!("From:   {}", from);
-                        }
-                        if let Some(to) = tx.get("to").and_then(|v| v.as_str()) {
-                            println!("To:     {}", to);
-                        }
-                        if let Some(amount) = tx.get("amount").and_then(|v| v.as_u64()) {
-                            if amount > 0 {
-                                println!("Amount: {} MOLT", to_molt(amount));
-                            }
-                        }
-                        if let Some(err) = tx.get("error").and_then(|v| v.as_str()) {
-                            if !err.is_empty() {
-                                println!("Error:  {}", err);
-                            }
+        Commands::Tx { signature } => match client.get_transaction(&signature).await {
+            Ok(tx) => {
+                if json_output {
+                    print_json(&tx);
+                } else {
+                    println!("📝 Transaction {}", signature);
+                    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    if let Some(slot) = tx.get("slot").and_then(|v| v.as_u64()) {
+                        println!("Slot:   {}", slot);
+                    }
+                    if let Some(status) = tx.get("status").and_then(|v| v.as_str()) {
+                        println!("Status: {}", status);
+                    }
+                    if let Some(fee) = tx.get("fee").and_then(|v| v.as_u64()) {
+                        println!("Fee:    {} MOLT", to_molt(fee));
+                    }
+                    if let Some(from) = tx.get("from").and_then(|v| v.as_str()) {
+                        println!("From:   {}", from);
+                    }
+                    if let Some(to) = tx.get("to").and_then(|v| v.as_str()) {
+                        println!("To:     {}", to);
+                    }
+                    if let Some(amount) = tx.get("amount").and_then(|v| v.as_u64()) {
+                        if amount > 0 {
+                            println!("Amount: {} MOLT", to_molt(amount));
                         }
                     }
-                }
-                Err(e) => {
-                    if json_output {
-                        print_json(&serde_json::json!({"error": e.to_string(), "signature": signature}));
-                    } else {
-                        println!("Transaction not found: {}", e);
+                    if let Some(err) = tx.get("error").and_then(|v| v.as_str()) {
+                        if !err.is_empty() {
+                            println!("Error:  {}", err);
+                        }
                     }
                 }
             }
-        }
+            Err(e) => {
+                if json_output {
+                    print_json(
+                        &serde_json::json!({"error": e.to_string(), "signature": signature}),
+                    );
+                } else {
+                    println!("Transaction not found: {}", e);
+                }
+            }
+        },
 
         // ====================================================================
         // NFT COMMANDS
@@ -2625,10 +2639,25 @@ async fn main() -> Result<()> {
                                     println!("No NFTs found");
                                 } else {
                                     for (i, nft) in arr.iter().enumerate() {
-                                        let name = nft.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
-                                        let collection = nft.get("collection").and_then(|v| v.as_str()).unwrap_or("-");
-                                        let token_id = nft.get("token_id").and_then(|v| v.as_u64()).unwrap_or(0);
-                                        println!("#{} {} (ID: {}, Collection: {})", i + 1, name, token_id, collection);
+                                        let name = nft
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Untitled");
+                                        let collection = nft
+                                            .get("collection")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("-");
+                                        let token_id = nft
+                                            .get("token_id")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        println!(
+                                            "#{} {} (ID: {}, Collection: {})",
+                                            i + 1,
+                                            name,
+                                            token_id,
+                                            collection
+                                        );
                                     }
                                     println!("\nTotal: {} NFTs", arr.len());
                                 }
@@ -2654,8 +2683,12 @@ async fn main() -> Result<()> {
                             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                             if let Some(arr) = nfts.as_array() {
                                 for (i, nft) in arr.iter().enumerate() {
-                                    let name = nft.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
-                                    let owner = nft.get("owner").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let name = nft
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Untitled");
+                                    let owner =
+                                        nft.get("owner").and_then(|v| v.as_str()).unwrap_or("-");
                                     println!("#{} {} (Owner: {})", i + 1, name, owner);
                                 }
                                 println!("\nTotal: {} NFTs in collection", arr.len());
@@ -2671,96 +2704,117 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            NftCommands::Marketplace { limit } => {
-                match client.get_market_listings(limit).await {
-                    Ok(listings) => {
-                        if json_output {
-                            print_json(&listings);
-                        } else {
-                            println!("🏪 NFT Marketplace Listings");
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            if let Some(arr) = listings.as_array() {
-                                if arr.is_empty() {
-                                    println!("No active listings");
-                                } else {
-                                    for (i, listing) in arr.iter().enumerate() {
-                                        let name = listing.get("name").and_then(|v| v.as_str()).unwrap_or("Untitled");
-                                        let price = listing.get("price").and_then(|v| v.as_u64()).unwrap_or(0);
-                                        let seller = listing.get("seller").and_then(|v| v.as_str()).unwrap_or("-");
-                                        println!("#{} {} — {} MOLT (Seller: {})", i + 1, name, to_molt(price), seller);
-                                    }
-                                    println!("\nShowing {} listings", arr.len());
+            NftCommands::Marketplace { limit } => match client.get_market_listings(limit).await {
+                Ok(listings) => {
+                    if json_output {
+                        print_json(&listings);
+                    } else {
+                        println!("🏪 NFT Marketplace Listings");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        if let Some(arr) = listings.as_array() {
+                            if arr.is_empty() {
+                                println!("No active listings");
+                            } else {
+                                for (i, listing) in arr.iter().enumerate() {
+                                    let name = listing
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Untitled");
+                                    let price =
+                                        listing.get("price").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let seller = listing
+                                        .get("seller")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("-");
+                                    println!(
+                                        "#{} {} — {} MOLT (Seller: {})",
+                                        i + 1,
+                                        name,
+                                        to_molt(price),
+                                        seller
+                                    );
                                 }
+                                println!("\nShowing {} listings", arr.len());
                             }
                         }
                     }
-                    Err(e) => {
-                        if json_output {
-                            print_json(&serde_json::json!({"error": e.to_string()}));
-                        } else {
-                            println!("Could not fetch marketplace: {}", e);
-                        }
+                }
+                Err(e) => {
+                    if json_output {
+                        print_json(&serde_json::json!({"error": e.to_string()}));
+                    } else {
+                        println!("Could not fetch marketplace: {}", e);
                     }
                 }
-            }
+            },
         },
 
         // ====================================================================
         // DEFI STATS
         // ====================================================================
         Commands::Defi(defi_cmd) => match defi_cmd {
-            DefiCommands::Dex => {
-                match client.get_defi_stats("getDexCoreStats").await {
-                    Ok(stats) => {
-                        if json_output {
-                            print_json(&stats);
-                        } else {
-                            println!("📊 ClawSwap DEX Stats");
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            print_defi_stats(&stats);
-                        }
+            DefiCommands::Dex => match client.get_defi_stats("getDexCoreStats").await {
+                Ok(stats) => {
+                    if json_output {
+                        print_json(&stats);
+                    } else {
+                        println!("📊 ClawSwap DEX Stats");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        print_defi_stats(&stats);
                     }
-                    Err(e) => println!("Could not fetch DEX stats: {}", e),
                 }
-            }
-            DefiCommands::Amm => {
-                match client.get_defi_stats("getDexAmmStats").await {
-                    Ok(stats) => {
-                        if json_output {
-                            print_json(&stats);
-                        } else {
-                            println!("📊 AMM Pool Stats");
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            print_defi_stats(&stats);
-                        }
+                Err(e) => println!("Could not fetch DEX stats: {}", e),
+            },
+            DefiCommands::Amm => match client.get_defi_stats("getDexAmmStats").await {
+                Ok(stats) => {
+                    if json_output {
+                        print_json(&stats);
+                    } else {
+                        println!("📊 AMM Pool Stats");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        print_defi_stats(&stats);
                     }
-                    Err(e) => println!("Could not fetch AMM stats: {}", e),
                 }
-            }
-            DefiCommands::Lending => {
-                match client.get_defi_stats("getLobsterLendStats").await {
-                    Ok(stats) => {
-                        if json_output {
-                            print_json(&stats);
-                        } else {
-                            println!("📊 LobsterLend Stats");
-                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                            print_defi_stats(&stats);
-                        }
+                Err(e) => println!("Could not fetch AMM stats: {}", e),
+            },
+            DefiCommands::Lending => match client.get_defi_stats("getLobsterLendStats").await {
+                Ok(stats) => {
+                    if json_output {
+                        print_json(&stats);
+                    } else {
+                        println!("📊 LobsterLend Stats");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        print_defi_stats(&stats);
                     }
-                    Err(e) => println!("Could not fetch lending stats: {}", e),
                 }
-            }
+                Err(e) => println!("Could not fetch lending stats: {}", e),
+            },
             DefiCommands::Overview => {
-                let labels = ["ClawSwap DEX", "AMM Pools", "LobsterLend", "ClawPay", "MoltSwap"];
-                let methods = ["getDexCoreStats", "getDexAmmStats", "getLobsterLendStats", "getClawPayStats", "getMoltswapStats"];
+                let labels = [
+                    "ClawSwap DEX",
+                    "AMM Pools",
+                    "LobsterLend",
+                    "ClawPay",
+                    "MoltSwap",
+                ];
+                let methods = [
+                    "getDexCoreStats",
+                    "getDexAmmStats",
+                    "getLobsterLendStats",
+                    "getClawPayStats",
+                    "getMoltswapStats",
+                ];
 
                 if json_output {
                     let mut all = serde_json::Map::new();
                     for (method, label) in methods.iter().zip(labels.iter()) {
                         match client.get_defi_stats(method).await {
-                            Ok(stats) => { all.insert(label.to_string(), stats); }
-                            Err(_) => { all.insert(label.to_string(), serde_json::json!(null)); }
+                            Ok(stats) => {
+                                all.insert(label.to_string(), stats);
+                            }
+                            Err(_) => {
+                                all.insert(label.to_string(), serde_json::json!(null));
+                            }
                         }
                     }
                     print_json(&serde_json::Value::Object(all));
@@ -2781,41 +2835,62 @@ async fn main() -> Result<()> {
         // ====================================================================
         // SUPPLY & ECONOMICS
         // ====================================================================
-        Commands::Supply => {
-            match client.get_metrics().await {
-                Ok(metrics) => {
-                    if json_output {
-                        print_json(&serde_json::json!({
-                            "total_supply_shells": metrics.total_supply,
-                            "total_supply_molt": to_molt(metrics.total_supply),
-                            "circulating_supply_shells": metrics.circulating_supply,
-                            "circulating_supply_molt": to_molt(metrics.circulating_supply),
-                            "total_burned_shells": metrics.total_burned,
-                            "total_burned_molt": to_molt(metrics.total_burned),
-                            "total_staked_shells": metrics.total_staked,
-                            "total_staked_molt": to_molt(metrics.total_staked),
-                            "burn_percentage": if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
-                            "staked_percentage": if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
-                            "total_accounts": metrics.total_accounts,
-                            "total_contracts": metrics.total_contracts,
-                        }));
-                    } else {
-                        println!("💰 MOLT Supply & Economics");
-                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                        println!();
-                        println!("Total Supply:       {:>14.4} MOLT", to_molt(metrics.total_supply));
-                        println!("Circulating:        {:>14.4} MOLT", to_molt(metrics.circulating_supply));
-                        println!("Burned:             {:>14.4} MOLT ({:.2}%)", to_molt(metrics.total_burned),
-                            if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 });
-                        println!("Staked:             {:>14.4} MOLT ({:.2}%)", to_molt(metrics.total_staked),
-                            if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 });
-                        println!();
-                        println!("Accounts: {}   Contracts: {}", metrics.total_accounts, metrics.total_contracts);
-                    }
+        Commands::Supply => match client.get_metrics().await {
+            Ok(metrics) => {
+                if json_output {
+                    print_json(&serde_json::json!({
+                        "total_supply_shells": metrics.total_supply,
+                        "total_supply_molt": to_molt(metrics.total_supply),
+                        "circulating_supply_shells": metrics.circulating_supply,
+                        "circulating_supply_molt": to_molt(metrics.circulating_supply),
+                        "total_burned_shells": metrics.total_burned,
+                        "total_burned_molt": to_molt(metrics.total_burned),
+                        "total_staked_shells": metrics.total_staked,
+                        "total_staked_molt": to_molt(metrics.total_staked),
+                        "burn_percentage": if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
+                        "staked_percentage": if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
+                        "total_accounts": metrics.total_accounts,
+                        "total_contracts": metrics.total_contracts,
+                    }));
+                } else {
+                    println!("💰 MOLT Supply & Economics");
+                    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    println!();
+                    println!(
+                        "Total Supply:       {:>14.4} MOLT",
+                        to_molt(metrics.total_supply)
+                    );
+                    println!(
+                        "Circulating:        {:>14.4} MOLT",
+                        to_molt(metrics.circulating_supply)
+                    );
+                    println!(
+                        "Burned:             {:>14.4} MOLT ({:.2}%)",
+                        to_molt(metrics.total_burned),
+                        if metrics.total_supply > 0 {
+                            (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0
+                        } else {
+                            0.0
+                        }
+                    );
+                    println!(
+                        "Staked:             {:>14.4} MOLT ({:.2}%)",
+                        to_molt(metrics.total_staked),
+                        if metrics.total_supply > 0 {
+                            (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0
+                        } else {
+                            0.0
+                        }
+                    );
+                    println!();
+                    println!(
+                        "Accounts: {}   Contracts: {}",
+                        metrics.total_accounts, metrics.total_contracts
+                    );
                 }
-                Err(e) => println!("Could not fetch supply info: {}", e),
             }
-        }
+            Err(e) => println!("Could not fetch supply info: {}", e),
+        },
 
         // ====================================================================
         // FEES
@@ -2882,36 +2957,40 @@ async fn main() -> Result<()> {
         // ====================================================================
         // EPOCH
         // ====================================================================
-        Commands::Epoch => {
-            match client.get_chain_status().await {
-                Ok(status) => {
-                    let epoch = status.current_slot / 1000;
-                    let slot_in_epoch = status.current_slot % 1000;
+        Commands::Epoch => match client.get_chain_status().await {
+            Ok(status) => {
+                let epoch = status.current_slot / 1000;
+                let slot_in_epoch = status.current_slot % 1000;
 
-                    if json_output {
-                        print_json(&serde_json::json!({
-                            "current_epoch": epoch,
-                            "current_slot": status.current_slot,
-                            "slot_in_epoch": slot_in_epoch,
-                            "slots_per_epoch": 1000,
-                            "epoch_progress_pct": (slot_in_epoch as f64 / 1000.0) * 100.0,
-                            "validators": status.validator_count,
-                            "total_staked_molt": to_molt(status.total_staked),
-                        }));
-                    } else {
-                        println!("📅 Epoch Information");
-                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                        println!();
-                        println!("Current Epoch: {}", epoch);
-                        println!("Current Slot:  {} ({}/1000 in epoch)", status.current_slot, slot_in_epoch);
-                        println!("Progress:      {:.1}%", (slot_in_epoch as f64 / 1000.0) * 100.0);
-                        println!("Validators:    {}", status.validator_count);
-                        println!("Total Staked:  {:.4} MOLT", to_molt(status.total_staked));
-                    }
+                if json_output {
+                    print_json(&serde_json::json!({
+                        "current_epoch": epoch,
+                        "current_slot": status.current_slot,
+                        "slot_in_epoch": slot_in_epoch,
+                        "slots_per_epoch": 1000,
+                        "epoch_progress_pct": (slot_in_epoch as f64 / 1000.0) * 100.0,
+                        "validators": status.validator_count,
+                        "total_staked_molt": to_molt(status.total_staked),
+                    }));
+                } else {
+                    println!("📅 Epoch Information");
+                    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    println!();
+                    println!("Current Epoch: {}", epoch);
+                    println!(
+                        "Current Slot:  {} ({}/1000 in epoch)",
+                        status.current_slot, slot_in_epoch
+                    );
+                    println!(
+                        "Progress:      {:.1}%",
+                        (slot_in_epoch as f64 / 1000.0) * 100.0
+                    );
+                    println!("Validators:    {}", status.validator_count);
+                    println!("Total Staked:  {:.4} MOLT", to_molt(status.total_staked));
                 }
-                Err(e) => println!("Could not fetch epoch info: {}", e),
             }
-        }
+            Err(e) => println!("Could not fetch epoch info: {}", e),
+        },
 
         // ====================================================================
         // HOST FUNCTIONS (for contract developers)

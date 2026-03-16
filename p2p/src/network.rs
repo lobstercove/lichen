@@ -1275,10 +1275,7 @@ impl P2PNetwork {
                     timestamp,
                 ) {
                     Ok(()) => {
-                        info!(
-                            "P2P: Certificate rotation accepted from {}",
-                            peer_addr
-                        );
+                        info!("P2P: Certificate rotation accepted from {}", peer_addr);
                         // Re-gossip the rotation to other peers
                         let relay_msg = P2PMessage::new(
                             MessageType::CertRotation {
@@ -1293,7 +1290,10 @@ impl P2PNetwork {
                         self.peer_manager.broadcast(relay_msg).await;
                     }
                     Err(e) => {
-                        warn!("P2P: Certificate rotation rejected from {}: {}", peer_addr, e);
+                        warn!(
+                            "P2P: Certificate rotation rejected from {}: {}",
+                            peer_addr, e
+                        );
                     }
                 }
             }
