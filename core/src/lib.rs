@@ -33,8 +33,8 @@ pub mod zk;
 // Re-exports
 pub use account::{Account, Keypair, Pubkey};
 pub use block::{
-    compute_bft_timestamp, Block, BlockHeader, CommitSignature, MAX_BLOCK_SIZE, MAX_CONTRACT_CODE,
-    MAX_TX_PER_BLOCK,
+    compute_bft_timestamp, compute_validators_hash, Block, BlockHeader, CommitSignature,
+    MAX_BLOCK_SIZE, MAX_CONTRACT_CODE, MAX_TX_PER_BLOCK,
 };
 pub use consensus::{
     compute_block_reward, compute_epoch_mint, epoch_start_slot, inflation_rate_bps,

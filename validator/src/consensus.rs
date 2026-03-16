@@ -19,7 +19,7 @@ use moltchain_core::{
     Block, CommitSignature, Hash, Keypair, Precommit, Prevote, Proposal, Pubkey, RoundStep,
     StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -31,6 +31,10 @@ const PREVOTE_TIMEOUT_BASE_MS: u64 = 1000;
 const PRECOMMIT_TIMEOUT_BASE_MS: u64 = 1000;
 /// Maximum timeout for any phase (60 seconds). Prevents unbounded growth.
 const MAX_TIMEOUT_MS: u64 = 60_000;
+
+/// Maximum number of heights ahead to buffer future BFT messages.
+/// Messages beyond this range are dropped to prevent memory exhaustion.
+const FUTURE_MSG_BUFFER_HEIGHTS: u64 = 10;
 
 /// Actions emitted by the consensus engine for the caller to execute.
 ///
@@ -57,6 +61,16 @@ pub enum ConsensusAction {
     },
     /// Multiple actions (processed in order).
     Multiple(Vec<ConsensusAction>),
+    /// Equivocation detected: a validator signed conflicting votes at the same (height, round).
+    EquivocationDetected {
+        height: u64,
+        round: u32,
+        validator: Pubkey,
+        /// "prevote" or "precommit"
+        vote_type: &'static str,
+        hash_1: Option<Hash>,
+        hash_2: Option<Hash>,
+    },
 }
 
 /// Tendermint-style BFT consensus engine.
@@ -96,17 +110,25 @@ pub struct ConsensusEngine {
     /// Blocks received via proposals, keyed by hash.
     proposal_blocks: HashMap<Hash, Block>,
 
-    // ── Duplicate suppression ───────────────────────────────────────
-    /// Prevotes we've already processed: (round, validator) → true.
-    seen_prevotes: HashMap<(u32, Pubkey), bool>,
-    /// Precommits we've already processed: (round, validator) → true.
-    seen_precommits: HashMap<(u32, Pubkey), bool>,
+    // ── Duplicate suppression & equivocation detection ─────────────
+    /// Prevotes we've already processed: (round, validator) → voted hash.
+    seen_prevotes: HashMap<(u32, Pubkey), Option<Hash>>,
+    /// Precommits we've already processed: (round, validator) → voted hash.
+    seen_precommits: HashMap<(u32, Pubkey), Option<Hash>>,
     /// Precommit signatures retained for commit certificates: (round, validator) → (signature, timestamp).
     precommit_sigs: HashMap<(u32, Pubkey), ([u8; 64], u64)>,
     /// Rounds for which we already signed a prevote, to prevent equivocation.
     signed_prevote_rounds: HashMap<u32, Option<Hash>>,
     /// Rounds for which we already signed a precommit, to prevent equivocation.
     signed_precommit_rounds: HashMap<u32, Option<Hash>>,
+
+    // ── Future message buffers (G-10 fix) ───────────────────────────
+    /// Proposals for heights > self.height, replayed when we advance.
+    future_proposals: BTreeMap<u64, Vec<Proposal>>,
+    /// Prevotes for heights > self.height.
+    future_prevotes: BTreeMap<u64, Vec<Prevote>>,
+    /// Precommits for heights > self.height.
+    future_precommits: BTreeMap<u64, Vec<Precommit>>,
 }
 
 impl ConsensusEngine {
@@ -131,6 +153,9 @@ impl ConsensusEngine {
             precommit_sigs: HashMap::new(),
             signed_prevote_rounds: HashMap::new(),
             signed_precommit_rounds: HashMap::new(),
+            future_proposals: BTreeMap::new(),
+            future_prevotes: BTreeMap::new(),
+            future_precommits: BTreeMap::new(),
         }
     }
 
@@ -152,6 +177,10 @@ impl ConsensusEngine {
         self.precommit_sigs.clear();
         self.signed_prevote_rounds.clear();
         self.signed_precommit_rounds.clear();
+        // Prune future message buffers: discard entries below the new height
+        self.future_proposals.retain(|h, _| *h >= height);
+        self.future_prevotes.retain(|h, _| *h >= height);
+        self.future_precommits.retain(|h, _| *h >= height);
         info!("🔷 BFT: Starting height {} round 0", height);
     }
 
@@ -164,6 +193,42 @@ impl ConsensusEngine {
             self.height, round
         );
         ConsensusAction::ScheduleTimeout(RoundStep::Propose, self.propose_timeout())
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  STATE MACHINE TRANSITION GUARD (G-7 fix)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Validate and execute a state transition. Logs invalid transitions
+    /// (which indicates a logic bug) and returns false if rejected.
+    ///
+    /// Valid transitions:
+    ///   Propose  → Prevote
+    ///   Prevote  → Precommit
+    ///   Precommit → Commit
+    ///   Commit   → Propose   (new height via start_height/start_round)
+    ///
+    /// Note: start_round() sets step directly because it's the canonical
+    /// entry point for a new round. This guard is for mid-round transitions.
+    fn transition_to(&mut self, new_step: RoundStep) -> bool {
+        let valid = matches!(
+            (self.step, new_step),
+            (RoundStep::Propose, RoundStep::Prevote)
+                | (RoundStep::Prevote, RoundStep::Precommit)
+                | (RoundStep::Precommit, RoundStep::Commit)
+                // These allow re-entering the same step (idempotent)
+                | (RoundStep::Prevote, RoundStep::Prevote)
+                | (RoundStep::Precommit, RoundStep::Precommit)
+        );
+        if valid {
+            self.step = new_step;
+        } else {
+            warn!(
+                "⚠️ BFT: Invalid state transition {:?} → {:?} at h={} r={}",
+                self.step, new_step, self.height, self.round
+            );
+        }
+        valid
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -231,8 +296,22 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        // Ignore proposals for wrong height
-        if proposal.height != self.height {
+        // Buffer proposals for future heights (G-10 fix)
+        if proposal.height > self.height {
+            if proposal.height <= self.height + FUTURE_MSG_BUFFER_HEIGHTS {
+                debug!(
+                    "📥 BFT: Buffering future proposal h={} (current h={})",
+                    proposal.height, self.height
+                );
+                self.future_proposals
+                    .entry(proposal.height)
+                    .or_default()
+                    .push(proposal);
+            }
+            return ConsensusAction::None;
+        }
+        // Ignore proposals for past heights
+        if proposal.height < self.height {
             return ConsensusAction::None;
         }
         // Ignore proposals for rounds we've already passed
@@ -335,7 +414,17 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        if prevote.height != self.height {
+        // Buffer prevotes for future heights (G-10 fix)
+        if prevote.height > self.height {
+            if prevote.height <= self.height + FUTURE_MSG_BUFFER_HEIGHTS {
+                self.future_prevotes
+                    .entry(prevote.height)
+                    .or_default()
+                    .push(prevote);
+            }
+            return ConsensusAction::None;
+        }
+        if prevote.height < self.height {
             return ConsensusAction::None;
         }
         if !prevote.verify_signature() {
@@ -346,15 +435,32 @@ impl ConsensusEngine {
         if validator_set.get_validator(&prevote.validator).is_none() {
             return ConsensusAction::None;
         }
-        // Deduplicate
-        if self
-            .seen_prevotes
-            .contains_key(&(prevote.round, prevote.validator))
-        {
+        // Deduplicate and detect equivocation (G-9 evidence reactor fix)
+        let dedup_key = (prevote.round, prevote.validator);
+        if let Some(existing_hash) = self.seen_prevotes.get(&dedup_key) {
+            if *existing_hash != prevote.block_hash {
+                // EQUIVOCATION: same validator sent conflicting prevotes for (height, round)
+                warn!(
+                    "🚨 BFT EQUIVOCATION: Double-prevote from {} at h={} r={} (hash1={} vs hash2={})",
+                    prevote.validator.to_base58(),
+                    self.height,
+                    prevote.round,
+                    existing_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
+                    prevote.block_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
+                );
+                return ConsensusAction::EquivocationDetected {
+                    height: self.height,
+                    round: prevote.round,
+                    validator: prevote.validator,
+                    vote_type: "prevote",
+                    hash_1: *existing_hash,
+                    hash_2: prevote.block_hash,
+                };
+            }
+            // Exact duplicate — ignore
             return ConsensusAction::None;
         }
-        self.seen_prevotes
-            .insert((prevote.round, prevote.validator), true);
+        self.seen_prevotes.insert(dedup_key, prevote.block_hash);
 
         // Record the prevote
         self.prevotes
@@ -367,31 +473,37 @@ impl ConsensusEngine {
 
         // Rule 1: Upon 2/3+ prevotes for a specific block_hash at current round
         if round == self.round && self.step == RoundStep::Prevote {
-            // Check for polka for any specific block hash
-            for (key, voters) in &self.prevotes {
-                if key.0 != round {
-                    continue;
-                }
-                if let Some(bh) = &key.1 {
-                    if self.has_supermajority_voters(voters, validator_set, stake_pool) {
-                        // 2/3+ prevotes for block_hash — LOCK and precommit
-                        info!(
-                            "🔒 BFT: Polka at height={} round={} for {}",
-                            self.height,
-                            round,
-                            hex::encode(&bh.0[..4])
-                        );
-                        self.valid_round = Some(round);
-                        if let Some(block) = self.proposal_blocks.get(bh) {
-                            self.valid_value = Some(block.clone());
+            // Find the polka hash (if any) without holding a borrow on self
+            let polka_hash = {
+                let mut found = None;
+                for (key, voters) in &self.prevotes {
+                    if key.0 != round {
+                        continue;
+                    }
+                    if let Some(bh) = &key.1 {
+                        if self.has_supermajority_voters(voters, validator_set, stake_pool) {
+                            found = Some(*bh);
+                            break;
                         }
-                        self.locked_round = Some(round);
-                        self.locked_value = Some(*bh);
-                        self.step = RoundStep::Precommit;
-                        actions.push(self.do_precommit(Some(*bh), validator_set, stake_pool));
-                        break;
                     }
                 }
+                found
+            };
+            if let Some(bh) = polka_hash {
+                info!(
+                    "🔒 BFT: Polka at height={} round={} for {}",
+                    self.height,
+                    round,
+                    hex::encode(&bh.0[..4])
+                );
+                self.valid_round = Some(round);
+                if let Some(block) = self.proposal_blocks.get(&bh) {
+                    self.valid_value = Some(block.clone());
+                }
+                self.locked_round = Some(round);
+                self.locked_value = Some(bh);
+                self.transition_to(RoundStep::Precommit);
+                actions.push(self.do_precommit(Some(bh), validator_set, stake_pool));
             }
         }
 
@@ -407,7 +519,7 @@ impl ConsensusEngine {
                     "⭕ BFT: Nil polka at height={} round={}",
                     self.height, round
                 );
-                self.step = RoundStep::Precommit;
+                self.transition_to(RoundStep::Precommit);
                 actions.push(self.do_precommit(None, validator_set, stake_pool));
             }
         }
@@ -452,7 +564,17 @@ impl ConsensusEngine {
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        if precommit.height != self.height {
+        // Buffer precommits for future heights (G-10 fix)
+        if precommit.height > self.height {
+            if precommit.height <= self.height + FUTURE_MSG_BUFFER_HEIGHTS {
+                self.future_precommits
+                    .entry(precommit.height)
+                    .or_default()
+                    .push(precommit);
+            }
+            return ConsensusAction::None;
+        }
+        if precommit.height < self.height {
             return ConsensusAction::None;
         }
         if !precommit.verify_signature() {
@@ -462,15 +584,32 @@ impl ConsensusEngine {
         if validator_set.get_validator(&precommit.validator).is_none() {
             return ConsensusAction::None;
         }
-        // Deduplicate
-        if self
-            .seen_precommits
-            .contains_key(&(precommit.round, precommit.validator))
-        {
+        // Deduplicate and detect equivocation (G-9 evidence reactor fix)
+        let dedup_key = (precommit.round, precommit.validator);
+        if let Some(existing_hash) = self.seen_precommits.get(&dedup_key) {
+            if *existing_hash != precommit.block_hash {
+                // EQUIVOCATION: same validator sent conflicting precommits for (height, round)
+                warn!(
+                    "🚨 BFT EQUIVOCATION: Double-precommit from {} at h={} r={} (hash1={} vs hash2={})",
+                    precommit.validator.to_base58(),
+                    self.height,
+                    precommit.round,
+                    existing_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
+                    precommit.block_hash.map(|h| hex::encode(&h.0[..4])).unwrap_or_else(|| "nil".into()),
+                );
+                return ConsensusAction::EquivocationDetected {
+                    height: self.height,
+                    round: precommit.round,
+                    validator: precommit.validator,
+                    vote_type: "precommit",
+                    hash_1: *existing_hash,
+                    hash_2: precommit.block_hash,
+                };
+            }
+            // Exact duplicate — ignore
             return ConsensusAction::None;
         }
-        self.seen_precommits
-            .insert((precommit.round, precommit.validator), true);
+        self.seen_precommits.insert(dedup_key, precommit.block_hash);
 
         // Record the precommit
         self.precommits
@@ -488,37 +627,46 @@ impl ConsensusEngine {
         let mut actions = Vec::new();
 
         // Rule 1: 2/3+ precommits for a specific block → COMMIT
-        for (key, voters) in &self.precommits {
-            if key.0 != round {
-                continue;
-            }
-            if let Some(bh) = &key.1 {
-                if self.has_supermajority_voters(voters, validator_set, stake_pool) {
-                    if let Some(block) = self.proposal_blocks.get(bh) {
-                        info!(
-                            "✅ BFT: COMMIT at height={} round={} hash={}",
-                            self.height,
-                            round,
-                            hex::encode(&bh.0[..4])
-                        );
-                        self.step = RoundStep::Commit;
-                        let mut committed = block.clone();
-                        committed.commit_signatures = self.collect_commit_signatures(round, bh);
-                        return ConsensusAction::CommitBlock {
-                            height: self.height,
-                            round,
-                            block: committed,
-                            block_hash: *bh,
-                        };
+        // Find the committed hash without holding a borrow on self
+        let commit_hash = {
+            let mut found = None;
+            for (key, voters) in &self.precommits {
+                if key.0 != round {
+                    continue;
+                }
+                if let Some(bh) = &key.1 {
+                    if self.has_supermajority_voters(voters, validator_set, stake_pool) {
+                        found = Some(*bh);
+                        break;
                     }
-                    // We have 2/3+ precommits but don't have the block.
-                    // This shouldn't happen if the proposer broadcast correctly.
-                    warn!(
-                        "⚠️ BFT: 2/3+ precommits for {} but block not found",
-                        hex::encode(&bh.0[..4])
-                    );
                 }
             }
+            found
+        };
+        if let Some(bh) = commit_hash {
+            let block_clone = self.proposal_blocks.get(&bh).cloned();
+            if let Some(block) = block_clone {
+                info!(
+                    "✅ BFT: COMMIT at height={} round={} hash={}",
+                    self.height,
+                    round,
+                    hex::encode(&bh.0[..4])
+                );
+                self.transition_to(RoundStep::Commit);
+                let mut committed = block;
+                committed.commit_signatures = self.collect_commit_signatures(round, &bh);
+                return ConsensusAction::CommitBlock {
+                    height: self.height,
+                    round,
+                    block: committed,
+                    block_hash: bh,
+                };
+            }
+            // We have 2/3+ precommits but don't have the block.
+            warn!(
+                "⚠️ BFT: 2/3+ precommits for {} but block not found",
+                hex::encode(&bh.0[..4])
+            );
         }
 
         // Rule 2: 2/3+ precommits for nil → advance to next round
@@ -567,6 +715,75 @@ impl ConsensusEngine {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  FUTURE MESSAGE REPLAY (G-10 fix)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Replay any buffered proposals, prevotes, and precommits for the current
+    /// height. Called after `start_height()` to process messages that arrived
+    /// while we were still at a previous height. This is critical for fast
+    /// catch-up: without it, a validator that falls one height behind would
+    /// miss the proposal and all votes, forcing a full round timeout.
+    pub fn drain_future_messages(
+        &mut self,
+        validator_set: &ValidatorSet,
+        stake_pool: &StakePool,
+    ) -> ConsensusAction {
+        let height = self.height;
+        let mut actions = Vec::new();
+
+        // Proposals first (so the block is registered before votes reference it)
+        if let Some(proposals) = self.future_proposals.remove(&height) {
+            info!(
+                "📥 BFT: Replaying {} buffered proposals for height {}",
+                proposals.len(),
+                height
+            );
+            for p in proposals {
+                let a = self.on_proposal(p, validator_set, stake_pool);
+                if !matches!(a, ConsensusAction::None) {
+                    actions.push(a);
+                }
+            }
+        }
+
+        // Prevotes
+        if let Some(prevotes) = self.future_prevotes.remove(&height) {
+            info!(
+                "📥 BFT: Replaying {} buffered prevotes for height {}",
+                prevotes.len(),
+                height
+            );
+            for pv in prevotes {
+                let a = self.on_prevote(pv, validator_set, stake_pool);
+                if !matches!(a, ConsensusAction::None) {
+                    actions.push(a);
+                }
+            }
+        }
+
+        // Precommits
+        if let Some(precommits) = self.future_precommits.remove(&height) {
+            info!(
+                "📥 BFT: Replaying {} buffered precommits for height {}",
+                precommits.len(),
+                height
+            );
+            for pc in precommits {
+                let a = self.on_precommit(pc, validator_set, stake_pool);
+                if !matches!(a, ConsensusAction::None) {
+                    actions.push(a);
+                }
+            }
+        }
+
+        match actions.len() {
+            0 => ConsensusAction::None,
+            1 => actions.remove(0),
+            _ => ConsensusAction::Multiple(actions),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  TIMEOUT HANDLING
     // ═══════════════════════════════════════════════════════════════
 
@@ -603,7 +820,7 @@ impl ConsensusEngine {
                         self.height, self.round
                     );
                     // Didn't reach polka — precommit nil
-                    self.step = RoundStep::Precommit;
+                    self.transition_to(RoundStep::Precommit);
                     self.do_precommit(None, validator_set, stake_pool)
                 } else {
                     ConsensusAction::None
@@ -648,7 +865,7 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
 
-        self.step = RoundStep::Prevote;
+        self.transition_to(RoundStep::Prevote);
         let msg = Prevote::signable_bytes(self.height, self.round, &block_hash);
         let signature = self.keypair.sign(&msg);
 
@@ -663,7 +880,7 @@ impl ConsensusEngine {
         // Record locally so we count our own vote
         self.signed_prevote_rounds.insert(self.round, block_hash);
         self.seen_prevotes
-            .insert((self.round, self.validator_pubkey), true);
+            .insert((self.round, self.validator_pubkey), block_hash);
         self.prevotes
             .entry((self.round, block_hash))
             .or_default()
@@ -701,7 +918,7 @@ impl ConsensusEngine {
                 }
                 self.locked_round = Some(round);
                 self.locked_value = Some(bh);
-                self.step = RoundStep::Precommit;
+                self.transition_to(RoundStep::Precommit);
                 let precommit_action = self.do_precommit(Some(bh), validator_set, stake_pool);
                 return ConsensusAction::Multiple(vec![broadcast, precommit_action]);
             }
@@ -716,7 +933,7 @@ impl ConsensusEngine {
                     "⭕ BFT: Nil polka at height={} round={}",
                     self.height, round
                 );
-                self.step = RoundStep::Precommit;
+                self.transition_to(RoundStep::Precommit);
                 let precommit_action = self.do_precommit(None, validator_set, stake_pool);
                 return ConsensusAction::Multiple(vec![broadcast, precommit_action]);
             }
@@ -763,7 +980,7 @@ impl ConsensusEngine {
 
         self.signed_precommit_rounds.insert(self.round, block_hash);
         self.seen_precommits
-            .insert((self.round, self.validator_pubkey), true);
+            .insert((self.round, self.validator_pubkey), block_hash);
         self.precommits
             .entry((self.round, block_hash))
             .or_default()
@@ -789,27 +1006,31 @@ impl ConsensusEngine {
                 .get(&(round, Some(bh)))
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            if self.has_supermajority_voters(voters, validator_set, stake_pool) {
-                if let Some(block) = self.proposal_blocks.get(&bh) {
-                    info!(
-                        "✅ BFT: COMMIT at height={} round={} hash={}",
-                        self.height,
+            let has_commit = self.has_supermajority_voters(voters, validator_set, stake_pool);
+            let block_clone = if has_commit {
+                self.proposal_blocks.get(&bh).cloned()
+            } else {
+                None
+            };
+            if let Some(block) = block_clone {
+                info!(
+                    "✅ BFT: COMMIT at height={} round={} hash={}",
+                    self.height,
+                    round,
+                    hex::encode(&bh.0[..4])
+                );
+                self.transition_to(RoundStep::Commit);
+                let mut committed = block;
+                committed.commit_signatures = self.collect_commit_signatures(round, &bh);
+                return ConsensusAction::Multiple(vec![
+                    broadcast,
+                    ConsensusAction::CommitBlock {
+                        height: self.height,
                         round,
-                        hex::encode(&bh.0[..4])
-                    );
-                    self.step = RoundStep::Commit;
-                    let mut committed = block.clone();
-                    committed.commit_signatures = self.collect_commit_signatures(round, &bh);
-                    return ConsensusAction::Multiple(vec![
-                        broadcast,
-                        ConsensusAction::CommitBlock {
-                            height: self.height,
-                            round,
-                            block: committed,
-                            block_hash: bh,
-                        },
-                    ]);
-                }
+                        block: committed,
+                        block_hash: bh,
+                    },
+                ]);
             }
         } else {
             let nil_voters = self
@@ -1167,6 +1388,30 @@ impl ConsensusEngine {
     pub fn initial_propose_timeout(&self) -> Duration {
         self.propose_timeout()
     }
+
+    /// Restore locked state from WAL recovery (G-1/G-2 fix).
+    /// Called after start_height() if the WAL indicates we were locked
+    /// before a crash. This preserves the Tendermint safety invariant.
+    pub fn restore_lock(&mut self, height: u64, round: u32, block_hash: Hash) {
+        if height == self.height {
+            info!(
+                "🔐 WAL: Restoring lock from crash recovery: h={} r={} hash={}",
+                height,
+                round,
+                hex::encode(&block_hash.0[..4])
+            );
+            self.locked_round = Some(round);
+            self.locked_value = Some(block_hash);
+        }
+    }
+
+    /// Get the current locked state (for WAL persistence).
+    pub fn locked_state(&self) -> Option<(u32, Hash)> {
+        match (self.locked_round, self.locked_value) {
+            (Some(r), Some(h)) => Some((r, h)),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1401,7 +1646,7 @@ mod tests {
             .entry((0, Some(block_hash)))
             .or_default()
             .push(pk1);
-        engine.seen_precommits.insert((0, pk1), true);
+        engine.seen_precommits.insert((0, pk1), Some(block_hash));
         let ts1 = 999u64;
         let signable1 = Precommit::signable_bytes(1, 0, &Some(block_hash), ts1);
         engine

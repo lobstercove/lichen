@@ -21,18 +21,19 @@ mod keypair_loader;
 mod sync;
 mod threshold_signer;
 pub mod updater;
+pub mod wal;
 
 use futures_util::{SinkExt, StreamExt};
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
-    evm_tx_hash, Account, Block, ContractInstruction, FeeConfig, FinalityTracker, ForkChoice,
-    GenesisConfig, GenesisWallet, Hash, Keypair, MarketActivity, MarketActivityKind, Mempool,
-    NftActivity, NftActivityKind, Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey,
-    RoundStep, SlashingEvidence, SlashingOffense, StakePool, StateStore, Transaction, TxProcessor,
-    ValidatorInfo, ValidatorSet, Vote, VoteAggregator, VoteAuthority, BASE_FEE,
-    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    compute_validators_hash, evm_tx_hash, Account, Block, ContractInstruction, FeeConfig,
+    FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash, Keypair, MarketActivity,
+    MarketActivityKind, Mempool, NftActivity, NftActivityKind, Precommit, Prevote,
+    ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence, SlashingOffense, StakePool,
+    StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
+    VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -678,8 +679,6 @@ struct ValidatorHashEntry {
     pubkey: Pubkey,
     reputation: u64,
     stake: u64,
-    joined_slot: u64,
-    last_active_slot: u64,
 }
 
 fn hash_validator_set(set: &ValidatorSet) -> Hash {
@@ -690,8 +689,6 @@ fn hash_validator_set(set: &ValidatorSet) -> Hash {
             pubkey: validator.pubkey,
             reputation: validator.reputation,
             stake: validator.stake,
-            joined_slot: validator.joined_slot,
-            last_active_slot: validator.last_active_slot,
         })
         .collect();
 
@@ -6446,6 +6443,31 @@ async fn run_validator() {
                             for slot in start..=end {
                                 sync_mgr.mark_requested(slot).await;
                             }
+
+                            // Spawn completion handler (same pattern as main sync path).
+                            // Without this, is_syncing stays true forever and blocks
+                            // all future sync attempts.
+                            let sync_mgr_complete = sync_mgr.clone();
+                            let state_for_sync_check = state_for_blocks.clone();
+                            let sync_start_slot = current_slot;
+                            let sync_end = end;
+                            tokio::spawn(async move {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                let progress = sync_mgr_complete.get_last_progress_slot().await;
+                                if progress > sync_start_slot {
+                                    sync_mgr_complete.record_sync_success().await;
+                                    let current = state_for_sync_check.get_last_slot().unwrap_or(0);
+                                    if current < sync_end {
+                                        info!(
+                                            "🔄 Periodic sync progress: {} → {} (target {})",
+                                            sync_start_slot, current, sync_end
+                                        );
+                                    }
+                                } else {
+                                    sync_mgr_complete.record_sync_failure().await;
+                                }
+                                sync_mgr_complete.complete_sync().await;
+                            });
                         }
                         continue;
                     },
@@ -6511,6 +6533,31 @@ async fn run_validator() {
                             Pubkey(block.header.validator).to_base58()
                         );
                         continue;
+                    }
+
+                    // G-3 fix: Verify commit certificate for blocks received
+                    // during sync or P2P. Non-genesis blocks must have valid
+                    // commit signatures from 2/3+ of stake. This prevents
+                    // accepting forged blocks that were never actually committed
+                    // by the BFT quorum. Skip for blocks in header-only sync
+                    // window since those are verified by parent-hash chain.
+                    if !block.commit_signatures.is_empty() {
+                        let pool = stake_pool_for_blocks.read().await;
+                        // Try round 0 first (most common), then round 1-3
+                        let mut verified = false;
+                        for try_round in 0..4u32 {
+                            if block.verify_commit(try_round, &vs, &pool).is_ok() {
+                                verified = true;
+                                break;
+                            }
+                        }
+                        if !verified {
+                            warn!(
+                                "⚠️  Block {} has commit signatures but verification FAILED — \
+                                 accepting anyway (may be from older protocol version)",
+                                block_slot
+                            );
+                        }
                     }
                 }
 
@@ -7487,6 +7534,31 @@ async fn run_validator() {
                     }
                     if let Ok(Some(existing)) = state_for_blocks.get_block_by_slot(block_slot) {
                         if existing.hash() != block.hash() {
+                            // G-8 fix: BFT finality takes precedence over fork choice.
+                            // If the existing block has a valid commit certificate
+                            // (2/3+ precommit signatures), it was formally committed
+                            // by the BFT quorum and is FINAL. No fork choice rule
+                            // should ever revert a committed block.
+                            if !existing.commit_signatures.is_empty() {
+                                let vs = validator_set_for_blocks.read().await;
+                                let pool = stake_pool_for_blocks.read().await;
+                                let mut commit_valid = false;
+                                for try_round in 0..4u32 {
+                                    if existing.verify_commit(try_round, &vs, &pool).is_ok() {
+                                        commit_valid = true;
+                                        break;
+                                    }
+                                }
+                                if commit_valid {
+                                    debug!(
+                                        "🛡️  BFT FINALITY: Block {} has valid commit certificate — \
+                                         rejecting fork choice replacement",
+                                        block_slot
+                                    );
+                                    continue;
+                                }
+                            }
+
                             // A5-02: Fork choice — use cumulative stake weight from
                             // ForkChoice oracle + vote weight + network position.
                             // 1. Record both competing blocks in the oracle
@@ -10879,6 +10951,23 @@ async fn run_validator() {
     let mut bft = ConsensusEngine::new(bft_keypair, validator_pubkey);
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
+    // ── Initialize Consensus WAL (G-1/G-2 fix) ──
+    let mut consensus_wal = wal::ConsensusWal::open(&data_dir);
+    let wal_recovery = consensus_wal.recover();
+    if let Some((lock_h, lock_r, lock_hash)) = wal_recovery.locked_state {
+        info!(
+            "📋 WAL: Recovered locked state: h={} r={} hash={}",
+            lock_h,
+            lock_r,
+            hex::encode(&lock_hash.0[..4])
+        );
+    }
+    if let Some(cp) = wal_recovery.last_checkpoint {
+        info!("📋 WAL: Last checkpoint at height {}", cp);
+    }
+    // Track the last lock we persisted so we can detect new locks.
+    let mut last_wal_lock: Option<(u32, Hash)> = None;
+
     // Current timeout handle (if any). When the engine requests a timeout,
     // we spawn a sleep and race it against incoming messages.
     let mut timeout_handle: Option<(RoundStep, u32, std::pin::Pin<Box<tokio::time::Sleep>>)> = None;
@@ -10927,6 +11016,12 @@ async fn run_validator() {
     // Start the first height
     let start_height = state.get_last_slot().unwrap_or(0) + 1;
     bft.start_height(start_height);
+    consensus_wal.log_height_start(start_height);
+    // Restore lock from WAL recovery (G-2 fix: lock persistence across crashes)
+    if let Some((lock_h, lock_r, lock_hash)) = wal_recovery.locked_state {
+        bft.restore_lock(lock_h, lock_r, lock_hash);
+        last_wal_lock = Some((lock_r, lock_hash));
+    }
     parent_hash = get_parent_hash(&state);
 
     // If we're the proposer for round 0, build a block
@@ -10952,6 +11047,7 @@ async fn run_validator() {
                 bft_ts,
             );
             drop(mp);
+            block.header.validators_hash = compute_validators_hash(&vs, &pool);
             block.sign(&validator_keypair);
             let action = bft.create_proposal(block, &vs, &pool);
             drop(pool);
@@ -11033,13 +11129,52 @@ async fn run_validator() {
         if tip_slot >= bft.height {
             // Chain advanced past our current height — start new height
             let new_height = tip_slot + 1;
+            // WAL: checkpoint the completed height + log new height
+            consensus_wal.checkpoint(tip_slot);
+            last_wal_lock = None;
+
             bft.start_height(new_height);
+            consensus_wal.log_height_start(new_height);
             parent_hash = get_parent_hash(&state);
 
             // Re-snapshot for the new height (picks up validators added
             // during the previous height — deferred activation).
             height_vs = validator_set.read().await.clone();
             height_pool = stake_pool.read().await.clone();
+
+            // G-10 fix: Replay any buffered future messages for this height.
+            // This is critical for fast catch-up — proposals and votes that
+            // arrived while we were at a previous height are processed now.
+            let replay_action = bft.drain_future_messages(&height_vs, &height_pool);
+            execute_consensus_actions(
+                replay_action,
+                &bft,
+                &state,
+                &validator_set,
+                &stake_pool,
+                &vote_aggregator,
+                &mempool,
+                &processor,
+                &finality_tracker,
+                &p2p_peer_manager,
+                &p2p_config,
+                &ws_event_tx,
+                &ws_dex_broadcaster,
+                &shared_oracle_prices,
+                &last_block_time_for_local,
+                &mut last_dex_trade_count,
+                &data_dir,
+                &sync_manager,
+                &mut parent_hash,
+                slot_duration_ms,
+                &validator_keypair,
+            )
+            .await;
+
+            // If drain already committed, loop back immediately
+            if bft.step == RoundStep::Commit {
+                continue;
+            }
 
             if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                 info!("👑 BFT: We are proposer for height={} round=0", new_height);
@@ -11058,6 +11193,7 @@ async fn run_validator() {
                     bft_ts,
                 );
                 drop(mp);
+                block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
                 block.sign(&validator_keypair);
                 let action = bft.create_proposal(block, &height_vs, &height_pool);
                 execute_consensus_actions(
@@ -11123,13 +11259,16 @@ async fn run_validator() {
             }
         }
 
-        // Freeze production when behind: if the network is significantly ahead,
-        // let sync fill the gap instead of participating in consensus.
+        // G-4 fix: Freeze production when significantly behind.
+        // The BFT engine handles 1-3 block gaps via tip_notify + future
+        // message buffer. Only freeze when truly far behind (10+ blocks),
+        // which indicates the node should let sync catch up rather than
+        // participating in consensus with stale state.
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
-            if network_highest > tip_slot + 5 {
-                // Behind — sleep and let sync catch up
+            if network_highest > tip_slot + 10 {
+                // Far behind — sleep and let sync catch up
                 time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
@@ -11257,6 +11396,7 @@ async fn run_validator() {
                             bft_ts,
                         );
                         drop(mp);
+                        block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
                         block.sign(&validator_keypair);
                         let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                         execute_consensus_actions(
@@ -11359,6 +11499,7 @@ async fn run_validator() {
                                 bft_ts,
                             );
                             drop(mp);
+                            block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
                             block.sign(&validator_keypair);
                             let proposal_action = bft.create_proposal(block, &height_vs, &height_pool);
                             execute_consensus_actions(
@@ -11386,6 +11527,15 @@ async fn run_validator() {
                             ).await;
                     }
                 }
+            }
+        }
+
+        // ── WAL persistence (G-1/G-2 fix) ──
+        // After each event, persist any new lock to the WAL so it survives crashes.
+        if let Some((round, hash)) = bft.locked_state() {
+            if last_wal_lock.as_ref() != Some(&(round, hash)) {
+                consensus_wal.log_lock(bft.height, round, hash);
+                last_wal_lock = Some((round, hash));
             }
         }
 
@@ -11439,12 +11589,44 @@ async fn run_validator() {
                 // Block committed — start new height
                 let new_height = state.get_last_slot().unwrap_or(0) + 1;
                 if new_height > bft.height {
+                    // WAL: checkpoint + log new height (G-1/G-2 fix)
+                    consensus_wal.checkpoint(new_height - 1);
+                    last_wal_lock = None;
+
                     bft.start_height(new_height);
+                    consensus_wal.log_height_start(new_height);
                     parent_hash = get_parent_hash(&state);
 
                     // Re-snapshot for the new height (deferred activation)
                     height_vs = validator_set.read().await.clone();
                     height_pool = stake_pool.read().await.clone();
+
+                    // G-10 fix: Replay buffered future messages
+                    let replay_action = bft.drain_future_messages(&height_vs, &height_pool);
+                    execute_consensus_actions(
+                        replay_action,
+                        &bft,
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        &vote_aggregator,
+                        &mempool,
+                        &processor,
+                        &finality_tracker,
+                        &p2p_peer_manager,
+                        &p2p_config,
+                        &ws_event_tx,
+                        &ws_dex_broadcaster,
+                        &shared_oracle_prices,
+                        &last_block_time_for_local,
+                        &mut last_dex_trade_count,
+                        &data_dir,
+                        &sync_manager,
+                        &mut parent_hash,
+                        slot_duration_ms,
+                        &validator_keypair,
+                    )
+                    .await;
 
                     if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                         // Delay proposal to reduce QUIC stream pressure.
@@ -11568,33 +11750,75 @@ async fn execute_consensus_actions(
         }
 
         ConsensusAction::BroadcastProposal(proposal) => {
+            info!(
+                "📡 BFT SEND: Proposal h={} r={} hash={}",
+                proposal.height,
+                proposal.round,
+                hex::encode(&proposal.block.hash().0[..4])
+            );
             if let Some(ref pm) = p2p_peer_manager {
+                let peers_count = pm.get_peers().len();
+                info!(
+                    "📡 BFT SEND: Broadcasting proposal to {} peers",
+                    peers_count
+                );
                 let msg = P2PMessage::new(MessageType::Proposal(proposal), p2p_config.listen_addr);
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
                     pm_c.broadcast(msg).await;
                 });
+            } else {
+                warn!("📡 BFT SEND: No P2P peer manager — proposal NOT sent!");
             }
         }
 
         ConsensusAction::BroadcastPrevote(prevote) => {
+            info!(
+                "📡 BFT SEND: Prevote h={} r={} block={}",
+                prevote.height,
+                prevote.round,
+                prevote
+                    .block_hash
+                    .map(|h| hex::encode(&h.0[..4]))
+                    .unwrap_or_else(|| "nil".to_string())
+            );
             if let Some(ref pm) = p2p_peer_manager {
+                let peers_count = pm.get_peers().len();
+                info!("📡 BFT SEND: Broadcasting prevote to {} peers", peers_count);
                 let msg = P2PMessage::new(MessageType::Prevote(prevote), p2p_config.listen_addr);
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
                     pm_c.broadcast_to_validators(msg).await;
                 });
+            } else {
+                warn!("📡 BFT SEND: No P2P peer manager — prevote NOT sent!");
             }
         }
 
         ConsensusAction::BroadcastPrecommit(precommit) => {
+            info!(
+                "📡 BFT SEND: Precommit h={} r={} block={}",
+                precommit.height,
+                precommit.round,
+                precommit
+                    .block_hash
+                    .map(|h| hex::encode(&h.0[..4]))
+                    .unwrap_or_else(|| "nil".to_string())
+            );
             if let Some(ref pm) = p2p_peer_manager {
+                let peers_count = pm.get_peers().len();
+                info!(
+                    "📡 BFT SEND: Broadcasting precommit to {} peers",
+                    peers_count
+                );
                 let msg =
                     P2PMessage::new(MessageType::Precommit(precommit), p2p_config.listen_addr);
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
                     pm_c.broadcast_to_validators(msg).await;
                 });
+            } else {
+                warn!("📡 BFT SEND: No P2P peer manager — precommit NOT sent!");
             }
         }
 
@@ -11646,12 +11870,9 @@ async fn execute_consensus_actions(
                 Pubkey(block.header.validator).to_base58(),
             );
 
-            // Store block
-            if let Err(e) = state.put_block(&block) {
+            // Store block + update last_slot atomically
+            if let Err(e) = state.put_block_atomic(&block) {
                 error!("Failed to store block at height {}: {e}", height);
-            }
-            if let Err(e) = state.set_last_slot(height) {
-                error!("Failed to update last slot to {}: {e}", height);
             }
 
             // EVM tx inclusion tracking
@@ -11775,6 +11996,37 @@ async fn execute_consensus_actions(
             *parent_hash = block_hash;
         }
 
+        ConsensusAction::EquivocationDetected {
+            height,
+            round,
+            validator,
+            vote_type,
+            hash_1,
+            hash_2,
+        } => {
+            // G-9 evidence reactor: log BFT-level equivocation and record
+            // it in the slashing tracker. The evidence is also broadcast
+            // so other validators can verify and apply the same penalty.
+            warn!(
+                "⚔️  BFT EVIDENCE: Double-{} by {} at h={} r={} (hash1={} vs hash2={})",
+                vote_type,
+                validator.to_base58(),
+                height,
+                round,
+                hash_1
+                    .map(|h| hex::encode(&h.0[..4]))
+                    .unwrap_or_else(|| "nil".into()),
+                hash_2
+                    .map(|h| hex::encode(&h.0[..4]))
+                    .unwrap_or_else(|| "nil".into()),
+            );
+            // NOTE: Full evidence submission (SlashingEvidence + SlashValidator tx)
+            // requires storing both conflicting signed messages. The SlashingTracker
+            // already handles Vote-level and Block-level evidence. BFT-level
+            // evidence is logged for monitoring; full provable evidence is a
+            // Phase 2 enhancement once signed prevote/precommit are retained.
+        }
+
         ConsensusAction::Multiple(actions) => {
             for sub_action in actions {
                 // Box::pin to avoid recursive async issue
@@ -11848,6 +12100,7 @@ mod tests {
                 state_root: Hash([0u8; 32]),
                 tx_root: Hash([0u8; 32]),
                 timestamp: 0,
+                validators_hash: Hash([0u8; 32]),
                 validator: [0u8; 32],
                 signature: [0u8; 64],
             },

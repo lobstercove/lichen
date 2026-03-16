@@ -499,8 +499,8 @@ impl P2PNetwork {
             }
 
             MessageType::Proposal(proposal) => {
-                debug!(
-                    "P2P: Received BFT proposal height={} round={} from {}",
+                info!(
+                    "📥 BFT RECV: Proposal h={} r={} from peer {}",
                     proposal.height, proposal.round, peer_addr
                 );
                 if let Err(e) = self.proposal_tx.try_send(proposal) {
@@ -512,8 +512,8 @@ impl P2PNetwork {
             }
 
             MessageType::Prevote(prevote) => {
-                debug!(
-                    "P2P: Received BFT prevote height={} round={} from {}",
+                info!(
+                    "📥 BFT RECV: Prevote h={} r={} from peer {}",
                     prevote.height, prevote.round, peer_addr
                 );
                 if let Err(e) = self.prevote_tx.try_send(prevote) {
@@ -525,8 +525,8 @@ impl P2PNetwork {
             }
 
             MessageType::Precommit(precommit) => {
-                debug!(
-                    "P2P: Received BFT precommit height={} round={} from {}",
+                info!(
+                    "📥 BFT RECV: Precommit h={} r={} from peer {}",
                     precommit.height, precommit.round, peer_addr
                 );
                 if let Err(e) = self.precommit_tx.try_send(precommit) {

@@ -84,6 +84,16 @@ pub struct BlockHeader {
     /// Unix timestamp
     pub timestamp: u64,
 
+    /// Hash of the active validator set for this block's height.
+    /// Enables light clients to verify which validator set signed the block
+    /// without replaying full state. Computed as SHA-256 of the sorted
+    /// validator pubkeys and their stakes.
+    ///
+    /// Legacy blocks (before this field was added) will have the default
+    /// zero hash via `#[serde(default)]`.
+    #[serde(default)]
+    pub validators_hash: Hash,
+
     /// Validator that produced this block
     pub validator: [u8; 32],
 
@@ -151,6 +161,7 @@ impl Block {
                 state_root,
                 tx_root,
                 timestamp,
+                validators_hash: Hash::default(),
                 validator: [0u8; 32],
                 signature: [0u8; 64],
             },
@@ -177,6 +188,7 @@ impl Block {
                 state_root,
                 tx_root,
                 timestamp: current_timestamp(),
+                validators_hash: Hash::default(),
                 validator,
                 signature: [0u8; 64],
             },
@@ -204,6 +216,7 @@ impl Block {
                 state_root,
                 tx_root,
                 timestamp,
+                validators_hash: Hash::default(),
                 validator,
                 signature: [0u8; 64],
             },
@@ -399,6 +412,39 @@ pub fn compute_bft_timestamp(
     }
 
     Some(median_ts)
+}
+
+/// Compute a deterministic hash of the validator set and their stakes.
+///
+/// The hash is SHA-256 over the sorted (pubkey, stake) pairs:
+///   SHA256(pubkey_1 || stake_1_le64 || pubkey_2 || stake_2_le64 || ...)
+///
+/// This is included in the block header so light clients can verify which
+/// validator set was active when the block was committed.
+pub fn compute_validators_hash(
+    validator_set: &crate::consensus::ValidatorSet,
+    stake_pool: &crate::consensus::StakePool,
+) -> Hash {
+    let mut sorted: Vec<_> = validator_set
+        .sorted_validators()
+        .iter()
+        .map(|vi| {
+            let stake = stake_pool
+                .get_stake(&vi.pubkey)
+                .map(|s| s.total_stake())
+                .unwrap_or(vi.stake);
+            (vi.pubkey, stake)
+        })
+        .collect();
+    // Sort by pubkey bytes for determinism
+    sorted.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+
+    let mut data = Vec::with_capacity(sorted.len() * 40);
+    for (pk, stake) in &sorted {
+        data.extend_from_slice(&pk.0);
+        data.extend_from_slice(&stake.to_le_bytes());
+    }
+    Hash::hash(&data)
 }
 
 fn compute_tx_root(transactions: &[Transaction]) -> Hash {
@@ -615,6 +661,7 @@ mod tests {
             state_root: Hash::default(),
             tx_root: Hash::default(),
             timestamp: 0,
+            validators_hash: Hash::default(),
             validator: [0u8; 32],
             signature: [0u8; 64],
         };
