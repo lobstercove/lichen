@@ -184,6 +184,11 @@ All system instructions use `program_id = System Program (all zeros)`. The first
 | **23** | `system_shield_deposit` | 169 bytes (see §10) | `[sender]` | ZK shield: transparent → shielded pool. |
 | **24** | `system_unshield_withdraw` | 233 bytes (see §10) | `[recipient]` | ZK unshield: shielded pool → transparent. |
 | **25** | `system_shielded_transfer` | 289 bytes (see §10) | (none — fully private) | ZK transfer: shielded → shielded. |
+| **26** | `system_register_validator` | `[0x1A, stake:u64 LE]` | `[validator]` | Register new validator (internal, fee-free). |
+| **27** | `system_slash_validator` | `[0x1B, evidence...]` | `[validator]` | Slash validator for equivocation (internal, fee-free). |
+| **28** | `system_nonce` | `[0x1C, sub_opcode, ...]` | `[authority, nonce_account]` | Durable nonce (sub: 0=Initialize, 1=Advance, 2=Withdraw, 3=Authorize). |
+| **29** | `system_governance_param_change` | `[0x1D, param_id:u8, value:u64 LE]` | `[governance_authority]` | Queue governance parameter change (applied at epoch boundary). |
+| **30** | `system_oracle_attestation` | `[0x1E, asset_name_len:u8, asset_name, price:u64 LE]` | `[validator]` | Submit oracle price attestation (quorum >2/3 stake). |
 
 ---
 
@@ -1133,6 +1138,16 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 | `getPredictionTraderStats` | `[address]` | `{volume, trade_count}` |
 | `getPredictionLeaderboard` | `[{limit?}]` | Top traders |
 | `getPredictionTrending` | none | Top 10 markets by 24h vol |
+
+#### Proofs, Estimation & Archive (v0.4.0)
+
+| Method | Params | Returns |
+|--------|--------|---------|
+| `getBlockCommit` | `[slot]` | `{slot, block_hash, commit_signatures[], commit_validator_count, bft_timestamp}` |
+| `getAccountProof` | `[pubkey]` | `{pubkey, account, proof: {leaf_hash, siblings, path}, state_root}` |
+| `estimateTransactionFee` | `[base64_tx]` | `{fee_shells, fee_molt, compute_units}` |
+| `getAccountAtSlot` | `[pubkey, slot]` | Account state at historical slot (archive mode) |
+| `getOraclePrices` | none | `{prices: [{asset, price, confidence, slot, attestations}]}` |
 
 #### EVM & Symbol Registry
 
