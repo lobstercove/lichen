@@ -438,23 +438,30 @@ impl P2PNetwork {
         peer_addr: SocketAddr,
         message: P2PMessage,
     ) -> Result<(), String> {
-        // Relay/Seed nodes re-broadcast gossip messages to all peers except sender.
-        // The SeenMessageCache in handle_connection already prevents loops.
-        if (self.role == NodeRole::Relay || self.role == NodeRole::Seed)
-            && matches!(
-                message.msg_type,
-                MessageType::Block(_)
-                    | MessageType::Vote(_)
-                    | MessageType::Proposal(_)
-                    | MessageType::Prevote(_)
-                    | MessageType::Precommit(_)
-                    | MessageType::Transaction(_)
-                    | MessageType::ValidatorAnnounce { .. }
-                    | MessageType::SlashingEvidence(_)
-                    | MessageType::CompactBlockMsg(_)
-                    | MessageType::CertRotation { .. }
-            )
-        {
+        // Relay/Seed nodes re-broadcast ALL gossip messages to all peers except sender.
+        // Validator nodes additionally re-broadcast BFT consensus messages
+        // (Proposal, Prevote, Precommit) — this matches CometBFT's consensus
+        // reactor pattern where every node gossips all known votes to all peers.
+        // The SeenMessageCache in handle_connection prevents infinite loops.
+        let is_relay_or_seed = self.role == NodeRole::Relay || self.role == NodeRole::Seed;
+        let is_bft_message = matches!(
+            message.msg_type,
+            MessageType::Proposal(_) | MessageType::Prevote(_) | MessageType::Precommit(_)
+        );
+        let is_gossip_message = matches!(
+            message.msg_type,
+            MessageType::Block(_)
+                | MessageType::Vote(_)
+                | MessageType::Proposal(_)
+                | MessageType::Prevote(_)
+                | MessageType::Precommit(_)
+                | MessageType::Transaction(_)
+                | MessageType::ValidatorAnnounce { .. }
+                | MessageType::SlashingEvidence(_)
+                | MessageType::CompactBlockMsg(_)
+                | MessageType::CertRotation { .. }
+        );
+        if (is_relay_or_seed && is_gossip_message) || is_bft_message {
             self.peer_manager
                 .broadcast_except(&message, &peer_addr)
                 .await;

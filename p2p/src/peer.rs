@@ -1305,9 +1305,12 @@ async fn handle_connection(
 
                 // C2-01: Dedup — hash the raw message bytes and skip if already seen.
                 // Only dedup gossip message types (Block, Vote, Transaction,
-                // SlashingEvidence, ValidatorAnnounce). Request/response types
-                // (Ping, Pong, BlockRequest, StatusRequest, etc.) are point-to-point
-                // and must always be processed.
+                // SlashingEvidence, ValidatorAnnounce, and BFT consensus
+                // messages). Request/response types (Ping, Pong, BlockRequest,
+                // StatusRequest, etc.) are point-to-point and must always be
+                // processed. BFT messages (Proposal, Prevote, Precommit) are
+                // included because validators re-gossip them (CometBFT reactor
+                // pattern) and we must prevent infinite relay loops.
                 let should_dedup = matches!(
                     message.msg_type,
                     crate::MessageType::Block(_)
@@ -1315,6 +1318,9 @@ async fn handle_connection(
                         | crate::MessageType::Transaction(_)
                         | crate::MessageType::SlashingEvidence(_)
                         | crate::MessageType::ValidatorAnnounce { .. }
+                        | crate::MessageType::Proposal(_)
+                        | crate::MessageType::Prevote(_)
+                        | crate::MessageType::Precommit(_)
                 );
                 if should_dedup {
                     let hash: [u8; 32] = Sha256::digest(&bytes).into();

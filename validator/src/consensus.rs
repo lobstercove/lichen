@@ -992,16 +992,26 @@ impl ConsensusEngine {
     /// Tendermint round-skip: if we see votes from >1/3 voting power for
     /// round R' > our round, skip to R'. This prevents permanent deadlocks
     /// when nodes diverge in round numbers.
+    /// Tendermint-style round-skip with aggregate future-round counting.
+    ///
+    /// CometBFT's f+1 rule: if >1/3 of voting power has voted for a round
+    /// higher than ours, our round can't reach 2/3 anyway — skip ahead.
+    ///
+    /// Unlike the basic per-round check, this counts ALL unique voters across
+    /// ALL rounds > self.round.  This is critical for convergence after
+    /// staggered restarts: if validators are at rounds 7, 8, 9 respectively,
+    /// each round has only one vote (25% < 33%).  By aggregating, a validator
+    /// at round 7 sees 2 voters in future rounds (50% > 33%) and skips to
+    /// the highest round, enabling consensus.
+    ///
+    /// Safety: if >1/3 of stake has moved past round R, round R can never
+    /// gather the required 2/3 supermajority — skipping is always safe.
     fn check_round_skip(
         &mut self,
-        vote_round: u32,
+        _vote_round: u32,
         validator_set: &ValidatorSet,
         stake_pool: &StakePool,
     ) -> ConsensusAction {
-        if vote_round <= self.round {
-            return ConsensusAction::None;
-        }
-
         let total_eligible_stake: u128 = validator_set
             .sorted_validators()
             .iter()
@@ -1024,35 +1034,47 @@ impl ConsensusEngine {
             return ConsensusAction::None;
         }
 
-        // Collect unique voters who sent prevotes OR precommits for vote_round
-        let mut round_voters = std::collections::HashSet::new();
+        // Collect unique voters who sent prevotes OR precommits for ANY
+        // round > self.round, and track the highest round seen.
+        let mut future_voters = std::collections::HashSet::new();
+        let mut max_round = self.round;
         for (r, pk) in self.seen_prevotes.keys() {
-            if *r == vote_round {
-                round_voters.insert(*pk);
+            if *r > self.round {
+                future_voters.insert(*pk);
+                if *r > max_round {
+                    max_round = *r;
+                }
             }
         }
         for (r, pk) in self.seen_precommits.keys() {
-            if *r == vote_round {
-                round_voters.insert(*pk);
+            if *r > self.round {
+                future_voters.insert(*pk);
+                if *r > max_round {
+                    max_round = *r;
+                }
             }
         }
 
-        let round_stake: u128 = round_voters
+        if max_round == self.round {
+            return ConsensusAction::None;
+        }
+
+        let future_stake: u128 = future_voters
             .iter()
             .filter_map(|pk| stake_pool.get_stake(pk))
             .map(|s| s.total_stake() as u128)
             .sum();
 
-        // f+1 threshold: round_stake * 3 > total_eligible_stake (i.e., >1/3)
-        if round_stake * 3 > total_eligible_stake {
+        // f+1 threshold: future_stake * 3 > total_eligible_stake (i.e., >1/3)
+        if future_stake * 3 > total_eligible_stake {
             info!(
-                "🔄 BFT: Round skip h={} r={} → r={} (saw >1/3 votes for higher round)",
-                self.height, self.round, vote_round
+                "🔄 BFT: Round skip h={} r={} → r={} (>1/3 stake has voted in future rounds, {} voters)",
+                self.height, self.round, max_round, future_voters.len()
             );
-            let skip_action = self.start_round(vote_round);
+            let skip_action = self.start_round(max_round);
             // After skipping, check if we already have a stored proposal
             // for the new round and process it immediately.
-            if let Some(proposal) = self.proposals.get(&vote_round).cloned() {
+            if let Some(proposal) = self.proposals.get(&max_round).cloned() {
                 let block_hash = proposal.block.hash();
                 // Tendermint prevote rule after skip
                 let should_prevote_block = if self.locked_round.is_none()
