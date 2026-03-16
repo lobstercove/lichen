@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 pub struct CliConfig {
     /// RPC endpoint URL
     pub rpc_url: String,
-    
+
     /// WebSocket endpoint URL (optional)
     pub ws_url: Option<String>,
-    
+
     /// Default keypair path (optional)
     pub keypair: Option<PathBuf>,
 }
@@ -40,23 +40,21 @@ impl CliConfig {
                 Self::default()
             }
         };
-        
+
         // Override RPC URL if provided
         if let Some(url) = url_override {
             config.rpc_url = url.clone();
         }
-        
+
         Ok(config)
     }
-    
+
     fn load_from_file(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .context("Failed to read config file")?;
-        
-        serde_json::from_str(&content)
-            .context("Failed to parse config file")
+        let content = fs::read_to_string(path).context("Failed to read config file")?;
+
+        serde_json::from_str(&content).context("Failed to parse config file")
     }
-    
+
     /// Get default config path (~/.moltchain/config.json)
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
@@ -64,22 +62,22 @@ impl CliConfig {
             .join(".moltchain")
             .join("config.json")
     }
-    
+
     /// Save configuration
     pub fn save(&self) -> Result<()> {
         let path = Self::default_path();
-        
+
         // Create directory if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        
+
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&path, json)?;
-        
+
         Ok(())
     }
-    
+
     /// Display current configuration
     pub fn display(&self) {
         println!("🔧 MoltChain CLI Configuration");

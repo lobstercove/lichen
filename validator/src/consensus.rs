@@ -275,7 +275,9 @@ impl ConsensusEngine {
         if proposed_ts > now_secs + 30 {
             warn!(
                 "🚨 BFT: Proposal timestamp {} is too far in the future (now={}, delta={}s)",
-                proposed_ts, now_secs, proposed_ts - now_secs
+                proposed_ts,
+                now_secs,
+                proposed_ts - now_secs
             );
             return ConsensusAction::None;
         }
@@ -477,8 +479,10 @@ impl ConsensusEngine {
             .push(precommit.validator);
 
         // Retain precommit signature + timestamp for commit certificate
-        self.precommit_sigs
-            .insert((precommit.round, precommit.validator), (precommit.signature, precommit.timestamp));
+        self.precommit_sigs.insert(
+            (precommit.round, precommit.validator),
+            (precommit.signature, precommit.timestamp),
+        );
 
         let round = precommit.round;
         let mut actions = Vec::new();

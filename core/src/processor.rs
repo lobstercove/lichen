@@ -242,10 +242,7 @@ pub fn compute_stake_weighted_median(attestations: &[OracleAttestation]) -> u64 
         return attestations[0].price;
     }
 
-    let mut sorted: Vec<(u64, u64)> = attestations
-        .iter()
-        .map(|a| (a.price, a.stake))
-        .collect();
+    let mut sorted: Vec<(u64, u64)> = attestations.iter().map(|a| (a.price, a.stake)).collect();
     sorted.sort_by_key(|&(price, _)| price);
 
     let total_stake: u128 = sorted.iter().map(|&(_, s)| s as u128).sum();
@@ -484,7 +481,9 @@ impl TxProcessor {
     /// (3) express lane already removed in Task 3.7. All users now pay flat fees.
     ///
     /// Kept as identity function for backward compatibility with any external callers.
-    #[deprecated(note = "Fee discounts removed (Task 4.2 M-7 MEV audit). Returns base_fee unchanged.")]
+    #[deprecated(
+        note = "Fee discounts removed (Task 4.2 M-7 MEV audit). Returns base_fee unchanged."
+    )]
     pub fn apply_reputation_fee_discount(base_fee: u64, _reputation: u64) -> u64 {
         base_fee
     }
@@ -4425,8 +4424,7 @@ impl TxProcessor {
         let threshold = (total_active_stake as u128 * 2) / 3;
         if attested_stake > threshold {
             // Compute stake-weighted median price
-            let consensus_price =
-                compute_stake_weighted_median(&attestations);
+            let consensus_price = compute_stake_weighted_median(&attestations);
             self.state.put_oracle_consensus_price(
                 asset,
                 consensus_price,
@@ -5544,7 +5542,10 @@ impl TxProcessor {
         if let Some(timelock_epochs) = contract.upgrade_timelock_epochs {
             if timelock_epochs > 0 {
                 if contract.pending_upgrade.is_some() {
-                    return Err("Contract already has a pending upgrade — execute or veto first".to_string());
+                    return Err(
+                        "Contract already has a pending upgrade — execute or veto first"
+                            .to_string(),
+                    );
                 }
                 let current_slot = self.b_get_last_slot().unwrap_or(0);
                 let current_epoch = crate::consensus::slot_to_epoch(current_slot);
@@ -5585,11 +5586,7 @@ impl TxProcessor {
     }
 
     /// Set or remove the upgrade timelock for a contract (owner only).
-    fn contract_set_upgrade_timelock(
-        &self,
-        ix: &Instruction,
-        epochs: u32,
-    ) -> Result<(), String> {
+    fn contract_set_upgrade_timelock(&self, ix: &Instruction, epochs: u32) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("SetUpgradeTimelock requires owner and contract accounts".to_string());
         }
@@ -5681,7 +5678,9 @@ impl TxProcessor {
     /// Veto (cancel) a pending contract upgrade. Governance authority only.
     fn contract_veto_upgrade(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
-            return Err("VetoUpgrade requires governance authority and contract accounts".to_string());
+            return Err(
+                "VetoUpgrade requires governance authority and contract accounts".to_string(),
+            );
         }
 
         let signer = &ix.accounts[0];
@@ -9971,7 +9970,12 @@ mod tests {
     // ────────────────────────────────────────────────────────────────────────
 
     /// Helper: build an oracle attestation instruction
-    fn make_oracle_attestation_ix(signer: Pubkey, asset: &str, price: u64, decimals: u8) -> Instruction {
+    fn make_oracle_attestation_ix(
+        signer: Pubkey,
+        asset: &str,
+        price: u64,
+        decimals: u8,
+    ) -> Instruction {
         let asset_bytes = asset.as_bytes();
         let mut data = vec![30u8, asset_bytes.len() as u8];
         data.extend_from_slice(asset_bytes);
@@ -9986,7 +9990,9 @@ mod tests {
 
     /// Helper: set up a validator with active stake in the stake pool
     fn setup_active_validator(state: &StateStore, pubkey: &Pubkey, stake_shells: u64) {
-        let mut pool = state.get_stake_pool().unwrap_or_else(|_| crate::consensus::StakePool::new());
+        let mut pool = state
+            .get_stake_pool()
+            .unwrap_or_else(|_| crate::consensus::StakePool::new());
         // Use stake() which requires >= MIN_VALIDATOR_STAKE
         pool.stake(*pubkey, stake_shells, 0).unwrap();
         state.put_stake_pool(&pool).unwrap();
@@ -10160,7 +10166,9 @@ mod tests {
 
         // Fund bob and carol
         state.put_account(&bob, &Account::new(1000, bob)).unwrap();
-        state.put_account(&carol, &Account::new(1000, carol)).unwrap();
+        state
+            .put_account(&carol, &Account::new(1000, carol))
+            .unwrap();
 
         // Equal stake for all three validators
         let stake = MIN_VALIDATOR_STAKE;
@@ -10196,7 +10204,10 @@ mod tests {
 
         // 2/3 exactly is NOT >2/3 supermajority (Tendermint convention)
         let cp = state.get_oracle_consensus_price("MOLT").unwrap();
-        assert!(cp.is_none(), "2/3 exactly should NOT reach quorum (need >2/3)");
+        assert!(
+            cp.is_none(),
+            "2/3 exactly should NOT reach quorum (need >2/3)"
+        );
 
         // Carol attests: MOLT = 155 (3 of 3 = 100% > 2/3, quorum reached)
         let ix = make_oracle_attestation_ix(carol, "MOLT", 155, 8);
@@ -10212,7 +10223,10 @@ mod tests {
         let cp = cp.unwrap();
         assert_eq!(cp.attestation_count, 3);
         // Sorted prices: [150, 155, 160]. With equal stakes, median = 155
-        assert_eq!(cp.price, 155, "Stake-weighted median of [150,155,160] with equal stakes");
+        assert_eq!(
+            cp.price, 155,
+            "Stake-weighted median of [150,155,160] with equal stakes"
+        );
     }
 
     #[test]
@@ -10238,7 +10252,9 @@ mod tests {
         assert!(r.success, "second: {:?}", r.error);
 
         // Should only have 1 attestation (replaced, not appended)
-        let atts = state.get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS).unwrap();
+        let atts = state
+            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+            .unwrap();
         assert_eq!(atts.len(), 1);
         assert_eq!(atts[0].price, 200);
     }
@@ -10266,8 +10282,12 @@ mod tests {
         assert!(r.success, "wETH: {:?}", r.error);
 
         // Check each asset independently
-        let molt_atts = state.get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS).unwrap();
-        let weth_atts = state.get_oracle_attestations("wETH", 0, ORACLE_STALENESS_SLOTS).unwrap();
+        let molt_atts = state
+            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+            .unwrap();
+        let weth_atts = state
+            .get_oracle_attestations("wETH", 0, ORACLE_STALENESS_SLOTS)
+            .unwrap();
         assert_eq!(molt_atts.len(), 1);
         assert_eq!(weth_atts.len(), 1);
         assert_eq!(molt_atts[0].price, 150);
@@ -10294,9 +10314,27 @@ mod tests {
     #[test]
     fn test_stake_weighted_median_equal_stakes() {
         let atts = vec![
-            OracleAttestation { validator: Pubkey([1u8; 32]), price: 100, decimals: 8, stake: 1000, slot: 0 },
-            OracleAttestation { validator: Pubkey([2u8; 32]), price: 200, decimals: 8, stake: 1000, slot: 0 },
-            OracleAttestation { validator: Pubkey([3u8; 32]), price: 300, decimals: 8, stake: 1000, slot: 0 },
+            OracleAttestation {
+                validator: Pubkey([1u8; 32]),
+                price: 100,
+                decimals: 8,
+                stake: 1000,
+                slot: 0,
+            },
+            OracleAttestation {
+                validator: Pubkey([2u8; 32]),
+                price: 200,
+                decimals: 8,
+                stake: 1000,
+                slot: 0,
+            },
+            OracleAttestation {
+                validator: Pubkey([3u8; 32]),
+                price: 300,
+                decimals: 8,
+                stake: 1000,
+                slot: 0,
+            },
         ];
         // Sorted: [100, 200, 300], total=3000, half=1500
         // Cumulative: 1000, 2000, 3000 → crosses at 200
@@ -10306,9 +10344,27 @@ mod tests {
     #[test]
     fn test_stake_weighted_median_unequal_stakes() {
         let atts = vec![
-            OracleAttestation { validator: Pubkey([1u8; 32]), price: 100, decimals: 8, stake: 100, slot: 0 },
-            OracleAttestation { validator: Pubkey([2u8; 32]), price: 200, decimals: 8, stake: 100, slot: 0 },
-            OracleAttestation { validator: Pubkey([3u8; 32]), price: 300, decimals: 8, stake: 800, slot: 0 },
+            OracleAttestation {
+                validator: Pubkey([1u8; 32]),
+                price: 100,
+                decimals: 8,
+                stake: 100,
+                slot: 0,
+            },
+            OracleAttestation {
+                validator: Pubkey([2u8; 32]),
+                price: 200,
+                decimals: 8,
+                stake: 100,
+                slot: 0,
+            },
+            OracleAttestation {
+                validator: Pubkey([3u8; 32]),
+                price: 300,
+                decimals: 8,
+                stake: 800,
+                slot: 0,
+            },
         ];
         // Sorted: [100, 200, 300], total=1000, half=500
         // Cumulative: 100, 200, 1000 → crosses at 300 (the whale's price dominates)
@@ -10352,7 +10408,8 @@ mod tests {
         };
         let message = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(message);
-        tx.signatures.push(deployer_kp.sign(&tx.message.serialize()));
+        tx.signatures
+            .push(deployer_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, validator);
         assert!(result.success, "deploy should succeed: {:?}", result.error);
         // Verify created
@@ -10386,7 +10443,9 @@ mod tests {
     /// different (but valid) WASM binary.
     fn valid_wasm_code(tag: u8) -> Vec<u8> {
         // magic + version + custom section (id=0, payload_len=2, name_len=1, name=tag)
-        vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, tag]
+        vec![
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, tag,
+        ]
     }
 
     #[test]
@@ -10396,7 +10455,12 @@ mod tests {
 
         // Deploy contract
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set 3-epoch timelock
@@ -10408,7 +10472,11 @@ mod tests {
             genesis_hash,
             &validator,
         );
-        assert!(result.success, "SetUpgradeTimelock should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "SetUpgradeTimelock should succeed: {:?}",
+            result.error
+        );
 
         // Verify timelock is stored
         let acct = state.get_account(&contract_addr).unwrap().unwrap();
@@ -10422,11 +10490,17 @@ mod tests {
             &processor,
             &alice_kp,
             vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: new_code.clone() },
+            crate::ContractInstruction::Upgrade {
+                code: new_code.clone(),
+            },
             genesis_hash,
             &validator,
         );
-        assert!(result.success, "Timelocked upgrade should succeed (staged): {:?}", result.error);
+        assert!(
+            result.success,
+            "Timelocked upgrade should succeed (staged): {:?}",
+            result.error
+        );
 
         // Verify pending upgrade exists but code not applied yet
         let acct = state.get_account(&contract_addr).unwrap().unwrap();
@@ -10444,7 +10518,12 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // No timelock set — upgrade should be instant
@@ -10453,11 +10532,17 @@ mod tests {
             &processor,
             &alice_kp,
             vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: new_code.clone() },
+            crate::ContractInstruction::Upgrade {
+                code: new_code.clone(),
+            },
             genesis_hash,
             &validator,
         );
-        assert!(result.success, "Instant upgrade should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Instant upgrade should succeed: {:?}",
+            result.error
+        );
 
         let acct = state.get_account(&contract_addr).unwrap().unwrap();
         let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
@@ -10472,33 +10557,55 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set timelock
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // First upgrade → staged
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x03) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x03),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Second upgrade while first is pending → should fail
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x04) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x04),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(!r.success, "Double-stage should be rejected");
-        assert!(r.error.as_deref().unwrap_or("").contains("already has a pending upgrade"));
+        assert!(r
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("already has a pending upgrade"));
     }
 
     #[test]
@@ -10507,33 +10614,53 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &_state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set 5-epoch timelock (current slot = 0 → epoch 0, needs > epoch 5)
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 5 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Stage upgrade
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x05) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x05),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Try execute immediately (epoch 0, needs > epoch 5) → should fail
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::ExecuteUpgrade,
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(!r.success, "Should fail: timelock not expired");
-        assert!(r.error.as_deref().unwrap_or("").contains("Timelock has not expired"));
+        assert!(r
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Timelock has not expired"));
     }
 
     #[test]
@@ -10542,17 +10669,29 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &_state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Try execute with no pending upgrade → should fail
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::ExecuteUpgrade,
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(!r.success, "Should fail: no pending upgrade");
-        assert!(r.error.as_deref().unwrap_or("").contains("No pending upgrade"));
+        assert!(r
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("No pending upgrade"));
     }
 
     #[test]
@@ -10561,7 +10700,12 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set governance authority
@@ -10574,16 +10718,24 @@ mod tests {
 
         // Set timelock + stage upgrade
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x06) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x06),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
@@ -10594,16 +10746,22 @@ mod tests {
 
         // Governance authority vetoes
         let r = submit_contract_ix(
-            &processor, &gov_kp, vec![gov, contract_addr],
+            &processor,
+            &gov_kp,
+            vec![gov, contract_addr],
             crate::ContractInstruction::VetoUpgrade,
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success, "Veto should succeed: {:?}", r.error);
 
         // Verify pending is cleared
         let acct = state.get_account(&contract_addr).unwrap().unwrap();
         let ca: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
-        assert!(ca.pending_upgrade.is_none(), "Pending upgrade should be cleared");
+        assert!(
+            ca.pending_upgrade.is_none(),
+            "Pending upgrade should be cleared"
+        );
         assert_eq!(ca.version, 1, "Version should NOT change after veto");
     }
 
@@ -10613,7 +10771,12 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set governance authority to someone else
@@ -10623,27 +10786,42 @@ mod tests {
 
         // Set timelock + stage upgrade
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 1 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x07) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x07),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Alice (not governance) tries to veto → should fail
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::VetoUpgrade,
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(!r.success, "Non-governance should not be able to veto");
-        assert!(r.error.as_deref().unwrap_or("").contains("governance authority"));
+        assert!(r
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("governance authority"));
     }
 
     #[test]
@@ -10652,32 +10830,51 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &_state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &_state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set timelock
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 2 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Stage upgrade
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
-            crate::ContractInstruction::Upgrade { code: valid_wasm_code(0x08) },
-            genesis_hash, &validator,
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
+            crate::ContractInstruction::Upgrade {
+                code: valid_wasm_code(0x08),
+            },
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
         // Try to remove timelock while upgrade is pending → should fail
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 0 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
-        assert!(!r.success, "Should not remove timelock while upgrade pending");
+        assert!(
+            !r.success,
+            "Should not remove timelock while upgrade pending"
+        );
         assert!(r.error.as_deref().unwrap_or("").contains("pending"));
     }
 
@@ -10687,14 +10884,22 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let contract_addr = deploy_test_contract(
-            &processor, &state, &alice_kp, alice, genesis_hash, &validator,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            genesis_hash,
+            &validator,
         );
 
         // Set timelock
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 5 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success);
 
@@ -10704,9 +10909,12 @@ mod tests {
 
         // Remove timelock (no pending upgrade)
         let r = submit_contract_ix(
-            &processor, &alice_kp, vec![alice, contract_addr],
+            &processor,
+            &alice_kp,
+            vec![alice, contract_addr],
             crate::ContractInstruction::SetUpgradeTimelock { epochs: 0 },
-            genesis_hash, &validator,
+            genesis_hash,
+            &validator,
         );
         assert!(r.success, "Remove timelock should succeed: {:?}", r.error);
 

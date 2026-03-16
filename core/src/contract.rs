@@ -1456,7 +1456,10 @@ fn host_storage_write(
     // Task 4.3 (M-4): Enforce total storage bytes limit at protocol level.
     // Compute the delta from this write (new key+val adds bytes; overwrite adjusts by diff).
     let new_bytes = key.len() + val.len();
-    let old_bytes = ctx.storage.get(&key).map_or(0, |old_val| key.len() + old_val.len());
+    let old_bytes = ctx
+        .storage
+        .get(&key)
+        .map_or(0, |old_val| key.len() + old_val.len());
     let projected = ctx.storage_bytes_used + new_bytes - old_bytes;
     if projected > MAX_TOTAL_STORAGE_BYTES {
         tracing::warn!(
@@ -2486,8 +2489,14 @@ mod tests {
 
     #[test]
     fn test_wasm_memory_constants() {
-        assert_eq!(MAX_WASM_MEMORY_PAGES, 1024, "Max should be 1024 pages (64MB)");
-        assert_eq!(DEFAULT_WASM_MEMORY_PAGES, 16, "Default should be 16 pages (1MB)");
+        assert_eq!(
+            MAX_WASM_MEMORY_PAGES, 1024,
+            "Max should be 1024 pages (64MB)"
+        );
+        assert_eq!(
+            DEFAULT_WASM_MEMORY_PAGES, 16,
+            "Default should be 16 pages (1MB)"
+        );
         assert!(
             DEFAULT_WASM_MEMORY_PAGES < MAX_WASM_MEMORY_PAGES,
             "Default must be less than max"
@@ -2563,7 +2572,10 @@ mod tests {
         // Create a WASM module with 1025 initial pages (exceeds 1024 max)
         let wasm = wasm_with_memory(1025, None);
         let result = rt.deploy(&wasm);
-        assert!(result.is_err(), "Deploy should reject >1024 pages initial memory");
+        assert!(
+            result.is_err(),
+            "Deploy should reject >1024 pages initial memory"
+        );
         let err = result.unwrap_err();
         assert!(
             err.contains("exceeds limit"),
@@ -2593,7 +2605,11 @@ mod tests {
         // Create a WASM module with exactly 1024 initial pages and 1024 max
         let wasm = wasm_with_memory(1024, Some(1024));
         let result = rt.deploy(&wasm);
-        assert!(result.is_ok(), "Deploy should accept exactly 1024 pages: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Deploy should accept exactly 1024 pages: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2602,7 +2618,11 @@ mod tests {
         // Create a WASM module with 1 page (64KB)
         let wasm = wasm_with_memory(1, None);
         let result = rt.deploy(&wasm);
-        assert!(result.is_ok(), "Deploy should accept 1-page memory: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Deploy should accept 1-page memory: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2611,19 +2631,18 @@ mod tests {
         // Create a WASM module with 16 pages (1MB = default)
         let wasm = wasm_with_memory(DEFAULT_WASM_MEMORY_PAGES, Some(MAX_WASM_MEMORY_PAGES));
         let result = rt.deploy(&wasm);
-        assert!(result.is_ok(), "Deploy should accept default memory: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Deploy should accept default memory: {:?}",
+            result.err()
+        );
     }
 
     // ── Task 4.3 (M-4): Contract Storage Protocol Enforcement ───────
 
     #[test]
     fn test_storage_bytes_tracking_new_context() {
-        let ctx = ContractContext::new(
-            Pubkey([1u8; 32]),
-            Pubkey([2u8; 32]),
-            0,
-            0,
-        );
+        let ctx = ContractContext::new(Pubkey([1u8; 32]), Pubkey([2u8; 32]), 0, 0);
         assert_eq!(ctx.storage_bytes_used, 0);
     }
 
@@ -2631,14 +2650,9 @@ mod tests {
     fn test_storage_bytes_tracking_with_storage() {
         let mut storage = HashMap::new();
         storage.insert(b"key1".to_vec(), b"value1".to_vec()); // 4 + 6 = 10
-        storage.insert(b"key2".to_vec(), b"val".to_vec());    // 4 + 3 = 7
-        let ctx = ContractContext::with_storage(
-            Pubkey([1u8; 32]),
-            Pubkey([2u8; 32]),
-            0,
-            0,
-            storage,
-        );
+        storage.insert(b"key2".to_vec(), b"val".to_vec()); // 4 + 3 = 7
+        let ctx =
+            ContractContext::with_storage(Pubkey([1u8; 32]), Pubkey([2u8; 32]), 0, 0, storage);
         assert_eq!(ctx.storage_bytes_used, 17);
     }
 

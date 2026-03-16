@@ -93,10 +93,7 @@ pub fn build_block(
     block.oracle_prices = oracle_prices;
 
     if block.transactions.is_empty() {
-        debug!(
-            "📦 Built empty block (heartbeat) at height {}",
-            height
-        );
+        debug!("📦 Built empty block (heartbeat) at height {}", height);
     } else {
         info!(
             "📦 Built block at height {} with {} txs",

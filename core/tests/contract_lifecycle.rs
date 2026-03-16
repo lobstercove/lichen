@@ -55,8 +55,8 @@ fn build_signed_tx(
     Transaction {
         signatures: vec![signature],
         message,
-            tx_type: Default::default(),
-}
+        tx_type: Default::default(),
+    }
 }
 
 // ============================================================================

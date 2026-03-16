@@ -281,8 +281,8 @@ fn test_charge_fee_direct_uses_atomic_write() {
     let mut tx = Transaction {
         signatures: vec![[0u8; 64]],
         message: msg,
-            tx_type: Default::default(),
-};
+        tx_type: Default::default(),
+    };
     tx.signatures[0] = payer_kp.sign(&tx.message.serialize());
 
     let validator_pubkey = Keypair::new().pubkey();

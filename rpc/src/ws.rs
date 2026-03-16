@@ -513,7 +513,8 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
         // M-19: Send periodic pings at 30-second intervals (RFC 6455 keepalive)
-        let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
+        let mut ping_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -2346,6 +2347,9 @@ mod tests {
         // No pong received → next ping interval fires
         // Check: should detect dead connection
         let is_dead = flag.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(is_dead, "Connection with missed pong should be detected as dead");
+        assert!(
+            is_dead,
+            "Connection with missed pong should be detected as dead"
+        );
     }
 }

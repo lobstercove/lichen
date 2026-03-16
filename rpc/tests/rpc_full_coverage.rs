@@ -2222,12 +2222,24 @@ async fn test_get_transaction_includes_message_hash() {
     let result = &resp["result"];
     if result.is_object() && result.get("signature").is_some() {
         // Response has the transaction — verify message_hash is present and valid hex
-        let mh = result["message_hash"].as_str().expect("message_hash should be string");
-        assert_eq!(mh.len(), 64, "message_hash should be 64 hex chars (32 bytes)");
-        assert!(mh.chars().all(|c| c.is_ascii_hexdigit()), "message_hash must be hex");
+        let mh = result["message_hash"]
+            .as_str()
+            .expect("message_hash should be string");
+        assert_eq!(
+            mh.len(),
+            64,
+            "message_hash should be 64 hex chars (32 bytes)"
+        );
+        assert!(
+            mh.chars().all(|c| c.is_ascii_hexdigit()),
+            "message_hash must be hex"
+        );
         // message_hash must differ from signature (tx hash)
         let sig = result["signature"].as_str().unwrap();
-        assert_ne!(mh, sig, "message_hash should differ from tx hash (signatures not included)");
+        assert_ne!(
+            mh, sig,
+            "message_hash should differ from tx hash (signatures not included)"
+        );
     }
 }
 
@@ -2970,18 +2982,16 @@ async fn test_evm_eth_get_logs_with_stored_evm_logs() {
     let (app, state, _, _, _, _) = app_with_rich_state();
     use moltchain_core::evm::{EvmLog, EvmLogEntry};
 
-    let logs = vec![
-        EvmLogEntry {
-            tx_hash: [0xAA; 32],
-            tx_index: 0,
-            log_index: 0,
-            log: EvmLog {
-                address: [0x11; 20],
-                topics: vec![[0x01; 32], [0x02; 32]],
-                data: vec![0xFF, 0xFE],
-            },
+    let logs = vec![EvmLogEntry {
+        tx_hash: [0xAA; 32],
+        tx_index: 0,
+        log_index: 0,
+        log: EvmLog {
+            address: [0x11; 20],
+            topics: vec![[0x01; 32], [0x02; 32]],
+            data: vec![0xFF, 0xFE],
         },
-    ];
+    }];
     state.put_evm_logs_for_slot(1, &logs).unwrap();
 
     let resp = rpc_p(
@@ -3080,19 +3090,31 @@ async fn test_evm_eth_get_logs_address_array_filter() {
             tx_hash: [0x01; 32],
             tx_index: 0,
             log_index: 0,
-            log: EvmLog { address: addr_a, topics: vec![[0x10; 32]], data: vec![1] },
+            log: EvmLog {
+                address: addr_a,
+                topics: vec![[0x10; 32]],
+                data: vec![1],
+            },
         },
         EvmLogEntry {
             tx_hash: [0x02; 32],
             tx_index: 1,
             log_index: 1,
-            log: EvmLog { address: addr_b, topics: vec![[0x20; 32]], data: vec![2] },
+            log: EvmLog {
+                address: addr_b,
+                topics: vec![[0x20; 32]],
+                data: vec![2],
+            },
         },
         EvmLogEntry {
             tx_hash: [0x03; 32],
             tx_index: 2,
             log_index: 2,
-            log: EvmLog { address: addr_c, topics: vec![[0x30; 32]], data: vec![3] },
+            log: EvmLog {
+                address: addr_c,
+                topics: vec![[0x30; 32]],
+                data: vec![3],
+            },
         },
     ];
     state.put_evm_logs_for_slot(1, &logs).unwrap();
@@ -3200,16 +3222,34 @@ async fn test_evm_eth_get_logs_topic_or_filter() {
     let topic_c = [0xCC; 32];
     let logs = vec![
         EvmLogEntry {
-            tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
-            log: EvmLog { address: [0x11; 20], topics: vec![topic_a], data: vec![1] },
+            tx_hash: [0x01; 32],
+            tx_index: 0,
+            log_index: 0,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_a],
+                data: vec![1],
+            },
         },
         EvmLogEntry {
-            tx_hash: [0x02; 32], tx_index: 1, log_index: 1,
-            log: EvmLog { address: [0x11; 20], topics: vec![topic_b], data: vec![2] },
+            tx_hash: [0x02; 32],
+            tx_index: 1,
+            log_index: 1,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_b],
+                data: vec![2],
+            },
         },
         EvmLogEntry {
-            tx_hash: [0x03; 32], tx_index: 2, log_index: 2,
-            log: EvmLog { address: [0x11; 20], topics: vec![topic_c], data: vec![3] },
+            tx_hash: [0x03; 32],
+            tx_index: 2,
+            log_index: 2,
+            log: EvmLog {
+                address: [0x11; 20],
+                topics: vec![topic_c],
+                data: vec![3],
+            },
         },
     ];
     state.put_evm_logs_for_slot(1, &logs).unwrap();
@@ -3242,7 +3282,10 @@ async fn test_evm_eth_get_logs_topic_or_filter() {
     let b_data = format!("0x{}", hex::encode([2u8]));
     assert!(matched_data.contains(&a_data), "Should include topic_a log");
     assert!(matched_data.contains(&c_data), "Should include topic_c log");
-    assert!(!matched_data.contains(&b_data), "Should NOT include topic_b log");
+    assert!(
+        !matched_data.contains(&b_data),
+        "Should NOT include topic_b log"
+    );
 }
 
 #[tokio::test]
@@ -3253,16 +3296,16 @@ async fn test_evm_eth_get_logs_wildcard_topic() {
     let topic_sig = [0xDD; 32];
     let topic_from = [0xAA; 32];
     let topic_to = [0xBB; 32];
-    let logs = vec![
-        EvmLogEntry {
-            tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
-            log: EvmLog {
-                address: [0x11; 20],
-                topics: vec![topic_sig, topic_from, topic_to],
-                data: vec![0x42],
-            },
+    let logs = vec![EvmLogEntry {
+        tx_hash: [0x01; 32],
+        tx_index: 0,
+        log_index: 0,
+        log: EvmLog {
+            address: [0x11; 20],
+            topics: vec![topic_sig, topic_from, topic_to],
+            data: vec![0x42],
         },
-    ];
+    }];
     state.put_evm_logs_for_slot(1, &logs).unwrap();
 
     // Wildcard at position 0, exact match at position 2 (topic_to)
@@ -3288,7 +3331,11 @@ async fn test_evm_eth_get_logs_wildcard_topic() {
         .iter()
         .filter(|l| l["data"].as_str().unwrap() == format!("0x{}", hex::encode([0x42])))
         .collect();
-    assert_eq!(evm_matches.len(), 1, "Wildcard + exact should match the log");
+    assert_eq!(
+        evm_matches.len(),
+        1,
+        "Wildcard + exact should match the log"
+    );
 }
 
 #[tokio::test]
@@ -3298,8 +3345,14 @@ async fn test_evm_eth_get_logs_block_range() {
 
     // Put logs in slot 1 only (slot 0 is genesis)
     let logs = vec![EvmLogEntry {
-        tx_hash: [0x01; 32], tx_index: 0, log_index: 0,
-        log: EvmLog { address: [0x11; 20], topics: vec![[0xAA; 32]], data: vec![1] },
+        tx_hash: [0x01; 32],
+        tx_index: 0,
+        log_index: 0,
+        log: EvmLog {
+            address: [0x11; 20],
+            topics: vec![[0xAA; 32]],
+            data: vec![1],
+        },
     }];
     state.put_evm_logs_for_slot(1, &logs).unwrap();
 
@@ -3361,8 +3414,14 @@ async fn test_evm_eth_get_logs_log_format_complete() {
     assert!(log.get("data").is_some(), "Must have data");
     assert!(log.get("blockNumber").is_some(), "Must have blockNumber");
     assert!(log.get("blockHash").is_some(), "Must have blockHash");
-    assert!(log.get("transactionHash").is_some(), "Must have transactionHash");
-    assert!(log.get("transactionIndex").is_some(), "Must have transactionIndex");
+    assert!(
+        log.get("transactionHash").is_some(),
+        "Must have transactionHash"
+    );
+    assert!(
+        log.get("transactionIndex").is_some(),
+        "Must have transactionIndex"
+    );
     assert!(log.get("logIndex").is_some(), "Must have logIndex");
     assert!(log.get("removed").is_some(), "Must have removed");
 
@@ -3378,10 +3437,9 @@ async fn test_evm_eth_get_logs_log_format_complete() {
 async fn test_evm_precompile_addresses_discoverable() {
     // Verify the supported_precompiles() function returns standard Ethereum precompiles
     use moltchain_core::{
-        supported_precompiles,
-        PRECOMPILE_ECRECOVER, PRECOMPILE_SHA256, PRECOMPILE_RIPEMD160,
-        PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_BN256_ADD,
-        PRECOMPILE_BN256_MUL, PRECOMPILE_BN256_PAIRING, PRECOMPILE_BLAKE2F,
+        supported_precompiles, PRECOMPILE_BLAKE2F, PRECOMPILE_BN256_ADD, PRECOMPILE_BN256_MUL,
+        PRECOMPILE_BN256_PAIRING, PRECOMPILE_ECRECOVER, PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP,
+        PRECOMPILE_RIPEMD160, PRECOMPILE_SHA256,
     };
 
     let precompiles = supported_precompiles();
@@ -3428,11 +3486,17 @@ async fn test_evm_topics_match_integration() {
     assert!(topics_match(&log_topics, &[None, Some(vec![from_topic])]));
 
     // Wildcard + wildcard + exact match on 'to'
-    assert!(topics_match(&log_topics, &[None, None, Some(vec![to_topic])]));
+    assert!(topics_match(
+        &log_topics,
+        &[None, None, Some(vec![to_topic])]
+    ));
 
     // OR filter: match transfer OR approval at position 0
     let approval_topic = [0xEE; 32];
-    assert!(topics_match(&log_topics, &[Some(vec![transfer_topic, approval_topic])]));
+    assert!(topics_match(
+        &log_topics,
+        &[Some(vec![transfer_topic, approval_topic])]
+    ));
 
     // No match
     assert!(!topics_match(&log_topics, &[Some(vec![approval_topic])]));
@@ -3455,7 +3519,10 @@ async fn test_native_get_account_at_slot_archive_disabled() {
     .await
     .unwrap();
     assert_valid_rpc(&resp);
-    assert!(resp.get("error").is_some(), "should error when archive disabled");
+    assert!(
+        resp.get("error").is_some(),
+        "should error when archive disabled"
+    );
 }
 
 #[tokio::test]
@@ -3466,9 +3533,16 @@ async fn test_native_get_account_at_slot_not_found() {
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
         state,
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
     let resp = rpc_p(
         &app,
@@ -3495,18 +3569,20 @@ async fn test_native_get_account_at_slot_found() {
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
         state,
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
-    let resp = rpc_p(
-        &app,
-        "/",
-        "getAccountAtSlot",
-        json!([pk.to_base58(), 100]),
-    )
-    .await
-    .unwrap();
+    let resp = rpc_p(&app, "/", "getAccountAtSlot", json!([pk.to_base58(), 100]))
+        .await
+        .unwrap();
     assert_valid_rpc(&resp);
     let result = resp.get("result").expect("should have result");
     assert_eq!(result["shells"], 5_000_000_000u64);
@@ -3521,14 +3597,26 @@ async fn test_native_get_account_at_slot_missing_params() {
     let _ = Box::leak(Box::new(dir));
     let app = build_rpc_router(
         state,
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
     // Missing slot parameter
-    let resp = rpc_p(&app, "/", "getAccountAtSlot", json!(["11111111111111111111111111111111"]))
-        .await
-        .unwrap();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountAtSlot",
+        json!(["11111111111111111111111111111111"]),
+    )
+    .await
+    .unwrap();
     assert_valid_rpc(&resp);
     assert!(resp.get("error").is_some());
 }
@@ -3554,9 +3642,16 @@ async fn test_send_transaction_wire_envelope() {
 
     let app = build_rpc_router(
         state.clone(),
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
 
     // Build a transfer transaction
@@ -3615,9 +3710,16 @@ async fn test_send_transaction_legacy_bincode() {
 
     let app = build_rpc_router(
         state.clone(),
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
 
     let receiver = moltchain_core::Pubkey([0x42; 32]);
@@ -3671,9 +3773,16 @@ async fn test_simulate_transaction_wire_envelope() {
 
     let app = build_rpc_router(
         state.clone(),
-        None, None, None,
-        "moltchain-test".to_string(), "molt-test".to_string(),
-        None, None, None, None, None,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
     );
 
     let receiver = moltchain_core::Pubkey([0x42; 32]);
