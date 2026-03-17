@@ -17,12 +17,11 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use moltchain_sdk::crosscall::{call_contract, CrossCall};
 use moltchain_sdk::{
-    storage_get, storage_set, log_info, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
-    get_value, get_contract_address, call_token_transfer, Address,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
+    log_info, set_return_data, storage_get, storage_set, u64_to_bytes, Address,
 };
-use moltchain_sdk::crosscall::{CrossCall, call_contract};
 
 // Oracle configuration key (stores moltoracle contract address)
 const ORACLE_ADDR_KEY: &[u8] = b"ll_oracle_addr";
@@ -52,7 +51,10 @@ fn get_oracle_price(asset: &[u8]) -> u64 {
 const REENTRANCY_KEY: &[u8] = b"_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
@@ -151,7 +153,9 @@ fn store_u64(key: &[u8], val: u64) {
 }
 
 fn is_paused() -> bool {
-    storage_get(PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn is_admin(caller: &[u8]) -> bool {
@@ -163,11 +167,19 @@ fn is_admin(caller: &[u8]) -> bool {
 
 /// AUDIT-FIX G9-01: Load configured moltcoin address (returns zero if not set)
 fn load_molt_addr() -> [u8; 32] {
-    storage_get(MOLTCOIN_ADDRESS_KEY).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(MOLTCOIN_ADDRESS_KEY)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero_addr(a: &[u8; 32]) -> bool { a.iter().all(|&b| b == 0) }
+fn is_zero_addr(a: &[u8; 32]) -> bool {
+    a.iter().all(|&b| b == 0)
+}
 
 /// Transfer tokens OUT from the contract's own balance to a recipient.
 /// Uses the self-custody pattern: caller==from in CCC context.
@@ -221,8 +233,8 @@ fn settle_user_borrow(hex: &[u8; 64]) -> u64 {
     }
 
     // Recalculate with u128 intermediate to prevent overflow
-    let actual_borrow = (stored_borrow as u128 * global_index as u128
-        / effective_user_index as u128) as u64;
+    let actual_borrow =
+        (stored_borrow as u128 * global_index as u128 / effective_user_index as u128) as u64;
 
     // Store updated borrow and checkpoint
     store_u64(&borrow_key, actual_borrow);
@@ -263,7 +275,9 @@ fn compute_current_borrow(hex: &[u8; 64]) -> u64 {
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -281,7 +295,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"ll_total_borrows", 0);
     store_u64(b"ll_last_update", get_timestamp());
     store_u64(b"ll_reserve_factor", 10); // 10% of interest goes to reserves
-    // P9-SC-01: Initialize borrow index for Compound-style per-borrower tracking
+                                         // P9-SC-01: Initialize borrow index for Compound-style per-borrower tracking
     store_u64(b"ll_borrow_index", BORROW_INDEX_SCALE);
 
     log_info("LobsterLend initialized");
@@ -309,7 +323,9 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let mut depositor = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -370,7 +386,9 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let mut depositor = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -439,7 +457,9 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let mut borrower = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -535,7 +555,9 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let mut borrower = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -566,11 +588,18 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 2;
     }
 
-    let repay_amount = if amount > current_borrow { current_borrow } else { amount };
+    let repay_amount = if amount > current_borrow {
+        current_borrow
+    } else {
+        amount
+    };
     store_u64(&borrow_key, current_borrow - repay_amount);
 
     let total_borrows = load_u64(b"ll_total_borrows");
-    store_u64(b"ll_total_borrows", total_borrows.saturating_sub(repay_amount));
+    store_u64(
+        b"ll_total_borrows",
+        total_borrows.saturating_sub(repay_amount),
+    );
 
     // Track repay count
     store_u64(REPAY_COUNT_KEY, load_u64(REPAY_COUNT_KEY) + 1);
@@ -596,7 +625,9 @@ pub extern "C" fn liquidate(
     }
 
     let mut _liquidator = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(liquidator_ptr, _liquidator.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(liquidator_ptr, _liquidator.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -614,7 +645,9 @@ pub extern "C" fn liquidate(
     }
 
     let mut borrower = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32);
+    }
     let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
@@ -644,12 +677,22 @@ pub extern "C" fn liquidate(
 
     // Can only liquidate up to 50% of the borrow at once
     let max_repay = current_borrow / 2;
-    let actual_repay = if repay_amount > max_repay { max_repay } else { repay_amount };
+    let actual_repay = if repay_amount > max_repay {
+        max_repay
+    } else {
+        repay_amount
+    };
 
     // Collateral seized = repay_amount * (1 + bonus)
     // AUDIT-FIX L6-01: Use u128 throughout to prevent overflow on large repay amounts
-    let collateral_seized = (actual_repay as u128 + (actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100)) as u64;
-    let actual_seized = if collateral_seized > deposit { deposit } else { collateral_seized };
+    let collateral_seized = (actual_repay as u128
+        + (actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100))
+        as u64;
+    let actual_seized = if collateral_seized > deposit {
+        deposit
+    } else {
+        collateral_seized
+    };
 
     // Update borrower
     store_u64(&borrow_key, current_borrow - actual_repay);
@@ -657,9 +700,15 @@ pub extern "C" fn liquidate(
 
     // Update totals
     let total_borrows = load_u64(b"ll_total_borrows");
-    store_u64(b"ll_total_borrows", total_borrows.saturating_sub(actual_repay));
+    store_u64(
+        b"ll_total_borrows",
+        total_borrows.saturating_sub(actual_repay),
+    );
     let total_deposits = load_u64(b"ll_total_deposits");
-    store_u64(b"ll_total_deposits", total_deposits.saturating_sub(actual_seized));
+    store_u64(
+        b"ll_total_deposits",
+        total_deposits.saturating_sub(actual_seized),
+    );
 
     // Track liquidation count
     store_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
@@ -720,17 +769,23 @@ fn accrue_interest() {
         BASE_RATE_SCALED + (utilization * BASE_RATE_SCALED * 2 / 100)
     } else {
         // Sharp increase after kink
-        let base_at_kink = BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
+        let base_at_kink =
+            BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
         let excess = utilization - UTILIZATION_KINK_PERCENT;
         base_at_kink + (excess * BASE_RATE_SCALED * 10 / 100)
     };
 
     // v2: Cap rate to prevent manipulation
-    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT { MAX_RATE_PER_SLOT } else { rate_per_slot };
+    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT {
+        MAX_RATE_PER_SLOT
+    } else {
+        rate_per_slot
+    };
 
     // Interest accrued = total_borrows * rate * elapsed_slots / SCALE
     // Use u128 intermediate to prevent overflow on large values
-    let interest = ((total_borrows as u128) * (rate_per_slot as u128) * (elapsed_slots as u128) / (RATE_SCALE as u128)) as u64;
+    let interest = ((total_borrows as u128) * (rate_per_slot as u128) * (elapsed_slots as u128)
+        / (RATE_SCALE as u128)) as u64;
 
     if interest > 0 {
         // Reserve factor: portion goes to protocol reserves
@@ -741,7 +796,10 @@ fn accrue_interest() {
         // Increase total borrows by interest (borrowers owe more)
         store_u64(b"ll_total_borrows", total_borrows.saturating_add(interest));
         // Increase total deposits by depositor's share (depositors earn)
-        store_u64(b"ll_total_deposits", total_deposits.saturating_add(depositor_interest));
+        store_u64(
+            b"ll_total_deposits",
+            total_deposits.saturating_add(depositor_interest),
+        );
         // Track protocol reserves
         let reserves = load_u64(b"ll_reserves");
         store_u64(b"ll_reserves", reserves.saturating_add(reserve_amount));
@@ -750,8 +808,7 @@ fn accrue_interest() {
         // index_delta = old_index * rate_per_slot * elapsed_slots / RATE_SCALE
         // (same factor as interest / total_borrows)
         let old_index = load_u64(b"ll_borrow_index");
-        let index_delta = ((old_index as u128) * (rate_per_slot as u128)
-            * (elapsed_slots as u128)
+        let index_delta = ((old_index as u128) * (rate_per_slot as u128) * (elapsed_slots as u128)
             / (RATE_SCALE as u128)) as u64;
         store_u64(b"ll_borrow_index", old_index.saturating_add(index_delta));
     }
@@ -767,7 +824,9 @@ fn accrue_interest() {
 #[no_mangle]
 pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let hex = hex_encode_addr(&user);
 
     let deposit = load_u64(&make_key(b"dep:", &hex));
@@ -780,7 +839,8 @@ pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
     let health_factor = if borrow == 0 {
         u64::MAX // Infinite health
     } else {
-        ((deposit as u128) * (LIQUIDATION_THRESHOLD_PERCENT as u128) * 100 / (borrow as u128)) as u64
+        ((deposit as u128) * (LIQUIDATION_THRESHOLD_PERCENT as u128) * 100 / (borrow as u128))
+            as u64
     };
 
     let mut result = Vec::with_capacity(24);
@@ -829,7 +889,9 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     let mut _borrower = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -853,7 +915,8 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     // AUDIT-FIX NEW-M2: round-up fee (consistent with moltswap), u128 intermediate
-    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + (BPS_SCALE as u128 - 1)) / BPS_SCALE as u128) as u64;
+    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + (BPS_SCALE as u128 - 1))
+        / BPS_SCALE as u128) as u64;
     let fee = if fee == 0 { 1 } else { fee }; // minimum 1 shell fee
 
     // Record flash loan
@@ -879,7 +942,9 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32 {
     let mut _borrower = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -927,7 +992,9 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -952,7 +1019,9 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -977,7 +1046,9 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -998,7 +1069,9 @@ pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_reserve_factor(caller_ptr: *const u8, factor: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1023,7 +1096,9 @@ pub extern "C" fn set_reserve_factor(caller_ptr: *const u8, factor: u64) -> u32 
 #[no_mangle]
 pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1061,7 +1136,9 @@ pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_moltcoin_address(caller_ptr: *const u8, addr_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // Verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1075,7 +1152,9 @@ pub extern "C" fn set_moltcoin_address(caller_ptr: *const u8, addr_ptr: *const u
     }
 
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     if is_zero_addr(&addr) {
         log_info("Cannot set zero moltcoin address");
@@ -1106,11 +1185,16 @@ pub extern "C" fn get_interest_rate() -> u32 {
     let rate_per_slot = if utilization <= UTILIZATION_KINK_PERCENT {
         BASE_RATE_SCALED + (utilization * BASE_RATE_SCALED * 2 / 100)
     } else {
-        let base_at_kink = BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
+        let base_at_kink =
+            BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
         let excess = utilization - UTILIZATION_KINK_PERCENT;
         base_at_kink + (excess * BASE_RATE_SCALED * 10 / 100)
     };
-    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT { MAX_RATE_PER_SLOT } else { rate_per_slot };
+    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT {
+        MAX_RATE_PER_SLOT
+    } else {
+        rate_per_slot
+    };
 
     let available = total_deposits.saturating_sub(total_borrows);
 
@@ -1158,8 +1242,8 @@ pub extern "C" fn get_platform_stats() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     const MOLT_ADDR: [u8; 32] = [99u8; 32];
     const CONTRACT_ADDR: [u8; 32] = [88u8; 32];
@@ -1271,7 +1355,7 @@ mod tests {
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 750_000); // max borrow at 75%
-        // Any withdrawal makes it unhealthy
+                                        // Any withdrawal makes it unhealthy
         assert_eq!(withdraw(user.as_ptr(), 1), 3);
     }
 
@@ -1412,7 +1496,10 @@ mod tests {
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
         test_mock::set_value(200_000);
-        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
+            0
+        );
         let borrow_after = load_u64(&bor_key);
         assert!(borrow_after < 860_000);
     }
@@ -1431,7 +1518,10 @@ mod tests {
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
         test_mock::set_value(100_000);
-        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 3);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000),
+            3
+        );
     }
 
     #[test]
@@ -1447,7 +1537,10 @@ mod tests {
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
         test_mock::set_value(100_000);
-        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 2);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000),
+            2
+        );
     }
 
     // AUDIT-FIX G9-01: Liquidate with insufficient value attached
@@ -1469,7 +1562,10 @@ mod tests {
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
         test_mock::set_value(50_000); // less than repay_amount
-        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 30);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
+            30
+        );
     }
 
     #[test]
@@ -1825,7 +1921,10 @@ mod tests {
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
         test_mock::set_value(200_000);
-        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
+        assert_eq!(
+            liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
+            0
+        );
     }
 
     // ========================================================================

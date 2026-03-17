@@ -15,17 +15,19 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use moltchain_sdk::{
-    storage_get, storage_set, log_info, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
-    get_value, get_contract_address,
-    Address, CrossCall, call_contract, call_token_transfer,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
+    get_timestamp, get_value, log_info, set_return_data, storage_get, storage_set, u64_to_bytes,
+    Address, CrossCall,
 };
 
 // T5.12: Reentrancy guard
 const REENTRANCY_KEY: &[u8] = b"_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
@@ -137,7 +139,9 @@ fn store_u64(key: &[u8], val: u64) {
 }
 
 fn is_paused() -> bool {
-    storage_get(PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn is_admin(caller: &[u8]) -> bool {
@@ -150,7 +154,9 @@ fn is_admin(caller: &[u8]) -> bool {
 fn is_token_frozen(token_id: u64) -> bool {
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
-    storage_get(&key).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(&key)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn last_buy_key(token_id: u64, buyer_hex: &[u8; 64]) -> Vec<u8> {
@@ -229,7 +235,9 @@ const TOKEN_DATA_SIZE: usize = 65;
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -259,7 +267,9 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     let mut creator = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -283,12 +293,12 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 
     // Store token data
     let mut data = Vec::with_capacity(TOKEN_DATA_SIZE);
-    data.extend_from_slice(&creator);             // creator: 32 bytes
-    data.extend_from_slice(&u64_to_bytes(0));    // supply_sold: 0
-    data.extend_from_slice(&u64_to_bytes(0));    // molt_raised: 0
+    data.extend_from_slice(&creator); // creator: 32 bytes
+    data.extend_from_slice(&u64_to_bytes(0)); // supply_sold: 0
+    data.extend_from_slice(&u64_to_bytes(0)); // molt_raised: 0
     data.extend_from_slice(&u64_to_bytes(DEFAULT_MAX_SUPPLY)); // max_supply
-    data.extend_from_slice(&u64_to_bytes(get_timestamp()));    // created_at
-    data.push(0);                                 // graduated: false
+    data.extend_from_slice(&u64_to_bytes(get_timestamp())); // created_at
+    data.push(0); // graduated: false
 
     let token_key = make_key(b"cpt:", &id_hex);
     storage_set(&token_key, &data);
@@ -384,7 +394,9 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     }
 
     let mut buyer = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(buyer_ptr, buyer.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(buyer_ptr, buyer.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -504,15 +516,22 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     store_u64(&lbk, now);
 
     // Check graduation (use u128 to prevent overflow with large supplies)
-    let market_cap = (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
+    let market_cap =
+        (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
     if market_cap >= GRADUATION_MARKET_CAP {
         // --- DEX Migration: create pair, create pool, seed liquidity ---
         // AUDIT-FIX: Only set graduated flag AFTER successful DEX migration
         let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
         let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
 
-        let has_core = dex_core_bytes.as_ref().map(|b| b.len() == 32 && b.iter().any(|&x| x != 0)).unwrap_or(false);
-        let has_amm = dex_amm_bytes.as_ref().map(|b| b.len() == 32 && b.iter().any(|&x| x != 0)).unwrap_or(false);
+        let has_core = dex_core_bytes
+            .as_ref()
+            .map(|b| b.len() == 32 && b.iter().any(|&x| x != 0))
+            .unwrap_or(false);
+        let has_amm = dex_amm_bytes
+            .as_ref()
+            .map(|b| b.len() == 32 && b.iter().any(|&x| x != 0))
+            .unwrap_or(false);
 
         if has_core && has_amm {
             let mut core_addr = [0u8; 32];
@@ -527,11 +546,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             let mut create_pair_args = Vec::with_capacity(16);
             create_pair_args.extend_from_slice(&u64_to_bytes(token_id));
             create_pair_args.extend_from_slice(&u64_to_bytes(price));
-            let pair_call = CrossCall::new(
-                Address(core_addr),
-                "create_pair",
-                create_pair_args,
-            );
+            let pair_call = CrossCall::new(Address(core_addr), "create_pair", create_pair_args);
             let pair_ok = call_contract(pair_call).is_ok();
 
             // 2) Create AMM pool
@@ -539,11 +554,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             let mut create_pool_args = Vec::with_capacity(16);
             create_pool_args.extend_from_slice(&u64_to_bytes(token_id));
             create_pool_args.extend_from_slice(&u64_to_bytes(price));
-            let pool_call = CrossCall::new(
-                Address(amm_addr),
-                "create_pool",
-                create_pool_args,
-            );
+            let pool_call = CrossCall::new(Address(amm_addr), "create_pool", create_pool_args);
             let pool_ok = call_contract(pool_call).is_ok();
 
             // 3) Seed initial liquidity from raised MOLT
@@ -556,22 +567,23 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             seed_args.extend_from_slice(&u64_to_bytes(token_id));
             seed_args.extend_from_slice(&u64_to_bytes(liquidity_molt));
             seed_args.extend_from_slice(&u64_to_bytes(new_supply));
-            let seed_call = CrossCall::new(
-                Address(amm_addr),
-                "add_liquidity",
-                seed_args,
-            );
+            let seed_call = CrossCall::new(Address(amm_addr), "add_liquidity", seed_args);
             let seed_ok = call_contract(seed_call).is_ok();
 
             if pair_ok && pool_ok && seed_ok {
                 // Track platform revenue only after full successful migration.
                 let prev_revenue = load_u64(b"cp_graduation_revenue");
-                store_u64(b"cp_graduation_revenue", prev_revenue.saturating_add(platform_molt));
+                store_u64(
+                    b"cp_graduation_revenue",
+                    prev_revenue.saturating_add(platform_molt),
+                );
                 log_info("Token graduated! DEX pair created, pool seeded with liquidity");
                 data[64] = 1; // AUDIT-FIX: Only mark graduated on full success
                 storage_set(&token_key, &data);
             } else {
-                log_info("DEX migration failed — graduation aborted, token remains on bonding curve");
+                log_info(
+                    "DEX migration failed — graduation aborted, token remains on bonding curve",
+                );
                 // AUDIT-FIX: Do NOT set graduated flag on partial failure
             }
         } else {
@@ -610,7 +622,9 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     }
 
     let mut seller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -746,7 +760,9 @@ pub extern "C" fn get_buy_quote(token_id: u64, molt_amount: u64) -> u64 {
     let net = molt_amount * (100 - PLATFORM_FEE_PERCENT) / 100;
 
     let mut lo: u64 = 0;
-    let mut hi = max_supply.saturating_sub(supply_sold).min(1_000_000_000_000);
+    let mut hi = max_supply
+        .saturating_sub(supply_sold)
+        .min(1_000_000_000_000);
     while lo < hi {
         let mid = lo + (hi - lo + 1) / 2;
         if calculate_buy_cost(supply_sold, mid) <= net {
@@ -785,7 +801,9 @@ pub extern "C" fn get_platform_stats() -> u32 {
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -793,8 +811,12 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
-    if is_paused() { return 2; }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if is_paused() {
+        return 2;
+    }
     storage_set(PAUSE_KEY, &[1]);
     log_info("ClawPump paused");
     0
@@ -804,7 +826,9 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -812,8 +836,12 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
-    if !is_paused() { return 2; }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if !is_paused() {
+        return 2;
+    }
     storage_set(PAUSE_KEY, &[0]);
     log_info("ClawPump unpaused");
     0
@@ -823,7 +851,9 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -831,7 +861,9 @@ pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
+    if !is_admin(&caller) {
+        return 1;
+    }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
     storage_set(&key, &[1]);
@@ -843,7 +875,9 @@ pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -851,7 +885,9 @@ pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
+    if !is_admin(&caller) {
+        return 1;
+    }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
     storage_set(&key, &[0]);
@@ -863,7 +899,9 @@ pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -871,7 +909,9 @@ pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
+    if !is_admin(&caller) {
+        return 1;
+    }
     store_u64(b"cp_buy_cooldown", cooldown_ms);
     0
 }
@@ -880,7 +920,9 @@ pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u
 #[no_mangle]
 pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -888,7 +930,9 @@ pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> 
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
+    if !is_admin(&caller) {
+        return 1;
+    }
     store_u64(b"cp_sell_cooldown", cooldown_ms);
     0
 }
@@ -897,7 +941,9 @@ pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> 
 #[no_mangle]
 pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -905,8 +951,12 @@ pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
-    if max_amount == 0 { return 2; }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if max_amount == 0 {
+        return 2;
+    }
     store_u64(b"cp_max_buy", max_amount);
     0
 }
@@ -915,7 +965,9 @@ pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -923,8 +975,12 @@ pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
-    if bps > 1000 { return 2; } // Max 10%
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if bps > 1000 {
+        return 2;
+    } // Max 10%
     store_u64(b"cp_creator_royalty", bps);
     0
 }
@@ -933,7 +989,9 @@ pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -941,10 +999,16 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
-    if amount == 0 { return 2; }
+    if !is_admin(&caller) {
+        return 1;
+    }
+    if amount == 0 {
+        return 2;
+    }
     let fees = load_u64(b"cp_fees_collected");
-    if amount > fees { return 3; }
+    if amount > fees {
+        return 3;
+    }
     store_u64(b"cp_fees_collected", fees - amount);
 
     // G24-01: Transfer MOLT to admin (self-custody)
@@ -963,17 +1027,23 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn set_molt_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
         return 200;
     }
 
-    if !is_admin(&caller) { return 1; }
+    if !is_admin(&caller) {
+        return 1;
+    }
 
     let mut token = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32);
+    }
 
     if token.iter().all(|&b| b == 0) {
         log_info("MOLT token address cannot be zero");
@@ -988,9 +1058,15 @@ pub extern "C" fn set_molt_token(caller_ptr: *const u8, token_ptr: *const u8) ->
 /// Admin sets DEX contract addresses for graduation migration
 /// Both addresses must be non-zero 32-byte addresses
 #[no_mangle]
-pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, amm_ptr: *const u8) -> u32 {
+pub extern "C" fn set_dex_addresses(
+    caller_ptr: *const u8,
+    core_ptr: *const u8,
+    amm_ptr: *const u8,
+) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1002,9 +1078,13 @@ pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, 
         return 1;
     }
     let mut core_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(core_ptr, core_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(core_ptr, core_addr.as_mut_ptr(), 32);
+    }
     let mut amm_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(amm_ptr, amm_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(amm_ptr, amm_addr.as_mut_ptr(), 32);
+    }
 
     // Validate non-zero
     if core_addr.iter().all(|&b| b == 0) {
@@ -1027,10 +1107,22 @@ pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, 
 pub extern "C" fn get_graduation_info() -> u32 {
     let revenue = load_u64(b"cp_graduation_revenue");
     let core_set: u8 = storage_get(DEX_CORE_ADDRESS_KEY)
-        .map(|b| if b.len() == 32 && b.iter().any(|&x| x != 0) { 1 } else { 0 })
+        .map(|b| {
+            if b.len() == 32 && b.iter().any(|&x| x != 0) {
+                1
+            } else {
+                0
+            }
+        })
         .unwrap_or(0);
     let amm_set: u8 = storage_get(DEX_AMM_ADDRESS_KEY)
-        .map(|b| if b.len() == 32 && b.iter().any(|&x| x != 0) { 1 } else { 0 })
+        .map(|b| {
+            if b.len() == 32 && b.iter().any(|&x| x != 0) {
+                1
+            } else {
+                0
+            }
+        })
         .unwrap_or(0);
 
     let mut result = Vec::with_capacity(10);
@@ -1046,8 +1138,8 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::vec;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -1509,7 +1601,10 @@ mod tests {
         // Withdraw some
         test_mock::set_caller(admin);
         assert_eq!(withdraw_fees(admin.as_ptr(), CREATION_FEE / 2), 0);
-        assert_eq!(load_u64(b"cp_fees_collected"), fees_before - CREATION_FEE / 2);
+        assert_eq!(
+            load_u64(b"cp_fees_collected"),
+            fees_before - CREATION_FEE / 2
+        );
 
         // Over-withdraw rejected
         assert_eq!(withdraw_fees(admin.as_ptr(), 999_999_999_999), 3);
@@ -1575,7 +1670,10 @@ mod tests {
         let core_addr = [10u8; 32];
         let amm_addr = [20u8; 32];
         test_mock::set_caller(other);
-        assert_eq!(set_dex_addresses(other.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()), 1);
+        assert_eq!(
+            set_dex_addresses(other.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()),
+            1
+        );
     }
 
     #[test]
@@ -1587,7 +1685,10 @@ mod tests {
 
         let zero = [0u8; 32];
         let amm_addr = [20u8; 32];
-        assert_eq!(set_dex_addresses(admin.as_ptr(), zero.as_ptr(), amm_addr.as_ptr()), 2);
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), zero.as_ptr(), amm_addr.as_ptr()),
+            2
+        );
     }
 
     #[test]
@@ -1599,7 +1700,10 @@ mod tests {
 
         let core_addr = [10u8; 32];
         let zero = [0u8; 32];
-        assert_eq!(set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), zero.as_ptr()), 3);
+        assert_eq!(
+            set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), zero.as_ptr()),
+            3
+        );
     }
 
     #[test]
@@ -1652,7 +1756,10 @@ mod tests {
             // Need more buys to reach graduation
             test_mock::set_timestamp(15_000);
             let tokens2 = buy(buyer.as_ptr(), token_id, huge_amount);
-            assert!(tokens2 > 0 || data[64] == 1, "Should buy more or already graduated");
+            assert!(
+                tokens2 > 0 || data[64] == 1,
+                "Should buy more or already graduated"
+            );
 
             test_mock::set_timestamp(20_000);
             let _ = buy(buyer.as_ptr(), token_id, huge_amount);
@@ -1712,7 +1819,10 @@ mod tests {
 
         // Verify token is graduated (bonding curve stops)
         let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(data2[64], 1, "Token should be graduated even without DEX addresses");
+        assert_eq!(
+            data2[64], 1,
+            "Token should be graduated even without DEX addresses"
+        );
     }
 
     #[test]
@@ -1853,7 +1963,11 @@ mod tests {
         test_mock::set_caller(buyer);
         // Attempt buy with insufficient get_value
         test_mock::set_value(500_000_000); // 0.5 MOLT
-        assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0, "Buy should fail: payment < amount");
+        assert_eq!(
+            buy(buyer.as_ptr(), 1, 1_000_000_000),
+            0,
+            "Buy should fail: payment < amount"
+        );
         // With sufficient value succeeds
         test_mock::set_value(1_000_000_000);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
@@ -1871,7 +1985,11 @@ mod tests {
         test_mock::set_caller(creator);
         // No value attached — should fail
         test_mock::set_value(0);
-        assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 0, "Create token should fail: no value");
+        assert_eq!(
+            create_token(creator.as_ptr(), CREATION_FEE),
+            0,
+            "Create token should fail: no value"
+        );
         // Exact fee attached — should succeed
         test_mock::set_value(CREATION_FEE);
         assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 1);

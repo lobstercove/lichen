@@ -16,9 +16,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
-    Address, call_token_transfer, get_caller, get_contract_address,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
+    storage_get, storage_set, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -29,20 +28,20 @@ const REWARD_POOL_PER_MONTH: u64 = 100_000_000_000_000; // 100K MOLT (in shells)
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
 // Tier thresholds (cumulative volume in shells)
-const TIER_BRONZE_MAX: u64 = 100_000_000_000_000;     // <100k MOLT ($10K at $0.10)
-const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000;    // 100k-1M MOLT ($100K at $0.10)
-const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000;     // 1M-10M MOLT ($1M at $0.10)
-// Above GOLD_MAX = Diamond
+const TIER_BRONZE_MAX: u64 = 100_000_000_000_000; // <100k MOLT ($10K at $0.10)
+const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000; // 100k-1M MOLT ($100K at $0.10)
+const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000; // 1M-10M MOLT ($1M at $0.10)
+                                                   // Above GOLD_MAX = Diamond
 
 // Tier multipliers (in basis points, 10000 = 1x)
-const MULTIPLIER_BRONZE: u64 = 10_000;  // 1x
-const MULTIPLIER_SILVER: u64 = 15_000;  // 1.5x
-const MULTIPLIER_GOLD: u64 = 20_000;    // 2x
+const MULTIPLIER_BRONZE: u64 = 10_000; // 1x
+const MULTIPLIER_SILVER: u64 = 15_000; // 1.5x
+const MULTIPLIER_GOLD: u64 = 20_000; // 2x
 const MULTIPLIER_DIAMOND: u64 = 30_000; // 3x
 
 // Referral rates
-const REFERRAL_RATE_BPS: u64 = 1000;         // 10% of fees to referrer
-const REFERRAL_DISCOUNT_BPS: u64 = 500;      // 5% fee discount for referee
+const REFERRAL_RATE_BPS: u64 = 1000; // 10% of fees to referrer
+const REFERRAL_DISCOUNT_BPS: u64 = 500; // 5% fee discount for referee
 const REFERRAL_VERIFIED_RATE_BPS: u64 = 1500; // 15% for MoltyID-verified
 const REFERRAL_DISCOUNT_DURATION: u64 = 2_592_000; // 30 days
 
@@ -59,72 +58,102 @@ const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
 const TOTAL_VOLUME_KEY: &[u8] = b"rew_total_volume";
 const TRADE_COUNT_KEY: &[u8] = b"rew_trade_count";
 const TRADER_COUNT_KEY: &[u8] = b"rew_trader_count";
-const EPOCH_DISTRIBUTED_KEY: &[u8] = b"rew_epoch_dist";   // rewards distributed this epoch
-const EPOCH_START_SLOT_KEY: &[u8] = b"rew_epoch_start";   // slot when current epoch started
+const EPOCH_DISTRIBUTED_KEY: &[u8] = b"rew_epoch_dist"; // rewards distributed this epoch
+const EPOCH_START_SLOT_KEY: &[u8] = b"rew_epoch_start"; // slot when current epoch started
 
 // ============================================================================
 // HELPERS
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
-fn save_u64(key: &[u8], val: u64) { storage_set(key, &u64_to_bytes(val)); }
+fn save_u64(key: &[u8], val: u64) {
+    storage_set(key, &u64_to_bytes(val));
+}
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero(addr: &[u8; 32]) -> bool { addr.iter().all(|&b| b == 0) }
+fn is_zero(addr: &[u8; 32]) -> bool {
+    addr.iter().all(|&b| b == 0)
+}
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
-    while n > 0 { buf.push(b'0' + (n % 10) as u8); n /= 10; }
-    buf.reverse(); buf
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    buf.reverse();
+    buf
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    for &b in bytes { out.push(hex_chars[(b >> 4) as usize]); out.push(hex_chars[(b & 0x0f) as usize]); }
+    for &b in bytes {
+        out.push(hex_chars[(b >> 4) as usize]);
+        out.push(hex_chars[(b & 0x0f) as usize]);
+    }
     out
 }
 
 fn trader_volume_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_vol_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn trader_pending_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_pend_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn trader_claimed_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_claim_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn referral_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_ref_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn referrer_earnings_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_refr_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn referrer_count_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_refc_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn referral_start_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_refs_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 fn pair_reward_rate_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_rate_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
 }
 fn lp_pending_key(pos_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"rew_lp_"[..]);
-    k.extend_from_slice(&u64_to_decimal(pos_id)); k
+    k.extend_from_slice(&u64_to_decimal(pos_id));
+    k
 }
 
 // ============================================================================
@@ -132,20 +161,37 @@ fn lp_pending_key(pos_id: u64) -> Vec<u8> {
 // ============================================================================
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) { return false; }
-    storage_set(REENTRANCY_KEY, &[1u8]); true
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    storage_set(REENTRANCY_KEY, &[1u8]);
+    true
 }
-fn reentrancy_exit() { storage_set(REENTRANCY_KEY, &[0u8]); }
-fn is_paused() -> bool { storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) }
-fn require_not_paused() -> bool { !is_paused() }
+fn reentrancy_exit() {
+    storage_set(REENTRANCY_KEY, &[0u8]);
+}
+fn is_paused() -> bool {
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+fn require_not_paused() -> bool {
+    !is_paused()
+}
 fn require_admin(caller: &[u8; 32]) -> bool {
-    let admin = load_addr(ADMIN_KEY); !is_zero(&admin) && *caller == admin
+    let admin = load_addr(ADMIN_KEY);
+    !is_zero(&admin) && *caller == admin
 }
 fn is_authorized_caller() -> bool {
     let caller = get_caller();
     let mut key = Vec::from(AUTHORIZED_CALLER_PREFIX);
     key.extend_from_slice(&caller.0);
-    storage_get(&key).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(&key)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 // ============================================================================
@@ -153,10 +199,21 @@ fn is_authorized_caller() -> bool {
 // ============================================================================
 
 fn get_tier(volume: u64) -> u8 {
-    if volume >= TIER_GOLD_MAX { 3 } // Diamond
-    else if volume >= TIER_SILVER_MAX { 2 } // Gold
-    else if volume >= TIER_BRONZE_MAX { 1 } // Silver
-    else { 0 } // Bronze
+    if volume >= TIER_GOLD_MAX {
+        3
+    }
+    // Diamond
+    else if volume >= TIER_SILVER_MAX {
+        2
+    }
+    // Gold
+    else if volume >= TIER_BRONZE_MAX {
+        1
+    }
+    // Silver
+    else {
+        0
+    } // Bronze
 }
 
 fn get_multiplier(tier: u8) -> u64 {
@@ -176,9 +233,13 @@ fn get_multiplier(tier: u8) -> u64 {
 #[no_mangle]
 pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; }
+    if !is_zero(&existing) {
+        return 1;
+    }
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches claimed admin address
     let real_caller = get_caller();
     if real_caller.0 != addr {
@@ -200,18 +261,26 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
         return 5;
     }
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
 
     // Update cumulative volume
     let current_vol = load_u64(&trader_volume_key(&t));
     if current_vol == 0 {
         // First trade for this trader — increment unique trader count
-        save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY).saturating_add(1));
+        save_u64(
+            TRADER_COUNT_KEY,
+            load_u64(TRADER_COUNT_KEY).saturating_add(1),
+        );
     }
     save_u64(&trader_volume_key(&t), current_vol.saturating_add(volume));
 
     // Track global volume and trade count
-    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
+    save_u64(
+        TOTAL_VOLUME_KEY,
+        load_u64(TOTAL_VOLUME_KEY).saturating_add(volume),
+    );
     save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY).saturating_add(1));
 
     // TOKENOMICS H7: Monthly epoch cap enforcement
@@ -256,10 +325,17 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
             referrer.copy_from_slice(&ref_data[..32]);
             if !is_zero(&referrer) {
                 let dynamic_rate = load_u64(REFERRAL_RATE_KEY);
-                let effective_rate = if dynamic_rate > 0 { dynamic_rate } else { REFERRAL_RATE_BPS };
+                let effective_rate = if dynamic_rate > 0 {
+                    dynamic_rate
+                } else {
+                    REFERRAL_RATE_BPS
+                };
                 let ref_bonus = fee_paid * effective_rate / 10_000;
                 let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
-                save_u64(&referrer_earnings_key(&referrer), ref_earnings.saturating_add(ref_bonus));
+                save_u64(
+                    &referrer_earnings_key(&referrer),
+                    ref_earnings.saturating_add(ref_bonus),
+                );
             }
         }
     }
@@ -272,10 +348,17 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
 ///          4=transfer failed, 5=moltcoin address not configured
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
-    if !reentrancy_enter() { return 3; }
-    if !require_not_paused() { reentrancy_exit(); return 2; }
+    if !reentrancy_enter() {
+        return 3;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 2;
+    }
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -285,7 +368,10 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     }
 
     let pending = load_u64(&trader_pending_key(&t));
-    if pending == 0 { reentrancy_exit(); return 1; }
+    if pending == 0 {
+        reentrancy_exit();
+        return 1;
+    }
 
     // Transfer MOLT from contract's own balance to trader.
     // AUDIT-FIX G7-02: Use self-custody pattern — the contract holds reward
@@ -298,9 +384,7 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(
-        Address(molt_addr), self_addr, Address(t), pending,
-    ) {
+    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(t), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -322,10 +406,17 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
 ///          4=transfer failed, 5=moltcoin address not configured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
-    if !reentrancy_enter() { return 3; }
-    if !require_not_paused() { reentrancy_exit(); return 2; }
+    if !reentrancy_enter() {
+        return 3;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 2;
+    }
     let mut p = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -336,7 +427,10 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
 
     let lp_k = lp_pending_key(position_id);
     let pending = load_u64(&lp_k);
-    if pending == 0 { reentrancy_exit(); return 1; }
+    if pending == 0 {
+        reentrancy_exit();
+        return 1;
+    }
 
     // Transfer MOLT from contract's own balance to provider.
     // AUDIT-FIX G7-02: self-custody pattern (see claim_trading_rewards).
@@ -347,9 +441,7 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(
-        Address(molt_addr), self_addr, Address(p), pending,
-    ) {
+    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(p), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -367,14 +459,19 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
 /// Register a referral relationship
 /// Returns: 0=success, 1=already has referrer, 2=self-referral, 3=reentrancy
 pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
-    if !reentrancy_enter() { return 3; }
+    if !reentrancy_enter() {
+        return 3;
+    }
     let mut t = [0u8; 32];
     let mut r = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(referrer, r.as_mut_ptr(), 32);
     }
-    if t == r { reentrancy_exit(); return 2; }
+    if t == r {
+        reentrancy_exit();
+        return 2;
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -384,7 +481,10 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
     }
 
     let rk = referral_key(&t);
-    if storage_get(&rk).is_some() { reentrancy_exit(); return 1; }
+    if storage_get(&rk).is_some() {
+        reentrancy_exit();
+        return 1;
+    }
 
     storage_set(&rk, &r);
     save_u64(&referral_start_key(&t), get_slot());
@@ -404,10 +504,17 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
 ///          4=transfer failed, 5=moltcoin address not configured
 pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
-    if !reentrancy_enter() { return 3; }
-    if !require_not_paused() { reentrancy_exit(); return 2; }
+    if !reentrancy_enter() {
+        return 3;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 2;
+    }
     let mut r = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(referrer, r.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(referrer, r.as_mut_ptr(), 32);
+    }
 
     // Verify caller matches transaction signer
     let real_caller = get_caller();
@@ -417,7 +524,10 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
     }
 
     let earnings = load_u64(&referrer_earnings_key(&r));
-    if earnings == 0 { reentrancy_exit(); return 1; }
+    if earnings == 0 {
+        reentrancy_exit();
+        return 1;
+    }
 
     // Transfer MOLT from contract's own balance to referrer (self-custody pattern)
     let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
@@ -427,9 +537,7 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(
-        Address(molt_addr), self_addr, Address(r), earnings,
-    ) {
+    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(r), earnings) {
         reentrancy_exit();
         return 4;
     }
@@ -447,13 +555,17 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
 /// Set reward rate for a pair (admin only)
 pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     save_u64(&pair_reward_rate_key(pair_id), rate_per_slot);
     0
 }
@@ -466,7 +578,9 @@ pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 
         return 5;
     }
     let rate = load_u64(&pair_reward_rate_key(pair_id));
-    if rate == 0 { return 1; }
+    if rate == 0 {
+        return 1;
+    }
     let reward = liquidity * rate / 1_000_000_000;
     let lp_k = lp_pending_key(position_id);
     let current = load_u64(&lp_k);
@@ -477,7 +591,9 @@ pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 
 // Queries
 pub fn get_pending_rewards(addr: *const u8) -> u64 {
     let mut a = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
     let trading = load_u64(&trader_pending_key(&a));
     let referral = load_u64(&referrer_earnings_key(&a));
     trading + referral
@@ -485,31 +601,43 @@ pub fn get_pending_rewards(addr: *const u8) -> u64 {
 
 pub fn get_trading_tier(addr: *const u8) -> u8 {
     let mut a = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
     let vol = load_u64(&trader_volume_key(&a));
     get_tier(vol)
 }
 
 pub fn get_referral_stats(addr: *const u8) -> u64 {
     let mut a = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
     load_u64(&referrer_count_key(&a))
 }
 
-pub fn get_total_distributed() -> u64 { load_u64(TOTAL_DISTRIBUTED_KEY) }
+pub fn get_total_distributed() -> u64 {
+    load_u64(TOTAL_DISTRIBUTED_KEY)
+}
 
 /// Set the referral rate in basis points (admin only)
 /// Default is 1000 (10%). Max is 3000 (30%).
 pub fn set_referral_rate(caller: *const u8, rate_bps: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if rate_bps > 3000 { return 2; } // cap at 30%
+    if !require_admin(&c) {
+        return 1;
+    }
+    if rate_bps > 3000 {
+        return 2;
+    } // cap at 30%
     save_u64(REFERRAL_RATE_KEY, rate_bps);
     0
 }
@@ -517,7 +645,11 @@ pub fn set_referral_rate(caller: *const u8, rate_bps: u64) -> u32 {
 /// Get the current referral rate (bps)
 pub fn get_referral_rate() -> u64 {
     let r = load_u64(REFERRAL_RATE_KEY);
-    if r > 0 { r } else { REFERRAL_RATE_BPS }
+    if r > 0 {
+        r
+    } else {
+        REFERRAL_RATE_BPS
+    }
 }
 
 /// Set the MOLT coin contract address (admin only)
@@ -533,8 +665,12 @@ pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if is_zero(&a) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
     storage_set(MOLTCOIN_ADDRESS_KEY, &a);
     0
 }
@@ -552,34 +688,46 @@ pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if is_zero(&a) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
     storage_set(REWARDS_POOL_KEY, &a);
     0
 }
 
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Rewards: EMERGENCY PAUSE");
     0
 }
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     0
 }
@@ -598,8 +746,12 @@ pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enable
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if is_zero(&a) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&a) {
+        return 2;
+    }
     let mut key = Vec::from(AUTHORIZED_CALLER_PREFIX);
     key.extend_from_slice(&a);
     storage_set(&key, &[enabled]);
@@ -612,7 +764,9 @@ pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enable
 #[no_mangle]
 pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
-    if args.is_empty() { return; }
+    if args.is_empty() {
+        return;
+    }
     match args[0] {
         // 0: initialize(admin[32])
         0 => {
@@ -754,7 +908,9 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 
@@ -784,7 +940,10 @@ mod tests {
         assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
         // Authorize a caller address for record_trade / accrue_lp_rewards
         let dex_caller = [0xFFu8; 32];
-        assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
+        assert_eq!(
+            set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1),
+            0
+        );
         test_mock::set_caller(dex_caller);
         admin
     }
@@ -799,7 +958,10 @@ mod tests {
         assert_eq!(initialize(admin.as_ptr()), 0);
         let dex_caller = [0xFFu8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
+        assert_eq!(
+            set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1),
+            0
+        );
         test_mock::set_caller(dex_caller);
         admin
     }
@@ -1253,7 +1415,10 @@ mod tests {
 
         // Pending reward should be capped at REWARD_POOL_PER_MONTH
         let pending = load_u64(&trader_pending_key(&trader));
-        assert!(pending <= REWARD_POOL_PER_MONTH, "reward must not exceed monthly cap");
+        assert!(
+            pending <= REWARD_POOL_PER_MONTH,
+            "reward must not exceed monthly cap"
+        );
 
         // Epoch distributed should be at cap
         let epoch_dist = load_u64(EPOCH_DISTRIBUTED_KEY);
@@ -1281,7 +1446,10 @@ mod tests {
         record_trade(trader2.as_ptr(), 10_000, 10_000_000);
         let dist_after = load_u64(EPOCH_DISTRIBUTED_KEY);
         // Should be much less than before since epoch reset
-        assert!(dist_after < dist_before, "epoch counter should reset after month");
+        assert!(
+            dist_after < dist_before,
+            "epoch counter should reset after month"
+        );
     }
 
     #[test]
@@ -1321,6 +1489,10 @@ mod tests {
         // Verify the pool address is stored
         let stored = storage_get(REWARDS_POOL_KEY).unwrap();
         assert_eq!(stored.len(), 32);
-        assert_eq!(&stored[..], &builder_grants[..], "rewards pool must be builder_grants");
+        assert_eq!(
+            &stored[..],
+            &builder_grants[..],
+            "rewards pool must be builder_grants"
+        );
     }
 }

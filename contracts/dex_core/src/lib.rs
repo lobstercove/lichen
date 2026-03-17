@@ -42,8 +42,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall, call_contract};
+use moltchain_sdk::{
+    bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
+    u64_to_bytes, Address, CrossCall,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -61,7 +63,7 @@ const FEE_LP_SHARE: u64 = 20; // 20% to LPs
 const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
 const MIN_FEE_PER_TRADE: u64 = 1; // 1 shell minimum
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
-// F18.2: Analytics cross-contract call — record trades after settlement
+                                         // F18.2: Analytics cross-contract call — record trades after settlement
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
 // G2-04: Margin contract address for reduce-only cross-contract validation
 const MARGIN_ADDRESS_KEY: &str = "dex_margin_addr";
@@ -564,7 +566,9 @@ fn decode_order_trigger_price(data: &[u8]) -> u64 {
 
 // Task 2.2: Update trigger price on an existing order
 fn update_order_trigger_price(data: &mut Vec<u8>, trigger_price: u64) {
-    while data.len() < 99 { data.push(0); }
+    while data.len() < 99 {
+        data.push(0);
+    }
     data[91..99].copy_from_slice(&u64_to_bytes(trigger_price));
 }
 
@@ -743,13 +747,21 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if is_zero(&q) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&q) {
+        return 2;
+    }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
-        if load_addr(&allowed_quote_key(i)) == q { return 3; }
+        if load_addr(&allowed_quote_key(i)) == q {
+            return 3;
+        }
     }
-    if count >= MAX_ALLOWED_QUOTES { return 4; }
+    if count >= MAX_ALLOWED_QUOTES {
+        return 4;
+    }
     storage_set(&allowed_quote_key(count), &q);
     save_u64(ALLOWED_QUOTE_COUNT_KEY, count + 1);
     log_info("Allowed quote token added");
@@ -770,7 +782,9 @@ pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
         if load_addr(&allowed_quote_key(i)) == q {
@@ -1126,8 +1140,7 @@ pub fn place_order(
             let mut bal_args = Vec::with_capacity(33);
             bal_args.push(5u8); // opcode: balance_of
             bal_args.extend_from_slice(&t);
-            let call = CrossCall::new(Address(token_addr), "balance_of", bal_args)
-                .with_value(0);
+            let call = CrossCall::new(Address(token_addr), "balance_of", bal_args).with_value(0);
             let bal_result = call_contract(call);
             // AUDIT-FIX CON-11: Fail-closed balance validation.
             // If cross-contract call fails, reject the trade (fail-closed).
@@ -1135,8 +1148,14 @@ pub fn place_order(
                 Ok(bal_bytes) => {
                     if bal_bytes.len() >= 8 {
                         let balance = u64::from_le_bytes([
-                            bal_bytes[0], bal_bytes[1], bal_bytes[2], bal_bytes[3],
-                            bal_bytes[4], bal_bytes[5], bal_bytes[6], bal_bytes[7],
+                            bal_bytes[0],
+                            bal_bytes[1],
+                            bal_bytes[2],
+                            bal_bytes[3],
+                            bal_bytes[4],
+                            bal_bytes[5],
+                            bal_bytes[6],
+                            bal_bytes[7],
                         ]);
                         let required = if side == SIDE_BUY { notional } else { quantity };
                         if balance < required {
@@ -1170,26 +1189,46 @@ pub fn place_order(
         if let Some(band_data) = storage_get(&band_key_str) {
             if band_data.len() >= 16 {
                 let ref_price = u64::from_le_bytes([
-                    band_data[0], band_data[1], band_data[2], band_data[3],
-                    band_data[4], band_data[5], band_data[6], band_data[7],
+                    band_data[0],
+                    band_data[1],
+                    band_data[2],
+                    band_data[3],
+                    band_data[4],
+                    band_data[5],
+                    band_data[6],
+                    band_data[7],
                 ]);
                 let band_slot = u64::from_le_bytes([
-                    band_data[8], band_data[9], band_data[10], band_data[11],
-                    band_data[12], band_data[13], band_data[14], band_data[15],
+                    band_data[8],
+                    band_data[9],
+                    band_data[10],
+                    band_data[11],
+                    band_data[12],
+                    band_data[13],
+                    band_data[14],
+                    band_data[15],
                 ]);
 
                 // Only enforce if band data is fresh (within 300 slots ≈ 5 min)
                 if ref_price > 0 && current_slot.saturating_sub(band_slot) < 300 {
                     let check_price = if base_order_type == ORDER_MARKET {
                         // Market order with worst-price bound
-                        if price > 0 { price } else { 0 }
+                        if price > 0 {
+                            price
+                        } else {
+                            0
+                        }
                     } else {
                         price
                     };
 
                     if check_price > 0 {
                         // Percentage thresholds (basis points): market=500 (5%), limit=1000 (10%)
-                        let band_bps: u64 = if base_order_type == ORDER_MARKET { 500 } else { 1000 };
+                        let band_bps: u64 = if base_order_type == ORDER_MARKET {
+                            500
+                        } else {
+                            1000
+                        };
 
                         // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
                         let band = (ref_price as u128 * band_bps as u128 / 10000) as u64;
@@ -1236,8 +1275,8 @@ pub fn place_order(
         qargs.push(26u8); // opcode
         qargs.extend_from_slice(&t);
         qargs.extend_from_slice(&u64_to_bytes(pair_id));
-        let call = CrossCall::new(Address(margin_addr), "query_user_open_position", qargs)
-            .with_value(0);
+        let call =
+            CrossCall::new(Address(margin_addr), "query_user_open_position", qargs).with_value(0);
         match call_contract(call) {
             Ok(ref data) if data.len() >= 58 => {
                 // Parse position: byte 48 = side, byte 49 = status, bytes 50..58 = size
@@ -1534,7 +1573,10 @@ fn fill_at_price_level(
         // AUDIT-FIX L6-01: u128 intermediate to prevent overflow on large trades
         let protocol_fee = (taker_fee as u128 * FEE_PROTOCOL_SHARE as u128 / 100) as u64;
         let current_treasury = load_u64(FEE_TREASURY_KEY);
-        save_u64(FEE_TREASURY_KEY, current_treasury.saturating_add(protocol_fee));
+        save_u64(
+            FEE_TREASURY_KEY,
+            current_treasury.saturating_add(protocol_fee),
+        );
 
         // F19.12a: Deduct taker fee from taker's quote token balance via cross-contract call
         // Uses best-effort pattern — won't fail trade if runtime doesn't support cross-contract yet
@@ -1560,7 +1602,7 @@ fn fill_at_price_level(
                             .with_value(0);
                         // AUDIT-FIX CON-12: Log fee transfer failures instead of silently ignoring
                         match call_contract(call) {
-                            Ok(_) => {},
+                            Ok(_) => {}
                             Err(_) => {
                                 log_info("WARNING: Fee transfer to treasury failed — trade proceeds but fee uncollected");
                             }
@@ -1631,8 +1673,8 @@ fn fill_at_price_level(
                 ana_args.extend_from_slice(&u64_to_bytes(price));
                 ana_args.extend_from_slice(&u64_to_bytes(notional));
                 ana_args.extend_from_slice(taker);
-                let call = CrossCall::new(Address(analytics_addr), "record_trade", ana_args)
-                    .with_value(0);
+                let call =
+                    CrossCall::new(Address(analytics_addr), "record_trade", ana_args).with_value(0);
                 // Analytics recording is non-critical — log failures but don't block trade
                 if call_contract(call).is_err() {
                     log_info("Analytics record_trade call failed — trade still valid");
@@ -1845,8 +1887,12 @@ pub fn set_analytics_address(caller: *const u8, analytics: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(analytics, a.as_mut_ptr(), 32);
     }
     let real_caller = get_caller();
-    if real_caller.0 != c { return 200; }
-    if !require_admin(&c) { return 1; }
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(ANALYTICS_ADDRESS_KEY.as_bytes(), &a);
     log_info("DEX Core: analytics address set");
     0
@@ -1861,8 +1907,12 @@ pub fn set_margin_address(caller: *const u8, margin: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(margin, m.as_mut_ptr(), 32);
     }
     let real_caller = get_caller();
-    if real_caller.0 != c { return 200; }
-    if !require_admin(&c) { return 1; }
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(MARGIN_ADDRESS_KEY.as_bytes(), &m);
     log_info("DEX Core: margin address set");
     0
@@ -2111,7 +2161,15 @@ pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
         let trader = decode_order_trader(&od);
 
         // Run through matching engine
-        let remaining = match_order(oid, pair_id, side, price, remaining_qty, &trader, &pair_data);
+        let remaining = match_order(
+            oid,
+            pair_id,
+            side,
+            price,
+            remaining_qty,
+            &trader,
+            &pair_data,
+        );
 
         // Rest unfilled portion on book (stop-limit acts as limit once triggered)
         if remaining > 0 {
@@ -2372,10 +2430,8 @@ pub extern "C" fn call() {
             // check_triggers(pair_id[8], last_price[8])
             // Called by validator after each block to activate dormant stop-limit orders
             if args.len() >= 17 {
-                let triggered = check_triggers(
-                    bytes_to_u64(&args[1..9]),
-                    bytes_to_u64(&args[9..17]),
-                );
+                let triggered =
+                    check_triggers(bytes_to_u64(&args[1..9]), bytes_to_u64(&args[9..17]));
                 moltchain_sdk::set_return_data(&u64_to_bytes(triggered));
             }
         }
@@ -2386,7 +2442,9 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 
@@ -3064,7 +3122,10 @@ mod tests {
         assert_eq!(ORDER_LIMIT | REDUCE_ONLY_FLAG, 0x80);
         assert_eq!((ORDER_LIMIT | REDUCE_ONLY_FLAG) & 0x7F, ORDER_LIMIT);
         assert_eq!((ORDER_MARKET | REDUCE_ONLY_FLAG) & 0x7F, ORDER_MARKET);
-        assert_eq!((ORDER_STOP_LIMIT | REDUCE_ONLY_FLAG) & 0x7F, ORDER_STOP_LIMIT);
+        assert_eq!(
+            (ORDER_STOP_LIMIT | REDUCE_ONLY_FLAG) & 0x7F,
+            ORDER_STOP_LIMIT
+        );
         assert_eq!((ORDER_POST_ONLY | REDUCE_ONLY_FLAG) & 0x7F, ORDER_POST_ONLY);
     }
 
@@ -3123,7 +3184,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         let data = storage_get(&order_key(1)).unwrap();
@@ -3145,7 +3206,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         test_mock::set_caller(other);
         assert_eq!(cancel_order(other.as_ptr(), 1), 2);
@@ -3165,7 +3226,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         assert_eq!(cancel_order(trader.as_ptr(), 1), 3);
@@ -3185,7 +3246,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         place_order(
             trader.as_ptr(),
@@ -3195,7 +3256,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(cancel_all_orders(trader.as_ptr(), pair_id), 0);
         let d1 = storage_get(&order_key(1)).unwrap();
@@ -3218,7 +3279,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(modify_order(trader.as_ptr(), 1, 2_000_000_000, 2000), 0);
         // Old order cancelled
@@ -3283,7 +3344,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(get_best_bid(pair_id), 1_000_000_000);
 
@@ -3297,7 +3358,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(get_best_ask(pair_id), 2_000_000_000);
     }
@@ -3317,7 +3378,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         test_mock::set_caller(seller);
         place_order(
@@ -3328,7 +3389,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(get_spread(pair_id), 1_000_000_000);
     }
@@ -3359,7 +3420,7 @@ mod tests {
             1_000_000_000,
             1_000_000,
             0,
-            0
+            0,
         );
         test_mock::set_caller(buyer);
         place_order(
@@ -3370,7 +3431,7 @@ mod tests {
             1_000_000_000,
             1_000_000,
             0,
-            0
+            0,
         );
 
         let treasury = get_fee_treasury();
@@ -3493,7 +3554,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(get_order(1), 1);
         assert_eq!(get_order(999), 0);
@@ -3514,7 +3575,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         test_mock::set_caller(buyer);
         place_order(
@@ -3525,7 +3586,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
-            0
+            0,
         );
         assert_eq!(get_trade_count(), 1);
     }
@@ -3647,11 +3708,41 @@ mod tests {
         let base2 = [11u8; 32];
         let base3 = [12u8; 32];
         // TOKEN/mUSD → OK
-        assert_eq!(create_pair(admin.as_ptr(), base1.as_ptr(), musd.as_ptr(), 1000, 100, 1000), 0);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base1.as_ptr(),
+                musd.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
         // TOKEN/MOLT → OK
-        assert_eq!(create_pair(admin.as_ptr(), base2.as_ptr(), molt.as_ptr(), 1000, 100, 1000), 0);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base2.as_ptr(),
+                molt.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
         // TOKEN/random → rejected
-        assert_eq!(create_pair(admin.as_ptr(), base3.as_ptr(), wrong.as_ptr(), 1000, 100, 1000), 6);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base3.as_ptr(),
+                wrong.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            6
+        );
     }
 
     #[test]
@@ -3773,9 +3864,19 @@ mod tests {
         );
 
         // --- Step 3: Verify trade executed ---
-        assert_eq!(load_u64(TRADE_COUNT_KEY), 1, "exactly 1 trade should execute");
-        assert!(load_u64(TOTAL_VOLUME_KEY) > 0, "volume must increase after trade");
-        assert!(load_u64(FEE_TREASURY_KEY) > 0, "fee treasury must accumulate");
+        assert_eq!(
+            load_u64(TRADE_COUNT_KEY),
+            1,
+            "exactly 1 trade should execute"
+        );
+        assert!(
+            load_u64(TOTAL_VOLUME_KEY) > 0,
+            "volume must increase after trade"
+        );
+        assert!(
+            load_u64(FEE_TREASURY_KEY) > 0,
+            "fee treasury must accumulate"
+        );
 
         // Both orders should be FILLED
         let sell_data = storage_get(&order_key(1)).unwrap();
@@ -3836,14 +3937,32 @@ mod tests {
         // Seller posts 2000 units
         test_mock::set_caller(seller);
         assert_eq!(
-            place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 2000, 0, 0),
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                2000,
+                0,
+                0
+            ),
             0
         );
 
         // Buyer A takes 1000 → partial fill
         test_mock::set_caller(buyer_a);
         assert_eq!(
-            place_order(buyer_a.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0, 0),
+            place_order(
+                buyer_a.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0
+            ),
             0
         );
 
@@ -3857,7 +3976,16 @@ mod tests {
         // Buyer B takes remaining 1000 → fully fills seller
         test_mock::set_caller(buyer_b);
         assert_eq!(
-            place_order(buyer_b.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0, 0),
+            place_order(
+                buyer_b.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0,
+                0
+            ),
             0
         );
 
@@ -3865,7 +3993,11 @@ mod tests {
         assert_eq!(decode_order_status(&sell_final), STATUS_FILLED);
         assert_eq!(decode_order_filled(&sell_final), 2000);
 
-        assert_eq!(load_u64(TRADE_COUNT_KEY), 2, "two trades should have executed");
+        assert_eq!(
+            load_u64(TRADE_COUNT_KEY),
+            2,
+            "two trades should have executed"
+        );
 
         let total_vol = load_u64(TOTAL_VOLUME_KEY);
         assert!(total_vol > 0, "cumulative volume must be positive");

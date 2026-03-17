@@ -26,9 +26,7 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WalEntry {
     /// Consensus started for a new height.
-    HeightStarted {
-        height: u64,
-    },
+    HeightStarted { height: u64 },
     /// Validator locked on a value (Tendermint safety-critical state).
     Locked {
         height: u64,
@@ -42,9 +40,7 @@ pub enum WalEntry {
         block_hash: Hash,
     },
     /// Commit was applied and persisted — WAL can be truncated.
-    Checkpoint {
-        height: u64,
-    },
+    Checkpoint { height: u64 },
 }
 
 /// Consensus WAL backed by a file on disk.
@@ -60,9 +56,7 @@ impl ConsensusWal {
         let path = Path::new(data_dir).join("consensus.wal");
         let entries = if path.exists() {
             match fs::read(&path) {
-                Ok(data) if !data.is_empty() => {
-                    Self::decode_entries(&data)
-                }
+                Ok(data) if !data.is_empty() => Self::decode_entries(&data),
                 Ok(_) => Vec::new(),
                 Err(e) => {
                     warn!("⚠️ WAL: Failed to read {}: {}", path.display(), e);
@@ -73,7 +67,11 @@ impl ConsensusWal {
             Vec::new()
         };
         if !entries.is_empty() {
-            info!("📋 WAL: Loaded {} entries from {}", entries.len(), path.display());
+            info!(
+                "📋 WAL: Loaded {} entries from {}",
+                entries.len(),
+                path.display()
+            );
         }
         Self { path, entries }
     }
@@ -91,7 +89,10 @@ impl ConsensusWal {
             ]) as usize;
             cursor += 4;
             if cursor + len > data.len() {
-                warn!("⚠️ WAL: Truncated entry at offset {}, stopping replay", cursor - 4);
+                warn!(
+                    "⚠️ WAL: Truncated entry at offset {}, stopping replay",
+                    cursor - 4
+                );
                 break;
             }
             match bincode::deserialize::<WalEntry>(&data[cursor..cursor + len]) {
@@ -131,7 +132,11 @@ impl ConsensusWal {
         };
 
         let len_bytes = (encoded.len() as u32).to_le_bytes();
-        if let Err(e) = file.write_all(&len_bytes).and_then(|_| file.write_all(&encoded)).and_then(|_| file.sync_all()) {
+        if let Err(e) = file
+            .write_all(&len_bytes)
+            .and_then(|_| file.write_all(&encoded))
+            .and_then(|_| file.sync_all())
+        {
             error!("WAL: Failed to write entry: {}", e);
             return;
         }
@@ -147,12 +152,20 @@ impl ConsensusWal {
 
     /// Record that the validator locked on a value.
     pub fn log_lock(&mut self, height: u64, round: u32, block_hash: Hash) {
-        self.append(WalEntry::Locked { height, round, block_hash });
+        self.append(WalEntry::Locked {
+            height,
+            round,
+            block_hash,
+        });
     }
 
     /// Record a commit decision.
     pub fn log_commit_decision(&mut self, height: u64, round: u32, block_hash: Hash) {
-        self.append(WalEntry::CommitDecision { height, round, block_hash });
+        self.append(WalEntry::CommitDecision {
+            height,
+            round,
+            block_hash,
+        });
     }
 
     /// Checkpoint: the commit for `height` was applied. Truncate the WAL
@@ -165,7 +178,8 @@ impl ConsensusWal {
                 let entry = WalEntry::Checkpoint { height };
                 if let Ok(encoded) = bincode::serialize(&entry) {
                     let len_bytes = (encoded.len() as u32).to_le_bytes();
-                    let _ = f.write_all(&len_bytes)
+                    let _ = f
+                        .write_all(&len_bytes)
                         .and_then(|_| f.write_all(&encoded))
                         .and_then(|_| f.sync_all());
                 }
@@ -193,7 +207,11 @@ impl ConsensusWal {
                 WalEntry::HeightStarted { height } => {
                     last_height_started = Some(*height);
                 }
-                WalEntry::Locked { height, round, block_hash } => {
+                WalEntry::Locked {
+                    height,
+                    round,
+                    block_hash,
+                } => {
                     // Only keep the lock if it's for the latest height
                     if last_checkpoint.is_none_or(|cp| *height > cp) {
                         last_lock = Some((*height, *round, *block_hash));

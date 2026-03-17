@@ -38,14 +38,18 @@ fn setup_with_market() -> ([u8; 32], u64) {
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
-        2,  // CRYPTO category
+        2, // CRYPTO category
         close_slot,
-        2,  // binary (YES/NO)
+        2, // binary (YES/NO)
         question_hash.as_ptr(),
         question.as_ptr(),
         question.len() as u32,
     );
-    assert!(market_id > 0, "create_market should succeed, got {}", market_id);
+    assert!(
+        market_id > 0,
+        "create_market should succeed, got {}",
+        market_id
+    );
     (admin, market_id as u64)
 }
 
@@ -78,9 +82,9 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
-        1,  // SPORTS
+        1, // SPORTS
         close_slot,
-        4,  // 4 outcomes
+        4, // 4 outcomes
         question_hash.as_ptr(),
         question.as_ptr(),
         question.len() as u32,
@@ -121,10 +125,15 @@ fn position_key_for_test(market_id: u64, addr: &[u8; 32], outcome: u8) -> Vec<u8
 }
 
 fn itoa_test(n: u64) -> Vec<u8> {
-    if n == 0 { return vec![b'0']; }
+    if n == 0 {
+        return vec![b'0'];
+    }
     let mut buf = Vec::new();
     let mut v = n;
-    while v > 0 { buf.push(b'0' + (v % 10) as u8); v /= 10; }
+    while v > 0 {
+        buf.push(b'0' + (v % 10) as u8);
+        v /= 10;
+    }
     buf.reverse();
     buf
 }
@@ -145,7 +154,11 @@ fn read_position(market_id: u64, addr: &[u8; 32], outcome: u8) -> (u64, u64) {
 /// Read price for a given outcome (calls get_price, parses return_data).
 fn read_price(market_id: u64, outcome: u8) -> u64 {
     let r = get_price(market_id, outcome);
-    assert_eq!(r, 1, "get_price failed for market {} outcome {}", market_id, outcome);
+    assert_eq!(
+        r, 1,
+        "get_price failed for market {} outcome {}",
+        market_id, outcome
+    );
     read_return_u64()
 }
 
@@ -205,8 +218,13 @@ fn test_create_market_multiple() {
         moltchain_sdk::test_mock::set_caller(admin);
         moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         let mid = create_market(
-            admin.as_ptr(), 0, 1000 + 100_000, 2,
-            qh.as_ptr(), q.as_ptr(), q.len() as u32,
+            admin.as_ptr(),
+            0,
+            1000 + 100_000,
+            2,
+            qh.as_ptr(),
+            q.as_ptr(),
+            q.len() as u32,
         );
         assert_eq!(mid, (i + 1) as u32, "Market {} should be created", i + 1);
     }
@@ -220,7 +238,15 @@ fn test_create_market_rejects_caller_mismatch() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(faker.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        faker.as_ptr(),
+        0,
+        1000 + 100_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "Should reject caller/creator mismatch");
 }
 
@@ -230,7 +256,15 @@ fn test_create_market_rejects_outcome_count_1() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 100_000, 1, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100_000,
+        1,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "outcome_count=1 must be rejected");
 }
 
@@ -240,7 +274,15 @@ fn test_create_market_rejects_outcome_count_9() {
     let qh = [43u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 100_000, 9, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100_000,
+        9,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "outcome_count=9 must be rejected");
 }
 
@@ -250,7 +292,15 @@ fn test_create_market_rejects_invalid_category() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 8, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        8,
+        1000 + 100_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "category=8 must be rejected");
 }
 
@@ -260,7 +310,15 @@ fn test_create_market_rejects_past_close_slot() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 500, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        500,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "Past close_slot must be rejected");
 }
 
@@ -270,7 +328,15 @@ fn test_create_market_rejects_too_short_duration() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 100, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "Too-short duration must be rejected");
 }
 
@@ -280,7 +346,15 @@ fn test_create_market_rejects_too_long_duration() {
     let qh = [42u8; 32];
     let q = b"Test";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 70_000_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 70_000_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "Too-long duration must be rejected");
 }
 
@@ -290,7 +364,15 @@ fn test_create_market_rejects_empty_question() {
     let qh = [42u8; 32];
     let q: &[u8] = b"";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), 0);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        0,
+    );
     assert_eq!(r, 0, "Empty question must be rejected");
 }
 
@@ -301,7 +383,15 @@ fn test_create_market_rejects_duplicate_question_hash() {
     let qh = [42u8; 32]; // same hash as first market
     let q = b"Duplicate question";
     moltchain_sdk::test_mock::set_caller(admin);
-    let r = create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let r = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert_eq!(r, 0, "Duplicate question hash must be rejected");
 }
 
@@ -314,7 +404,15 @@ fn test_create_market_all_valid_categories() {
         let q = b"Category test";
         moltchain_sdk::test_mock::set_caller(admin);
         moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-        let r = create_market(admin.as_ptr(), cat, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+        let r = create_market(
+            admin.as_ptr(),
+            cat,
+            1000 + 100_000,
+            2,
+            qh.as_ptr(),
+            q.as_ptr(),
+            q.len() as u32,
+        );
         assert!(r > 0, "Category {} should be accepted", cat);
     }
 }
@@ -326,7 +424,15 @@ fn test_create_multi_outcome_market() {
     let q = b"Multi outcome test";
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-    let mid = create_market(admin.as_ptr(), 0, 1000 + 100_000, 5, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+    let mid = create_market(
+        admin.as_ptr(),
+        0,
+        1000 + 100_000,
+        5,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    );
     assert!(mid > 0);
     assert_eq!(get_market(mid as u64), 1);
     let rd = moltchain_sdk::test_mock::get_return_data();
@@ -371,8 +477,11 @@ fn test_initial_liquidity_custom_odds() {
     let r = add_initial_liquidity(admin.as_ptr(), market_id, amount, odds.as_ptr(), 4);
     assert_eq!(r, 1);
     let price_yes = read_price(market_id, 0);
-    assert!(price_yes > 600_000 && price_yes < 800_000,
-        "YES price should be ~$0.70, got {}", price_yes);
+    assert!(
+        price_yes > 600_000 && price_yes < 800_000,
+        "YES price should be ~$0.70, got {}",
+        price_yes
+    );
 }
 
 #[test]
@@ -397,7 +506,10 @@ fn test_initial_liquidity_rejects_double_activation() {
     let (admin, market_id) = setup_active_market();
     moltchain_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, 5_000_000, core::ptr::null(), 0);
-    assert_eq!(r, 0, "Cannot add initial liquidity to already ACTIVE market");
+    assert_eq!(
+        r, 0,
+        "Cannot add initial liquidity to already ACTIVE market"
+    );
 }
 
 #[test]
@@ -428,8 +540,11 @@ fn test_prices_always_sum_to_one_binary() {
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
-    assert!(sum >= 999_999 && sum <= 1_000_001,
-        "Prices must sum to ~1.00, got {}", sum);
+    assert!(
+        sum >= 999_999 && sum <= 1_000_001,
+        "Prices must sum to ~1.00, got {}",
+        sum
+    );
 }
 
 #[test]
@@ -441,8 +556,12 @@ fn test_buy_yes_increases_yes_price() {
     let r = buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
     assert!(r > 0, "buy_shares failed");
     let price_after = read_price(market_id, 0);
-    assert!(price_after > price_before,
-        "Buying YES should increase YES price: {} → {}", price_before, price_after);
+    assert!(
+        price_after > price_before,
+        "Buying YES should increase YES price: {} → {}",
+        price_before,
+        price_after
+    );
 }
 
 #[test]
@@ -454,8 +573,12 @@ fn test_buy_no_decreases_yes_price() {
     let r = buy_shares(trader.as_ptr(), market_id, 1, 1_000_000);
     assert!(r > 0);
     let price_after = read_price(market_id, 0);
-    assert!(price_after < price_before,
-        "Buying NO should decrease YES price: {} → {}", price_before, price_after);
+    assert!(
+        price_after < price_before,
+        "Buying NO should decrease YES price: {} → {}",
+        price_before,
+        price_after
+    );
 }
 
 #[test]
@@ -467,8 +590,13 @@ fn test_prices_sum_after_trade() {
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
-    assert!(sum >= 999_000 && sum <= 1_001_000,
-        "Post-trade prices must sum to ~$1.00, got {} (p0={}, p1={})", sum, p0, p1);
+    assert!(
+        sum >= 999_000 && sum <= 1_001_000,
+        "Post-trade prices must sum to ~$1.00, got {} (p0={}, p1={})",
+        sum,
+        p0,
+        p1
+    );
 }
 
 #[test]
@@ -496,7 +624,10 @@ fn test_mint_complete_set_no_price_impact() {
     let r = mint_complete_set(user.as_ptr(), market_id, 5_000_000);
     assert_eq!(r, 1);
     let price_after = read_price(market_id, 0);
-    assert_eq!(price_before, price_after, "Minting complete set must not change price");
+    assert_eq!(
+        price_before, price_after,
+        "Minting complete set must not change price"
+    );
 }
 
 #[test]
@@ -507,7 +638,11 @@ fn test_redeem_complete_set_returns_collateral() {
     assert_eq!(mint_complete_set(user.as_ptr(), market_id, 3_000_000), 1);
     for outcome in 0..2u8 {
         let (shares, _) = read_position(market_id, &user, outcome);
-        assert_eq!(shares, 3_000_000, "Should have 3M shares of outcome {}", outcome);
+        assert_eq!(
+            shares, 3_000_000,
+            "Should have 3M shares of outcome {}",
+            outcome
+        );
     }
     moltchain_sdk::test_mock::set_caller(user);
     let returned = redeem_complete_set(user.as_ptr(), market_id, 3_000_000);
@@ -527,7 +662,11 @@ fn test_quote_buy_matches_actual_buy() {
     moltchain_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
     let (actual, _) = read_position(market_id, &trader, 0);
-    assert_eq!(quoted, actual, "Quote and actual must match: q={} a={}", quoted, actual);
+    assert_eq!(
+        quoted, actual,
+        "Quote and actual must match: q={} a={}",
+        quoted, actual
+    );
 }
 
 #[test]
@@ -671,7 +810,16 @@ fn test_submit_resolution_rejects_active_market() {
     let resolver = [5u8; 32];
     let att_hash = [77u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
-    assert_eq!(submit_resolution(resolver.as_ptr(), market_id, 0, att_hash.as_ptr(), 100_000_000), 0);
+    assert_eq!(
+        submit_resolution(
+            resolver.as_ptr(),
+            market_id,
+            0,
+            att_hash.as_ptr(),
+            100_000_000
+        ),
+        0
+    );
 }
 
 #[test]
@@ -812,7 +960,11 @@ fn test_get_user_markets_tracking() {
     assert_eq!(get_user_markets(trader.as_ptr()), 1);
     moltchain_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
-    assert_eq!(get_user_markets(trader.as_ptr()), 1, "No duplicate tracking");
+    assert_eq!(
+        get_user_markets(trader.as_ptr()),
+        1,
+        "No duplicate tracking"
+    );
 }
 
 #[test]
@@ -846,8 +998,13 @@ fn test_multiple_traders_same_market() {
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
     let sum = p0 + p1;
-    assert!(sum >= 999_000 && sum <= 1_001_000,
-        "Prices must sum to ~$1.00: {} (p0={}, p1={})", sum, p0, p1);
+    assert!(
+        sum >= 999_000 && sum <= 1_001_000,
+        "Prices must sum to ~$1.00: {} (p0={}, p1={})",
+        sum,
+        p0,
+        p1
+    );
 
     let (s1, _) = read_position(market_id, &t1, 0);
     let (s2, _) = read_position(market_id, &t2, 1);
@@ -907,17 +1064,25 @@ fn test_sell_more_than_owned_rejected() {
 fn test_multi_outcome_prices_sum_to_one() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let mut total: u64 = 0;
-    for i in 0..4u8 { total += read_price(market_id, i); }
-    assert!(total >= 999_000 && total <= 1_001_000,
-        "4-outcome prices must sum to ~$1.00, got {}", total);
+    for i in 0..4u8 {
+        total += read_price(market_id, i);
+    }
+    assert!(
+        total >= 999_000 && total <= 1_001_000,
+        "4-outcome prices must sum to ~$1.00, got {}",
+        total
+    );
 }
 
 #[test]
 fn test_multi_outcome_initial_equal() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let p0 = read_price(market_id, 0);
-    assert!(p0 > 200_000 && p0 < 300_000,
-        "Each of 4 outcomes should be ~$0.25, got {}", p0);
+    assert!(
+        p0 > 200_000 && p0 < 300_000,
+        "Each of 4 outcomes should be ~$0.25, got {}",
+        p0
+    );
 }
 
 #[test]
@@ -938,9 +1103,14 @@ fn test_multi_outcome_prices_sum_after_trade() {
     moltchain_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 2, 5_000_000);
     let mut total: u64 = 0;
-    for i in 0..4u8 { total += read_price(market_id, i); }
-    assert!(total >= 998_000 && total <= 1_002_000,
-        "Multi-outcome prices must sum to ~$1.00 after trade, got {}", total);
+    for i in 0..4u8 {
+        total += read_price(market_id, i);
+    }
+    assert!(
+        total >= 998_000 && total <= 1_002_000,
+        "Multi-outcome prices must sum to ~$1.00 after trade, got {}",
+        total
+    );
 }
 
 // ============================================================================
@@ -954,7 +1124,17 @@ fn test_max_outcomes_8_accepted() {
     let q = b"8 outcome market";
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-    assert!(create_market(admin.as_ptr(), 0, 1000 + 100_000, 8, qh.as_ptr(), q.as_ptr(), q.len() as u32) > 0);
+    assert!(
+        create_market(
+            admin.as_ptr(),
+            0,
+            1000 + 100_000,
+            8,
+            qh.as_ptr(),
+            q.as_ptr(),
+            q.len() as u32
+        ) > 0
+    );
 }
 
 #[test]
@@ -963,7 +1143,18 @@ fn test_outcome_9_rejected() {
     let qh = [89u8; 32];
     let q = b"9 outcome market";
     moltchain_sdk::test_mock::set_caller(admin);
-    assert_eq!(create_market(admin.as_ptr(), 0, 1000 + 100_000, 9, qh.as_ptr(), q.as_ptr(), q.len() as u32), 0);
+    assert_eq!(
+        create_market(
+            admin.as_ptr(),
+            0,
+            1000 + 100_000,
+            9,
+            qh.as_ptr(),
+            q.as_ptr(),
+            q.len() as u32
+        ),
+        0
+    );
 }
 
 // ============================================================================

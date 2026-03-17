@@ -20,8 +20,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall, call_contract,
+    bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
+    u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -391,13 +391,21 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
-    if is_zero(&q) { return 2; }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&q) {
+        return 2;
+    }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
-        if load_addr(&allowed_quote_key(i)) == q { return 3; }
+        if load_addr(&allowed_quote_key(i)) == q {
+            return 3;
+        }
     }
-    if count >= MAX_ALLOWED_QUOTES { return 4; }
+    if count >= MAX_ALLOWED_QUOTES {
+        return 4;
+    }
     storage_set(&allowed_quote_key(count), &q);
     save_u64(ALLOWED_QUOTE_COUNT_KEY, count + 1);
     log_info("Allowed quote token added (governance)");
@@ -418,7 +426,9 @@ pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if real_caller.0 != c {
         return 200;
     }
-    if !require_admin(&c) { return 1; }
+    if !require_admin(&c) {
+        return 1;
+    }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
     for i in 0..count {
         if load_addr(&allowed_quote_key(i)) == q {
@@ -739,12 +749,12 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let quote_token = load_addr(PREFERRED_QUOTE_KEY);
             // Use sensible defaults: tick_size=1_000_000, lot_size=100, min_order=1000
             let mut args = Vec::new();
-            args.extend_from_slice(&core_addr);  // admin/caller (governance contract itself)
+            args.extend_from_slice(&core_addr); // admin/caller (governance contract itself)
             args.extend_from_slice(&base_token);
             args.extend_from_slice(&quote_token);
             args.extend_from_slice(&u64_to_bytes(1_000_000)); // tick_size
-            args.extend_from_slice(&u64_to_bytes(100));        // lot_size
-            args.extend_from_slice(&u64_to_bytes(1_000));      // min_order
+            args.extend_from_slice(&u64_to_bytes(100)); // lot_size
+            args.extend_from_slice(&u64_to_bytes(1_000)); // min_order
             let target = Address(core_addr);
             let call = CrossCall::new(target, "create_pair", args);
             match call_contract(call) {
@@ -766,7 +776,7 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             let maker_fee = decode_prop_maker_fee(&data);
             let taker_fee = decode_prop_taker_fee(&data);
             let mut args = Vec::new();
-            args.extend_from_slice(&core_addr);                // admin/caller
+            args.extend_from_slice(&core_addr); // admin/caller
             args.extend_from_slice(&u64_to_bytes(pair_id));
             args.extend_from_slice(&maker_fee.to_le_bytes());
             args.extend_from_slice(&taker_fee.to_le_bytes());
@@ -943,7 +953,7 @@ pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
 fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
     // Check if MoltyID address is configured (non-zero)
     match storage_get(MOLTYID_ADDRESS_KEY) {
-        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {},
+        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {}
         _ => {
             // P10-SC-10: Fail closed when MoltyID is not configured
             log_info("verify_reputation: MoltyID not configured — denying (fail closed)");
@@ -1143,7 +1153,9 @@ pub extern "C" fn call() {
             // get_voter_count — unique voters
             moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 
@@ -1592,8 +1604,8 @@ mod tests {
         }
         let rep_value: u64 = 1000;
         storage_set(&rep_key, &u64_to_bytes(rep_value));
-        assert!(verify_reputation(&user, 500));   // 1000 >= 500
-        assert!(verify_reputation(&user, 1000));  // 1000 >= 1000
+        assert!(verify_reputation(&user, 500)); // 1000 >= 500
+        assert!(verify_reputation(&user, 1000)); // 1000 >= 1000
         assert!(!verify_reputation(&user, 1001)); // 1000 < 1001
     }
 
@@ -1610,7 +1622,7 @@ mod tests {
         test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
-            5  // reputation check fails — no reputation data
+            5 // reputation check fails — no reputation data
         );
     }
 
@@ -1629,7 +1641,7 @@ mod tests {
         // Propose also fails reputation check with MoltyID configured
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
-            5  // reputation check fails — no reputation data
+            5 // reputation check fails — no reputation data
         );
     }
 
@@ -1656,7 +1668,7 @@ mod tests {
         // Finalize → should reject due to insufficient quorum
         let result = finalize_proposal(1);
         assert_eq!(result, 1); // rejected (insufficient quorum)
-        // Verify status is REJECTED
+                               // Verify status is REJECTED
         let pd = storage_get(&proposal_key(1)).unwrap();
         assert_eq!(decode_prop_status(&pd), STATUS_REJECTED);
     }
@@ -1707,7 +1719,10 @@ mod tests {
         // Verify execution result stored (cross-call mock returns empty)
         let mut rk = Vec::from(&b"gov_exec_result_"[..]);
         rk.extend_from_slice(&u64_to_bytes(1));
-        assert!(storage_get(&rk).is_some(), "execution result must be stored");
+        assert!(
+            storage_get(&rk).is_some(),
+            "execution result must be stored"
+        );
     }
 
     #[test]

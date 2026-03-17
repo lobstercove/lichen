@@ -62,7 +62,16 @@ fn test_place_order_quantity_exceeds_max() {
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
     // MAX_ORDER_SIZE is 10_000_000_000_000_000 (10M MOLT at 9 decimals)
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 10_000_000_000_000_001, 0, 0);
+    let result = place_order(
+        trader.as_ptr(),
+        pair_id,
+        0,
+        0,
+        P,
+        10_000_000_000_000_001,
+        0,
+        0,
+    );
     assert_eq!(result, 4, "quantity exceeding MAX should be rejected");
 }
 
@@ -89,9 +98,15 @@ fn test_fee_treasury_accumulation() {
     moltchain_sdk::test_mock::set_slot(100);
     let big_q: u64 = 200_000;
     moltchain_sdk::test_mock::set_caller(seller);
-    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, big_q, 0, 0), 0);
+    assert_eq!(
+        place_order(seller.as_ptr(), pair_id, 1, 0, P, big_q, 0, 0),
+        0
+    );
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, big_q, 0, 0), 0);
+    assert_eq!(
+        place_order(buyer.as_ptr(), pair_id, 0, 0, P, big_q, 0, 0),
+        0
+    );
     let treasury = get_fee_treasury();
     assert!(
         treasury > 0,
@@ -131,7 +146,10 @@ fn test_user_order_count_after_cancel() {
     moltchain_sdk::test_mock::set_caller(trader);
     for i in 0..100u64 {
         let price = P + (i + 1) * 1_000_000;
-        assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0), 0);
+        assert_eq!(
+            place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0),
+            0
+        );
     }
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
     let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0, 0);
@@ -152,7 +170,10 @@ fn test_order_expiry_exact_boundary() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(1000);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000, 0), 8);
+    assert_eq!(
+        place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000, 0),
+        8
+    );
 }
 
 #[test]
@@ -161,7 +182,10 @@ fn test_order_expiry_one_slot_away() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(1000);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1001, 0), 0);
+    assert_eq!(
+        place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1001, 0),
+        0
+    );
 }
 
 #[test]
@@ -297,9 +321,9 @@ fn test_unpause_restores_operations() {
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
     // AUDIT-FIX M12: Unpause is now two-step: schedule then execute after timelock
     assert_eq!(emergency_unpause(admin.as_ptr()), 0); // schedules
-    // Advance past timelock
+                                                      // Advance past timelock
     moltchain_sdk::test_mock::set_slot(100 + UNPAUSE_TIMELOCK_SLOTS);
-    assert_eq!(execute_unpause(admin.as_ptr()), 0);   // executes
+    assert_eq!(execute_unpause(admin.as_ptr()), 0); // executes
     moltchain_sdk::test_mock::set_caller(trader);
     assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
 }
@@ -314,7 +338,10 @@ fn test_price_not_tick_aligned() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P + 1, Q, 0, 0), 4);
+    assert_eq!(
+        place_order(trader.as_ptr(), pair_id, 0, 0, P + 1, Q, 0, 0),
+        4
+    );
 }
 
 #[test]
@@ -462,5 +489,8 @@ fn test_matching_many_orders() {
     }
     let buyer = [50u8; 32];
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q * 10, 0, 0), 0);
+    assert_eq!(
+        place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q * 10, 0, 0),
+        0
+    );
 }

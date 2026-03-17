@@ -31,11 +31,22 @@ fn setup_large_market() -> ([u8; 32], u64) {
     let q = b"Will BTC reach 100k?";
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-    let mid = create_market(admin.as_ptr(), 2, 101_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
+    let mid = create_market(
+        admin.as_ptr(),
+        2,
+        101_000,
+        2,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    ) as u64;
     assert!(mid > 0);
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(100_000_000);
-    assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0), 1);
+    assert_eq!(
+        add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0),
+        1
+    );
     (admin, mid)
 }
 
@@ -46,11 +57,22 @@ fn setup_multi_market() -> ([u8; 32], u64) {
     let q = b"Which party wins?";
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
-    let mid = create_market(admin.as_ptr(), 1, 201_000, 4, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
+    let mid = create_market(
+        admin.as_ptr(),
+        1,
+        201_000,
+        4,
+        qh.as_ptr(),
+        q.as_ptr(),
+        q.len() as u32,
+    ) as u64;
     assert!(mid > 0);
     moltchain_sdk::test_mock::set_caller(admin);
     moltchain_sdk::test_mock::set_value(40_000_000);
-    assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0), 1);
+    assert_eq!(
+        add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0),
+        1
+    );
     (admin, mid)
 }
 
@@ -65,10 +87,15 @@ fn read_price(market_id: u64, outcome: u8) -> u64 {
 }
 
 fn itoa_test(n: u64) -> Vec<u8> {
-    if n == 0 { return vec![b'0']; }
+    if n == 0 {
+        return vec![b'0'];
+    }
     let mut buf = Vec::new();
     let mut v = n;
-    while v > 0 { buf.push(b'0' + (v % 10) as u8); v /= 10; }
+    while v > 0 {
+        buf.push(b'0' + (v % 10) as u8);
+        v /= 10;
+    }
     buf.reverse();
     buf
 }
@@ -79,7 +106,10 @@ fn position_key_for_test(market_id: u64, addr: &[u8; 32], outcome: u8) -> Vec<u8
     let mut id_buf = itoa_test(market_id);
     k.append(&mut id_buf);
     k.push(b'_');
-    for &b in addr { k.push(hex_chars[(b >> 4) as usize]); k.push(hex_chars[(b & 0x0f) as usize]); }
+    for &b in addr {
+        k.push(hex_chars[(b >> 4) as usize]);
+        k.push(hex_chars[(b & 0x0f) as usize]);
+    }
     k.push(b'_');
     let mut out_buf = itoa_test(outcome as u64);
     k.append(&mut out_buf);
@@ -105,8 +135,12 @@ fn read_market_record(market_id: u64) -> Option<Vec<u8>> {
     moltchain_sdk::test_mock::get_storage(&key)
 }
 
-fn market_status_from_record(data: &[u8]) -> u8 { data[64] }
-fn market_winning_outcome_from_record(data: &[u8]) -> u8 { data[66] }
+fn market_status_from_record(data: &[u8]) -> u8 {
+    data[64]
+}
+fn market_winning_outcome_from_record(data: &[u8]) -> u8 {
+    data[66]
+}
 
 // ============================================================================
 // CLOSE_MARKET TESTS
@@ -119,9 +153,17 @@ fn test_close_market_after_close_slot() {
     moltchain_sdk::test_mock::set_slot(101_001);
     let anyone = [5u8; 32];
     moltchain_sdk::test_mock::set_caller(anyone);
-    assert_eq!(close_market(anyone.as_ptr(), mid), 1, "Should close after close_slot");
+    assert_eq!(
+        close_market(anyone.as_ptr(), mid),
+        1,
+        "Should close after close_slot"
+    );
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 2, "Status should be CLOSED (2)");
+    assert_eq!(
+        market_status_from_record(&rec),
+        2,
+        "Status should be CLOSED (2)"
+    );
 }
 
 #[test]
@@ -129,7 +171,11 @@ fn test_close_market_before_close_slot() {
     let (_admin, mid) = setup_large_market();
     let anyone = [5u8; 32];
     moltchain_sdk::test_mock::set_caller(anyone);
-    assert_eq!(close_market(anyone.as_ptr(), mid), 0, "Cannot close before close_slot");
+    assert_eq!(
+        close_market(anyone.as_ptr(), mid),
+        0,
+        "Cannot close before close_slot"
+    );
 }
 
 #[test]
@@ -139,7 +185,11 @@ fn test_close_market_at_exact_close_slot() {
     let anyone = [5u8; 32];
     moltchain_sdk::test_mock::set_caller(anyone);
     // close_market requires current_slot > close_slot, not >=
-    assert_eq!(close_market(anyone.as_ptr(), mid), 0, "Cannot close at exact close_slot");
+    assert_eq!(
+        close_market(anyone.as_ptr(), mid),
+        0,
+        "Cannot close at exact close_slot"
+    );
 }
 
 #[test]
@@ -150,7 +200,11 @@ fn test_close_market_already_closed() {
     moltchain_sdk::test_mock::set_caller(anyone);
     close_market(anyone.as_ptr(), mid);
     moltchain_sdk::test_mock::set_caller(anyone);
-    assert_eq!(close_market(anyone.as_ptr(), mid), 0, "Cannot close already-closed market");
+    assert_eq!(
+        close_market(anyone.as_ptr(), mid),
+        0,
+        "Cannot close already-closed market"
+    );
 }
 
 // ============================================================================
@@ -164,7 +218,10 @@ fn test_submit_resolution_requires_closed() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
-    assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000), 0);
+    assert_eq!(
+        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000),
+        0
+    );
 }
 
 #[test]
@@ -184,8 +241,16 @@ fn test_submit_resolution_basic() {
     assert_eq!(r, 1, "Resolution should be accepted");
 
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 3, "Status should be RESOLVING (3)");
-    assert_eq!(market_winning_outcome_from_record(&rec), 0, "Winning outcome should be 0");
+    assert_eq!(
+        market_status_from_record(&rec),
+        3,
+        "Status should be RESOLVING (3)"
+    );
+    assert_eq!(
+        market_winning_outcome_from_record(&rec),
+        0,
+        "Winning outcome should be 0"
+    );
 }
 
 #[test]
@@ -199,8 +264,11 @@ fn test_submit_resolution_invalid_outcome() {
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
-    assert_eq!(submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), 100_000_000), 0,
-        "Invalid outcome index should fail");
+    assert_eq!(
+        submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), 100_000_000),
+        0,
+        "Invalid outcome index should fail"
+    );
 }
 
 #[test]
@@ -215,8 +283,11 @@ fn test_submit_resolution_insufficient_bond() {
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     // DISPUTE_BOND = 100_000_000
-    assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 99_999_999), 0,
-        "Below DISPUTE_BOND should fail");
+    assert_eq!(
+        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 99_999_999),
+        0,
+        "Below DISPUTE_BOND should fail"
+    );
 }
 
 // ============================================================================
@@ -245,7 +316,11 @@ fn test_finalize_resolution_after_dispute_period() {
     assert_eq!(r, 1, "Should finalize after dispute period");
 
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 4, "Status should be RESOLVED (4)");
+    assert_eq!(
+        market_status_from_record(&rec),
+        4,
+        "Status should be RESOLVED (4)"
+    );
 }
 
 #[test]
@@ -264,7 +339,11 @@ fn test_finalize_resolution_during_dispute_period() {
     // Try finalize at resolve_slot + 1000 (still within 172800)
     moltchain_sdk::test_mock::set_slot(101_001 + 1000);
     moltchain_sdk::test_mock::set_caller(anyone);
-    assert_eq!(finalize_resolution(anyone.as_ptr(), mid), 0, "Cannot finalize during dispute period");
+    assert_eq!(
+        finalize_resolution(anyone.as_ptr(), mid),
+        0,
+        "Cannot finalize during dispute period"
+    );
 }
 
 // ============================================================================
@@ -291,7 +370,11 @@ fn test_challenge_resolution_basic() {
     assert_eq!(r, 1, "Challenge should succeed");
 
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 5, "Status should be DISPUTED (5)");
+    assert_eq!(
+        market_status_from_record(&rec),
+        5,
+        "Status should be DISPUTED (5)"
+    );
 }
 
 #[test]
@@ -310,8 +393,11 @@ fn test_cannot_challenge_own_resolution() {
     // Same resolver tries to challenge
     let evidence = [88u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
-    assert_eq!(challenge_resolution(resolver.as_ptr(), mid, evidence.as_ptr(), 100_000_000), 0,
-        "Cannot challenge own resolution");
+    assert_eq!(
+        challenge_resolution(resolver.as_ptr(), mid, evidence.as_ptr(), 100_000_000),
+        0,
+        "Cannot challenge own resolution"
+    );
 }
 
 #[test]
@@ -332,7 +418,10 @@ fn test_challenge_after_dispute_period_fails() {
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
     moltchain_sdk::test_mock::set_caller(challenger);
-    assert_eq!(challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000), 0);
+    assert_eq!(
+        challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 100_000_000),
+        0
+    );
 }
 
 #[test]
@@ -351,8 +440,11 @@ fn test_challenge_insufficient_bond() {
     let challenger = [3u8; 32];
     let evidence = [88u8; 32];
     moltchain_sdk::test_mock::set_caller(challenger);
-    assert_eq!(challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 50_000_000), 0,
-        "Insufficient bond should fail");
+    assert_eq!(
+        challenge_resolution(challenger.as_ptr(), mid, evidence.as_ptr(), 50_000_000),
+        0,
+        "Insufficient bond should fail"
+    );
 }
 
 // ============================================================================
@@ -383,8 +475,16 @@ fn test_dao_resolve_disputed_market() {
     assert_eq!(r, 1, "DAO resolve should succeed");
 
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 4, "Status should be RESOLVED (4)");
-    assert_eq!(market_winning_outcome_from_record(&rec), 1, "Winning outcome should be 1");
+    assert_eq!(
+        market_status_from_record(&rec),
+        4,
+        "Status should be RESOLVED (4)"
+    );
+    assert_eq!(
+        market_winning_outcome_from_record(&rec),
+        1,
+        "Winning outcome should be 1"
+    );
 }
 
 #[test]
@@ -516,7 +616,11 @@ fn test_redeem_requires_resolved_status() {
 
     // Market is ACTIVE, cannot redeem
     moltchain_sdk::test_mock::set_caller(t);
-    assert_eq!(redeem_shares(t.as_ptr(), mid, 0), 0, "Cannot redeem on active market");
+    assert_eq!(
+        redeem_shares(t.as_ptr(), mid, 0),
+        0,
+        "Cannot redeem on active market"
+    );
 }
 
 #[test]
@@ -539,7 +643,11 @@ fn test_redeem_with_no_shares() {
     // User with no shares
     let nobody = [77u8; 32];
     moltchain_sdk::test_mock::set_caller(nobody);
-    assert_eq!(redeem_shares(nobody.as_ptr(), mid, 0), 0, "No shares to redeem");
+    assert_eq!(
+        redeem_shares(nobody.as_ptr(), mid, 0),
+        0,
+        "No shares to redeem"
+    );
 }
 
 // ============================================================================
@@ -572,7 +680,10 @@ fn test_multi_outcome_resolution_and_redemption() {
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     moltchain_sdk::test_mock::set_value(100_000_000); // DISPUTE_BOND
-    assert_eq!(submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), 100_000_000), 1);
+    assert_eq!(
+        submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), 100_000_000),
+        1
+    );
 
     moltchain_sdk::test_mock::set_slot(201_001 + 432_001);
     moltchain_sdk::test_mock::set_caller(t);
@@ -728,7 +839,11 @@ fn test_full_lifecycle_void_after_dispute() {
     dao_void(admin.as_ptr(), mid);
 
     let rec = read_market_record(mid).unwrap();
-    assert_eq!(market_status_from_record(&rec), 6, "Status should be VOIDED (6)");
+    assert_eq!(
+        market_status_from_record(&rec),
+        6,
+        "Status should be VOIDED (6)"
+    );
 
     // Trader reclaims collateral
     moltchain_sdk::test_mock::set_caller(t);
@@ -856,7 +971,10 @@ fn test_resolution_with_oracle_attestation() {
     let resolver = [2u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
     let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    assert_eq!(r, 0, "Oracle cross-contract call returns empty data in mock — correctly rejects");
+    assert_eq!(
+        r, 0,
+        "Oracle cross-contract call returns empty data in mock — correctly rejects"
+    );
 }
 
 #[test]
@@ -909,9 +1027,7 @@ fn test_resolution_with_missing_attestation() {
 fn mock_moltyid_reputation(_addr: &[u8; 32], reputation: u64) {
     // CON-14 audit fix: reputation is now read via cross-contract call, not storage.
     // Set the mock cross-call response to return the reputation as 8 le bytes.
-    moltchain_sdk::test_mock::set_cross_call_response(
-        Some(reputation.to_le_bytes().to_vec()),
-    );
+    moltchain_sdk::test_mock::set_cross_call_response(Some(reputation.to_le_bytes().to_vec()));
 }
 
 #[test]
@@ -989,7 +1105,10 @@ fn test_resolution_with_both_oracle_and_reputation() {
 
     moltchain_sdk::test_mock::set_caller(resolver);
     let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), 100_000_000);
-    assert_eq!(r, 0, "Oracle cross-contract call returns empty data in mock — correctly rejects");
+    assert_eq!(
+        r, 0,
+        "Oracle cross-contract call returns empty data in mock — correctly rejects"
+    );
 }
 
 // ============================================================================
@@ -1030,6 +1149,13 @@ fn test_total_collateral_decreases_after_redemption() {
     let stats2 = moltchain_sdk::test_mock::get_return_data();
     let coll_after = u64::from_le_bytes(stats2[24..32].try_into().unwrap());
 
-    assert!(coll_after < coll_before, "Total collateral should decrease after redemption");
-    assert_eq!(coll_before - coll_after, shares, "Decrease = shares redeemed");
+    assert!(
+        coll_after < coll_before,
+        "Total collateral should decrease after redemption"
+    );
+    assert_eq!(
+        coll_before - coll_after,
+        shares,
+        "Decrease = shares redeemed"
+    );
 }

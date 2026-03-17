@@ -16,8 +16,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes,
-    call_token_transfer, call_nft_transfer, call_nft_owner, get_caller
+    bytes_to_u64, call_nft_owner, call_nft_transfer, call_token_transfer, get_caller, log_info,
+    storage_get, storage_set, u64_to_bytes, Address,
 };
 
 const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
@@ -29,7 +29,10 @@ const MAX_ACTIVE_OFFERS_PER_WALLET: u64 = 64;
 const MM_REENTRANCY_KEY: &[u8] = b"mm_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(MM_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(MM_REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(MM_REENTRANCY_KEY, &[1u8]);
@@ -44,11 +47,15 @@ fn reentrancy_exit() {
 const MM_PAUSE_KEY: &[u8] = b"mm_paused";
 
 fn is_mm_paused() -> bool {
-    storage_get(MM_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(MM_PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn is_mm_admin(caller: &[u8]) -> bool {
-    storage_get(b"marketplace_owner").map(|d| d.as_slice() == caller).unwrap_or(false)
+    storage_get(b"marketplace_owner")
+        .map(|d| d.as_slice() == caller)
+        .unwrap_or(false)
 }
 
 fn offerer_active_count_key(offerer: &[u8; 32]) -> Vec<u8> {
@@ -117,9 +124,13 @@ pub extern "C" fn initialize(owner_ptr: *const u8, fee_addr_ptr: *const u8) {
     }
 
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
     let mut fee_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(fee_addr_ptr, fee_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(fee_addr_ptr, fee_addr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -154,13 +165,13 @@ pub extern "C" fn list_nft(
         if real_caller.0 != seller.0 {
             return 200;
         }
-        
+
         // Verify seller owns the NFT (cross-contract call!)
         match call_nft_owner(nft_contract, token_id) {
             Ok(owner) if owner.0 == seller.0 => {
                 // Store listing — 145 bytes with correct layout
                 let listing_key = create_listing_key(nft_contract, token_id);
-                
+
                 let mut listing_data = alloc::vec![0u8; LISTING_SIZE];
                 listing_data[0..32].copy_from_slice(&seller.0);
                 listing_data[32..64].copy_from_slice(&nft_contract.0);
@@ -169,8 +180,8 @@ pub extern "C" fn list_nft(
                 listing_data[80..112].copy_from_slice(&payment_token.0);
                 // bytes 112..144 = royalty_recipient (zero = none)
                 listing_data[144] = 1; // active = true
-                // bytes 145..147 = royalty_bps (0 = no royalty on basic list)
-                
+                                       // bytes 145..147 = royalty_bps (0 = no royalty on basic list)
+
                 storage_set(&listing_key, &listing_data);
 
                 // v2: increment listing count
@@ -179,7 +190,7 @@ pub extern "C" fn list_nft(
                     .map(|d| bytes_to_u64(&d))
                     .unwrap_or(0);
                 storage_set(count_key, &u64_to_bytes(count + 1));
-                
+
                 log_info("NFT listed for sale");
                 1
             }
@@ -193,11 +204,7 @@ pub extern "C" fn list_nft(
 
 /// Buy an NFT (executes cross-contract calls to token & NFT contracts)
 #[no_mangle]
-pub extern "C" fn buy_nft(
-    buyer_ptr: *const u8,
-    nft_contract_ptr: *const u8,
-    token_id: u64,
-) -> u32 {
+pub extern "C" fn buy_nft(buyer_ptr: *const u8, nft_contract_ptr: *const u8, token_id: u64) -> u32 {
     if is_mm_paused() {
         log_info("Marketplace is paused");
         return 0;
@@ -215,7 +222,7 @@ pub extern "C" fn buy_nft(
             reentrancy_exit();
             return 200;
         }
-        
+
         // Load listing
         let listing_key = create_listing_key(nft_contract, token_id);
         let listing_data = match storage_get(&listing_key) {
@@ -226,29 +233,29 @@ pub extern "C" fn buy_nft(
                 return 0;
             }
         };
-        
+
         if listing_data.len() < 145 {
             // Accept both legacy 145-byte and new 147-byte listings
             log_info("Invalid listing data");
             reentrancy_exit();
             return 0;
         }
-        
+
         // Parse listing
         let mut seller_bytes = [0u8; 32];
         seller_bytes.copy_from_slice(&listing_data[0..32]);
         let seller = Address(seller_bytes);
-        
+
         let mut price_bytes = [0u8; 8];
         price_bytes.copy_from_slice(&listing_data[72..80]);
         let price = u64::from_le_bytes(price_bytes);
-        
+
         let mut payment_token_bytes = [0u8; 32];
         payment_token_bytes.copy_from_slice(&listing_data[80..112]);
         let payment_token = Address(payment_token_bytes);
-        
+
         let active = listing_data[144] == 1;
-        
+
         if !active {
             log_info("Listing not active");
             reentrancy_exit();
@@ -269,7 +276,7 @@ pub extern "C" fn buy_nft(
         } else {
             0
         };
-        
+
         // Calculate marketplace fee (2.5%)
         let fee = get_marketplace_fee();
         // Use u128 to prevent overflow on large NFT prices
@@ -281,9 +288,9 @@ pub extern "C" fn buy_nft(
             0
         };
         let seller_amount = price - fee_amount - royalty_amount;
-        
+
         log_info("Executing purchase with escrow pattern...");
-        
+
         // AUDIT-FIX 1.12: Escrow pattern — hold payment in marketplace until
         // NFT transfer confirms. Prevents buyer losing funds if NFT transfer fails.
         let fee_addr_bytes = storage_get(b"marketplace_fee_addr");
@@ -307,7 +314,7 @@ pub extern "C" fn buy_nft(
                 return 0;
             }
         }
-        
+
         // STEP 2: Transfer NFT from seller to buyer
         match call_nft_transfer(nft_contract, seller, buyer, token_id) {
             Ok(true) => {
@@ -324,13 +331,13 @@ pub extern "C" fn buy_nft(
                 return 0;
             }
         }
-        
+
         // STEP 3: Release escrowed funds — seller gets their share
         match call_token_transfer(payment_token, marketplace_addr, seller, seller_amount) {
             Ok(true) => log_info("Seller payment released from escrow"),
             _ => log_info(" Seller payment release failed"),
         }
-        
+
         // STEP 4: Marketplace fee stays in marketplace_addr (already there)
         // The remaining (price - seller_amount - royalty_amount = fee_amount) stays in escrow as the fee.
         if fee_amount > 0 {
@@ -339,21 +346,33 @@ pub extern "C" fn buy_nft(
 
         // STEP 5 (v3): Pay royalty to creator if applicable
         if royalty_amount > 0 {
-            match call_token_transfer(payment_token, marketplace_addr, royalty_recipient, royalty_amount) {
-                Ok(true) => log_info(&alloc::format!("Royalty paid: {} to creator", royalty_amount)),
+            match call_token_transfer(
+                payment_token,
+                marketplace_addr,
+                royalty_recipient,
+                royalty_amount,
+            ) {
+                Ok(true) => log_info(&alloc::format!(
+                    "Royalty paid: {} to creator",
+                    royalty_amount
+                )),
                 _ => log_info("Royalty transfer failed — retained in marketplace"),
             }
         }
-        
+
         // Mark listing as inactive
         let mut updated_data = listing_data.clone();
         updated_data[144] = 0; // active = false
         storage_set(&listing_key, &updated_data);
-        
+
         // Track sale stats
-        let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let sc = storage_get(MM_SALE_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
-        let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let sv = storage_get(MM_SALE_VOLUME_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
 
         log_info("Purchase complete with escrow pattern!");
@@ -378,24 +397,24 @@ pub extern "C" fn cancel_listing(
         if real_caller.0 != seller.0 {
             return 200;
         }
-        
+
         let listing_key = create_listing_key(nft_contract, token_id);
         let listing_data = match storage_get(&listing_key) {
             Some(data) => data,
             None => return 0,
         };
-        
+
         // Verify caller is seller
         if listing_data[..32] != seller.0 {
             log_info("Only seller can cancel listing");
             return 0;
         }
-        
+
         // Mark as inactive
         let mut updated_data = listing_data;
         updated_data[144] = 0;
         storage_set(&listing_key, &updated_data);
-        
+
         log_info("Listing cancelled");
         1
     }
@@ -403,15 +422,11 @@ pub extern "C" fn cancel_listing(
 
 /// Get listing details
 #[no_mangle]
-pub extern "C" fn get_listing(
-    nft_contract_ptr: *const u8,
-    token_id: u64,
-    out_ptr: *mut u8,
-) -> u32 {
+pub extern "C" fn get_listing(nft_contract_ptr: *const u8, token_id: u64, out_ptr: *mut u8) -> u32 {
     unsafe {
         let nft_contract = parse_address(nft_contract_ptr);
         let listing_key = create_listing_key(nft_contract, token_id);
-        
+
         match storage_get(&listing_key) {
             Some(data) => {
                 let out_slice = core::slice::from_raw_parts_mut(out_ptr, data.len());
@@ -426,14 +441,17 @@ pub extern "C" fn get_listing(
 /// Set marketplace fee (owner only)
 #[no_mangle]
 pub extern "C" fn set_marketplace_fee(caller_ptr: *const u8, new_fee: u64) -> u32 {
-    if new_fee > 1000 { // Max 10%
+    if new_fee > 1000 {
+        // Max 10%
         log_info("Fee too high (max 10%)");
         return 0;
     }
-    
+
     // Verify caller is owner
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -452,7 +470,7 @@ pub extern "C" fn set_marketplace_fee(caller_ptr: *const u8, new_fee: u64) -> u3
         log_info("Only marketplace owner can set fee");
         return 0;
     }
-    
+
     storage_set(b"marketplace_fee", &u64_to_bytes(new_fee));
     log_info("Marketplace fee updated");
     1
@@ -499,12 +517,17 @@ pub extern "C" fn list_nft_with_royalty(
                 data[112..144].copy_from_slice(&royalty.0);
                 data[144] = 1;
                 // v3: store royalty basis points (cap at 5000 = 50%)
-                let capped_bps = if royalty_bps > 5000 { 5000u16 } else { royalty_bps as u16 };
+                let capped_bps = if royalty_bps > 5000 {
+                    5000u16
+                } else {
+                    royalty_bps as u16
+                };
                 data[145..147].copy_from_slice(&capped_bps.to_le_bytes());
                 storage_set(&listing_key, &data);
 
                 let count = storage_get(b"mm_listing_count")
-                    .map(|d| bytes_to_u64(&d)).unwrap_or(0);
+                    .map(|d| bytes_to_u64(&d))
+                    .unwrap_or(0);
                 storage_set(b"mm_listing_count", &u64_to_bytes(count + 1));
                 log_info("NFT listed with royalty recipient");
                 1
@@ -536,7 +559,9 @@ pub extern "C" fn make_offer(
         return 0;
     }
     let mut offerer = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -546,7 +571,9 @@ pub extern "C" fn make_offer(
 
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
     let mut payment_token = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32);
+    }
 
     let mut key = b"offer:".to_vec();
     key.extend_from_slice(&nft_contract.0);
@@ -582,7 +609,9 @@ pub extern "C" fn cancel_offer(
     token_id: u64,
 ) -> u32 {
     let mut offerer = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -690,7 +719,8 @@ pub extern "C" fn accept_offer(
                 if fee_addr_data.len() >= 32 {
                     let mut fee_addr = [0u8; 32];
                     fee_addr.copy_from_slice(&fee_addr_data[..32]);
-                    let _ = call_token_transfer(payment_token, buyer, Address(fee_addr), fee_amount);
+                    let _ =
+                        call_token_transfer(payment_token, buyer, Address(fee_addr), fee_amount);
                 }
             }
         }
@@ -704,9 +734,13 @@ pub extern "C" fn accept_offer(
                 storage_set(&key, &updated);
                 release_offer_slot_if_needed(&offerer, true);
                 // Track sale stats
-                let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                let sc = storage_get(MM_SALE_COUNT_KEY)
+                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                    .unwrap_or(0);
                 storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
-                let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                let sv = storage_get(MM_SALE_VOLUME_KEY)
+                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                    .unwrap_or(0);
                 storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
 
                 log_info("Offer accepted, trade executed");
@@ -729,16 +763,21 @@ pub extern "C" fn accept_offer(
 #[no_mangle]
 pub extern "C" fn get_marketplace_stats() -> u32 {
     let count = storage_get(b"mm_listing_count")
-        .map(|d| bytes_to_u64(&d)).unwrap_or(0);
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(0);
     let fee = get_marketplace_fee();
     let mut result = Vec::with_capacity(32);
     result.extend_from_slice(&u64_to_bytes(count));
     result.extend_from_slice(&u64_to_bytes(fee));
     result.extend_from_slice(&u64_to_bytes(
-        storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(MM_SALE_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     result.extend_from_slice(&u64_to_bytes(
-        storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(MM_SALE_VOLUME_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     moltchain_sdk::set_return_data(&result);
     0
@@ -774,7 +813,9 @@ pub extern "C" fn set_nft_attributes(
         return 0;
     }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -845,10 +886,7 @@ pub extern "C" fn get_nft_attributes(
 /// Check if an NFT has any active offers. Returns offer count.
 /// Queries storage prefix "offer:{nft_contract}:{token_id}:"
 #[no_mangle]
-pub extern "C" fn get_offer_count(
-    nft_contract_ptr: *const u8,
-    token_id: u64,
-) -> u32 {
+pub extern "C" fn get_offer_count(nft_contract_ptr: *const u8, token_id: u64) -> u32 {
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
     let mut prefix = b"offer:".to_vec();
     prefix.extend_from_slice(&nft_contract.0);
@@ -984,16 +1022,23 @@ pub extern "C" fn create_auction(
     duration: u64,
     payment_token_ptr: *const u8,
 ) -> u32 {
-    if is_mm_paused() { return 0; }
+    if is_mm_paused() {
+        return 0;
+    }
     unsafe {
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
         let payment_token = parse_address(payment_token_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != seller.0 { return 200; }
+        if real_caller.0 != seller.0 {
+            return 200;
+        }
 
-        if start_price == 0 { log_info("Start price must be > 0"); return 0; }
+        if start_price == 0 {
+            log_info("Start price must be > 0");
+            return 0;
+        }
         if duration < 60 || duration > 2_592_000 {
             log_info("Duration must be 60s - 30 days");
             return 0;
@@ -1002,7 +1047,10 @@ pub extern "C" fn create_auction(
         // Verify ownership
         match call_nft_owner(nft_contract, token_id) {
             Ok(owner) if owner.0 == seller.0 => {}
-            _ => { log_info("Seller does not own NFT"); return 0; }
+            _ => {
+                log_info("Seller does not own NFT");
+                return 0;
+            }
         }
 
         // Check no existing active auction
@@ -1046,19 +1094,30 @@ pub extern "C" fn place_bid(
     token_id: u64,
     bid_amount: u64,
 ) -> u32 {
-    if is_mm_paused() { return 0; }
-    if !reentrancy_enter() { return 0; }
+    if is_mm_paused() {
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let bidder = parse_address(bidder_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != bidder.0 { reentrancy_exit(); return 200; }
+        if real_caller.0 != bidder.0 {
+            reentrancy_exit();
+            return 200;
+        }
 
         let key = create_auction_key(nft_contract, token_id);
         let data = match storage_get(&key) {
             Some(d) if d.len() >= AUCTION_SIZE && d[144] == 1 => d,
-            _ => { log_info("Active auction not found"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("Active auction not found");
+                reentrancy_exit();
+                return 0;
+            }
         };
 
         // Check auction hasn't ended
@@ -1066,7 +1125,11 @@ pub extern "C" fn place_bid(
         let mut end_bytes = [0u8; 8];
         end_bytes.copy_from_slice(&data[136..144]);
         let end_time = u64::from_le_bytes(end_bytes);
-        if now > end_time { log_info("Auction has ended"); reentrancy_exit(); return 0; }
+        if now > end_time {
+            log_info("Auction has ended");
+            reentrancy_exit();
+            return 0;
+        }
 
         // Check bid > current highest
         let mut highest_bytes = [0u8; 8];
@@ -1077,7 +1140,11 @@ pub extern "C" fn place_bid(
         start_price_bytes.copy_from_slice(&data[72..80]);
         let start_price = u64::from_le_bytes(start_price_bytes);
 
-        let min_bid = if current_highest > 0 { current_highest + 1 } else { start_price };
+        let min_bid = if current_highest > 0 {
+            current_highest + 1
+        } else {
+            start_price
+        };
         if bid_amount < min_bid {
             log_info("Bid too low");
             reentrancy_exit();
@@ -1092,13 +1159,21 @@ pub extern "C" fn place_bid(
         // Escrow bid from bidder to marketplace
         let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
             Some(v) if v.len() >= 32 => v,
-            _ => { log_info("marketplace_fee_addr not configured — bid rejected"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("marketplace_fee_addr not configured — bid rejected");
+                reentrancy_exit();
+                return 0;
+            }
         };
         let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
         match call_token_transfer(payment_token, bidder, marketplace_addr, bid_amount) {
             Ok(true) => {}
-            _ => { log_info("Bid escrow failed"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("Bid escrow failed");
+                reentrancy_exit();
+                return 0;
+            }
         }
 
         // Refund previous highest bidder
@@ -1107,7 +1182,12 @@ pub extern "C" fn place_bid(
             prev_bidder_bytes.copy_from_slice(&data[96..128]);
             let prev_bidder = Address(prev_bidder_bytes);
             if prev_bidder_bytes != [0u8; 32] {
-                let _ = call_token_transfer(payment_token, marketplace_addr, prev_bidder, current_highest);
+                let _ = call_token_transfer(
+                    payment_token,
+                    marketplace_addr,
+                    prev_bidder,
+                    current_highest,
+                );
             }
         }
 
@@ -1137,19 +1217,30 @@ pub extern "C" fn settle_auction(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    if is_mm_paused() { return 0; }
-    if !reentrancy_enter() { return 0; }
+    if is_mm_paused() {
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let caller = parse_address(caller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != caller.0 { reentrancy_exit(); return 200; }
+        if real_caller.0 != caller.0 {
+            reentrancy_exit();
+            return 200;
+        }
 
         let key = create_auction_key(nft_contract, token_id);
         let data = match storage_get(&key) {
             Some(d) if d.len() >= AUCTION_SIZE && d[144] == 1 => d,
-            _ => { log_info("Active auction not found"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("Active auction not found");
+                reentrancy_exit();
+                return 0;
+            }
         };
 
         // Verify auction has ended
@@ -1157,7 +1248,11 @@ pub extern "C" fn settle_auction(
         let mut end_bytes = [0u8; 8];
         end_bytes.copy_from_slice(&data[136..144]);
         let end_time = u64::from_le_bytes(end_bytes);
-        if now <= end_time { log_info("Auction not yet ended"); reentrancy_exit(); return 0; }
+        if now <= end_time {
+            log_info("Auction not yet ended");
+            reentrancy_exit();
+            return 0;
+        }
 
         let mut highest_bytes = [0u8; 8];
         highest_bytes.copy_from_slice(&data[88..96]);
@@ -1180,7 +1275,11 @@ pub extern "C" fn settle_auction(
 
         let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
             Some(v) if v.len() >= 32 => v,
-            _ => { log_info("marketplace_fee_addr not configured — auction finalize rejected"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("marketplace_fee_addr not configured — auction finalize rejected");
+                reentrancy_exit();
+                return 0;
+            }
         };
         let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
@@ -1188,7 +1287,12 @@ pub extern "C" fn settle_auction(
         if highest_bid == 0 || (reserve_price > 0 && highest_bid < reserve_price) {
             // No winner — refund highest bidder if any
             if highest_bid > 0 && bidder_bytes != [0u8; 32] {
-                let _ = call_token_transfer(payment_token, marketplace_addr, Address(bidder_bytes), highest_bid);
+                let _ = call_token_transfer(
+                    payment_token,
+                    marketplace_addr,
+                    Address(bidder_bytes),
+                    highest_bid,
+                );
             }
             let mut updated = data;
             updated[144] = 0; // cancelled
@@ -1212,10 +1316,14 @@ pub extern "C" fn settle_auction(
             let mut rbps = [0u8; 2];
             rbps.copy_from_slice(&data[209..211]);
             u16::from_le_bytes(rbps) as u64
-        } else { 0 };
+        } else {
+            0
+        };
         let royalty_amount = if has_royalty && royalty_bps > 0 {
             ((price as u128) * (royalty_bps as u128) / 10000) as u64
-        } else { 0 };
+        } else {
+            0
+        };
 
         let seller_amount = price - fee_amount - royalty_amount;
 
@@ -1238,13 +1346,23 @@ pub extern "C" fn settle_auction(
         let _ = call_token_transfer(payment_token, marketplace_addr, seller, seller_amount);
         // Pay royalty; if royalty transfer fails, credit seller fallback so seller is not underpaid.
         if royalty_amount > 0 {
-            match call_token_transfer(payment_token, marketplace_addr, Address(royalty_recip_bytes), royalty_amount) {
+            match call_token_transfer(
+                payment_token,
+                marketplace_addr,
+                Address(royalty_recip_bytes),
+                royalty_amount,
+            ) {
                 Ok(true) => {
                     log_info("Auction royalty paid");
                 }
                 _ => {
                     log_info("Auction royalty transfer failed; paying fallback to seller");
-                    let _ = call_token_transfer(payment_token, marketplace_addr, seller, royalty_amount);
+                    let _ = call_token_transfer(
+                        payment_token,
+                        marketplace_addr,
+                        seller,
+                        royalty_amount,
+                    );
                 }
             }
         }
@@ -1255,9 +1373,13 @@ pub extern "C" fn settle_auction(
         storage_set(&key, &updated);
 
         // Track stats
-        let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let sc = storage_get(MM_SALE_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
-        let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        let sv = storage_get(MM_SALE_VOLUME_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0);
         storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
 
         log_info("Auction settled: NFT transferred to winner");
@@ -1278,15 +1400,23 @@ pub extern "C" fn cancel_auction(
         let nft_contract = parse_address(nft_contract_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != seller.0 { return 200; }
+        if real_caller.0 != seller.0 {
+            return 200;
+        }
 
         let key = create_auction_key(nft_contract, token_id);
         let data = match storage_get(&key) {
             Some(d) if d.len() >= AUCTION_SIZE && d[144] == 1 => d,
-            _ => { log_info("Active auction not found"); return 0; }
+            _ => {
+                log_info("Active auction not found");
+                return 0;
+            }
         };
 
-        if data[0..32] != seller.0 { log_info("Only seller can cancel"); return 0; }
+        if data[0..32] != seller.0 {
+            log_info("Only seller can cancel");
+            return 0;
+        }
 
         // Can only cancel if no bids placed
         let mut highest_bytes = [0u8; 8];
@@ -1307,11 +1437,7 @@ pub extern "C" fn cancel_auction(
 
 /// Get auction details
 #[no_mangle]
-pub extern "C" fn get_auction(
-    nft_contract_ptr: *const u8,
-    token_id: u64,
-    out_ptr: *mut u8,
-) -> u32 {
+pub extern "C" fn get_auction(nft_contract_ptr: *const u8, token_id: u64, out_ptr: *mut u8) -> u32 {
     unsafe {
         let nft_contract = parse_address(nft_contract_ptr);
         let key = create_auction_key(nft_contract, token_id);
@@ -1348,14 +1474,19 @@ pub extern "C" fn make_collection_offer(
     payment_token_ptr: *const u8,
     expiry: u64,
 ) -> u32 {
-    if price == 0 { log_info("Price must be > 0"); return 0; }
+    if price == 0 {
+        log_info("Price must be > 0");
+        return 0;
+    }
     unsafe {
         let offerer = parse_address(offerer_ptr);
         let collection = parse_address(collection_ptr);
         let payment_token = parse_address(payment_token_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != offerer.0 { return 200; }
+        if real_caller.0 != offerer.0 {
+            return 200;
+        }
 
         let mut key = b"col_offer:".to_vec();
         key.extend_from_slice(&collection.0);
@@ -1384,20 +1515,31 @@ pub extern "C" fn accept_collection_offer(
     token_id: u64,
     offerer_ptr: *const u8,
 ) -> u32 {
-    if is_mm_paused() { return 0; }
-    if !reentrancy_enter() { return 0; }
+    if is_mm_paused() {
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
         let offerer = parse_address(offerer_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != seller.0 { reentrancy_exit(); return 200; }
+        if real_caller.0 != seller.0 {
+            reentrancy_exit();
+            return 200;
+        }
 
         // Verify seller owns this specific NFT
         match call_nft_owner(nft_contract, token_id) {
             Ok(owner) if owner.0 == seller.0 => {}
-            _ => { log_info("Seller does not own NFT"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("Seller does not own NFT");
+                reentrancy_exit();
+                return 0;
+            }
         }
 
         // Load collection offer
@@ -1408,7 +1550,11 @@ pub extern "C" fn accept_collection_offer(
 
         let data = match storage_get(&key) {
             Some(d) if d.len() >= COLLECTION_OFFER_SIZE && d[104] == 1 => d,
-            _ => { log_info("Active collection offer not found"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("Active collection offer not found");
+                reentrancy_exit();
+                return 0;
+            }
         };
 
         // Check expiry
@@ -1434,7 +1580,11 @@ pub extern "C" fn accept_collection_offer(
 
         let fee_addr_bytes = match storage_get(b"marketplace_fee_addr") {
             Some(v) if v.len() >= 32 => v,
-            _ => { log_info("marketplace_fee_addr not configured — offer rejected"); reentrancy_exit(); return 0; }
+            _ => {
+                log_info("marketplace_fee_addr not configured — offer rejected");
+                reentrancy_exit();
+                return 0;
+            }
         };
         let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0u8; 32]));
 
@@ -1446,7 +1596,10 @@ pub extern "C" fn accept_collection_offer(
         // Escrow payment in marketplace first to prevent double-pull from offerer.
         match call_token_transfer(payment_token, offerer, marketplace_addr, price) {
             Ok(true) => {}
-            _ => { reentrancy_exit(); return 0; }
+            _ => {
+                reentrancy_exit();
+                return 0;
+            }
         }
 
         // Transfer NFT
@@ -1462,9 +1615,13 @@ pub extern "C" fn accept_collection_offer(
                 updated[104] = 0;
                 storage_set(&key, &updated);
 
-                let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                let sc = storage_get(MM_SALE_COUNT_KEY)
+                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                    .unwrap_or(0);
                 storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
-                let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                let sv = storage_get(MM_SALE_VOLUME_KEY)
+                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                    .unwrap_or(0);
                 storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
 
                 log_info("Collection offer accepted");
@@ -1491,7 +1648,9 @@ pub extern "C" fn cancel_collection_offer(
         let collection = parse_address(collection_ptr);
 
         let real_caller = get_caller();
-        if real_caller.0 != offerer.0 { return 200; }
+        if real_caller.0 != offerer.0 {
+            return 200;
+        }
 
         let mut key = b"col_offer:".to_vec();
         key.extend_from_slice(&collection.0);
@@ -1502,7 +1661,9 @@ pub extern "C" fn cancel_collection_offer(
             Some(d) if d.len() >= COLLECTION_OFFER_SIZE && d[104] == 1 => d,
             _ => return 0,
         };
-        if data[0..32] != offerer.0 { return 0; }
+        if data[0..32] != offerer.0 {
+            return 0;
+        }
 
         let mut updated = data;
         updated[104] = 0;
@@ -1529,16 +1690,25 @@ pub extern "C" fn make_offer_with_expiry(
     payment_token_ptr: *const u8,
     expiry: u64,
 ) -> u32 {
-    if price < MIN_OFFER_PRICE { log_info("Offer price below minimum floor"); return 0; }
+    if price < MIN_OFFER_PRICE {
+        log_info("Offer price below minimum floor");
+        return 0;
+    }
     let mut offerer = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
+    }
 
     let real_caller = get_caller();
-    if real_caller.0 != offerer { return 200; }
+    if real_caller.0 != offerer {
+        return 200;
+    }
 
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
     let mut payment_token = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32);
+    }
 
     let mut key = b"offer:".to_vec();
     key.extend_from_slice(&nft_contract.0);
@@ -1574,7 +1744,9 @@ pub extern "C" fn make_offer_with_expiry(
 #[no_mangle]
 pub extern "C" fn mm_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1594,7 +1766,9 @@ pub extern "C" fn mm_pause(caller_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn mm_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1614,8 +1788,8 @@ pub extern "C" fn mm_unpause(caller_ptr: *const u8) -> u32 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -1623,8 +1797,11 @@ mod tests {
 
     /// Create a listing directly in storage with the 147-byte layout (v3).
     fn create_test_listing(
-        seller: &[u8; 32], nft_contract: &Address,
-        token_id: u64, price: u64, payment_token: &Address,
+        seller: &[u8; 32],
+        nft_contract: &Address,
+        token_id: u64,
+        price: u64,
+        payment_token: &Address,
     ) {
         let key = create_listing_key(*nft_contract, token_id);
         let mut data = alloc::vec![0u8; LISTING_SIZE];
@@ -1634,7 +1811,7 @@ mod tests {
         data[72..80].copy_from_slice(&price.to_le_bytes());
         data[80..112].copy_from_slice(&payment_token.0);
         data[144] = 1; // active
-        // bytes 145..147 = royalty_bps (0 by default)
+                       // bytes 145..147 = royalty_bps (0 by default)
         moltchain_sdk::storage_set(&key, &data);
     }
 
@@ -1817,7 +1994,10 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(offerer);
         // Make offer (price >= MIN_OFFER_PRICE = 1_000_000)
-        assert_eq!(make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 1_000_000, pay.as_ptr()), 1);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 1_000_000, pay.as_ptr()),
+            1
+        );
 
         // Verify offer stored
         let mut key = b"offer:".to_vec();
@@ -1842,7 +2022,10 @@ mod tests {
         let nft = [4u8; 32];
         let pay = [5u8; 32];
         let offerer = [6u8; 32];
-        assert_eq!(make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 0, pay.as_ptr()), 0);
+        assert_eq!(
+            make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 0, pay.as_ptr()),
+            0
+        );
     }
 
     #[test]
@@ -1898,10 +2081,18 @@ mod tests {
 
         // Set rarity=3 (Epic), category=0 (Art), no traits
         let traits: [u8; 0] = [];
-        assert_eq!(set_nft_attributes(
-            nft_owner.as_ptr(), nft.0.as_ptr(), 1,
-            3, 0, traits.as_ptr(), 0
-        ), 1);
+        assert_eq!(
+            set_nft_attributes(
+                nft_owner.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                3,
+                0,
+                traits.as_ptr(),
+                0
+            ),
+            1
+        );
 
         // Read back
         let mut out = [0u8; 256];
@@ -1918,10 +2109,18 @@ mod tests {
         test_mock::set_caller(nft_owner);
         let nft = [4u8; 32];
         let traits: [u8; 0] = [];
-        assert_eq!(set_nft_attributes(
-            nft_owner.as_ptr(), nft.as_ptr(), 1,
-            5, 0, traits.as_ptr(), 0  // rarity 5 is invalid
-        ), 0);
+        assert_eq!(
+            set_nft_attributes(
+                nft_owner.as_ptr(),
+                nft.as_ptr(),
+                1,
+                5,
+                0,
+                traits.as_ptr(),
+                0 // rarity 5 is invalid
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1931,10 +2130,18 @@ mod tests {
         test_mock::set_caller(nft_owner);
         let nft = [4u8; 32];
         let traits: [u8; 0] = [];
-        assert_eq!(set_nft_attributes(
-            nft_owner.as_ptr(), nft.as_ptr(), 1,
-            0, 7, traits.as_ptr(), 0  // category 7 is invalid
-        ), 0);
+        assert_eq!(
+            set_nft_attributes(
+                nft_owner.as_ptr(),
+                nft.as_ptr(),
+                1,
+                0,
+                7,
+                traits.as_ptr(),
+                0 // category 7 is invalid
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1946,10 +2153,18 @@ mod tests {
         test_mock::set_cross_call_response(Some(real_owner.to_vec()));
         test_mock::set_caller(imposter);
         let traits: [u8; 0] = [];
-        assert_eq!(set_nft_attributes(
-            imposter.as_ptr(), nft.0.as_ptr(), 1,
-            1, 1, traits.as_ptr(), 0
-        ), 0);
+        assert_eq!(
+            set_nft_attributes(
+                imposter.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                1,
+                1,
+                traits.as_ptr(),
+                0
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1967,10 +2182,18 @@ mod tests {
 
         // Trait data: "color" = "red" — key_len(5), "color", val_len(3), "red"
         let trait_data: [u8; 12] = [5, b'c', b'o', b'l', b'o', b'r', 3, b'r', b'e', b'd', 0, 0];
-        assert_eq!(set_nft_attributes(
-            nft_owner.as_ptr(), nft.0.as_ptr(), 1,
-            4, 2, trait_data.as_ptr(), 10  // Legendary, Photography
-        ), 1);
+        assert_eq!(
+            set_nft_attributes(
+                nft_owner.as_ptr(),
+                nft.0.as_ptr(),
+                1,
+                4,
+                2,
+                trait_data.as_ptr(),
+                10 // Legendary, Photography
+            ),
+            1
+        );
 
         let mut out = [0u8; 256];
         let len = get_nft_attributes(nft.0.as_ptr(), 1, out.as_mut_ptr());
@@ -1995,7 +2218,10 @@ mod tests {
         create_test_listing(&seller, &nft, 1, 1000, &pay);
 
         test_mock::set_caller(seller);
-        assert_eq!(update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 2000), 1);
+        assert_eq!(
+            update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 2000),
+            1
+        );
 
         // Verify price updated
         let key = create_listing_key(nft, 1);
@@ -2012,7 +2238,10 @@ mod tests {
         let pay = Address([5u8; 32]);
         create_test_listing(&seller, &nft, 1, 1000, &pay);
         test_mock::set_caller(seller);
-        assert_eq!(update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 0), 0);
+        assert_eq!(
+            update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 0),
+            0
+        );
     }
 
     #[test]
@@ -2024,7 +2253,10 @@ mod tests {
         create_test_listing(&seller, &nft, 1, 1000, &pay);
         let other = [6u8; 32];
         test_mock::set_caller(other);
-        assert_eq!(update_listing_price(other.as_ptr(), nft.0.as_ptr(), 1, 2000), 0);
+        assert_eq!(
+            update_listing_price(other.as_ptr(), nft.0.as_ptr(), 1, 2000),
+            0
+        );
     }
 
     #[test]
@@ -2040,7 +2272,10 @@ mod tests {
         data[144] = 0;
         moltchain_sdk::storage_set(&key, &data);
         test_mock::set_caller(seller);
-        assert_eq!(update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 2000), 0);
+        assert_eq!(
+            update_listing_price(seller.as_ptr(), nft.0.as_ptr(), 1, 2000),
+            0
+        );
     }
 
     #[test]

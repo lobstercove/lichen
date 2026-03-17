@@ -14,8 +14,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    Address, call_token_transfer, get_caller,
+    bytes_to_u64, call_token_transfer, get_caller, get_timestamp, log_info, storage_get,
+    storage_set, u64_to_bytes, Address,
 };
 
 // ============================================================================
@@ -26,7 +26,9 @@ const MOLTYID_REENTRANCY_KEY: &[u8] = b"mid_reentrancy";
 
 fn reentrancy_enter() -> bool {
     if let Some(v) = storage_get(MOLTYID_REENTRANCY_KEY) {
-        if !v.is_empty() && v[0] == 1 { return false; }
+        if !v.is_empty() && v[0] == 1 {
+            return false;
+        }
     }
     storage_set(MOLTYID_REENTRANCY_KEY, &[1u8]);
     true
@@ -84,10 +86,14 @@ const VOUCH_COOLDOWN_MS: u64 = 3_600_000; // 1 hour
 const REGISTER_COOLDOWN_MS: u64 = 60_000; // 1 minute
 
 fn is_mid_paused() -> bool {
-    storage_get(MID_PAUSE_KEY).map(|d| d.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(MID_PAUSE_KEY)
+        .map(|d| d.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 fn is_mid_admin(caller: &[u8]) -> bool {
-    storage_get(b"mid_admin").map(|d| d.as_slice() == caller).unwrap_or(false)
+    storage_get(b"mid_admin")
+        .map(|d| d.as_slice() == caller)
+        .unwrap_or(false)
 }
 /// Key for tracking last vouch timestamp per voucher
 fn vouch_cooldown_key(voucher: &[u8]) -> Vec<u8> {
@@ -498,9 +504,7 @@ fn apply_reputation_decay(current_rep: u64, last_updated_ms: u64, now_ms: u64) -
 
     let mut decayed = current_rep;
     for _ in 0..periods {
-        decayed = decayed
-            .saturating_mul(10_000 - REPUTATION_DECAY_BPS)
-            / 10_000;
+        decayed = decayed.saturating_mul(10_000 - REPUTATION_DECAY_BPS) / 10_000;
         if decayed <= MIN_REPUTATION {
             return (MIN_REPUTATION, periods);
         }
@@ -574,21 +578,50 @@ fn validate_molt_name(name: &[u8]) -> bool {
 fn is_reserved_name(name: &[u8]) -> bool {
     const RESERVED: &[&[u8]] = &[
         // System / admin
-        b"admin", b"system", b"validator", b"root", b"node", b"test",
+        b"admin",
+        b"system",
+        b"validator",
+        b"root",
+        b"node",
+        b"test",
         // Chain identity
-        b"moltchain", b"molt", b"moltyid", b"treasury",
+        b"moltchain",
+        b"molt",
+        b"moltyid",
+        b"treasury",
         // Core token + wrapped
-        b"moltcoin", b"musd", b"wsol", b"weth",
+        b"moltcoin",
+        b"musd",
+        b"wsol",
+        b"weth",
         // DEX
-        b"dex", b"amm", b"router", b"margin", b"rewards", b"governance", b"analytics",
+        b"dex",
+        b"amm",
+        b"router",
+        b"margin",
+        b"rewards",
+        b"governance",
+        b"analytics",
         // DeFi protocols
-        b"moltswap", b"bridge", b"oracle", b"dao", b"lending",
+        b"moltswap",
+        b"bridge",
+        b"oracle",
+        b"dao",
+        b"lending",
         // Marketplaces / NFT
-        b"marketplace", b"auction", b"moltpunks",
+        b"marketplace",
+        b"auction",
+        b"moltpunks",
         // Infrastructure
-        b"clawpay", b"clawpump", b"clawvault", b"bountyboard", b"compute", b"reefstake",
+        b"clawpay",
+        b"clawpump",
+        b"clawvault",
+        b"bountyboard",
+        b"compute",
+        b"reefstake",
         // Prediction Markets
-        b"predict", b"prediction",
+        b"predict",
+        b"prediction",
     ];
     for &r in RESERVED {
         if name == r {
@@ -618,11 +651,15 @@ fn name_registration_cost(name_len: usize) -> u64 {
 ///   - admin_ptr: pointer to 32-byte admin address
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     log_info("🪪 Initializing MoltyID program...");
 
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -667,7 +704,9 @@ pub extern "C" fn register_identity(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     log_info("🪪 Registering new MoltyID identity...");
 
     if is_mid_paused() {
@@ -677,7 +716,9 @@ pub extern "C" fn register_identity(
     }
 
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -695,7 +736,9 @@ pub extern "C" fn register_identity(
     }
 
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     // Validate agent type
     if !is_valid_agent_type(agent_type) {
@@ -785,7 +828,9 @@ pub extern "C" fn register_identity(
 #[no_mangle]
 pub extern "C" fn get_identity(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
     let id_key = identity_key(&pubkey);
 
     match storage_get(&id_key) {
@@ -831,11 +876,17 @@ pub extern "C" fn update_reputation_typed(
     contribution_type: u8,
     count: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -891,9 +942,17 @@ pub extern "C" fn update_reputation_typed(
     let delta = weight.saturating_mul(count);
     let new_rep = if is_positive {
         let sum = current_rep.saturating_add(delta);
-        if sum > MAX_REPUTATION { MAX_REPUTATION } else { sum }
+        if sum > MAX_REPUTATION {
+            MAX_REPUTATION
+        } else {
+            sum
+        }
     } else {
-        if delta > current_rep { MIN_REPUTATION } else { current_rep - delta }
+        if delta > current_rep {
+            MIN_REPUTATION
+        } else {
+            current_rep - delta
+        }
     };
 
     let rep_bytes = u64_to_bytes(new_rep);
@@ -926,9 +985,14 @@ pub extern "C" fn update_reputation_typed(
     // Check for graduation and achievements
     check_achievements(&target, new_rep);
 
-    log_info(&alloc::format!("Reputation updated: {} → {} (type: {}, Δ: {}{})",
-        current_rep, new_rep, contribution_type,
-        if is_positive { "+" } else { "-" }, delta));
+    log_info(&alloc::format!(
+        "Reputation updated: {} → {} (type: {}, Δ: {}{})",
+        current_rep,
+        new_rep,
+        contribution_type,
+        if is_positive { "+" } else { "-" },
+        delta
+    ));
     reentrancy_exit();
     0
 }
@@ -948,11 +1012,17 @@ pub extern "C" fn update_reputation(
     delta: u64,
     is_increase: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -993,7 +1063,11 @@ pub extern "C" fn update_reputation(
     // Apply delta with bounds
     let new_rep = if is_increase == 1 {
         let sum = current_rep.saturating_add(delta);
-        if sum > MAX_REPUTATION { MAX_REPUTATION } else { sum }
+        if sum > MAX_REPUTATION {
+            MAX_REPUTATION
+        } else {
+            sum
+        }
     } else {
         if delta > current_rep {
             MIN_REPUTATION
@@ -1042,9 +1116,13 @@ pub extern "C" fn add_skill(
     skill_name_len: u32,
     proficiency: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1068,7 +1146,9 @@ pub extern "C" fn add_skill(
     }
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
-    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len);
+    }
 
     // Load identity
     let id_key = identity_key(&caller);
@@ -1122,7 +1202,12 @@ pub extern "C" fn add_skill(
     storage_set(&reputation_key(&caller), &u64_to_bytes(new_rep));
 
     // Check achievements based on new rep and skill count
-    check_achievements_full(&caller, new_rep, record[123], vouch_count_from_record(&record));
+    check_achievements_full(
+        &caller,
+        new_rep,
+        record[123],
+        vouch_count_from_record(&record),
+    );
 
     log_info("Skill added");
     reentrancy_exit();
@@ -1139,11 +1224,17 @@ pub extern "C" fn add_skill_as(
     skill_name_len: u32,
     proficiency: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1174,7 +1265,9 @@ pub extern "C" fn add_skill_as(
     }
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
-    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len);
+    }
 
     // Load owner's identity
     let id_key = identity_key(&owner);
@@ -1229,7 +1322,9 @@ pub extern "C" fn add_skill_as(
 #[no_mangle]
 pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
 
     let id_key = identity_key(&pubkey);
     let record = match storage_get(&id_key) {
@@ -1267,11 +1362,17 @@ pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
 ///   - vouchee_ptr: 32-byte vouchee address
 #[no_mangle]
 pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut voucher = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(voucher_ptr, voucher.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(voucher_ptr, voucher.as_mut_ptr(), 32);
+    }
     let mut vouchee = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(vouchee_ptr, vouchee.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(vouchee_ptr, vouchee.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1315,8 +1416,10 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     };
 
     let now = get_timestamp();
-    let voucher_rep = apply_decay_to_identity_record(&voucher, &voucher_id_key, &mut voucher_record, now);
-    let vouchee_rep = apply_decay_to_identity_record(&vouchee, &vouchee_id_key, &mut vouchee_record, now);
+    let voucher_rep =
+        apply_decay_to_identity_record(&voucher, &voucher_id_key, &mut voucher_record, now);
+    let vouchee_rep =
+        apply_decay_to_identity_record(&vouchee, &vouchee_id_key, &mut vouchee_record, now);
 
     // Check voucher has enough reputation
     if voucher_rep < VOUCH_COST {
@@ -1402,7 +1505,11 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     // Add reputation to vouchee
     let new_vouchee_rep = {
         let sum = vouchee_rep.saturating_add(VOUCH_REWARD);
-        if sum > MAX_REPUTATION { MAX_REPUTATION } else { sum }
+        if sum > MAX_REPUTATION {
+            MAX_REPUTATION
+        } else {
+            sum
+        }
     };
     let vouchee_rep_bytes = u64_to_bytes(new_vouchee_rep);
 
@@ -1419,8 +1526,17 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
 
     // Check achievements for vouchee (rep milestones + vouch count)
     let vouchee_vouch_new = vouchee_vouch_count + 1;
-    let vouchee_skill_count = if vouchee_record.len() >= 124 { vouchee_record[123] } else { 0 };
-    check_achievements_full(&vouchee, new_vouchee_rep, vouchee_skill_count, vouchee_vouch_new as u16);
+    let vouchee_skill_count = if vouchee_record.len() >= 124 {
+        vouchee_record[123]
+    } else {
+        0
+    };
+    check_achievements_full(
+        &vouchee,
+        new_vouchee_rep,
+        vouchee_skill_count,
+        vouchee_vouch_new as u16,
+    );
 
     log_info("Vouch recorded successfully");
     reentrancy_exit();
@@ -1442,24 +1558,38 @@ pub extern "C" fn set_recovery_guardians(
     guardian4_ptr: *const u8,
     guardian5_ptr: *const u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut guardian1 = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian1_ptr, guardian1.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian1_ptr, guardian1.as_mut_ptr(), 32);
+    }
     let mut guardian2 = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian2_ptr, guardian2.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian2_ptr, guardian2.as_mut_ptr(), 32);
+    }
     let mut guardian3 = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian3_ptr, guardian3.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian3_ptr, guardian3.as_mut_ptr(), 32);
+    }
     let mut guardian4 = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian4_ptr, guardian4.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian4_ptr, guardian4.as_mut_ptr(), 32);
+    }
     let mut guardian5 = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian5_ptr, guardian5.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian5_ptr, guardian5.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1475,7 +1605,8 @@ pub extern "C" fn set_recovery_guardians(
         return 1;
     }
 
-    let guardians: [[u8; 32]; RECOVERY_GUARDIAN_COUNT] = [guardian1, guardian2, guardian3, guardian4, guardian5];
+    let guardians: [[u8; 32]; RECOVERY_GUARDIAN_COUNT] =
+        [guardian1, guardian2, guardian3, guardian4, guardian5];
 
     for i in 0..RECOVERY_GUARDIAN_COUNT {
         if guardians[i] == caller {
@@ -1526,18 +1657,26 @@ pub extern "C" fn approve_recovery(
     target_ptr: *const u8,
     new_owner_ptr: *const u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut guardian = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(guardian_ptr, guardian.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(guardian_ptr, guardian.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
     let mut new_owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1596,18 +1735,26 @@ pub extern "C" fn execute_recovery(
     target_ptr: *const u8,
     new_owner_ptr: *const u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
     let mut new_owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1753,7 +1900,9 @@ pub extern "C" fn execute_recovery(
 #[no_mangle]
 pub extern "C" fn get_reputation(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
 
     let id_key = identity_key(&pubkey);
     if let Some(mut record) = storage_get(&id_key) {
@@ -1785,15 +1934,18 @@ pub extern "C" fn get_reputation(pubkey_ptr: *const u8) -> u32 {
 ///   - caller_ptr: 32-byte caller address
 ///   - target_ptr: 32-byte target identity to deactivate
 #[no_mangle]
-pub extern "C" fn deactivate_identity(
-    caller_ptr: *const u8,
-    target_ptr: *const u8,
-) -> u32 {
-    if !reentrancy_enter() { return 100; }
+pub extern "C" fn deactivate_identity(caller_ptr: *const u8, target_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1868,13 +2020,14 @@ pub extern "C" fn get_identity_count() -> u32 {
 ///   - caller_ptr: 32-byte caller address (must be owner)
 ///   - new_agent_type: new agent type value
 #[no_mangle]
-pub extern "C" fn update_agent_type(
-    caller_ptr: *const u8,
-    new_agent_type: u8,
-) -> u32 {
-    if !reentrancy_enter() { return 100; }
+pub extern "C" fn update_agent_type(caller_ptr: *const u8, new_agent_type: u8) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1929,7 +2082,9 @@ pub extern "C" fn update_agent_type(
 #[no_mangle]
 pub extern "C" fn get_vouches(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
 
     let id_key = identity_key(&pubkey);
     let record = match storage_get(&id_key) {
@@ -1967,19 +2122,19 @@ pub extern "C" fn get_vouches(pubkey_ptr: *const u8) -> u32 {
 // ============================================================================
 
 /// Achievement IDs (per whitepaper):
-const ACHIEVEMENT_FIRST_TX: u8 = 1;        // First successful transaction
-const ACHIEVEMENT_VOTER: u8 = 2;           // Participated in governance
-const ACHIEVEMENT_BUILDER: u8 = 3;         // Deployed a program
-const ACHIEVEMENT_TRUSTED: u8 = 4;         // Reached reputation 500
-const ACHIEVEMENT_VETERAN: u8 = 5;         // Reached reputation 1000
-const ACHIEVEMENT_LEGEND: u8 = 6;          // Reached reputation 5000
-const ACHIEVEMENT_ENDORSED: u8 = 7;        // Received 10+ vouches
-const ACHIEVEMENT_GRADUATION: u8 = 8;      // Graduated (bootstrap debt repaid)
-const ACHIEVEMENT_NAME_REGISTRAR: u8 = 9;  // Registered a .molt name
-const ACHIEVEMENT_SKILL_MASTER: u8 = 10;   // Added 5+ skills
-const ACHIEVEMENT_SOCIAL: u8 = 11;         // Received 3+ vouches
-const ACHIEVEMENT_FIRST_NAME: u8 = 12;     // Registered first .molt name
-// DEX (13-21) - awarded by processor
+const ACHIEVEMENT_FIRST_TX: u8 = 1; // First successful transaction
+const ACHIEVEMENT_VOTER: u8 = 2; // Participated in governance
+const ACHIEVEMENT_BUILDER: u8 = 3; // Deployed a program
+const ACHIEVEMENT_TRUSTED: u8 = 4; // Reached reputation 500
+const ACHIEVEMENT_VETERAN: u8 = 5; // Reached reputation 1000
+const ACHIEVEMENT_LEGEND: u8 = 6; // Reached reputation 5000
+const ACHIEVEMENT_ENDORSED: u8 = 7; // Received 10+ vouches
+const ACHIEVEMENT_GRADUATION: u8 = 8; // Graduated (bootstrap debt repaid)
+const ACHIEVEMENT_NAME_REGISTRAR: u8 = 9; // Registered a .molt name
+const ACHIEVEMENT_SKILL_MASTER: u8 = 10; // Added 5+ skills
+const ACHIEVEMENT_SOCIAL: u8 = 11; // Received 3+ vouches
+const ACHIEVEMENT_FIRST_NAME: u8 = 12; // Registered first .molt name
+                                       // DEX (13-21) - awarded by processor
 const _ACHIEVEMENT_FIRST_TRADE: u8 = 13;
 const _ACHIEVEMENT_LP_PROVIDER: u8 = 14;
 const _ACHIEVEMENT_LP_WITHDRAWAL: u8 = 15;
@@ -2079,13 +2234,28 @@ fn check_achievements(target: &[u8], reputation: u64) {
 
     // Check reputation milestones
     if reputation >= 500 {
-        award_achievement(target, &hex, ACHIEVEMENT_TRUSTED, "Trusted Agent (rep 500+)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_TRUSTED,
+            "Trusted Agent (rep 500+)",
+        );
     }
     if reputation >= 1000 {
-        award_achievement(target, &hex, ACHIEVEMENT_VETERAN, "Veteran Agent (rep 1000+)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_VETERAN,
+            "Veteran Agent (rep 1000+)",
+        );
     }
     if reputation >= 5000 {
-        award_achievement(target, &hex, ACHIEVEMENT_LEGEND, "Legendary Agent (rep 5000+)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_LEGEND,
+            "Legendary Agent (rep 5000+)",
+        );
     }
 }
 
@@ -2096,15 +2266,30 @@ fn check_achievements_full(target: &[u8], reputation: u64, skill_count: u8, vouc
 
     // Vouch count milestones
     if vouch_count >= 3 {
-        award_achievement(target, &hex, ACHIEVEMENT_SOCIAL, "Social Butterfly (3+ vouches)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_SOCIAL,
+            "Social Butterfly (3+ vouches)",
+        );
     }
     if vouch_count >= 10 {
-        award_achievement(target, &hex, ACHIEVEMENT_ENDORSED, "Well Endorsed (10+ vouches)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_ENDORSED,
+            "Well Endorsed (10+ vouches)",
+        );
     }
 
     // Skill count milestones
     if skill_count >= 5 {
-        award_achievement(target, &hex, ACHIEVEMENT_SKILL_MASTER, "Skill Master (5+ skills)");
+        award_achievement(
+            target,
+            &hex,
+            ACHIEVEMENT_SKILL_MASTER,
+            "Skill Master (5+ skills)",
+        );
     }
 }
 
@@ -2154,11 +2339,17 @@ pub extern "C" fn award_contribution_achievement(
     target_ptr: *const u8,
     achievement_id: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut target = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -2169,7 +2360,10 @@ pub extern "C" fn award_contribution_achievement(
 
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
-        None => { reentrancy_exit(); return 1; },
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
     };
     if caller[..] != admin[..] {
         log_info("Unauthorized");
@@ -2195,7 +2389,9 @@ pub extern "C" fn award_contribution_achievement(
 #[no_mangle]
 pub extern "C" fn get_achievements(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
     let hex = hex_encode_addr(&pubkey);
 
     let mut count_key = Vec::with_capacity(9 + 64);
@@ -2246,7 +2442,9 @@ fn skill_name_hash(skill_name: &[u8]) -> [u8; 16] {
 fn skill_name_hash_legacy(skill_name: &[u8]) -> [u8; 16] {
     let mut hash = [0u8; 16];
     for (i, &b) in skill_name.iter().enumerate() {
-        if i >= 16 { break; }
+        if i >= 16 {
+            break;
+        }
         hash[i] = b;
     }
     hash
@@ -2342,13 +2540,19 @@ pub extern "C" fn attest_skill(
     skill_name_len: u32,
     attestation_level: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     log_info("Attesting skill...");
 
     let mut attester = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32);
+    }
     let mut identity = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -2379,7 +2583,9 @@ pub extern "C" fn attest_skill(
     }
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
-    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len);
+    }
 
     // Both must have identities
     let id_key = identity_key(&identity);
@@ -2418,9 +2624,7 @@ pub extern "C" fn attest_skill(
     // Also migrate any legacy count forward on first write under new hash.
     let ck = attestation_count_key(&identity, &s_hash);
     let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
-    let mut count = storage_get(&ck)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let mut count = storage_get(&ck).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     // If this is the first attestation under the new hash and there's a legacy
     // count, absorb it so future reads see the combined total.
     if count == 0 {
@@ -2457,7 +2661,9 @@ pub extern "C" fn get_attestations(
     skill_name_len: u32,
 ) -> u32 {
     let mut identity = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32);
+    }
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
@@ -2466,13 +2672,13 @@ pub extern "C" fn get_attestations(
     }
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
-    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len);
+    }
     let s_hash = skill_name_hash(&skill_name);
     let ck = attestation_count_key(&identity, &s_hash);
 
-    let mut count = storage_get(&ck)
-        .map(|d| bytes_to_u64(&d))
-        .unwrap_or(0);
+    let mut count = storage_get(&ck).map(|d| bytes_to_u64(&d)).unwrap_or(0);
 
     // Dual-lookup: if no count under new FNV hash, check legacy truncated hash
     if count == 0 {
@@ -2507,13 +2713,19 @@ pub extern "C" fn revoke_attestation(
     skill_name_ptr: *const u8,
     skill_name_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     log_info("Revoking attestation...");
 
     let mut attester = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32);
+    }
     let mut identity = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify attester matches transaction signer
     let real_caller = get_caller();
@@ -2532,7 +2744,9 @@ pub extern "C" fn revoke_attestation(
     }
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
-    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len);
+    }
 
     // Dual-lookup: try new FNV hash first, then legacy truncated hash
     let s_hash = skill_name_hash(&skill_name);
@@ -2589,11 +2803,15 @@ pub extern "C" fn register_name(
     name_len: u32,
     duration_years: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     log_info("Registering .molt name...");
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -2605,7 +2823,9 @@ pub extern "C" fn register_name(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     // Must have a MoltyID
     let id_key = identity_key(&caller);
@@ -2744,7 +2964,9 @@ pub extern "C" fn register_name(
 pub extern "C" fn resolve_name(name_ptr: *const u8, name_len: u32) -> u32 {
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     let nk = name_key(&name);
     match storage_get(&nk) {
@@ -2777,7 +2999,9 @@ pub extern "C" fn resolve_name(name_ptr: *const u8, name_len: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn reverse_resolve(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     let rev_key = name_reverse_key(&addr);
     match storage_get(&rev_key) {
@@ -2817,14 +3041,18 @@ pub extern "C" fn create_name_auction(
     reserve_bid: u64,
     end_slot: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -2842,7 +3070,9 @@ pub extern "C" fn create_name_auction(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     if !validate_molt_name(&name) {
         log_info("Invalid .molt name for auction");
@@ -2922,7 +3152,9 @@ pub extern "C" fn bid_name_auction(
     name_len: u32,
     bid_amount: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     if is_mid_paused() {
         reentrancy_exit();
@@ -2930,7 +3162,9 @@ pub extern "C" fn bid_name_auction(
     }
 
     let mut bidder = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify bidder matches transaction signer
     let real_caller = get_caller();
@@ -2942,7 +3176,9 @@ pub extern "C" fn bid_name_auction(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     if storage_get(&identity_key(&bidder)).is_none() {
         log_info("Bidder must have a MoltyID");
@@ -3018,12 +3254,7 @@ pub extern "C" fn bid_name_auction(
                 return 31;
             }
         };
-        match call_token_transfer(
-            token_addr,
-            self_addr,
-            Address(prev_bidder),
-            prev_bid_amount,
-        ) {
+        match call_token_transfer(token_addr, self_addr, Address(prev_bidder), prev_bid_amount) {
             Err(_) => {
                 log_info("bid_name_auction: refund transfer failed");
                 reentrancy_exit();
@@ -3048,12 +3279,18 @@ pub extern "C" fn finalize_name_auction(
     name_len: u32,
     duration_years: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut _caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, _caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, _caller.as_mut_ptr(), 32);
+    }
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     if duration_years == 0 || duration_years > 10 {
         log_info("Duration must be 1-10 years");
@@ -3137,7 +3374,9 @@ pub extern "C" fn finalize_name_auction(
     storage_set(&winner_rev, &name);
 
     // Increment name count
-    let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    let count = storage_get(b"molt_name_count")
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(0);
     storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
 
     auction[0] = 0; // inactive
@@ -3153,7 +3392,9 @@ pub extern "C" fn finalize_name_auction(
 pub extern "C" fn get_name_auction(name_ptr: *const u8, name_len: u32) -> u32 {
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
     let ak = name_auction_key(&name);
     match storage_get(&ak) {
         Some(data) if data.len() >= 65 => {
@@ -3186,9 +3427,13 @@ pub extern "C" fn transfer_name(
     name_len: u32,
     new_owner_ptr: *const u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3200,9 +3445,13 @@ pub extern "C" fn transfer_name(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
     let mut new_owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32);
+    }
 
     // Look up the name record
     let nk = name_key(&name);
@@ -3286,9 +3535,13 @@ pub extern "C" fn renew_name(
     name_len: u32,
     additional_years: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3300,7 +3553,9 @@ pub extern "C" fn renew_name(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     if additional_years == 0 || additional_years > 10 {
         log_info("Additional years must be 1-10");
@@ -3337,7 +3592,11 @@ pub extern "C" fn renew_name(
     // Extend expiry from current expiry (or from now if expired)
     let current_expiry = bytes_to_u64(&record[40..48]);
     let current_slot = moltchain_sdk::get_slot();
-    let base = if current_slot > current_expiry { current_slot } else { current_expiry };
+    let base = if current_slot > current_expiry {
+        current_slot
+    } else {
+        current_expiry
+    };
     let new_expiry = base + (SLOTS_PER_YEAR * additional_years as u64);
 
     record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
@@ -3359,14 +3618,14 @@ pub extern "C" fn renew_name(
 ///   - name_ptr: pointer to name bytes
 ///   - name_len: length of name
 #[no_mangle]
-pub extern "C" fn release_name(
-    caller_ptr: *const u8,
-    name_ptr: *const u8,
-    name_len: u32,
-) -> u32 {
-    if !reentrancy_enter() { return 100; }
+pub extern "C" fn release_name(caller_ptr: *const u8, name_ptr: *const u8, name_len: u32) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3378,7 +3637,9 @@ pub extern "C" fn release_name(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     let nk = name_key(&name);
     let record = match storage_get(&nk) {
@@ -3426,11 +3687,17 @@ pub extern "C" fn transfer_name_as(
     name_len: u32,
     new_owner_ptr: *const u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -3442,9 +3709,13 @@ pub extern "C" fn transfer_name_as(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
     let mut new_owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32);
+    }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
@@ -3519,11 +3790,17 @@ pub extern "C" fn renew_name_as(
     name_len: u32,
     additional_years: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -3535,7 +3812,9 @@ pub extern "C" fn renew_name_as(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     if additional_years == 0 || additional_years > 10 {
         log_info("Additional years must be 1-10");
@@ -3576,7 +3855,11 @@ pub extern "C" fn renew_name_as(
 
     let current_expiry = bytes_to_u64(&record[40..48]);
     let current_slot = moltchain_sdk::get_slot();
-    let base = if current_slot > current_expiry { current_slot } else { current_expiry };
+    let base = if current_slot > current_expiry {
+        current_slot
+    } else {
+        current_expiry
+    };
     let new_expiry = base + (SLOTS_PER_YEAR * additional_years as u64);
 
     record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
@@ -3595,11 +3878,17 @@ pub extern "C" fn release_name_as(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -3611,7 +3900,9 @@ pub extern "C" fn release_name_as(
 
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
-    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len);
+    }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
@@ -3640,7 +3931,9 @@ pub extern "C" fn release_name_as(
     let rev_key = name_reverse_key(&owner);
     moltchain_sdk::storage::remove(&rev_key);
 
-    let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    let count = storage_get(b"molt_name_count")
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(0);
     if count > 0 {
         storage_set(b"molt_name_count", &u64_to_bytes(count - 1));
     }
@@ -3663,9 +3956,13 @@ pub extern "C" fn release_name_as(
 ///   - url_len: length of URL
 #[no_mangle]
 pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_len: u32) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer (same as register_identity)
     let real_caller = get_caller();
@@ -3684,7 +3981,9 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
     }
 
     let mut url = alloc::vec![0u8; url_len];
-    unsafe { core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len);
+    }
 
     // Must have identity
     let idk = identity_key(&caller);
@@ -3709,7 +4008,9 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
 #[no_mangle]
 pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     let ek = endpoint_key(&addr);
     match storage_get(&ek) {
@@ -3732,9 +4033,13 @@ pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
 ///   - json_len: length of metadata
 #[no_mangle]
 pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_len: u32) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3753,7 +4058,9 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
     }
 
     let mut json = alloc::vec![0u8; json_len];
-    unsafe { core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len);
+    }
 
     // Must have identity
     let idk = identity_key(&caller);
@@ -3778,7 +4085,9 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
 #[no_mangle]
 pub extern "C" fn get_metadata(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     let mk = metadata_key(&addr);
     match storage_get(&mk) {
@@ -3800,9 +4109,13 @@ pub extern "C" fn get_metadata(addr_ptr: *const u8) -> u32 {
 ///   - status: availability status (0-2)
 #[no_mangle]
 pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3841,7 +4154,9 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     let ak = availability_key(&addr);
     match storage_get(&ak) {
@@ -3864,9 +4179,13 @@ pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
 ///   - molt_per_unit: rate in MOLT
 #[no_mangle]
 pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -3899,7 +4218,9 @@ pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn get_rate(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     let rk = rate_key(&addr);
     match storage_get(&rk) {
@@ -3927,16 +4248,22 @@ pub extern "C" fn set_delegate(
     permissions: u8,
     expires_at_ms: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify owner matches transaction signer
     let real_caller = get_caller();
@@ -4005,16 +4332,22 @@ pub extern "C" fn set_delegate(
 /// Revoke delegation for a delegate.
 #[no_mangle]
 pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     if is_mid_paused() {
         reentrancy_exit();
         return 20;
     }
 
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify owner matches transaction signer
     let real_caller = get_caller();
@@ -4042,9 +4375,13 @@ pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8)
 #[no_mangle]
 pub extern "C" fn get_delegate(owner_ptr: *const u8, delegate_ptr: *const u8) -> u32 {
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
 
     let dk = delegation_key(&owner, &delegate);
     match storage_get(&dk) {
@@ -4067,11 +4404,17 @@ pub extern "C" fn set_endpoint_as(
     url_ptr: *const u8,
     url_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -4104,7 +4447,9 @@ pub extern "C" fn set_endpoint_as(
     }
 
     let mut url = alloc::vec![0u8; url_len];
-    unsafe { core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len);
+    }
     storage_set(&endpoint_key(&owner), &url);
     log_info("Delegated endpoint set");
     reentrancy_exit();
@@ -4119,11 +4464,17 @@ pub extern "C" fn set_metadata_as(
     json_ptr: *const u8,
     json_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -4156,7 +4507,9 @@ pub extern "C" fn set_metadata_as(
     }
 
     let mut json = alloc::vec![0u8; json_len];
-    unsafe { core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len);
+    }
     storage_set(&metadata_key(&owner), &json);
     log_info("Delegated metadata set");
     reentrancy_exit();
@@ -4170,11 +4523,17 @@ pub extern "C" fn set_availability_as(
     owner_ptr: *const u8,
     status: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -4217,11 +4576,17 @@ pub extern "C" fn set_rate_as(
     owner_ptr: *const u8,
     molt_per_unit: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -4258,11 +4623,17 @@ pub extern "C" fn update_agent_type_as(
     owner_ptr: *const u8,
     new_agent_type: u8,
 ) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut delegate = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32);
+    }
     let mut owner = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify delegate matches transaction signer
     let real_caller = get_caller();
@@ -4325,7 +4696,9 @@ pub extern "C" fn update_agent_type_as(
 #[no_mangle]
 pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32);
+    }
 
     // Must have identity
     let idk = identity_key(&addr);
@@ -4432,7 +4805,9 @@ pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
     let mut pubkey = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32);
+    }
     let id_key = identity_key(&pubkey);
     let reputation = match storage_get(&id_key) {
         Some(mut record) => {
@@ -4479,9 +4854,13 @@ pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -4491,8 +4870,14 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
-    if is_mid_paused() { reentrancy_exit(); return 2; }
+    if !is_mid_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if is_mid_paused() {
+        reentrancy_exit();
+        return 2;
+    }
     storage_set(MID_PAUSE_KEY, &[1]);
     log_info("MoltyID paused");
     reentrancy_exit();
@@ -4503,9 +4888,13 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -4515,8 +4904,14 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
         return 200;
     }
 
-    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
-    if !is_mid_paused() { reentrancy_exit(); return 2; }
+    if !is_mid_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !is_mid_paused() {
+        reentrancy_exit();
+        return 2;
+    }
     storage_set(MID_PAUSE_KEY, &[0]);
     log_info("MoltyID unpaused");
     reentrancy_exit();
@@ -4527,9 +4922,13 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin
 #[no_mangle]
 pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -4539,9 +4938,14 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
         return 200;
     }
 
-    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
+    if !is_mid_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
     let mut new_admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32);
+    }
     storage_set(b"mid_admin", &new_admin);
     log_info("Admin key transferred");
     reentrancy_exit();
@@ -4552,18 +4956,27 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
 /// Returns: 0 success, 1 not admin, 2 zero address rejected
 #[no_mangle]
 pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_mid_token_address: caller mismatch");
         reentrancy_exit();
         return 200;
     }
-    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
+    if !is_mid_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
     let mut token_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32);
+    }
     if token_addr.iter().all(|&b| b == 0) {
         log_info("set_mid_token_address: zero address rejected");
         reentrancy_exit();
@@ -4579,18 +4992,27 @@ pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *
 /// Returns: 0 success, 1 not admin, 2 zero address rejected
 #[no_mangle]
 pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_mid_self_address: caller mismatch");
         reentrancy_exit();
         return 200;
     }
-    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
+    if !is_mid_admin(&caller) {
+        reentrancy_exit();
+        return 1;
+    }
     let mut self_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32);
+    }
     if self_addr.iter().all(|&b| b == 0) {
         log_info("set_mid_self_address: zero address rejected");
         reentrancy_exit();
@@ -4622,7 +5044,9 @@ pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *co
 /// Args buffer layout (read via get_args): [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
 #[no_mangle]
 pub extern "C" fn admin_register_reserved_name() -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     // Read args from context buffer (avoids WASM ABI pointer-mapping issues)
     let args = moltchain_sdk::contract::args();
 
@@ -4703,11 +5127,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
 
         // Add 3 default system skills: Infrastructure, Consensus, Security
         // Skill format: [name_len(1), name(up to 32), proficiency(1), timestamp(8)]
-        let genesis_skills: &[&[u8]] = &[
-            b"Infrastructure",
-            b"Consensus",
-            b"Security",
-        ];
+        let genesis_skills: &[&[u8]] = &[b"Infrastructure", b"Consensus", b"Security"];
         let mut skill_idx: u8 = 0;
         for skill_name in genesis_skills {
             let mut skill_data = Vec::with_capacity(1 + skill_name.len() + 1 + 8);
@@ -4765,8 +5185,8 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -4781,7 +5201,10 @@ mod tests {
         assert_eq!(result, 0); // success
 
         assert_eq!(test_mock::get_storage(b"mid_admin"), Some(admin.to_vec()));
-        assert_eq!(test_mock::get_storage(b"mid_initialized"), Some([1u8].to_vec()));
+        assert_eq!(
+            test_mock::get_storage(b"mid_initialized"),
+            Some([1u8].to_vec())
+        );
     }
 
     #[test]
@@ -4844,9 +5267,19 @@ mod tests {
         let owner = [2u8; 32];
         let name = b"Agent";
         test_mock::set_caller(owner);
-        register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            owner.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
-        let result = register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        let result = register_identity(
+            owner.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
         assert_eq!(result, 3); // already registered
     }
 
@@ -4862,7 +5295,12 @@ mod tests {
         let owner = [2u8; 32];
         let name = b"SkillBot";
         test_mock::set_caller(owner);
-        register_identity(owner.as_ptr(), AGENT_TYPE_DEVELOPMENT, name.as_ptr(), name.len() as u32);
+        register_identity(
+            owner.as_ptr(),
+            AGENT_TYPE_DEVELOPMENT,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         let skill_name = b"Rust";
         let result = add_skill(
@@ -4880,12 +5318,7 @@ mod tests {
 
         // Add another skill
         let skill2 = b"Solidity";
-        let result2 = add_skill(
-            owner.as_ptr(),
-            skill2.as_ptr(),
-            skill2.len() as u32,
-            60,
-        );
+        let result2 = add_skill(owner.as_ptr(), skill2.as_ptr(), skill2.len() as u32, 60);
         assert_eq!(result2, 0);
 
         let record2 = test_mock::get_storage(&id_key).unwrap();
@@ -4902,7 +5335,12 @@ mod tests {
         let nobody = [9u8; 32];
         let skill_name = b"Hacking";
         test_mock::set_caller(nobody);
-        let result = add_skill(nobody.as_ptr(), skill_name.as_ptr(), skill_name.len() as u32, 50);
+        let result = add_skill(
+            nobody.as_ptr(),
+            skill_name.as_ptr(),
+            skill_name.len() as u32,
+            50,
+        );
         assert_eq!(result, 3); // identity not found
     }
 
@@ -4921,9 +5359,19 @@ mod tests {
         let name_b = b"AgentB";
 
         test_mock::set_caller(agent_a);
-        register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        register_identity(
+            agent_a.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_a.as_ptr(),
+            name_a.len() as u32,
+        );
         test_mock::set_caller(agent_b);
-        register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
+        register_identity(
+            agent_b.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_b.as_ptr(),
+            name_b.len() as u32,
+        );
 
         test_mock::set_caller(agent_a);
         let result = vouch(agent_a.as_ptr(), agent_b.as_ptr());
@@ -4952,7 +5400,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"SelfVoucher";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         let result = vouch(agent.as_ptr(), agent.as_ptr());
         assert_eq!(result, 1); // cannot vouch for yourself
@@ -4973,9 +5426,19 @@ mod tests {
         let name_b = b"B";
 
         test_mock::set_caller(agent_a);
-        register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        register_identity(
+            agent_a.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_a.as_ptr(),
+            name_a.len() as u32,
+        );
         test_mock::set_caller(agent_b);
-        register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
+        register_identity(
+            agent_b.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_b.as_ptr(),
+            name_b.len() as u32,
+        );
 
         test_mock::set_caller(agent_a);
         vouch(agent_a.as_ptr(), agent_b.as_ptr());
@@ -4998,7 +5461,15 @@ mod tests {
 
         let target_name = b"Target";
         test_mock::set_caller(target);
-        assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, target_name.as_ptr(), target_name.len() as u32), 0);
+        assert_eq!(
+            register_identity(
+                target.as_ptr(),
+                AGENT_TYPE_GENERAL,
+                target_name.as_ptr(),
+                target_name.len() as u32
+            ),
+            0
+        );
 
         for (idx, guardian) in guardians.iter().enumerate() {
             let g_name = match idx {
@@ -5009,7 +5480,15 @@ mod tests {
                 _ => b"G4".as_slice(),
             };
             test_mock::set_caller(*guardian);
-            assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
+            assert_eq!(
+                register_identity(
+                    guardian.as_ptr(),
+                    AGENT_TYPE_GENERAL,
+                    g_name.as_ptr(),
+                    g_name.len() as u32
+                ),
+                0
+            );
             assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
         }
 
@@ -5027,13 +5506,25 @@ mod tests {
         );
 
         test_mock::set_caller(guardians[0]);
-        assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
         test_mock::set_caller(guardians[1]);
-        assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
         test_mock::set_caller(guardians[2]);
-        assert_eq!(approve_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            approve_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
 
-        assert_eq!(execute_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            execute_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
 
         let new_id = identity_key(&new_owner);
         let new_record = test_mock::get_storage(&new_id).unwrap();
@@ -5060,9 +5551,15 @@ mod tests {
         let guardians = [[4u8; 32], [5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
 
         test_mock::set_caller(target);
-        assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, b"Target".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, b"Target".as_ptr(), 6),
+            0
+        );
         test_mock::set_caller(outsider);
-        assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Out".as_ptr(), 3), 0);
+        assert_eq!(
+            register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Out".as_ptr(), 3),
+            0
+        );
 
         for (idx, guardian) in guardians.iter().enumerate() {
             let g_name = match idx {
@@ -5073,7 +5570,15 @@ mod tests {
                 _ => b"A4".as_slice(),
             };
             test_mock::set_caller(*guardian);
-            assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
+            assert_eq!(
+                register_identity(
+                    guardian.as_ptr(),
+                    AGENT_TYPE_GENERAL,
+                    g_name.as_ptr(),
+                    g_name.len() as u32
+                ),
+                0
+            );
             assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
         }
 
@@ -5091,13 +5596,25 @@ mod tests {
         );
 
         test_mock::set_caller(outsider);
-        assert_eq!(approve_recovery(outsider.as_ptr(), target.as_ptr(), new_owner.as_ptr()), 2);
+        assert_eq!(
+            approve_recovery(outsider.as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            2
+        );
         test_mock::set_caller(guardians[0]);
-        assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
         test_mock::set_caller(guardians[1]);
-        assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(
+            approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            0
+        );
 
-        assert_eq!(execute_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 5);
+        assert_eq!(
+            execute_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()),
+            5
+        );
     }
 
     #[test]
@@ -5113,19 +5630,33 @@ mod tests {
         let delegate = [3u8; 32];
 
         test_mock::set_caller(owner);
-        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(delegate);
-        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5),
+            0
+        );
 
         let expires = 10_000 + 60_000;
         let perms = DELEGATE_PERM_PROFILE | DELEGATE_PERM_AGENT_TYPE;
         test_mock::set_caller(owner);
-        assert_eq!(set_delegate(owner.as_ptr(), delegate.as_ptr(), perms, expires), 0);
+        assert_eq!(
+            set_delegate(owner.as_ptr(), delegate.as_ptr(), perms, expires),
+            0
+        );
 
         let endpoint = b"https://agent.example/api";
         test_mock::set_caller(delegate);
         assert_eq!(
-            set_endpoint_as(delegate.as_ptr(), owner.as_ptr(), endpoint.as_ptr(), endpoint.len() as u32),
+            set_endpoint_as(
+                delegate.as_ptr(),
+                owner.as_ptr(),
+                endpoint.as_ptr(),
+                endpoint.len() as u32
+            ),
             0
         );
         let ek = endpoint_key(&owner);
@@ -5136,7 +5667,10 @@ mod tests {
         let rb = test_mock::get_storage(&rk).unwrap();
         assert_eq!(bytes_to_u64(&rb), 77_000);
 
-        assert_eq!(update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING), 0);
+        assert_eq!(
+            update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING),
+            0
+        );
         let idk = identity_key(&owner);
         let record = test_mock::get_storage(&idk).unwrap();
         assert_eq!(record[32], AGENT_TYPE_TRADING);
@@ -5156,11 +5690,20 @@ mod tests {
         let outsider = [4u8; 32];
 
         test_mock::set_caller(owner);
-        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(delegate);
-        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(outsider);
-        assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Other".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Other".as_ptr(), 5),
+            0
+        );
 
         // only profile permission
         test_mock::set_caller(owner);
@@ -5175,20 +5718,23 @@ mod tests {
         );
 
         // Missing agent-type permission
-    test_mock::set_caller(delegate);
-        assert_eq!(update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING), 2);
+        test_mock::set_caller(delegate);
+        assert_eq!(
+            update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING),
+            2
+        );
 
         // Outsider cannot act
-    test_mock::set_caller(outsider);
+        test_mock::set_caller(outsider);
         assert_eq!(set_rate_as(outsider.as_ptr(), owner.as_ptr(), 55_000), 1);
 
         // Expired delegation should fail
         test_mock::set_timestamp(20_500);
-    test_mock::set_caller(delegate);
+        test_mock::set_caller(delegate);
         assert_eq!(set_rate_as(delegate.as_ptr(), owner.as_ptr(), 55_000), 1);
 
         // Revoke idempotence path
-    test_mock::set_caller(owner);
+        test_mock::set_caller(owner);
         assert_eq!(revoke_delegate(owner.as_ptr(), delegate.as_ptr()), 1);
     }
 
@@ -5204,25 +5750,48 @@ mod tests {
         let owner = [2u8; 32];
         let delegate = [3u8; 32];
         test_mock::set_caller(owner);
-        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(delegate);
-        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5),
+            0
+        );
 
         test_mock::set_slot(5_000);
         test_mock::set_value(50_000_000_000);
         let name = b"delegated-name";
         test_mock::set_caller(owner);
-        assert_eq!(register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
+        assert_eq!(
+            register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1),
+            0
+        );
 
         // without naming permission should fail
         test_mock::set_caller(owner);
         assert_eq!(
-            set_delegate(owner.as_ptr(), delegate.as_ptr(), DELEGATE_PERM_PROFILE, 31_000),
+            set_delegate(
+                owner.as_ptr(),
+                delegate.as_ptr(),
+                DELEGATE_PERM_PROFILE,
+                31_000
+            ),
             0
         );
         test_mock::set_caller(delegate);
         test_mock::set_value(100_000_000);
-        assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 2);
+        assert_eq!(
+            renew_name_as(
+                delegate.as_ptr(),
+                owner.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                1
+            ),
+            2
+        );
 
         // with naming permission should succeed
         test_mock::set_caller(owner);
@@ -5237,8 +5806,25 @@ mod tests {
         );
         test_mock::set_caller(delegate);
         test_mock::set_value(50_000_000_000);
-        assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
-        assert_eq!(release_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32), 0);
+        assert_eq!(
+            renew_name_as(
+                delegate.as_ptr(),
+                owner.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                1
+            ),
+            0
+        );
+        assert_eq!(
+            release_name_as(
+                delegate.as_ptr(),
+                owner.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32
+            ),
+            0
+        );
         assert!(test_mock::get_storage(&name_key(name)).is_none());
     }
 
@@ -5252,9 +5838,15 @@ mod tests {
         let bidder1 = [2u8; 32];
         let bidder2 = [3u8; 32];
         test_mock::set_caller(bidder1);
-        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
         test_mock::set_caller(bidder2);
-        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
 
         test_mock::set_slot(10_000);
         let premium = b"xya";
@@ -5265,25 +5857,53 @@ mod tests {
         // Premium names are auction-only in direct registration path
         test_mock::set_caller(bidder1);
         test_mock::set_value(1_000_000_000);
-        assert_eq!(register_name(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 8);
+        assert_eq!(
+            register_name(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 1),
+            8
+        );
 
         test_mock::set_caller(admin);
         assert_eq!(
-            create_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 500_000_000_000, 310_000),
+            create_name_auction(
+                admin.as_ptr(),
+                premium.as_ptr(),
+                premium.len() as u32,
+                500_000_000_000,
+                310_000
+            ),
             0
         );
 
         test_mock::set_caller(bidder1);
         test_mock::set_value(600_000_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 600_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                premium.as_ptr(),
+                premium.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
 
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), premium.as_ptr(), premium.len() as u32, 700_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder2.as_ptr(),
+                premium.as_ptr(),
+                premium.len() as u32,
+                700_000_000_000
+            ),
+            0
+        );
 
         test_mock::set_slot(310_001);
         test_mock::set_caller(admin);
-        assert_eq!(finalize_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 0);
+        assert_eq!(
+            finalize_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 1),
+            0
+        );
 
         let nk = name_key(premium);
         let record = test_mock::get_storage(&nk).unwrap();
@@ -5302,7 +5922,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"RepBot";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         // Admin increases reputation
         test_mock::set_caller(admin);
@@ -5324,7 +5949,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"Bot";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         let non_admin = [9u8; 32];
         test_mock::set_caller(non_admin);
@@ -5344,7 +5974,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"DeactivateMe";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         // Owner deactivates
         let result = deactivate_identity(agent.as_ptr(), agent.as_ptr());
@@ -5367,7 +6002,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"RepCheck";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         let result = get_reputation(agent.as_ptr());
         assert_eq!(result, 0); // success
@@ -5390,7 +6030,12 @@ mod tests {
 
         test_mock::set_timestamp(1_000_000);
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         // Raise from 100 -> 1000
         test_mock::set_caller(admin);
@@ -5428,9 +6073,19 @@ mod tests {
         let name_b = b"AgentB";
 
         test_mock::set_caller(agent_a);
-        register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        register_identity(
+            agent_a.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_a.as_ptr(),
+            name_a.len() as u32,
+        );
         test_mock::set_caller(agent_b);
-        register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
+        register_identity(
+            agent_b.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_b.as_ptr(),
+            name_b.len() as u32,
+        );
 
         // Agent B attests Agent A's "Rust" skill at level 4
         let skill = b"Rust";
@@ -5451,14 +6106,22 @@ mod tests {
 
         // Duplicate attestation should fail
         let result = attest_skill(
-            agent_b.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32, 3,
+            agent_b.as_ptr(),
+            agent_a.as_ptr(),
+            skill.as_ptr(),
+            skill.len() as u32,
+            3,
         );
         assert_eq!(result, 6); // already attested
 
         // Self-attestation should fail
         test_mock::set_caller(agent_a);
         let result = attest_skill(
-            agent_a.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32, 5,
+            agent_a.as_ptr(),
+            agent_a.as_ptr(),
+            skill.as_ptr(),
+            skill.len() as u32,
+            5,
         );
         assert_eq!(result, 3); // cannot attest own skills
     }
@@ -5478,12 +6141,28 @@ mod tests {
         let name_b = b"AgentB";
 
         test_mock::set_caller(agent_a);
-        register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        register_identity(
+            agent_a.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_a.as_ptr(),
+            name_a.len() as u32,
+        );
         test_mock::set_caller(agent_b);
-        register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
+        register_identity(
+            agent_b.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name_b.as_ptr(),
+            name_b.len() as u32,
+        );
 
         let skill = b"Solidity";
-        attest_skill(agent_b.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32, 3);
+        attest_skill(
+            agent_b.as_ptr(),
+            agent_a.as_ptr(),
+            skill.as_ptr(),
+            skill.len() as u32,
+            3,
+        );
 
         // Check count is 1
         get_attestations(agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32);
@@ -5492,7 +6171,10 @@ mod tests {
 
         // Revoke
         let result = revoke_attestation(
-            agent_b.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32,
+            agent_b.as_ptr(),
+            agent_a.as_ptr(),
+            skill.as_ptr(),
+            skill.len() as u32,
         );
         assert_eq!(result, 0);
 
@@ -5503,7 +6185,10 @@ mod tests {
 
         // Double revoke should fail
         let result = revoke_attestation(
-            agent_b.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32,
+            agent_b.as_ptr(),
+            agent_a.as_ptr(),
+            skill.as_ptr(),
+            skill.len() as u32,
         );
         assert_eq!(result, 2); // no attestation found
     }
@@ -5536,12 +6221,7 @@ mod tests {
         setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"myagent";
-        let result = register_name(
-            owner.as_ptr(),
-            name.as_ptr(),
-            name.len() as u32,
-            1,
-        );
+        let result = register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
         assert_eq!(result, 0);
 
         // Verify forward mapping
@@ -5572,27 +6252,45 @@ mod tests {
 
         // Too short (2 chars)
         let short = b"ab";
-        assert_eq!(register_name(owner.as_ptr(), short.as_ptr(), short.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), short.as_ptr(), short.len() as u32, 1),
+            2
+        );
 
         // Has uppercase
         let upper = b"MyAgent";
-        assert_eq!(register_name(owner.as_ptr(), upper.as_ptr(), upper.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), upper.as_ptr(), upper.len() as u32, 1),
+            2
+        );
 
         // Leading hyphen
         let leading = b"-agent";
-        assert_eq!(register_name(owner.as_ptr(), leading.as_ptr(), leading.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), leading.as_ptr(), leading.len() as u32, 1),
+            2
+        );
 
         // Trailing hyphen
         let trailing = b"agent-";
-        assert_eq!(register_name(owner.as_ptr(), trailing.as_ptr(), trailing.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), trailing.as_ptr(), trailing.len() as u32, 1),
+            2
+        );
 
         // Consecutive hyphens
         let consec = b"my--agent";
-        assert_eq!(register_name(owner.as_ptr(), consec.as_ptr(), consec.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), consec.as_ptr(), consec.len() as u32, 1),
+            2
+        );
 
         // Has special chars
         let special = b"my_agent";
-        assert_eq!(register_name(owner.as_ptr(), special.as_ptr(), special.len() as u32, 1), 2);
+        assert_eq!(
+            register_name(owner.as_ptr(), special.as_ptr(), special.len() as u32, 1),
+            2
+        );
     }
 
     #[test]
@@ -5602,13 +6300,32 @@ mod tests {
         setup_identity_with_slot(&owner, 1000, 1_000_000_000);
 
         let reserved = b"admin";
-        assert_eq!(register_name(owner.as_ptr(), reserved.as_ptr(), reserved.len() as u32, 1), 3);
+        assert_eq!(
+            register_name(owner.as_ptr(), reserved.as_ptr(), reserved.len() as u32, 1),
+            3
+        );
 
         let reserved2 = b"system";
-        assert_eq!(register_name(owner.as_ptr(), reserved2.as_ptr(), reserved2.len() as u32, 1), 3);
+        assert_eq!(
+            register_name(
+                owner.as_ptr(),
+                reserved2.as_ptr(),
+                reserved2.len() as u32,
+                1
+            ),
+            3
+        );
 
         let reserved3 = b"molt";
-        assert_eq!(register_name(owner.as_ptr(), reserved3.as_ptr(), reserved3.len() as u32, 1), 3);
+        assert_eq!(
+            register_name(
+                owner.as_ptr(),
+                reserved3.as_ptr(),
+                reserved3.len() as u32,
+                1
+            ),
+            3
+        );
     }
 
     #[test]
@@ -5748,11 +6465,17 @@ mod tests {
         setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name1 = b"first-name";
-        assert_eq!(register_name(owner.as_ptr(), name1.as_ptr(), name1.len() as u32, 1), 0);
+        assert_eq!(
+            register_name(owner.as_ptr(), name1.as_ptr(), name1.len() as u32, 1),
+            0
+        );
 
         // Try to register a second name — should fail with error 6
         let name2 = b"second-name";
-        assert_eq!(register_name(owner.as_ptr(), name2.as_ptr(), name2.len() as u32, 1), 6);
+        assert_eq!(
+            register_name(owner.as_ptr(), name2.as_ptr(), name2.len() as u32, 1),
+            6
+        );
     }
 
     // ====================================================================
@@ -5822,7 +6545,12 @@ mod tests {
 
         // Register name
         let molt_name = b"profiled";
-        register_name(owner.as_ptr(), molt_name.as_ptr(), molt_name.len() as u32, 1);
+        register_name(
+            owner.as_ptr(),
+            molt_name.as_ptr(),
+            molt_name.len() as u32,
+            1,
+        );
 
         // Set endpoint
         let url = b"https://profiled.molt/api";
@@ -5849,7 +6577,10 @@ mod tests {
         assert_eq!(ret[IDENTITY_SIZE], 1);
         let nm_len = ret[IDENTITY_SIZE + 1] as usize;
         assert_eq!(nm_len, molt_name.len());
-        assert_eq!(&ret[IDENTITY_SIZE + 2..IDENTITY_SIZE + 2 + nm_len], molt_name);
+        assert_eq!(
+            &ret[IDENTITY_SIZE + 2..IDENTITY_SIZE + 2 + nm_len],
+            molt_name
+        );
     }
 
     #[test]
@@ -5864,7 +6595,12 @@ mod tests {
         let agent = [2u8; 32];
         let name = b"TierBot";
         test_mock::set_caller(agent);
-        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+        register_identity(
+            agent.as_ptr(),
+            AGENT_TYPE_GENERAL,
+            name.as_ptr(),
+            name.len() as u32,
+        );
 
         // Initial reputation = 100 → Tier 1
         get_trust_tier(agent.as_ptr());
@@ -6139,7 +6875,9 @@ mod tests {
         assert_eq!(admin_register_reserved_name(), 0);
 
         // Verify name count
-        let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+        let count = storage_get(b"molt_name_count")
+            .map(|d| bytes_to_u64(&d))
+            .unwrap_or(0);
         assert_eq!(count, 1);
     }
 
@@ -6156,12 +6894,18 @@ mod tests {
 
         let hash_a = skill_name_hash(skill_a);
         let hash_b = skill_name_hash(skill_b);
-        assert_ne!(hash_a, hash_b, "FNV-1a must distinguish skills with shared 16-byte prefix");
+        assert_ne!(
+            hash_a, hash_b,
+            "FNV-1a must distinguish skills with shared 16-byte prefix"
+        );
 
         // Verify the legacy function DOES collide (proves the bug existed)
         let legacy_a = skill_name_hash_legacy(skill_a);
         let legacy_b = skill_name_hash_legacy(skill_b);
-        assert_eq!(legacy_a, legacy_b, "Legacy truncation should collide on shared prefix");
+        assert_eq!(
+            legacy_a, legacy_b,
+            "Legacy truncation should collide on shared prefix"
+        );
     }
 
     #[test]
@@ -6196,27 +6940,45 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         // Attest a skill — should be stored under FNV hash key
         let skill = b"smart_contracts_audit";
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 3
-        ), 0);
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                3
+            ),
+            0
+        );
 
         // Verify it's under the FNV hash
         let s_hash = skill_name_hash(skill);
         let ak = attestation_key(&identity, &s_hash, &attester);
-        assert!(storage_get(&ak).is_some(), "Attestation must be stored under FNV hash");
+        assert!(
+            storage_get(&ak).is_some(),
+            "Attestation must be stored under FNV hash"
+        );
 
         // Verify it's NOT under the legacy hash (they differ for this skill)
         let s_hash_legacy = skill_name_hash_legacy(skill);
         let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
-        assert!(storage_get(&ak_legacy).is_none(), "Should not be stored under legacy hash");
+        assert!(
+            storage_get(&ak_legacy).is_none(),
+            "Should not be stored under legacy hash"
+        );
     }
 
     #[test]
@@ -6229,30 +6991,54 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         let skill_a = b"smart_contracts_audit";
         let skill_b = b"smart_contracts_dev";
 
         // Attest both — both must succeed (no collision)
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill_a.as_ptr(), skill_a.len() as u32, 3
-        ), 0);
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill_b.as_ptr(), skill_b.len() as u32, 4
-        ), 0);
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill_a.as_ptr(),
+                skill_a.len() as u32,
+                3
+            ),
+            0
+        );
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill_b.as_ptr(),
+                skill_b.len() as u32,
+                4
+            ),
+            0
+        );
 
         // Verify separate counts
-        assert_eq!(get_attestations(identity.as_ptr(), skill_a.as_ptr(), skill_a.len() as u32), 0);
+        assert_eq!(
+            get_attestations(identity.as_ptr(), skill_a.as_ptr(), skill_a.len() as u32),
+            0
+        );
         let count_a = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(count_a, 1);
 
-        assert_eq!(get_attestations(identity.as_ptr(), skill_b.as_ptr(), skill_b.len() as u32), 0);
+        assert_eq!(
+            get_attestations(identity.as_ptr(), skill_b.as_ptr(), skill_b.len() as u32),
+            0
+        );
         let count_b = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(count_b, 1);
     }
@@ -6267,21 +7053,39 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         let skill = b"blockchain";
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 2
-        ), 0);
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                2
+            ),
+            0
+        );
         // Second attestation must fail
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 4
-        ), 6);
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                4
+            ),
+            6
+        );
     }
 
     #[test]
@@ -6294,9 +7098,15 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         // Simulate a legacy attestation by writing directly under the old hash
@@ -6306,10 +7116,17 @@ mod tests {
         storage_set(&ak_legacy, &[2, 0, 0, 0, 0, 0, 0, 0, 1]); // level=2, timestamp=1
 
         // Attempting to attest the same skill under the new hash must be blocked
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 3
-        ), 6, "Must detect legacy attestation and block duplicate");
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                3
+            ),
+            6,
+            "Must detect legacy attestation and block duplicate"
+        );
     }
 
     #[test]
@@ -6321,7 +7138,10 @@ mod tests {
 
         let identity = [10u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
 
         // Write a count directly under legacy hash key (simulating pre-upgrade data)
         let skill = b"solidity";
@@ -6330,7 +7150,10 @@ mod tests {
         storage_set(&ck_legacy, &u64_to_bytes(7));
 
         // get_attestations should find the legacy count
-        assert_eq!(get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32), 0);
+        assert_eq!(
+            get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32),
+            0
+        );
         let count = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(count, 7, "Must fall back to legacy count");
     }
@@ -6345,22 +7168,39 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         let skill = b"defi";
-        assert_eq!(attest_skill(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 5
-        ), 0);
+        assert_eq!(
+            attest_skill(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                5
+            ),
+            0
+        );
 
         // Revoke
-        assert_eq!(revoke_attestation(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32
-        ), 0);
+        assert_eq!(
+            revoke_attestation(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32
+            ),
+            0
+        );
 
         // Attestation gone
         let s_hash = skill_name_hash(skill);
@@ -6368,7 +7208,10 @@ mod tests {
         assert!(storage_get(&ak).is_none());
 
         // Count back to 0
-        assert_eq!(get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32), 0);
+        assert_eq!(
+            get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32),
+            0
+        );
         let count = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(count, 0);
     }
@@ -6383,9 +7226,15 @@ mod tests {
         let identity = [10u8; 32];
         let attester = [11u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester);
-        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        assert_eq!(
+            register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6),
+            0
+        );
 
         // Write attestation directly under legacy hash (simulating pre-upgrade data)
         let skill = b"zk_proofs";
@@ -6396,12 +7245,20 @@ mod tests {
         storage_set(&ck_legacy, &u64_to_bytes(1));
 
         // Revoke should find and remove the legacy attestation
-        assert_eq!(revoke_attestation(
-            attester.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32
-        ), 0);
+        assert_eq!(
+            revoke_attestation(
+                attester.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32
+            ),
+            0
+        );
 
-        assert!(storage_get(&ak_legacy).is_none(), "Legacy attestation must be removed");
+        assert!(
+            storage_get(&ak_legacy).is_none(),
+            "Legacy attestation must be removed"
+        );
         let count = bytes_to_u64(&storage_get(&ck_legacy).unwrap());
         assert_eq!(count, 0, "Legacy count must be decremented");
     }
@@ -6417,11 +7274,20 @@ mod tests {
         let attester1 = [11u8; 32];
         let attester2 = [12u8; 32];
         test_mock::set_caller(identity);
-        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        assert_eq!(
+            register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5),
+            0
+        );
         test_mock::set_caller(attester1);
-        assert_eq!(register_identity(attester1.as_ptr(), AGENT_TYPE_GENERAL, b"Att1".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(attester1.as_ptr(), AGENT_TYPE_GENERAL, b"Att1".as_ptr(), 4),
+            0
+        );
         test_mock::set_caller(attester2);
-        assert_eq!(register_identity(attester2.as_ptr(), AGENT_TYPE_GENERAL, b"Att2".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(attester2.as_ptr(), AGENT_TYPE_GENERAL, b"Att2".as_ptr(), 4),
+            0
+        );
         test_mock::set_timestamp(1000);
 
         // Seed a legacy attestation from attester1
@@ -6433,16 +7299,25 @@ mod tests {
         storage_set(&ck_legacy, &u64_to_bytes(1));
 
         // Now attester2 attests the same skill via the new code path
-        assert_eq!(attest_skill(
-            attester2.as_ptr(), identity.as_ptr(),
-            skill.as_ptr(), skill.len() as u32, 4
-        ), 0);
+        assert_eq!(
+            attest_skill(
+                attester2.as_ptr(),
+                identity.as_ptr(),
+                skill.as_ptr(),
+                skill.len() as u32,
+                4
+            ),
+            0
+        );
 
         // The new FNV count should be legacy_count + 1 = 2
         let s_hash_new = skill_name_hash(skill);
         let ck_new = attestation_count_key(&identity, &s_hash_new);
         let count = bytes_to_u64(&storage_get(&ck_new).unwrap());
-        assert_eq!(count, 2, "Legacy count must be migrated forward on first new write");
+        assert_eq!(
+            count, 2,
+            "Legacy count must be migrated forward on first new write"
+        );
     }
 
     // ========================================================================
@@ -6518,26 +7393,57 @@ mod tests {
         let bidder1 = [2u8; 32];
         let bidder2 = [3u8; 32];
         test_mock::set_caller(bidder1);
-        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
         test_mock::set_caller(bidder2);
-        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
 
         test_mock::set_slot(10_000);
         let name = b"abc";
 
         // Create auction
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
+        assert_eq!(
+            create_name_auction(
+                admin.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                500_000_000_000,
+                300_500
+            ),
+            0
+        );
 
         // First bid succeeds (no refund needed yet)
         test_mock::set_caller(bidder1);
         test_mock::set_value(600_000_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
 
         // Second bid: triggers refund but token address not configured → error 30
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 30);
+        assert_eq!(
+            bid_name_auction(
+                bidder2.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                700_000_000_000
+            ),
+            30
+        );
     }
 
     #[test]
@@ -6550,9 +7456,15 @@ mod tests {
         let bidder1 = [2u8; 32];
         let bidder2 = [3u8; 32];
         test_mock::set_caller(bidder1);
-        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
         test_mock::set_caller(bidder2);
-        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
 
         test_mock::set_slot(10_000);
         let name = b"xyz";
@@ -6562,17 +7474,42 @@ mod tests {
 
         // Create auction
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
+        assert_eq!(
+            create_name_auction(
+                admin.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                500_000_000_000,
+                300_500
+            ),
+            0
+        );
 
         // First bid
         test_mock::set_caller(bidder1);
         test_mock::set_value(600_000_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
 
         // Second bid: triggers refund, should succeed with token configured
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder2.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                700_000_000_000
+            ),
+            0
+        );
 
         // Verify the auction record was updated to bidder2
         let ak = name_auction_key(name);
@@ -6591,9 +7528,15 @@ mod tests {
         let bidder1 = [2u8; 32];
         let bidder2 = [3u8; 32];
         test_mock::set_caller(bidder1);
-        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4),
+            0
+        );
         test_mock::set_caller(bidder2);
-        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+        assert_eq!(
+            register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4),
+            0
+        );
 
         test_mock::set_slot(10_000);
         let name = b"def";
@@ -6603,16 +7546,41 @@ mod tests {
         storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
 
         test_mock::set_caller(admin);
-        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500_000_000_000, 300_500), 0);
+        assert_eq!(
+            create_name_auction(
+                admin.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                500_000_000_000,
+                300_500
+            ),
+            0
+        );
 
         test_mock::set_caller(bidder1);
         test_mock::set_value(600_000_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                600_000_000_000
+            ),
+            0
+        );
 
         // Second bid: token set but self-address not → error 31
         test_mock::set_caller(bidder2);
         test_mock::set_value(700_000_000_000);
-        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700_000_000_000), 31);
+        assert_eq!(
+            bid_name_auction(
+                bidder2.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                700_000_000_000
+            ),
+            31
+        );
     }
 
     #[test]
@@ -6671,13 +7639,27 @@ mod tests {
         let name = b"prm";
         test_mock::set_caller(creator);
         test_mock::set_slot(100);
-        let result = create_name_auction(creator.as_ptr(), name.as_ptr(), name.len() as u32, 50_000_000_000, 300_100);
+        let result = create_name_auction(
+            creator.as_ptr(),
+            name.as_ptr(),
+            name.len() as u32,
+            50_000_000_000,
+            300_100,
+        );
         assert_eq!(result, 0, "Auction creation should succeed");
 
         // First bid
         test_mock::set_caller(bidder1);
         test_mock::set_value(60_000_000_000);
-        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 60_000_000_000), 0);
+        assert_eq!(
+            bid_name_auction(
+                bidder1.as_ptr(),
+                name.as_ptr(),
+                name.len() as u32,
+                60_000_000_000
+            ),
+            0
+        );
 
         // After first bid, auction record should have bidder1
         let ak = name_auction_key(name);

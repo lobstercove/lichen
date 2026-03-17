@@ -49,8 +49,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall, call_contract, call_token_transfer, get_value,
+    bytes_to_u64, call_contract, call_token_transfer, get_slot, get_value, log_info, storage_get,
+    storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -61,46 +61,46 @@ use moltchain_sdk::{
 const MAX_OUTCOMES: u8 = 8;
 const MAX_MARKETS: u64 = 100_000;
 const MAX_OPEN_MARKETS: u64 = 10_000;
-const MIN_COLLATERAL: u64 = 1_000_000;       // 1 mUSD (6 decimals)
-const MAX_COLLATERAL: u64 = 100_000_000_000;  // 100K mUSD
+const MIN_COLLATERAL: u64 = 1_000_000; // 1 mUSD (6 decimals)
+const MAX_COLLATERAL: u64 = 100_000_000_000; // 100K mUSD
 
 // --- Timing (in slots; 1 slot = 400ms) ---
-const MIN_DURATION: u64 = 9_000;             // 1 hour minimum
-const MAX_DURATION: u64 = 78_840_000;        // 1 year maximum
-const RESOLUTION_TIMEOUT: u64 = 1_512_000;   // 7 days to resolve after close
-const DISPUTE_PERIOD: u64 = 432_000;         // 48 hours to challenge resolution
-const EMERGENCY_TIMEOUT: u64 = 6_480_000;    // 30 days — auto-void if unresolved
+const MIN_DURATION: u64 = 9_000; // 1 hour minimum
+const MAX_DURATION: u64 = 78_840_000; // 1 year maximum
+const RESOLUTION_TIMEOUT: u64 = 1_512_000; // 7 days to resolve after close
+const DISPUTE_PERIOD: u64 = 432_000; // 48 hours to challenge resolution
+const EMERGENCY_TIMEOUT: u64 = 6_480_000; // 30 days — auto-void if unresolved
 
 // --- Fees (basis points / flat) ---
 const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 mUSD (anti-spam)
-const TRADING_FEE_BPS: u64 = 200;            // 2% on AMM swaps
-const RESOLUTION_REWARD_BPS: u64 = 50;       // 0.5% of pool to resolver
-const LP_FEE_BPS: u64 = 100;                 // 1% to liquidity providers
+const TRADING_FEE_BPS: u64 = 200; // 2% on AMM swaps
+const RESOLUTION_REWARD_BPS: u64 = 50; // 0.5% of pool to resolver
+const LP_FEE_BPS: u64 = 100; // 1% to liquidity providers
 
 // Fee distribution (% of trading fee)
-const FEE_LP_SHARE: u64 = 50;               // 50% to LPs
-const FEE_PROTOCOL_SHARE: u64 = 30;         // 30% to protocol
-const FEE_STAKER_SHARE: u64 = 20;           // 20% to stakers
+const FEE_LP_SHARE: u64 = 50; // 50% to LPs
+const FEE_PROTOCOL_SHARE: u64 = 30; // 30% to protocol
+const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
 
 // --- AMM ---
-const INITIAL_LIQUIDITY_MIN: u64 = 1_000;   // Min initial liquidity per outcome (shares)
-const MIN_SHARE_PRICE: u64 = 10_000;        // $0.01 minimum (6 decimal mUSD)
-const MAX_SHARE_PRICE: u64 = 990_000;       // $0.99 maximum
-const MUSD_UNIT: u64 = 1_000_000;           // 1 mUSD = 10^6
+const INITIAL_LIQUIDITY_MIN: u64 = 1_000; // Min initial liquidity per outcome (shares)
+const MIN_SHARE_PRICE: u64 = 10_000; // $0.01 minimum (6 decimal mUSD)
+const MAX_SHARE_PRICE: u64 = 990_000; // $0.99 maximum
+const MUSD_UNIT: u64 = 1_000_000; // 1 mUSD = 10^6
 
 // --- Reputation ---
 const MIN_REPUTATION_CREATE: u64 = 500;
 const MIN_REPUTATION_RESOLVE: u64 = 1000;
-const DISPUTE_BOND: u64 = 100_000_000;      // 100 mUSD bond to dispute
+const DISPUTE_BOND: u64 = 100_000_000; // 100 mUSD bond to dispute
 
 // --- Resolution ---
-const RESOLUTION_THRESHOLD: u8 = 3;         // Min oracle attestations
+const RESOLUTION_THRESHOLD: u8 = 3; // Min oracle attestations
 
 // --- Circuit breakers ---
 const CIRCUIT_BREAKER_COLLATERAL: u64 = 50_000_000_000; // 50K mUSD per market
 const CIRCUIT_BREAKER_PLATFORM: u64 = 1_000_000_000_000; // 1M mUSD total
-const PRICE_MOVE_PAUSE_BPS: u64 = 5_000;    // 50% in single slot → pause
-const PRICE_MOVE_PAUSE_SLOTS: u64 = 150;    // 60 seconds (at 400ms/slot)
+const PRICE_MOVE_PAUSE_BPS: u64 = 5_000; // 50% in single slot → pause
+const PRICE_MOVE_PAUSE_SLOTS: u64 = 150; // 60 seconds (at 400ms/slot)
 
 // --- Market statuses ---
 const STATUS_PENDING: u8 = 0;
@@ -574,81 +574,119 @@ fn encode_market(
     oracle_attestation_hash: &[u8],
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(MARKET_RECORD_SIZE);
-    data.extend_from_slice(&u64_to_bytes(market_id));           // 0..8
-    // creator: 32 bytes
+    data.extend_from_slice(&u64_to_bytes(market_id)); // 0..8
+                                                      // creator: 32 bytes
     if creator.len() >= 32 {
         data.extend_from_slice(&creator[..32]);
     } else {
         data.extend_from_slice(creator);
         data.resize(data.len() + 32 - creator.len(), 0);
-    }                                                            // 8..40
-    data.extend_from_slice(&u64_to_bytes(created_slot));         // 40..48
-    data.extend_from_slice(&u64_to_bytes(close_slot));           // 48..56
-    data.extend_from_slice(&u64_to_bytes(resolve_slot));         // 56..64
-    data.push(status);                                           // 64
-    data.push(outcome_count);                                    // 65
-    data.push(winning_outcome);                                  // 66
-    data.push(category);                                         // 67
-    data.extend_from_slice(&u64_to_bytes(total_collateral));     // 68..76
-    data.extend_from_slice(&u64_to_bytes(total_volume));         // 76..84
-    data.extend_from_slice(&u64_to_bytes(resolution_bond));      // 84..92
-    // resolver: 32 bytes
+    } // 8..40
+    data.extend_from_slice(&u64_to_bytes(created_slot)); // 40..48
+    data.extend_from_slice(&u64_to_bytes(close_slot)); // 48..56
+    data.extend_from_slice(&u64_to_bytes(resolve_slot)); // 56..64
+    data.push(status); // 64
+    data.push(outcome_count); // 65
+    data.push(winning_outcome); // 66
+    data.push(category); // 67
+    data.extend_from_slice(&u64_to_bytes(total_collateral)); // 68..76
+    data.extend_from_slice(&u64_to_bytes(total_volume)); // 76..84
+    data.extend_from_slice(&u64_to_bytes(resolution_bond)); // 84..92
+                                                            // resolver: 32 bytes
     if resolver.len() >= 32 {
         data.extend_from_slice(&resolver[..32]);
     } else {
         data.extend_from_slice(resolver);
         data.resize(data.len() + 32 - resolver.len(), 0);
-    }                                                            // 92..124
-    // question_hash: 32 bytes
+    } // 92..124
+      // question_hash: 32 bytes
     if question_hash.len() >= 32 {
         data.extend_from_slice(&question_hash[..32]);
     } else {
         data.extend_from_slice(question_hash);
         data.resize(data.len() + 32 - question_hash.len(), 0);
-    }                                                            // 124..156
-    data.extend_from_slice(&u64_to_bytes(dispute_end_slot));     // 156..164
-    data.extend_from_slice(&u64_to_bytes(fees_collected));       // 164..172
-    data.extend_from_slice(&u64_to_bytes(lp_total_shares));      // 172..180
-    // oracle_attestation_hash: first 8 bytes
+    } // 124..156
+    data.extend_from_slice(&u64_to_bytes(dispute_end_slot)); // 156..164
+    data.extend_from_slice(&u64_to_bytes(fees_collected)); // 164..172
+    data.extend_from_slice(&u64_to_bytes(lp_total_shares)); // 172..180
+                                                            // oracle_attestation_hash: first 8 bytes
     if oracle_attestation_hash.len() >= 8 {
         data.extend_from_slice(&oracle_attestation_hash[..8]);
     } else {
         data.extend_from_slice(oracle_attestation_hash);
         data.resize(data.len() + 8 - oracle_attestation_hash.len(), 0);
-    }                                                            // 180..188
-    data.extend_from_slice(&[0u8; 4]);                           // 188..192 pad
+    } // 180..188
+    data.extend_from_slice(&[0u8; 4]); // 188..192 pad
     debug_assert_eq!(data.len(), MARKET_RECORD_SIZE);
     data
 }
 
 // Market record decoders — individual field extractors
-fn market_id(data: &[u8]) -> u64 { bytes_to_u64(&data[0..8]) }
-fn market_creator(data: &[u8]) -> [u8; 32] {
-    let mut a = [0u8; 32]; a.copy_from_slice(&data[8..40]); a
+fn market_id(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[0..8])
 }
-fn market_created_slot(data: &[u8]) -> u64 { bytes_to_u64(&data[40..48]) }
-fn market_close_slot(data: &[u8]) -> u64 { bytes_to_u64(&data[48..56]) }
-fn market_resolve_slot(data: &[u8]) -> u64 { bytes_to_u64(&data[56..64]) }
-fn market_status(data: &[u8]) -> u8 { data[64] }
-fn market_outcome_count(data: &[u8]) -> u8 { data[65] }
-fn market_winning_outcome(data: &[u8]) -> u8 { data[66] }
-fn market_category(data: &[u8]) -> u8 { data[67] }
-fn market_total_collateral(data: &[u8]) -> u64 { bytes_to_u64(&data[68..76]) }
-fn market_total_volume(data: &[u8]) -> u64 { bytes_to_u64(&data[76..84]) }
-fn market_resolution_bond(data: &[u8]) -> u64 { bytes_to_u64(&data[84..92]) }
+fn market_creator(data: &[u8]) -> [u8; 32] {
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&data[8..40]);
+    a
+}
+fn market_created_slot(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[40..48])
+}
+fn market_close_slot(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[48..56])
+}
+fn market_resolve_slot(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[56..64])
+}
+fn market_status(data: &[u8]) -> u8 {
+    data[64]
+}
+fn market_outcome_count(data: &[u8]) -> u8 {
+    data[65]
+}
+fn market_winning_outcome(data: &[u8]) -> u8 {
+    data[66]
+}
+fn market_category(data: &[u8]) -> u8 {
+    data[67]
+}
+fn market_total_collateral(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[68..76])
+}
+fn market_total_volume(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[76..84])
+}
+fn market_resolution_bond(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[84..92])
+}
 fn market_resolver(data: &[u8]) -> [u8; 32] {
-    let mut a = [0u8; 32]; a.copy_from_slice(&data[92..124]); a
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&data[92..124]);
+    a
 }
 fn market_question_hash(data: &[u8]) -> [u8; 32] {
-    let mut a = [0u8; 32]; a.copy_from_slice(&data[124..156]); a
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&data[124..156]);
+    a
 }
-fn market_dispute_end_slot(data: &[u8]) -> u64 { bytes_to_u64(&data[156..164]) }
-fn market_fees_collected(data: &[u8]) -> u64 { bytes_to_u64(&data[164..172]) }
-fn market_lp_total_shares(data: &[u8]) -> u64 { bytes_to_u64(&data[172..180]) }
+fn market_dispute_end_slot(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[156..164])
+}
+fn market_fees_collected(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[164..172])
+}
+fn market_lp_total_shares(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[172..180])
+}
 
 // Market record mutators — set individual fields in-place
-fn set_market_status(data: &mut [u8], status: u8) { data[64] = status; }
-fn set_market_winning_outcome(data: &mut [u8], outcome: u8) { data[66] = outcome; }
+fn set_market_status(data: &mut [u8], status: u8) {
+    data[64] = status;
+}
+fn set_market_winning_outcome(data: &mut [u8], outcome: u8) {
+    data[66] = outcome;
+}
 fn set_market_total_collateral(data: &mut [u8], val: u64) {
     data[68..76].copy_from_slice(&u64_to_bytes(val));
 }
@@ -725,12 +763,24 @@ fn encode_outcome_pool(
     data
 }
 
-fn pool_reserve(data: &[u8]) -> u64 { bytes_to_u64(&data[0..8]) }
-fn pool_total_shares(data: &[u8]) -> u64 { bytes_to_u64(&data[8..16]) }
-fn pool_total_redeemed(data: &[u8]) -> u64 { bytes_to_u64(&data[16..24]) }
-fn pool_price_last(data: &[u8]) -> u64 { bytes_to_u64(&data[24..32]) }
-fn pool_volume(data: &[u8]) -> u64 { bytes_to_u64(&data[32..40]) }
-fn pool_open_interest(data: &[u8]) -> u64 { bytes_to_u64(&data[40..48]) }
+fn pool_reserve(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[0..8])
+}
+fn pool_total_shares(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[8..16])
+}
+fn pool_total_redeemed(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[16..24])
+}
+fn pool_price_last(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[24..32])
+}
+fn pool_volume(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[32..40])
+}
+fn pool_open_interest(data: &[u8]) -> u64 {
+    bytes_to_u64(&data[40..48])
+}
 
 fn set_pool_reserve(data: &mut [u8], val: u64) {
     data[0..8].copy_from_slice(&u64_to_bytes(val));
@@ -779,10 +829,18 @@ fn encode_position(shares: u64, cost_basis: u64) -> Vec<u8> {
 }
 
 fn position_shares(data: &[u8]) -> u64 {
-    if data.len() >= 8 { bytes_to_u64(&data[0..8]) } else { 0 }
+    if data.len() >= 8 {
+        bytes_to_u64(&data[0..8])
+    } else {
+        0
+    }
 }
 fn position_cost_basis(data: &[u8]) -> u64 {
-    if data.len() >= 16 { bytes_to_u64(&data[8..16]) } else { 0 }
+    if data.len() >= 16 {
+        bytes_to_u64(&data[8..16])
+    } else {
+        0
+    }
 }
 
 fn load_position(market_id: u64, addr: &[u8], outcome: u8) -> (u64, u64) {
@@ -908,11 +966,7 @@ fn calculate_price(reserves: &[u64], outcome: u8) -> u64 {
 /// Uses the complete-set-mint + swap model from the plan.
 ///
 /// Returns (shares_received_after_fee, fee_shares)
-fn calculate_buy(
-    reserves: &[u64],
-    outcome: u8,
-    amount_musd: u64,
-) -> (u64, u64) {
+fn calculate_buy(reserves: &[u64], outcome: u8, amount_musd: u64) -> (u64, u64) {
     let n = reserves.len();
     if n < 2 || outcome as usize >= n || amount_musd == 0 {
         return (0, 0);
@@ -980,11 +1034,7 @@ fn calculate_buy(
 /// Uses the swap + burn-complete-set model from the plan.
 ///
 /// Returns (musd_returned_after_fee, fee_musd)
-fn calculate_sell(
-    reserves: &[u64],
-    outcome: u8,
-    shares_amount: u64,
-) -> (u64, u64) {
+fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u64) {
     let n = reserves.len();
     if n < 2 || outcome as usize >= n || shares_amount == 0 {
         return (0, 0);
@@ -1006,9 +1056,9 @@ fn calculate_sell(
         // After swap, user has 0 A shares (all sold) but had shares_amount - 0 = 0 from swap
         // Wait — user starts with shares_amount of A. Sells them ALL into pool for B.
         // User ends with b_received B shares.
-        // To burn a complete set, need 1 A + 1 B. User has 0 A, so can't burn... 
-        // Actually the plan says: "Sell outcome shares into pool for opposite outcome shares, 
-        // then burn complete sets". The user doesn't sell ALL shares, they sell to swap for the 
+        // To burn a complete set, need 1 A + 1 B. User has 0 A, so can't burn...
+        // Actually the plan says: "Sell outcome shares into pool for opposite outcome shares,
+        // then burn complete sets". The user doesn't sell ALL shares, they sell to swap for the
         // other side, then burn matched pairs.
         //
         // Correct model: user has `shares_amount` of A.
@@ -1034,7 +1084,7 @@ fn calculate_sell(
         // sell_musd = b_received * MUSD_UNIT / MUSD_UNIT = b_received (since shares = mUSD micro-units)
         //
         // Actually the simplest correct model: selling A shares is equivalent to "un-buying".
-        // The user swaps A shares into the pool and gets back mUSD equal to the number of 
+        // The user swaps A shares into the pool and gets back mUSD equal to the number of
         // complete sets they can form plus the residual.
         //
         // Let me recompute using the standard approach:
@@ -1055,10 +1105,10 @@ fn calculate_sell(
         // This is a quadratic. Solving with integer sqrt.
         // s_a = [(A - x - y) + sqrt((A - x - y)² + 4 * A * x)] / 2
         // where A = shares_amount
-        
+
         let a_val = sell;
         let sum = x + y;
-        
+
         // Discriminant: (A + x + y)² - 4·A·y  [rearranging for positive root]
         // Actually let's re-derive:
         // s_a² + (x + y - A)*s_a - A*x = 0
@@ -1066,7 +1116,7 @@ fn calculate_sell(
         let coeff = sum.abs_diff(a_val);
         let disc = coeff * coeff + 4 * a_val * x;
         let sqrt_disc = isqrt_u128(disc);
-        
+
         // s_a = (-coeff + sqrt_disc) / 2 when A > x + y
         // s_a = (coeff - sqrt_disc + sqrt_disc) ... need to handle signs
         // Going back to: s_a² + (x + y - A)*s_a - A*x = 0
@@ -1086,8 +1136,12 @@ fn calculate_sell(
         let b_got = (y * s_a) / (x + s_a);
         // Complete sets = min(A - s_a, b_got)
         let remaining_a = a_val - s_a;
-        let sets = if remaining_a < b_got { remaining_a } else { b_got };
-        
+        let sets = if remaining_a < b_got {
+            remaining_a
+        } else {
+            b_got
+        };
+
         // mUSD returned = sets (since 1 share of each outcome = 1 mUSD_unit backing)
         let musd_raw = sets;
         let fee = (musd_raw * TRADING_FEE_BPS as u128) / 10_000;
@@ -1207,7 +1261,7 @@ fn apply_buy_reserves(
 
         // Swap: sell B into pool
         let a_received = (x * b_sold) / (y + b_sold);
-        
+
         // New reserves:
         // reserve_a = x - a_received + fee_shares (fees go to LP/pool)
         // reserve_b = y + b_sold
@@ -1223,7 +1277,9 @@ fn apply_buy_reserves(
         let sps128 = sps as u128;
 
         for j in 0..n {
-            if j == a { continue; }
+            if j == a {
+                continue;
+            }
             let a_received = (temp[a] * sps128) / (temp[j] + sps128);
             temp[a] -= a_received;
             temp[j] += sps128;
@@ -1236,11 +1292,7 @@ fn apply_buy_reserves(
 }
 
 /// Apply new reserves after a sell operation.
-fn apply_sell_reserves(
-    reserves: &[u64],
-    outcome: u8,
-    shares_amount: u64,
-) -> Vec<u64> {
+fn apply_sell_reserves(reserves: &[u64], outcome: u8, shares_amount: u64) -> Vec<u64> {
     let n = reserves.len();
     let a = outcome as usize;
 
@@ -1255,7 +1307,7 @@ fn apply_sell_reserves(
         let coeff = sum.abs_diff(sell);
         let disc = coeff * coeff + 4 * sell * x;
         let sqrt_disc = isqrt_u128(disc);
-        
+
         let s_a = if sell + sqrt_disc >= sum {
             (sell + sqrt_disc - sum) / 2
         } else {
@@ -1268,7 +1320,11 @@ fn apply_sell_reserves(
 
         let b_got = (y * s_a) / (x + s_a);
         let remaining_a_after_swap = sell - s_a;
-        let sets = if remaining_a_after_swap < b_got { remaining_a_after_swap } else { b_got };
+        let sets = if remaining_a_after_swap < b_got {
+            remaining_a_after_swap
+        } else {
+            b_got
+        };
 
         // After swap: pool absorbed s_a of A, gave out b_got of B.
         // After burn: remove `sets` from each outcome's total supply.
@@ -1358,7 +1414,9 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     }
 
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
     let admin = &admin[..];
     storage_set(ADMIN_KEY, admin);
     save_u64(MARKET_COUNT_KEY, 0);
@@ -1393,13 +1451,19 @@ pub fn create_market(
     }
 
     let mut creator = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32);
+    }
     let creator = &creator[..];
     let mut question_hash = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(question_hash_ptr, question_hash.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(question_hash_ptr, question_hash.as_mut_ptr(), 32);
+    }
     let question_hash = &question_hash[..];
     let mut question = vec![0u8; question_len as usize];
-    unsafe { core::ptr::copy_nonoverlapping(question_ptr, question.as_mut_ptr(), question_len as usize); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(question_ptr, question.as_mut_ptr(), question_len as usize);
+    }
 
     // Validate caller == creator
     let caller = moltchain_sdk::get_caller();
@@ -1499,14 +1563,14 @@ pub fn create_market(
         outcome_count,
         UNRESOLVED,
         category,
-        0, // total_collateral
-        0, // total_volume
-        0, // resolution_bond
+        0,          // total_collateral
+        0,          // total_volume
+        0,          // resolution_bond
         &[0u8; 32], // resolver
         question_hash,
-        0, // dispute_end_slot
-        0, // fees_collected
-        0, // lp_total_shares
+        0,         // dispute_end_slot
+        0,         // fees_collected
+        0,         // lp_total_shares
         &[0u8; 8], // oracle_attestation_hash
     );
     save_market(new_id, &record);
@@ -1549,11 +1613,18 @@ pub fn add_initial_liquidity(
     odds_bps_ptr: *const u8,
     odds_bps_len: u32,
 ) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut provider = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32);
+    }
     let provider = &provider[..];
 
     // Validate caller
@@ -1573,7 +1644,11 @@ pub fn add_initial_liquidity(
     // Load market
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { log_info("Market not found"); reentrancy_exit(); return 0; }
+        None => {
+            log_info("Market not found");
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     // Only PENDING markets accept initial liquidity
@@ -1607,7 +1682,13 @@ pub fn add_initial_liquidity(
 
     if odds_bps_len >= (outcome_count as u32) * 2 {
         let mut odds_data = vec![0u8; odds_bps_len as usize];
-        unsafe { core::ptr::copy_nonoverlapping(odds_bps_ptr, odds_data.as_mut_ptr(), odds_bps_len as usize); }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                odds_bps_ptr,
+                odds_data.as_mut_ptr(),
+                odds_bps_len as usize,
+            );
+        }
         // Check if first value is 0 (use default equal odds)
         let first_odds = u16::from_le_bytes([odds_data[0], odds_data[1]]);
         if first_odds == 0 {
@@ -1643,10 +1724,10 @@ pub fn add_initial_liquidity(
             // r_i = 1 / (C * p_i) = K / p_i where K is normalization constant
             // sum(r_i) = K * sum(1/p_i)
             // We want total liquidity to be total_shares * outcome_count (one set per mUSD).
-            // Actually just set: r_i = total_shares * (10000 - bps_i) / 10000 for binary, 
+            // Actually just set: r_i = total_shares * (10000 - bps_i) / 10000 for binary,
             // or more generally, r_i = total_shares * C / bps_i
             //
-            // Simplest correct approach for binary: 
+            // Simplest correct approach for binary:
             //   reserve_YES = total_shares * bps_NO / 10000
             //   reserve_NO = total_shares * bps_YES / 10000
             // These give: price_YES = r_NO / (r_YES + r_NO)
@@ -1654,7 +1735,7 @@ pub fn add_initial_liquidity(
             //           = bps_YES / (bps_NO + bps_YES) = bps_YES / 10000 //
             // For multi-outcome with CPMM product model:
             //   r_i = K / bps_i (where K is chosen so that all reserves are reasonable)
-            
+
             if outcome_count == 2 {
                 // Binary: swap the bps values for reserves
                 reserves.push((total_shares * bps_values[1]) / 10_000);
@@ -1728,16 +1809,19 @@ pub fn add_initial_liquidity(
 
 /// Add liquidity to an ACTIVE market.
 /// Returns LP shares minted, or 0 on failure.
-pub fn add_liquidity(
-    provider_ptr: *const u8,
-    market_id: u64,
-    amount_musd: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut provider = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32);
+    }
     let provider = &provider[..];
 
     let caller = moltchain_sdk::get_caller();
@@ -1755,7 +1839,11 @@ pub fn add_liquidity(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { log_info("Market not found"); reentrancy_exit(); return 0; }
+        None => {
+            log_info("Market not found");
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_ACTIVE {
@@ -1797,7 +1885,10 @@ pub fn add_liquidity(
     for i in 0..outcome_count {
         let mut pool = match load_outcome_pool(market_id, i) {
             Some(p) => p,
-            None => { reentrancy_exit(); return 0; }
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
         };
         let old_reserve = pool_reserve(&pool);
         // Add proportional to current reserve
@@ -1838,17 +1929,19 @@ pub fn add_liquidity(
 
 /// Buy shares of a specific outcome.
 /// Returns shares_received as u32 (full u64 also in return_data), 0 on failure.
-pub fn buy_shares(
-    trader_ptr: *const u8,
-    market_id: u64,
-    outcome: u8,
-    amount_musd: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut trader = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader_ptr, trader.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader_ptr, trader.as_mut_ptr(), 32);
+    }
     let trader = &trader[..];
 
     let caller = moltchain_sdk::get_caller();
@@ -1866,7 +1959,11 @@ pub fn buy_shares(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { log_info("Market not found"); reentrancy_exit(); return 0; }
+        None => {
+            log_info("Market not found");
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     // Must be ACTIVE and not past close_slot
@@ -1904,7 +2001,10 @@ pub fn buy_shares(
     for i in 0..outcome_count {
         let pool = match load_outcome_pool(market_id, i) {
             Some(p) => p,
-            None => { reentrancy_exit(); return 0; }
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
         };
         reserves.push(pool_reserve(&pool));
     }
@@ -1938,7 +2038,10 @@ pub fn buy_shares(
         let price_diff = new_price.abs_diff(prev_price);
         // Price move > 50% of previous price → arm circuit breaker for NEXT trade
         if (price_diff * 10_000) / prev_price > PRICE_MOVE_PAUSE_BPS {
-            save_u64(&market_pause_key(market_id), current_slot + PRICE_MOVE_PAUSE_SLOTS);
+            save_u64(
+                &market_pause_key(market_id),
+                current_slot + PRICE_MOVE_PAUSE_SLOTS,
+            );
         }
     }
 
@@ -2014,17 +2117,19 @@ pub fn buy_shares(
 
 /// Sell shares of a specific outcome.
 /// Returns musd_returned as u32 (full u64 also in return_data), 0 on failure.
-pub fn sell_shares(
-    trader_ptr: *const u8,
-    market_id: u64,
-    outcome: u8,
-    shares_amount: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut trader = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader_ptr, trader.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader_ptr, trader.as_mut_ptr(), 32);
+    }
     let trader = &trader[..];
 
     let caller = moltchain_sdk::get_caller();
@@ -2035,7 +2140,11 @@ pub fn sell_shares(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { log_info("Market not found"); reentrancy_exit(); return 0; }
+        None => {
+            log_info("Market not found");
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_ACTIVE {
@@ -2153,10 +2262,7 @@ pub fn sell_shares(
     // Update market totals
     let existing_coll = market_total_collateral(&record);
     let total_out = musd_returned + fee_musd;
-    set_market_total_collateral(
-        &mut record,
-        existing_coll.saturating_sub(total_out),
-    );
+    set_market_total_collateral(&mut record, existing_coll.saturating_sub(total_out));
     let vol = market_total_volume(&record);
     set_market_total_volume(&mut record, vol + total_out);
     let protocol_fee = (fee_musd * FEE_PROTOCOL_SHARE) / 100;
@@ -2183,16 +2289,19 @@ pub fn sell_shares(
 
 /// Mint a complete set (1 share of every outcome for amount_musd collateral).
 /// Returns 1 on success, 0 on failure.
-pub fn mint_complete_set(
-    user_ptr: *const u8,
-    market_id: u64,
-    amount_musd: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != user[..] {
@@ -2209,7 +2318,10 @@ pub fn mint_complete_set(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_ACTIVE {
@@ -2244,7 +2356,9 @@ pub fn mint_complete_set(
     for i in 0..outcome_count {
         let (existing_shares, existing_cost) = load_position(market_id, user, i);
         save_position(
-            market_id, user, i,
+            market_id,
+            user,
+            i,
             existing_shares + amount_musd,
             existing_cost + amount_musd,
         );
@@ -2252,7 +2366,10 @@ pub fn mint_complete_set(
         // Update pool: increase total shares and open interest
         let mut pool = match load_outcome_pool(market_id, i) {
             Some(p) => p,
-            None => { reentrancy_exit(); return 0; }
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
         };
         let ts = pool_total_shares(&pool);
         set_pool_total_shares(&mut pool, ts + amount_musd);
@@ -2276,16 +2393,19 @@ pub fn mint_complete_set(
 
 /// Redeem a complete set (burn 1 share of every outcome for collateral return).
 /// Returns mUSD amount returned, 0 on failure.
-pub fn redeem_complete_set(
-    user_ptr: *const u8,
-    market_id: u64,
-    amount: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != user[..] {
@@ -2295,7 +2415,10 @@ pub fn redeem_complete_set(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     let status = market_status(&record);
@@ -2325,9 +2448,13 @@ pub fn redeem_complete_set(
         let (shares, cost) = load_position(market_id, user, i);
         let cost_reduction = if shares > 0 {
             (cost as u128 * amount as u128 / shares as u128) as u64
-        } else { 0 };
+        } else {
+            0
+        };
         save_position(
-            market_id, user, i,
+            market_id,
+            user,
+            i,
             shares - amount,
             cost.saturating_sub(cost_reduction),
         );
@@ -2335,7 +2462,10 @@ pub fn redeem_complete_set(
         // Update pool
         let mut pool = match load_outcome_pool(market_id, i) {
             Some(p) => p,
-            None => { reentrancy_exit(); return 0; }
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
         };
         let ts = pool_total_shares(&pool);
         set_pool_total_shares(&mut pool, ts.saturating_sub(amount));
@@ -2347,14 +2477,14 @@ pub fn redeem_complete_set(
     // Return collateral (no fee on redemption per plan)
     let musd_returned = amount;
     let existing_coll = market_total_collateral(&record);
-    set_market_total_collateral(
-        &mut record,
-        existing_coll.saturating_sub(musd_returned),
-    );
+    set_market_total_collateral(&mut record, existing_coll.saturating_sub(musd_returned));
     save_market(market_id, &record);
 
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(musd_returned));
+    save_u64(
+        TOTAL_COLLATERAL_KEY,
+        total_coll.saturating_sub(musd_returned),
+    );
 
     // G21-01: Transfer mUSD to user
     if !transfer_musd_out(user, musd_returned) {
@@ -2370,14 +2500,15 @@ pub fn redeem_complete_set(
 /// Close a market after its close_slot has passed.
 /// Anyone can call this to transition ACTIVE → CLOSED.
 /// Returns 1 on success, 0 on failure.
-pub fn close_market(
-    caller_ptr: *const u8,
-    market_id: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn close_market(caller_ptr: *const u8, market_id: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let actual_caller = moltchain_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
@@ -2387,7 +2518,10 @@ pub fn close_market(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_ACTIVE {
@@ -2418,14 +2552,23 @@ pub fn submit_resolution(
     attestation_hash_ptr: *const u8,
     bond: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut resolver = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(resolver_ptr, resolver.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(resolver_ptr, resolver.as_mut_ptr(), 32);
+    }
     let resolver = &resolver[..];
     let mut attestation_hash = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(attestation_hash_ptr, attestation_hash.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(attestation_hash_ptr, attestation_hash.as_mut_ptr(), 32);
+    }
     let attestation_hash = &attestation_hash[..];
 
     let caller = moltchain_sdk::get_caller();
@@ -2443,7 +2586,11 @@ pub fn submit_resolution(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { log_info("Market not found"); reentrancy_exit(); return 0; }
+        None => {
+            log_info("Market not found");
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     // Market must be CLOSED
@@ -2540,14 +2687,23 @@ pub fn challenge_resolution(
     evidence_hash_ptr: *const u8,
     bond: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut challenger = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(challenger_ptr, challenger.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(challenger_ptr, challenger.as_mut_ptr(), 32);
+    }
     let challenger = &challenger[..];
     let mut evidence_hash = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(evidence_hash_ptr, evidence_hash.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(evidence_hash_ptr, evidence_hash.as_mut_ptr(), 32);
+    }
     let evidence_hash = &evidence_hash[..];
 
     let caller = moltchain_sdk::get_caller();
@@ -2565,7 +2721,10 @@ pub fn challenge_resolution(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_RESOLVING {
@@ -2619,19 +2778,23 @@ pub fn challenge_resolution(
 /// Finalize a resolution after the dispute period passes without challenge.
 /// This transitions RESOLVING → RESOLVED.
 /// Returns 1 on success, 0 on failure.
-pub fn finalize_resolution(
-    caller_ptr: *const u8,
-    market_id: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn finalize_resolution(caller_ptr: *const u8, market_id: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_RESOLVING {
@@ -2680,15 +2843,15 @@ pub fn finalize_resolution(
 
 /// DAO resolve: admin/DAO can override resolution for DISPUTED markets.
 /// Returns 1 on success, 0 on failure.
-pub fn dao_resolve(
-    caller_ptr: *const u8,
-    market_id: u64,
-    winning_outcome: u8,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn dao_resolve(caller_ptr: *const u8, market_id: u64, winning_outcome: u8) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -2711,7 +2874,10 @@ pub fn dao_resolve(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_DISPUTED {
@@ -2740,14 +2906,15 @@ pub fn dao_resolve(
 
 /// DAO void: admin/DAO can void a market (refund all collateral).
 /// Returns 1 on success, 0 on failure.
-pub fn dao_void(
-    caller_ptr: *const u8,
-    market_id: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn dao_void(caller_ptr: *const u8, market_id: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -2768,7 +2935,10 @@ pub fn dao_void(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     let status = market_status(&record);
@@ -2791,15 +2961,15 @@ pub fn dao_void(
 /// Returns 1 on success (payout in return data as u64), 0 on failure.
 /// SECURITY FIX: Now actually transfers mUSD tokens via call_token_transfer
 /// and stores full u64 payout in return_data (no more u32 truncation).
-pub fn redeem_shares(
-    user_ptr: *const u8,
-    market_id: u64,
-    outcome: u8,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != user[..] {
@@ -2809,7 +2979,10 @@ pub fn redeem_shares(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_RESOLVED {
@@ -2877,14 +3050,15 @@ pub fn redeem_shares(
 
 /// Reclaim collateral from a VOIDED market.
 /// Returns 1 on success (refund amount in return data as u64), 0 on failure.
-pub fn reclaim_collateral(
-    user_ptr: *const u8,
-    market_id: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
+pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
 
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != user[..] {
@@ -2894,7 +3068,10 @@ pub fn reclaim_collateral(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_VOIDED {
@@ -2980,16 +3157,19 @@ pub fn reclaim_collateral(
 
 /// Withdraw liquidity from an ACTIVE market.
 /// Returns mUSD returned.
-pub fn withdraw_liquidity(
-    provider_ptr: *const u8,
-    market_id: u64,
-    lp_shares_amount: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 0; }
-    if !require_not_paused() { reentrancy_exit(); return 0; }
+pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 0;
+    }
 
     let mut provider = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32);
+    }
     let provider = &provider[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != provider[..] {
@@ -2999,7 +3179,10 @@ pub fn withdraw_liquidity(
 
     let mut record = match load_market(market_id) {
         Some(r) => r,
-        None => { reentrancy_exit(); return 0; }
+        None => {
+            reentrancy_exit();
+            return 0;
+        }
     };
 
     if market_status(&record) != STATUS_ACTIVE {
@@ -3044,7 +3227,10 @@ pub fn withdraw_liquidity(
     for i in 0..outcome_count {
         let mut pool = match load_outcome_pool(market_id, i) {
             Some(p) => p,
-            None => { reentrancy_exit(); return 0; }
+            None => {
+                reentrancy_exit();
+                return 0;
+            }
         };
         let r = pool_reserve(&pool);
         let remove = (r as u128 * lp_shares_amount as u128 / total_lp as u128) as u64;
@@ -3061,7 +3247,10 @@ pub fn withdraw_liquidity(
     save_market(market_id, &record);
 
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
-    save_u64(TOTAL_COLLATERAL_KEY, platform_coll.saturating_sub(musd_returned));
+    save_u64(
+        TOTAL_COLLATERAL_KEY,
+        platform_coll.saturating_sub(musd_returned),
+    );
 
     // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
     moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
@@ -3077,7 +3266,9 @@ pub fn withdraw_liquidity(
 /// Emergency pause the entire contract.
 pub fn emergency_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -3097,7 +3288,9 @@ pub fn emergency_pause(caller_ptr: *const u8) -> u32 {
 /// Unpause the contract.
 pub fn emergency_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -3117,7 +3310,9 @@ pub fn emergency_unpause(caller_ptr: *const u8) -> u32 {
 /// Set MoltyID contract address.
 pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -3131,7 +3326,9 @@ pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
         return 0;
     }
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
     let address = &address[..];
     storage_set(MOLTYID_ADDR_KEY, address);
     1
@@ -3140,7 +3337,9 @@ pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
 /// Set MoltOracle contract address.
 pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
@@ -3154,7 +3353,9 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
         return 0;
     }
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
     let address = &address[..];
     storage_set(ORACLE_ADDR_KEY, address);
     1
@@ -3163,16 +3364,24 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
 /// Set mUSD token contract address.
 pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
     let actual_caller = moltchain_sdk::get_caller();
-    if actual_caller.0[..] != caller[..] { return 0; }
-    if !require_admin(&caller_arr) { return 0; }
+    if actual_caller.0[..] != caller[..] {
+        return 0;
+    }
+    if !require_admin(&caller_arr) {
+        return 0;
+    }
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
     let address = &address[..];
     storage_set(MUSD_ADDR_KEY, address);
     1
@@ -3181,16 +3390,24 @@ pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
 /// Set DEX governance address (for dispute resolution).
 pub fn set_dex_gov_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
     let actual_caller = moltchain_sdk::get_caller();
-    if actual_caller.0[..] != caller[..] { return 0; }
-    if !require_admin(&caller_arr) { return 0; }
+    if actual_caller.0[..] != caller[..] {
+        return 0;
+    }
+    if !require_admin(&caller_arr) {
+        return 0;
+    }
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
     let address = &address[..];
     storage_set(DEX_GOV_ADDR_KEY, address);
     1
@@ -3199,16 +3416,24 @@ pub fn set_dex_gov_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
 /// Set this contract's own address (needed for token transfer source). Admin only.
 pub fn set_self_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let caller = &caller[..];
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
     let actual_caller = moltchain_sdk::get_caller();
-    if actual_caller.0[..] != caller[..] { return 0; }
-    if !require_admin(&caller_arr) { return 0; }
+    if actual_caller.0[..] != caller[..] {
+        return 0;
+    }
+    if !require_admin(&caller_arr) {
+        return 0;
+    }
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
+    }
     if address.iter().all(|&b| b == 0) {
         log_info("set_self_address: zero address rejected");
         return 0;
@@ -3277,7 +3502,9 @@ pub fn get_price(market_id: u64, outcome: u8) -> u32 {
 /// Returns 16-byte position data via return_data.
 pub fn get_position(market_id: u64, user_ptr: *const u8, outcome: u8) -> u32 {
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let (shares, cost) = load_position(market_id, user, outcome);
     moltchain_sdk::set_return_data(&encode_position(shares, cost));
@@ -3287,7 +3514,9 @@ pub fn get_position(market_id: u64, user_ptr: *const u8, outcome: u8) -> u32 {
 /// Get user's market participation count.
 pub fn get_user_markets(user_ptr: *const u8) -> u64 {
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     load_u64(&user_market_count_key(user))
 }
@@ -3299,7 +3528,9 @@ pub fn quote_buy(market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
         None => return 0,
     };
     let outcome_count = market_outcome_count(&record);
-    if outcome >= outcome_count { return 0; }
+    if outcome >= outcome_count {
+        return 0;
+    }
 
     let mut reserves = Vec::with_capacity(outcome_count as usize);
     for i in 0..outcome_count {
@@ -3321,7 +3552,9 @@ pub fn quote_sell(market_id: u64, outcome: u8, shares_amount: u64) -> u32 {
         None => return 0,
     };
     let outcome_count = market_outcome_count(&record);
-    if outcome >= outcome_count { return 0; }
+    if outcome >= outcome_count {
+        return 0;
+    }
 
     let mut reserves = Vec::with_capacity(outcome_count as usize);
     for i in 0..outcome_count {
@@ -3371,7 +3604,9 @@ pub fn get_platform_stats() -> u32 {
 /// Get LP balance for a user in a market.
 pub fn get_lp_balance(market_id: u64, user_ptr: *const u8) -> u32 {
     let mut user = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
+    }
     let user = &user[..];
     let balance = load_u64(&lp_key(market_id, user));
     moltchain_sdk::set_return_data(&u64_to_bytes(balance));
@@ -3416,8 +3651,13 @@ pub extern "C" fn call() {
                 if args.len() >= 79 + q_len as usize {
                     let q_ptr = args[79..].as_ptr();
                     let result = create_market(
-                        creator_ptr, category, close_slot, outcome_count,
-                        qh_ptr, q_ptr, q_len,
+                        creator_ptr,
+                        category,
+                        close_slot,
+                        outcome_count,
+                        qh_ptr,
+                        q_ptr,
+                        q_len,
                     );
                     // G21-02: function sets return_data with full u64 on success
                     if result == 0 {
@@ -3433,8 +3673,16 @@ pub extern "C" fn call() {
                 let provider_ptr = args[1..33].as_ptr();
                 let mid = bytes_to_u64(&args[33..41]);
                 let amount = bytes_to_u64(&args[41..49]);
-                let odds_ptr = if args.len() > 49 { args[49..].as_ptr() } else { core::ptr::null() };
-                let odds_len = if args.len() > 49 { (args.len() - 49) as u32 } else { 0 };
+                let odds_ptr = if args.len() > 49 {
+                    args[49..].as_ptr()
+                } else {
+                    core::ptr::null()
+                };
+                let odds_len = if args.len() > 49 {
+                    (args.len() - 49) as u32
+                } else {
+                    0
+                };
                 let result = add_initial_liquidity(provider_ptr, mid, amount, odds_ptr, odds_len);
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
@@ -3533,42 +3781,30 @@ pub extern "C" fn call() {
         // 10: finalize_resolution
         10 => {
             if args.len() >= 1 + 32 + 8 {
-                let result = finalize_resolution(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                );
+                let result = finalize_resolution(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 11: dao_resolve
         11 => {
             if args.len() >= 1 + 32 + 8 + 1 {
-                let result = dao_resolve(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                    args[41],
-                );
+                let result =
+                    dao_resolve(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 12: dao_void
         12 => {
             if args.len() >= 1 + 32 + 8 {
-                let result = dao_void(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                );
+                let result = dao_void(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 13: redeem_shares
         13 => {
             if args.len() >= 1 + 32 + 8 + 1 {
-                let result = redeem_shares(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                    args[41],
-                );
+                let result =
+                    redeem_shares(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
                     moltchain_sdk::set_return_data(&u64_to_bytes(0));
@@ -3578,10 +3814,7 @@ pub extern "C" fn call() {
         // 14: reclaim_collateral
         14 => {
             if args.len() >= 1 + 32 + 8 {
-                let result = reclaim_collateral(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                );
+                let result = reclaim_collateral(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
                     moltchain_sdk::set_return_data(&u64_to_bytes(0));
@@ -3647,10 +3880,7 @@ pub extern "C" fn call() {
         // 22: close_market
         22 => {
             if args.len() >= 1 + 32 + 8 {
-                let result = close_market(
-                    args[1..33].as_ptr(),
-                    bytes_to_u64(&args[33..41]),
-                );
+                let result = close_market(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
@@ -3695,13 +3925,21 @@ pub extern "C" fn call() {
         29 => {
             // quote_buy
             if args.len() >= 18 {
-                quote_buy(bytes_to_u64(&args[1..9]), args[9], bytes_to_u64(&args[10..18]));
+                quote_buy(
+                    bytes_to_u64(&args[1..9]),
+                    args[9],
+                    bytes_to_u64(&args[10..18]),
+                );
             }
         }
         30 => {
             // quote_sell
             if args.len() >= 18 {
-                quote_sell(bytes_to_u64(&args[1..9]), args[9], bytes_to_u64(&args[10..18]));
+                quote_sell(
+                    bytes_to_u64(&args[1..9]),
+                    args[9],
+                    bytes_to_u64(&args[10..18]),
+                );
             }
         }
         31 => {
@@ -3762,7 +4000,11 @@ pub extern "C" fn call() {
         36 => {
             // get_leaderboard(limit 8B) → returns up to N traders sorted by volume
             // Format: count(8B) + [addr(32B) + volume(8B) + trades(8B)] * count
-            let limit = if args.len() >= 9 { bytes_to_u64(&args[1..9]).min(50) } else { 20 };
+            let limit = if args.len() >= 9 {
+                bytes_to_u64(&args[1..9]).min(50)
+            } else {
+                20
+            };
             let total_traders = load_u64(TOTAL_TRADERS_KEY);
             // Collect all traders and their volumes
             let scan_max = total_traders.min(500); // cap scan to prevent gas-bomb
@@ -3816,7 +4058,9 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&result);
             }
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 
@@ -3828,8 +4072,8 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
+    use moltchain_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -3877,13 +4121,8 @@ mod tests {
         test_mock::set_caller(*creator);
         // G21-01: Attach value covering liquidity deposit
         test_mock::set_value(amount);
-        let result = add_initial_liquidity(
-            creator.as_ptr(),
-            market_id,
-            amount,
-            core::ptr::null(),
-            0,
-        );
+        let result =
+            add_initial_liquidity(creator.as_ptr(), market_id, amount, core::ptr::null(), 0);
         assert_eq!(result, 1, "add_initial_liquidity should succeed");
     }
 
@@ -3952,9 +4191,31 @@ mod tests {
         let qhash = [0x42u8; 32];
         let question = b"Test?";
         // 1 outcome: too few
-        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 1, qhash.as_ptr(), question.as_ptr(), 5), 0);
+        assert_eq!(
+            create_market(
+                creator.as_ptr(),
+                0,
+                100_000,
+                1,
+                qhash.as_ptr(),
+                question.as_ptr(),
+                5
+            ),
+            0
+        );
         // 9 outcomes: too many
-        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 9, qhash.as_ptr(), question.as_ptr(), 5), 0);
+        assert_eq!(
+            create_market(
+                creator.as_ptr(),
+                0,
+                100_000,
+                9,
+                qhash.as_ptr(),
+                question.as_ptr(),
+                5
+            ),
+            0
+        );
     }
 
     #[test]
@@ -3967,7 +4228,18 @@ mod tests {
         let qhash = [0x42u8; 32];
         let question = b"Test?";
         // close_slot too close (< MIN_DURATION)
-        assert_eq!(create_market(creator.as_ptr(), 0, 1050, 2, qhash.as_ptr(), question.as_ptr(), 5), 0);
+        assert_eq!(
+            create_market(
+                creator.as_ptr(),
+                0,
+                1050,
+                2,
+                qhash.as_ptr(),
+                question.as_ptr(),
+                5
+            ),
+            0
+        );
     }
 
     #[test]
@@ -3980,7 +4252,18 @@ mod tests {
         test_mock::set_slot(1000);
         let qhash = [0x42u8; 32];
         let question = b"Test?";
-        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 2, qhash.as_ptr(), question.as_ptr(), 5), 0);
+        assert_eq!(
+            create_market(
+                creator.as_ptr(),
+                0,
+                100_000,
+                2,
+                qhash.as_ptr(),
+                question.as_ptr(),
+                5
+            ),
+            0
+        );
     }
 
     // ========================================================================
@@ -4015,7 +4298,10 @@ mod tests {
         let mid = create_binary_market(&creator, 100_000);
         test_mock::set_caller(creator);
         // Below MIN_COLLATERAL (1_000_000)
-        assert_eq!(add_initial_liquidity(creator.as_ptr(), mid, 500_000, core::ptr::null(), 0), 0);
+        assert_eq!(
+            add_initial_liquidity(creator.as_ptr(), mid, 500_000, core::ptr::null(), 0),
+            0
+        );
     }
 
     #[test]
@@ -4026,7 +4312,10 @@ mod tests {
         let mid = create_binary_market(&creator, 100_000);
         let other = [3u8; 32];
         test_mock::set_caller(other);
-        assert_eq!(add_initial_liquidity(other.as_ptr(), mid, 10_000_000, core::ptr::null(), 0), 0);
+        assert_eq!(
+            add_initial_liquidity(other.as_ptr(), mid, 10_000_000, core::ptr::null(), 0),
+            0
+        );
     }
 
     // ========================================================================
@@ -4209,9 +4498,7 @@ mod tests {
         test_mock::set_caller(resolver);
         test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xCC; 32];
-        let result = submit_resolution(
-            resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND,
-        );
+        let result = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
         assert_eq!(result, 1, "Resolution should succeed without oracle");
 
         let record = load_market(mid).unwrap();
@@ -4241,9 +4528,7 @@ mod tests {
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
         let att_hash = [0xCC; 32];
-        let result = submit_resolution(
-            resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND,
-        );
+        let result = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
         // Mock returns empty vec → "attestation not found" → rejection
         assert_eq!(result, 0, "Should reject when oracle returns empty data");
     }
@@ -4259,7 +4544,10 @@ mod tests {
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
         let att_hash = [0xCC; 32];
-        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND), 0);
+        assert_eq!(
+            submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND),
+            0
+        );
     }
 
     #[test]
@@ -4278,7 +4566,10 @@ mod tests {
         test_mock::set_caller(resolver);
         let att_hash = [0xCC; 32];
         // outcome 5 is invalid for binary market (0 or 1 only)
-        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), DISPUTE_BOND), 0);
+        assert_eq!(
+            submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), DISPUTE_BOND),
+            0
+        );
     }
 
     #[test]
@@ -4441,8 +4732,14 @@ mod tests {
         assert_eq!(result, 1, "Redeem should succeed");
 
         let payout = bytes_to_u64(&test_mock::get_return_data());
-        assert_eq!(payout, large_shares, "Full u64 payout should be preserved in return_data");
-        assert!(payout > u32::MAX as u64, "Payout exceeds u32::MAX — return_data is not truncated");
+        assert_eq!(
+            payout, large_shares,
+            "Full u64 payout should be preserved in return_data"
+        );
+        assert!(
+            payout > u32::MAX as u64,
+            "Payout exceeds u32::MAX — return_data is not truncated"
+        );
     }
 
     // ========================================================================
@@ -4620,7 +4917,18 @@ mod tests {
         test_mock::set_slot(1000);
         let qhash = [0x42u8; 32];
         let question = b"Paused?";
-        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 2, qhash.as_ptr(), question.as_ptr(), 7), 0);
+        assert_eq!(
+            create_market(
+                creator.as_ptr(),
+                0,
+                100_000,
+                2,
+                qhash.as_ptr(),
+                question.as_ptr(),
+                7
+            ),
+            0
+        );
     }
 
     #[test]
@@ -4682,7 +4990,10 @@ mod tests {
         test_mock::set_caller(resolver);
         test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xDD; 32];
-        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND), 1);
+        assert_eq!(
+            submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND),
+            1
+        );
 
         // 6. Finalize after dispute period
         test_mock::set_slot(100_001 + DISPUTE_PERIOD + 1);
@@ -4727,7 +5038,15 @@ mod tests {
         test_mock::set_caller(creator);
         let qhash2 = [0x43u8; 32];
         let q2 = b"Will BTC hit $500K?";
-        create_market(creator.as_ptr(), CATEGORY_CRYPTO, 100_000, 2, qhash2.as_ptr(), q2.as_ptr(), q2.len() as u32);
+        create_market(
+            creator.as_ptr(),
+            CATEGORY_CRYPTO,
+            100_000,
+            2,
+            qhash2.as_ptr(),
+            q2.as_ptr(),
+            q2.len() as u32,
+        );
         assert_eq!(get_market_count(), 2);
     }
 
@@ -4751,7 +5070,10 @@ mod tests {
         assert!(p_yes < 400_000, "YES should be cheap");
         assert!(p_no > 600_000, "NO should be expensive");
         // Sum should be ~MUSD_UNIT
-        assert!((p_yes + p_no).abs_diff(MUSD_UNIT) < 2, "Prices should sum to ~$1");
+        assert!(
+            (p_yes + p_no).abs_diff(MUSD_UNIT) < 2,
+            "Prices should sum to ~$1"
+        );
     }
 
     // ========================================================================
@@ -4767,7 +5089,15 @@ mod tests {
         test_mock::set_value(MARKET_CREATION_FEE - 1); // 1 short
         let q = b"Will it rain tomorrow?";
         let qh = [0xEE; 32];
-        let r = create_market(creator.as_ptr(), 0, 200_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+        let r = create_market(
+            creator.as_ptr(),
+            0,
+            200_000,
+            2,
+            qh.as_ptr(),
+            q.as_ptr(),
+            q.len() as u32,
+        );
         assert_eq!(r, 0, "Should reject insufficient creation fee");
     }
 
@@ -4799,7 +5129,10 @@ mod tests {
         test_mock::set_caller(user);
         test_mock::set_value(4_999_999); // less than 5_000_000
         let r = mint_complete_set(user.as_ptr(), mid, 5_000_000);
-        assert_eq!(r, 0, "Should reject insufficient value for mint_complete_set");
+        assert_eq!(
+            r, 0,
+            "Should reject insufficient value for mint_complete_set"
+        );
     }
 
     #[test]
@@ -4843,7 +5176,10 @@ mod tests {
         // Sell shares — should trigger transfer_musd_out
         test_mock::set_caller(trader);
         let sold = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
-        assert!(sold > 0, "sell_shares should return mUSD amount with escrow configured");
+        assert!(
+            sold > 0,
+            "sell_shares should return mUSD amount with escrow configured"
+        );
     }
 
     #[test]
@@ -4864,7 +5200,10 @@ mod tests {
         // Withdraw — should trigger transfer_musd_out
         test_mock::set_caller(creator);
         let w = withdraw_liquidity(creator.as_ptr(), mid, 2_000_000);
-        assert!(w > 0, "withdraw_liquidity should return mUSD amount with escrow configured");
+        assert!(
+            w > 0,
+            "withdraw_liquidity should return mUSD amount with escrow configured"
+        );
     }
 
     #[test]
@@ -4904,7 +5243,10 @@ mod tests {
         let rd = test_mock::get_return_data();
         assert!(rd.len() >= 8, "return_data should have 8 bytes");
         let rd_val = u64::from_le_bytes(rd[0..8].try_into().unwrap());
-        assert_eq!(rd_val, shares as u64, "return_data u64 should match u32 return for small values");
+        assert_eq!(
+            rd_val, shares as u64,
+            "return_data u64 should match u32 return for small values"
+        );
     }
 
     #[test]
@@ -4930,7 +5272,10 @@ mod tests {
         let rd = test_mock::get_return_data();
         assert!(rd.len() >= 8);
         let rd_val = u64::from_le_bytes(rd[0..8].try_into().unwrap());
-        assert_eq!(rd_val, musd as u64, "return_data u64 should match u32 return for sell");
+        assert_eq!(
+            rd_val, musd as u64,
+            "return_data u64 should match u32 return for sell"
+        );
     }
 
     #[test]
@@ -4982,9 +5327,7 @@ mod tests {
         // Add initial liquidity
         test_mock::set_caller(creator);
         test_mock::set_value(30_000_000); // 30 mUSD
-        let liq = add_initial_liquidity(
-            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
-        );
+        let liq = add_initial_liquidity(creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0);
         assert_eq!(liq, 1);
 
         // Buy shares of outcome 0
@@ -5013,9 +5356,7 @@ mod tests {
 
         test_mock::set_caller(creator);
         test_mock::set_value(30_000_000);
-        let liq = add_initial_liquidity(
-            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
-        );
+        let liq = add_initial_liquidity(creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0);
         assert_eq!(liq, 1);
 
         // Buy and sell all shares
@@ -5029,10 +5370,16 @@ mod tests {
         test_mock::set_caller(trader);
         test_mock::set_slot(5200);
         let musd = sell_shares(trader.as_ptr(), mid, 1, shares as u64);
-        assert!(musd > 0, "selling all multi-outcome shares should return mUSD");
+        assert!(
+            musd > 0,
+            "selling all multi-outcome shares should return mUSD"
+        );
 
         // Should get back less than initial due to slippage and fees
-        assert!((musd as u64) < 2_000_000, "should get back less than invested due to fees");
+        assert!(
+            (musd as u64) < 2_000_000,
+            "should get back less than invested due to fees"
+        );
     }
 
     #[test]
@@ -5047,9 +5394,7 @@ mod tests {
 
         test_mock::set_caller(creator);
         test_mock::set_value(30_000_000);
-        let liq = add_initial_liquidity(
-            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
-        );
+        let liq = add_initial_liquidity(creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0);
         assert_eq!(liq, 1);
 
         // Read initial reserves
@@ -5071,7 +5416,10 @@ mod tests {
         // After buy, outcome 0 reserve should decrease (shares extracted)
         let p0_after_buy = load_outcome_pool(mid, 0).unwrap();
         let r0_after_buy = pool_reserve(&p0_after_buy);
-        assert!(r0_after_buy < r0_before, "buying outcome 0 should decrease its reserve");
+        assert!(
+            r0_after_buy < r0_before,
+            "buying outcome 0 should decrease its reserve"
+        );
 
         // Sell all back (advance slot past circuit-breaker pause)
         test_mock::set_caller(trader);
@@ -5082,7 +5430,10 @@ mod tests {
         // After sell, outcome 0 reserve should increase back (shares returned to pool)
         let p0_after_sell = load_outcome_pool(mid, 0).unwrap();
         let r0_after_sell = pool_reserve(&p0_after_sell);
-        assert!(r0_after_sell > r0_after_buy, "selling outcome 0 should increase its reserve back");
+        assert!(
+            r0_after_sell > r0_after_buy,
+            "selling outcome 0 should increase its reserve back"
+        );
     }
 
     #[test]
@@ -5093,7 +5444,10 @@ mod tests {
         let (musd, fee) = calculate_sell(reserves, 0, 1_000_000);
         assert!(musd > 0, "binary sell should return nonzero");
         assert!(fee > 0, "binary sell should have nonzero fee");
-        assert!(musd + fee <= 1_000_000, "sell output should not exceed input shares");
+        assert!(
+            musd + fee <= 1_000_000,
+            "sell output should not exceed input shares"
+        );
     }
 
     #[test]
@@ -5103,7 +5457,10 @@ mod tests {
         assert!(musd > 0, "3-outcome sell should return nonzero mUSD");
         assert!(fee > 0, "3-outcome sell should have nonzero fee");
         // With equal reserves and selling 1/10 of reserve, should get reasonable output
-        assert!(musd + fee <= 1_000_000, "sell payout should not exceed shares sold");
+        assert!(
+            musd + fee <= 1_000_000,
+            "sell payout should not exceed shares sold"
+        );
     }
 
     #[test]
@@ -5120,9 +5477,12 @@ mod tests {
         let reserves = &[5_000_000u64, 15_000_000u64, 10_000_000u64];
         let (musd_expensive, _) = calculate_sell(reserves, 0, 500_000); // outcome 0: low reserve = expensive
         let (musd_cheap, _) = calculate_sell(reserves, 1, 500_000); // outcome 1: high reserve = cheap
-        assert!(musd_expensive > musd_cheap,
+        assert!(
+            musd_expensive > musd_cheap,
             "selling expensive outcome shares should yield more mUSD ({} vs {})",
-            musd_expensive, musd_cheap);
+            musd_expensive,
+            musd_cheap
+        );
     }
 
     #[test]
@@ -5131,7 +5491,10 @@ mod tests {
         // Forming 1M sets with 10M reserves each should be feasible
         let needed = total_a_for_sets(reserves, 0, 1_000_000);
         assert!(needed < u128::MAX, "should be feasible");
-        assert!(needed > 1_000_000, "should need more than C shares of A (also need swap cost)");
+        assert!(
+            needed > 1_000_000,
+            "should need more than C shares of A (also need swap cost)"
+        );
     }
 
     #[test]
@@ -5139,6 +5502,10 @@ mod tests {
         let reserves = &[10_000_000u64, 500_000u64, 10_000_000u64];
         // Trying to form 500_000 sets when reserve[1] = 500_000 should be impossible
         let needed = total_a_for_sets(reserves, 0, 500_000);
-        assert_eq!(needed, u128::MAX, "should be impossible when C >= reserve_j");
+        assert_eq!(
+            needed,
+            u128::MAX,
+            "should be impossible when C >= reserve_j"
+        );
     }
 }

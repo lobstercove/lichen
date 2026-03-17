@@ -363,8 +363,7 @@ impl ShieldedPoolState {
     ) -> Result<(), ShieldedPoolError> {
         if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
-                    .to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
             ));
         }
         // Proof was already cryptographically verified by the processor.
@@ -381,8 +380,7 @@ impl ShieldedPoolState {
     ) -> Result<(), ShieldedPoolError> {
         if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
-                    .to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
             ));
         }
         if merkle_root != &self.merkle_root {
@@ -401,8 +399,7 @@ impl ShieldedPoolState {
     ) -> Result<(), ShieldedPoolError> {
         if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
-                    .to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)".to_string(),
             ));
         }
         if merkle_root != &self.merkle_root {
@@ -524,7 +521,9 @@ pub enum ShieldedPoolInstruction {
 #[cfg(target_arch = "wasm32")]
 mod wasm_abi {
     use super::*;
-    use moltchain_sdk::{storage_get, storage_set, log_info, set_return_data, get_slot, get_caller};
+    use moltchain_sdk::{
+        get_caller, get_slot, log_info, set_return_data, storage_get, storage_set,
+    };
 
     const STATE_KEY: &[u8] = b"pool_state";
     const OWNER_KEY: &[u8] = b"owner";
@@ -607,7 +606,9 @@ mod wasm_abi {
     /// AUDIT-FIX CON-04: Pause the pool (admin only)
     #[no_mangle]
     pub extern "C" fn pause() -> u32 {
-        if !require_admin() { return 1; }
+        if !require_admin() {
+            return 1;
+        }
         storage_set(PAUSED_KEY, &[1u8]);
         log_info("ShieldedPool PAUSED");
         0
@@ -616,7 +617,9 @@ mod wasm_abi {
     /// AUDIT-FIX CON-04: Unpause the pool (admin only)
     #[no_mangle]
     pub extern "C" fn unpause() -> u32 {
-        if !require_admin() { return 1; }
+        if !require_admin() {
+            return 1;
+        }
         storage_set(PAUSED_KEY, &[0u8]);
         log_info("ShieldedPool UNPAUSED");
         0
@@ -674,9 +677,15 @@ mod wasm_abi {
     #[no_mangle]
     pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
         // AUDIT-FIX CON-04: Pause check
-        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        if is_paused() {
+            log_info("ShieldedPool: paused");
+            return 1;
+        }
         // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+        if !reentrancy_enter() {
+            log_info("ShieldedPool: reentrant call blocked");
+            return 1;
+        }
 
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: ShieldRequest = match serde_json::from_slice(slice) {
@@ -709,9 +718,15 @@ mod wasm_abi {
     #[no_mangle]
     pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
         // AUDIT-FIX CON-04: Pause check
-        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        if is_paused() {
+            log_info("ShieldedPool: paused");
+            return 1;
+        }
         // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+        if !reentrancy_enter() {
+            log_info("ShieldedPool: reentrant call blocked");
+            return 1;
+        }
 
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: UnshieldRequest = match serde_json::from_slice(slice) {
@@ -743,9 +758,15 @@ mod wasm_abi {
     #[no_mangle]
     pub extern "C" fn transfer(args_ptr: *const u8, args_len: u32) -> u32 {
         // AUDIT-FIX CON-04: Pause check
-        if is_paused() { log_info("ShieldedPool: paused"); return 1; }
+        if is_paused() {
+            log_info("ShieldedPool: paused");
+            return 1;
+        }
         // AUDIT-FIX CON-02: Reentrancy guard
-        if !reentrancy_enter() { log_info("ShieldedPool: reentrant call blocked"); return 1; }
+        if !reentrancy_enter() {
+            log_info("ShieldedPool: reentrant call blocked");
+            return 1;
+        }
 
         let slice = unsafe { core::slice::from_raw_parts(args_ptr, args_len as usize) };
         let request: TransferRequest = match serde_json::from_slice(slice) {

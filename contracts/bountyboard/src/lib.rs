@@ -18,8 +18,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
-    Address, CrossCall, call_contract, call_token_transfer, get_value, get_contract_address,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
+    get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // ============================================================================
@@ -75,7 +75,9 @@ const BB_REENTRANCY_KEY: &[u8] = b"bb_reentrancy";
 
 fn reentrancy_enter() -> bool {
     if let Some(v) = storage_get(BB_REENTRANCY_KEY) {
-        if !v.is_empty() && v[0] == 1 { return false; }
+        if !v.is_empty() && v[0] == 1 {
+            return false;
+        }
     }
     storage_set(BB_REENTRANCY_KEY, &[1u8]);
     true
@@ -138,11 +140,7 @@ fn encode_bounty(
 
 const SUBMISSION_SIZE: usize = 72;
 
-fn encode_submission(
-    worker: &[u8; 32],
-    proof_hash: &[u8; 32],
-    submitted_slot: u64,
-) -> Vec<u8> {
+fn encode_submission(worker: &[u8; 32], proof_hash: &[u8; 32], submitted_slot: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(SUBMISSION_SIZE);
     data.extend_from_slice(worker);
     data.extend_from_slice(proof_hash);
@@ -172,13 +170,22 @@ pub extern "C" fn create_bounty(
 ) -> u32 {
     log_info("Creating bounty...");
     // AUDIT-FIX P2: Enforce pause
-    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
-    if !reentrancy_enter() { return 100; }
+    if is_bb_paused() {
+        log_info("BountyBoard is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut creator_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(creator_ptr, creator_arr.as_mut_ptr(), 32);
+    }
     let mut title_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(title_hash_ptr, title_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(title_hash_ptr, title_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -259,13 +266,22 @@ pub extern "C" fn submit_work(
 ) -> u32 {
     log_info("Submitting work for bounty...");
     // AUDIT-FIX P2: Enforce pause
-    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
-    if !reentrancy_enter() { return 100; }
+    if is_bb_paused() {
+        log_info("BountyBoard is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut worker_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(worker_ptr, worker_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(worker_ptr, worker_arr.as_mut_ptr(), 32);
+    }
     let mut proof_arr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(proof_hash_ptr, proof_arr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(proof_hash_ptr, proof_arr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -346,18 +362,21 @@ pub extern "C" fn submit_work(
 ///
 /// Returns 0 on success.
 #[no_mangle]
-pub extern "C" fn approve_work(
-    caller_ptr: *const u8,
-    bounty_id: u64,
-    submission_idx: u8,
-) -> u32 {
+pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission_idx: u8) -> u32 {
     log_info("Approving bounty work...");
     // AUDIT-FIX P2: Enforce pause
-    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
-    if !reentrancy_enter() { return 100; }
+    if is_bb_paused() {
+        log_info("BountyBoard is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -461,10 +480,17 @@ pub extern "C" fn approve_work(
     }
 
     // Track completion stats
-    let cc = storage_get(BB_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let cc = storage_get(BB_COMPLETED_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(BB_COMPLETED_COUNT_KEY, &u64_to_bytes(cc + 1));
-    let rv = storage_get(BB_REWARD_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(BB_REWARD_VOLUME_KEY, &u64_to_bytes(rv.saturating_add(reward_amount)));
+    let rv = storage_get(BB_REWARD_VOLUME_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(
+        BB_REWARD_VOLUME_KEY,
+        &u64_to_bytes(rv.saturating_add(reward_amount)),
+    );
 
     log_info("Work approved, bounty completed");
     reentrancy_exit();
@@ -483,17 +509,21 @@ pub extern "C" fn approve_work(
 ///
 /// Returns 0 on success.
 #[no_mangle]
-pub extern "C" fn cancel_bounty(
-    caller_ptr: *const u8,
-    bounty_id: u64,
-) -> u32 {
+pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
     log_info("Cancelling bounty...");
     // AUDIT-FIX P2: Enforce pause
-    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
-    if !reentrancy_enter() { return 100; }
+    if is_bb_paused() {
+        log_info("BountyBoard is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -568,7 +598,9 @@ pub extern "C" fn cancel_bounty(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(reward));
 
-    let canc = storage_get(BB_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let canc = storage_get(BB_CANCEL_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(BB_CANCEL_COUNT_KEY, &u64_to_bytes(canc + 1));
 
     log_info("Bounty cancelled, refund issued");
@@ -618,9 +650,13 @@ const TOKEN_ADDRESS_KEY: &[u8] = b"bounty_token_addr";
 /// Only callable once (first caller becomes admin).
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -645,11 +681,17 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut moltyid_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -660,7 +702,10 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => { reentrancy_exit(); return 1; },
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
     };
     if caller[..] != admin[..] {
         reentrancy_exit();
@@ -677,9 +722,13 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -690,7 +739,10 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => { reentrancy_exit(); return 1; },
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
     };
     if caller[..] != admin[..] {
         reentrancy_exit();
@@ -707,11 +759,17 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
     let mut token_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -722,7 +780,10 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => { reentrancy_exit(); return 1; }, // no admin set
+        None => {
+            reentrancy_exit();
+            return 1;
+        } // no admin set
     };
     if caller[..] != admin[..] {
         reentrancy_exit();
@@ -802,9 +863,13 @@ pub extern "C" fn get_bounty_count() -> u64 {
 /// Tests expect `set_platform_fee`
 #[no_mangle]
 pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -814,7 +879,10 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     }
 
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 1;
+    }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
     reentrancy_exit();
@@ -824,9 +892,13 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 /// Tests expect `bb_pause`
 #[no_mangle]
 pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -836,7 +908,10 @@ pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
     }
 
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 1;
+    }
     storage_set(b"bb_paused", &[1u8]);
     log_info("BountyBoard paused");
     reentrancy_exit();
@@ -846,9 +921,13 @@ pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
 /// Tests expect `bb_unpause`
 #[no_mangle]
 pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
-    if !reentrancy_enter() { return 100; }
+    if !reentrancy_enter() {
+        return 100;
+    }
     let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -858,7 +937,10 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
     }
 
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
+    if caller[..] != admin[..] {
+        reentrancy_exit();
+        return 1;
+    }
     storage_set(b"bb_paused", &[0u8]);
     log_info("BountyBoard unpaused");
     reentrancy_exit();
@@ -870,16 +952,24 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn get_platform_stats() -> u32 {
     let mut buf = Vec::with_capacity(32);
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(b"bounty_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(b"bounty_count")
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(BB_COMPLETED_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_REWARD_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(BB_REWARD_VOLUME_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(BB_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(BB_CANCEL_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     moltchain_sdk::set_return_data(&buf);
     0
@@ -1034,7 +1124,10 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
 
         let creator = [2u8; 32];
@@ -1065,7 +1158,10 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         assert_eq!(set_identity_gate(admin.as_ptr(), 1), 0); // any reputation
 
         let worker = [2u8; 32];
@@ -1295,7 +1391,10 @@ mod tests {
         test_mock::set_caller(creator);
         test_mock::set_value(499_999); // 1 short of 500_000
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
-        assert_eq!(result, 11, "Should reject insufficient value for bounty reward");
+        assert_eq!(
+            result, 11,
+            "Should reject insufficient value for bounty reward"
+        );
     }
 
     #[test]
@@ -1334,7 +1433,10 @@ mod tests {
         test_mock::set_caller(creator);
         let result = cancel_bounty(creator.as_ptr(), 0);
         // call_token_transfer returns Ok(false) in test mock → cancel reverts
-        assert_eq!(result, 8, "Cancel should attempt transfer and revert on failure");
+        assert_eq!(
+            result, 8,
+            "Cancel should attempt transfer and revert on failure"
+        );
     }
 
     #[test]

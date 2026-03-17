@@ -22,7 +22,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{
+    bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -40,15 +42,15 @@ const INTERVAL_1W: u64 = 604_800;
 const INTERVAL_1Y: u64 = 31_536_000;
 
 // Max candles to keep per interval per pair (retention policy per milestone spec)
-const MAX_CANDLES_1M: u64 = 1_440;       // 24 hours
-const MAX_CANDLES_5M: u64 = 2_016;       // 7 days
-const MAX_CANDLES_15M: u64 = 2_880;      // 30 days
-const MAX_CANDLES_1H: u64 = 2_160;       // 90 days
-const MAX_CANDLES_4H: u64 = 2_190;       // 365 days
-const MAX_CANDLES_1D: u64 = 1_095;       // 3 years
-const MAX_CANDLES_3D: u64 = 243;         // 2 years
-const MAX_CANDLES_1W: u64 = 260;         // 5 years
-const MAX_CANDLES_1Y: u64 = u64::MAX;    // unlimited (forever)
+const MAX_CANDLES_1M: u64 = 1_440; // 24 hours
+const MAX_CANDLES_5M: u64 = 2_016; // 7 days
+const MAX_CANDLES_15M: u64 = 2_880; // 30 days
+const MAX_CANDLES_1H: u64 = 2_160; // 90 days
+const MAX_CANDLES_4H: u64 = 2_190; // 365 days
+const MAX_CANDLES_1D: u64 = 1_095; // 3 years
+const MAX_CANDLES_3D: u64 = 243; // 2 years
+const MAX_CANDLES_1W: u64 = 260; // 5 years
+const MAX_CANDLES_1Y: u64 = u64::MAX; // unlimited (forever)
 
 const MAX_LEADERBOARD: u64 = 100;
 const INTERVALS: [u64; 9] = [
@@ -138,7 +140,9 @@ fn is_paused() -> bool {
 const ANA_REENTRANCY_KEY: &[u8] = b"ana_reentrancy";
 fn reentrancy_enter() -> bool {
     if let Some(v) = storage_get(ANA_REENTRANCY_KEY) {
-        if !v.is_empty() && v[0] == 1 { return false; }
+        if !v.is_empty() && v[0] == 1 {
+            return false;
+        }
     }
     storage_set(ANA_REENTRANCY_KEY, &[1u8]);
     true
@@ -398,8 +402,12 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 /// Returns: 0=success
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
     // SECURITY-FIX: Check pause state before recording
-    if is_paused() { return 2; }
-    if !reentrancy_enter() { return 3; }
+    if is_paused() {
+        return 2;
+    }
+    if !reentrancy_enter() {
+        return 3;
+    }
     if price == 0 || volume == 0 {
         reentrancy_exit();
         return 1;
@@ -443,8 +451,12 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
 /// F18.10: Record realized PnL for a trader (called after margin position close/liquidation)
 /// pnl_biased: PNL_BIAS + signed_pnl. Value > PNL_BIAS means profit, < PNL_BIAS means loss.
 pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
-    if is_paused() { return 2; }
-    if !reentrancy_enter() { return 3; }
+    if is_paused() {
+        return 2;
+    }
+    if !reentrancy_enter() {
+        return 3;
+    }
 
     let mut t = [0u8; 32];
     unsafe {
@@ -464,7 +476,11 @@ pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
             decode_ts_volume(&d),
             decode_ts_trades(&d),
             decode_ts_pnl(&d),
-            if d.len() >= 32 { bytes_to_u64(&d[24..32]) } else { 0 },
+            if d.len() >= 32 {
+                bytes_to_u64(&d[24..32])
+            } else {
+                0
+            },
         ),
         _ => (0, 0, PNL_BIAS, 0),
     };
@@ -568,11 +584,14 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
             // First trade for this trader — increment unique trader count
             save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY) + 1);
             (0, 0, PNL_BIAS)
-        },
+        }
     };
     let new_volume = vol + volume;
     // Track global cumulative volume
-    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
+    save_u64(
+        TOTAL_VOLUME_KEY,
+        load_u64(TOTAL_VOLUME_KEY).saturating_add(volume),
+    );
     let stats = encode_trader_stats(new_volume, trades + 1, pnl, slot);
     storage_set(&tk, &stats);
 
@@ -652,7 +671,11 @@ fn update_leaderboard(trader: &[u8; 32], new_volume: u64) {
         save_u64(LEADERBOARD_COUNT_KEY, final_count);
     } else if lb_count < MAX_LEADERBOARD || insert_rank < lb_count {
         // New entry: shift down and insert
-        let final_count = if lb_count < MAX_LEADERBOARD { lb_count + 1 } else { MAX_LEADERBOARD };
+        let final_count = if lb_count < MAX_LEADERBOARD {
+            lb_count + 1
+        } else {
+            MAX_LEADERBOARD
+        };
         let mut r = final_count.saturating_sub(1);
         while r > insert_rank {
             let prev_data = storage_get(&leaderboard_key(r - 1)).unwrap_or_default();
@@ -907,7 +930,9 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+        _ => {
+            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        }
     }
 }
 

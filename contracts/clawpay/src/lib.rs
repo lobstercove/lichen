@@ -25,15 +25,18 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
-    Address, CrossCall, call_contract, call_token_transfer,
+    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_slot, log_info, storage_get,
+    storage_set, u64_to_bytes, Address, CrossCall,
 };
 
 // Reentrancy guard
 const CP_REENTRANCY_KEY: &[u8] = b"cp_reentrancy";
 
 fn reentrancy_enter() -> bool {
-    if storage_get(CP_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(CP_REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(CP_REENTRANCY_KEY, &[1u8]);
@@ -112,7 +115,9 @@ fn cliff_key(stream_id: u64) -> Vec<u8> {
 }
 
 fn is_paused() -> bool {
-    storage_get(PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(PAUSE_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn is_cp_admin(caller: &[u8]) -> bool {
@@ -132,7 +137,9 @@ fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32);
+    }
     Some(out)
 }
 
@@ -205,9 +212,7 @@ fn calculate_withdrawable(
     };
 
     // streamed = total_amount * elapsed / duration
-    let streamed = (total_amount as u128)
-        .saturating_mul(elapsed as u128)
-        / (duration as u128);
+    let streamed = (total_amount as u128).saturating_mul(elapsed as u128) / (duration as u128);
     let streamed = streamed as u64;
 
     streamed.saturating_sub(withdrawn)
@@ -361,8 +366,13 @@ pub extern "C" fn create_stream(
     storage_set(&sk, &data);
 
     // Track total streamed volume
-    let total = storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(total.saturating_add(total_amount)));
+    let total = storage_get(CP_TOTAL_STREAMED_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(
+        CP_TOTAL_STREAMED_KEY,
+        &u64_to_bytes(total.saturating_add(total_amount)),
+    );
 
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Payment stream created");
@@ -396,11 +406,7 @@ pub extern "C" fn create_stream(
 ///   32 = token transfer failed
 ///   200 = caller spoofing
 #[no_mangle]
-pub extern "C" fn withdraw_from_stream(
-    caller_ptr: *const u8,
-    stream_id: u64,
-    amount: u64,
-) -> u32 {
+pub extern "C" fn withdraw_from_stream(caller_ptr: *const u8, stream_id: u64, amount: u64) -> u32 {
     if !reentrancy_enter() {
         return 20;
     }
@@ -463,7 +469,13 @@ pub extern "C" fn withdraw_from_stream(
 
     let cliff = get_cliff(stream_id);
     let withdrawable = calculate_withdrawable(
-        total_amount, withdrawn, start_slot, end_slot, current_slot, false, cliff,
+        total_amount,
+        withdrawn,
+        start_slot,
+        end_slot,
+        current_slot,
+        false,
+        cliff,
     );
 
     if amount > withdrawable {
@@ -517,8 +529,13 @@ pub extern "C" fn withdraw_from_stream(
     log_info("Withdrawal successful");
 
     // Track total withdrawn
-    let total_w = storage_get(CP_TOTAL_WITHDRAWN_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(CP_TOTAL_WITHDRAWN_KEY, &u64_to_bytes(total_w.saturating_add(amount)));
+    let total_w = storage_get(CP_TOTAL_WITHDRAWN_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(
+        CP_TOTAL_WITHDRAWN_KEY,
+        &u64_to_bytes(total_w.saturating_add(amount)),
+    );
 
     reentrancy_exit();
     0
@@ -548,10 +565,7 @@ pub extern "C" fn withdraw_from_stream(
 ///   33 = transfer-to-recipient failed
 ///   200 = caller spoofing
 #[no_mangle]
-pub extern "C" fn cancel_stream(
-    caller_ptr: *const u8,
-    stream_id: u64,
-) -> u32 {
+pub extern "C" fn cancel_stream(caller_ptr: *const u8, stream_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 20;
     }
@@ -633,7 +647,9 @@ pub extern "C" fn cancel_stream(
             stream_data[96] = 1;
             storage_set(&sk, &stream_data);
             moltchain_sdk::set_return_data(&u64_to_bytes(refund));
-            let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+            let cc = storage_get(CP_CANCEL_COUNT_KEY)
+                .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                .unwrap_or(0);
             storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
             reentrancy_exit();
             return 0;
@@ -646,7 +662,9 @@ pub extern "C" fn cancel_stream(
             stream_data[96] = 1;
             storage_set(&sk, &stream_data);
             moltchain_sdk::set_return_data(&u64_to_bytes(refund));
-            let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+            let cc = storage_get(CP_CANCEL_COUNT_KEY)
+                .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                .unwrap_or(0);
             storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
             reentrancy_exit();
             return 0;
@@ -669,7 +687,14 @@ pub extern "C" fn cancel_stream(
     if recipient_due > 0 {
         let mut recipient_addr = [0u8; 32];
         recipient_addr.copy_from_slice(&stream_data[32..64]);
-        if call_token_transfer(token_addr, self_addr, Address(recipient_addr), recipient_due).is_err() {
+        if call_token_transfer(
+            token_addr,
+            self_addr,
+            Address(recipient_addr),
+            recipient_due,
+        )
+        .is_err()
+        {
             log_info("Transfer to recipient failed");
             reentrancy_exit();
             return 33;
@@ -685,7 +710,9 @@ pub extern "C" fn cancel_stream(
     log_info("Stream cancelled");
 
     // Track cancel count
-    let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let cc = storage_get(CP_CANCEL_COUNT_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
     storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
 
     reentrancy_exit();
@@ -751,7 +778,13 @@ pub extern "C" fn get_withdrawable(stream_id: u64) -> u32 {
 
     let cliff = get_cliff(stream_id);
     let withdrawable = calculate_withdrawable(
-        total_amount, withdrawn, start_slot, end_slot, current_slot, cancelled, cliff,
+        total_amount,
+        withdrawn,
+        start_slot,
+        end_slot,
+        current_slot,
+        cancelled,
+        cliff,
     );
 
     moltchain_sdk::set_return_data(&u64_to_bytes(withdrawable));
@@ -881,8 +914,13 @@ pub extern "C" fn create_stream_with_cliff(
     storage_set(&ck, &u64_to_bytes(cliff_slot));
 
     // Track total streamed volume
-    let total = storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(total.saturating_add(total_amount)));
+    let total = storage_get(CP_TOTAL_STREAMED_KEY)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    storage_set(
+        CP_TOTAL_STREAMED_KEY,
+        &u64_to_bytes(total.saturating_add(total_amount)),
+    );
 
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Stream created with cliff");
@@ -1266,7 +1304,9 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 /// Get stream count
 #[no_mangle]
 pub extern "C" fn get_stream_count() -> u64 {
-    storage_get(b"stream_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(b"stream_count")
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
 
 /// Get platform stats [stream_count(8), total_streamed(8), total_withdrawn(8), cancel_count(8)]
@@ -1274,16 +1314,24 @@ pub extern "C" fn get_stream_count() -> u64 {
 pub extern "C" fn get_platform_stats() -> u32 {
     let mut buf = Vec::with_capacity(32);
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(b"stream_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(b"stream_count")
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CP_TOTAL_STREAMED_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CP_TOTAL_WITHDRAWN_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CP_TOTAL_WITHDRAWN_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     buf.extend_from_slice(&u64_to_bytes(
-        storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+        storage_get(CP_CANCEL_COUNT_KEY)
+            .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+            .unwrap_or(0),
     ));
     moltchain_sdk::set_return_data(&buf);
     0
@@ -1322,13 +1370,7 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        let result = create_stream(
-            sender.as_ptr(),
-            recipient.as_ptr(),
-            1_000_000,
-            100,
-            1100,
-        );
+        let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 0);
 
         let ret = test_mock::get_return_data();
@@ -1354,13 +1396,7 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        create_stream(
-            sender.as_ptr(),
-            recipient.as_ptr(),
-            1_000_000,
-            100,
-            1100,
-        );
+        create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
         // Move to halfway point (slot 600 = 500 slots elapsed out of 1000)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
@@ -1397,13 +1433,7 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        create_stream(
-            sender.as_ptr(),
-            recipient.as_ptr(),
-            1_000_000,
-            100,
-            1100,
-        );
+        create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
         // Move to 25% (slot 350 = 250 slots of 1000)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
@@ -1472,7 +1502,10 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
+        assert_eq!(
+            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            0
+        );
         assert_eq!(set_identity_gate(admin.as_ptr(), 1), 0);
 
         let sender = [1u8; 32];
@@ -1613,13 +1646,23 @@ mod tests {
         test_mock::set_caller(sender);
         // cliff before start
         let result = create_stream_with_cliff(
-            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 50,
+            sender.as_ptr(),
+            recipient.as_ptr(),
+            1_000_000,
+            100,
+            1100,
+            50,
         );
         assert_eq!(result, 2);
 
         // cliff after end
         let result = create_stream_with_cliff(
-            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 2000,
+            sender.as_ptr(),
+            recipient.as_ptr(),
+            1_000_000,
+            100,
+            1100,
+            2000,
         );
         assert_eq!(result, 3);
     }
@@ -1712,7 +1755,12 @@ mod tests {
 
         // create_stream_with_cliff blocked too
         let result = create_stream_with_cliff(
-            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
+            sender.as_ptr(),
+            recipient.as_ptr(),
+            1_000_000,
+            100,
+            1100,
+            500,
         );
         assert_eq!(result, 20);
 
@@ -1741,7 +1789,12 @@ mod tests {
 
         test_mock::set_caller(sender);
         create_stream_with_cliff(
-            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
+            sender.as_ptr(),
+            recipient.as_ptr(),
+            1_000_000,
+            100,
+            1100,
+            500,
         );
 
         let result = get_stream_info(0);
@@ -1832,7 +1885,12 @@ mod tests {
         let recipient = [2u8; 32];
         test_mock::set_caller(sender);
         let result = create_stream_with_cliff(
-            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
+            sender.as_ptr(),
+            recipient.as_ptr(),
+            1_000_000,
+            100,
+            1100,
+            500,
         );
         assert_eq!(result, 30); // token address not configured
     }
@@ -1945,7 +2003,10 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
 
         // Withdraw 250k at 25%
         test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
@@ -1984,7 +2045,10 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
 
         // Withdraw at 50%
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
@@ -2013,7 +2077,10 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
         assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
         // Second cancel fails
         assert_eq!(cancel_stream(sender.as_ptr(), 0), 4);
@@ -2030,8 +2097,14 @@ mod tests {
 
         // Create two streams
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 500_000, 100, 600), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 500_000, 100, 600),
+            0
+        );
 
         // Withdraw from stream 0
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
@@ -2047,10 +2120,10 @@ mod tests {
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
         assert_eq!(ret.len(), 32);
-        assert_eq!(bytes_to_u64(&ret[0..8]), 2);         // stream_count = 2
+        assert_eq!(bytes_to_u64(&ret[0..8]), 2); // stream_count = 2
         assert_eq!(bytes_to_u64(&ret[8..16]), 1_500_000); // total_streamed = 1.5M
-        assert_eq!(bytes_to_u64(&ret[16..24]), 100_000);  // total_withdrawn = 100k
-        assert_eq!(bytes_to_u64(&ret[24..32]), 1);        // cancel_count = 1
+        assert_eq!(bytes_to_u64(&ret[16..24]), 100_000); // total_withdrawn = 100k
+        assert_eq!(bytes_to_u64(&ret[24..32]), 1); // cancel_count = 1
     }
 
     #[test]
@@ -2082,7 +2155,10 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
 
         // Cancel
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
@@ -2104,7 +2180,10 @@ mod tests {
         let recipient = [2u8; 32];
 
         test_mock::set_caller(sender);
-        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(
+            create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100),
+            0
+        );
 
         // Recipient cannot cancel
         test_mock::set_caller(recipient);

@@ -44,7 +44,9 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{
+    bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -462,7 +464,10 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
     save_u64(&from_bk, from_bal - amount);
     save_u64(&to_bk, to_bal.saturating_add(amount));
 
-    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY).saturating_add(1));
+    save_u64(
+        TRANSFER_COUNT_KEY,
+        load_u64(TRANSFER_COUNT_KEY).saturating_add(1),
+    );
 
     reentrancy_exit();
     0
@@ -570,7 +575,10 @@ pub extern "C" fn transfer_from(
     save_u64(&to_bk, to_bal.saturating_add(amount));
     save_u64(&ak, allowed - amount);
 
-    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY).saturating_add(1));
+    save_u64(
+        TRANSFER_COUNT_KEY,
+        load_u64(TRANSFER_COUNT_KEY).saturating_add(1),
+    );
 
     reentrancy_exit();
     0
