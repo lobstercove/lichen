@@ -3637,8 +3637,8 @@ async fn test_send_transaction_wire_envelope() {
     let pk = kp.pubkey();
     let mut sender = moltchain_core::Account::new(100, pk);
     sender.spendable = sender.shells;
-    state.put_account(&pk, &sender);
-    state.set_last_slot(1);
+    let _ = state.put_account(&pk, &sender);
+    let _ = state.set_last_slot(1);
 
     let app = build_rpc_router(
         state.clone(),
@@ -3705,8 +3705,8 @@ async fn test_send_transaction_legacy_bincode() {
     let pk = kp.pubkey();
     let mut sender = moltchain_core::Account::new(100, pk);
     sender.spendable = sender.shells;
-    state.put_account(&pk, &sender);
-    state.set_last_slot(1);
+    let _ = state.put_account(&pk, &sender);
+    let _ = state.set_last_slot(1);
 
     let app = build_rpc_router(
         state.clone(),
@@ -3768,8 +3768,8 @@ async fn test_simulate_transaction_wire_envelope() {
     let pk = kp.pubkey();
     let mut sender = moltchain_core::Account::new(100, pk);
     sender.spendable = sender.shells;
-    state.put_account(&pk, &sender);
-    state.set_last_slot(1);
+    let _ = state.put_account(&pk, &sender);
+    let _ = state.set_last_slot(1);
 
     let app = build_rpc_router(
         state.clone(),
