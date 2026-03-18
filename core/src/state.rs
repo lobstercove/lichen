@@ -81,6 +81,7 @@ const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 
 const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
 const CF_EVM_LOGS_BY_SLOT: &str = "evm_logs_by_slot"; // slot(8,BE) -> Vec<EvmLogEntry> (Task 3.4)
 const CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots"; // pubkey(32)+slot(8,BE) -> Account (Task 3.9 archive mode)
+const CF_PENDING_VALIDATOR_CHANGES: &str = "pending_validator_changes"; // epoch(8,BE)+slot(8,BE)+pubkey(8) -> PendingValidatorChange
 
 // ─── P2-3: Cold storage column family names ─────────────────────────────────
 // Cold DB mirrors a subset of hot CFs for archival data (old blocks, txns).
@@ -1076,6 +1077,8 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_EVM_LOGS_BY_SLOT, prefix_scan_opts(8)), // key=slot(8,BE) -> Vec<EvmLogEntry>
             // Task 3.9: Historical account snapshots (archive mode)
             ColumnFamilyDescriptor::new(CF_ACCOUNT_SNAPSHOTS, archival_opts(32)), // key=pubkey(32)+slot(8,BE) -> Account
+            // Epoch-based pending validator changes queue
+            ColumnFamilyDescriptor::new(CF_PENDING_VALIDATOR_CHANGES, prefix_scan_opts(8)), // key=epoch(8,BE)+slot(8,BE)+pubkey(8)
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -5170,6 +5173,101 @@ impl StateStore {
             .validator_count
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = 0;
+        Ok(())
+    }
+
+    // ─── Epoch-based pending validator change queue ─────────────────────────
+
+    /// Queue a validator set change for application at the given epoch boundary.
+    ///
+    /// Key format: epoch(8,BE) + queued_at_slot(8,BE) + pubkey_prefix(8)
+    /// This ensures changes are ordered by epoch, slot, and validator.
+    pub fn queue_pending_validator_change(
+        &self,
+        change: &crate::consensus::PendingValidatorChange,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PENDING_VALIDATOR_CHANGES)
+            .ok_or_else(|| "Pending validator changes CF not found".to_string())?;
+
+        let mut key = Vec::with_capacity(24);
+        key.extend_from_slice(&change.effective_epoch.to_be_bytes());
+        key.extend_from_slice(&change.queued_at_slot.to_be_bytes());
+        key.extend_from_slice(&change.pubkey.0[..8]);
+
+        let value = serde_json::to_vec(change)
+            .map_err(|e| format!("Failed to serialize PendingValidatorChange: {}", e))?;
+
+        self.db
+            .put_cf(&cf, &key, value)
+            .map_err(|e| format!("Failed to queue pending validator change: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get all pending validator changes for a specific epoch.
+    pub fn get_pending_validator_changes(
+        &self,
+        epoch: u64,
+    ) -> Result<Vec<crate::consensus::PendingValidatorChange>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PENDING_VALIDATOR_CHANGES)
+            .ok_or_else(|| "Pending validator changes CF not found".to_string())?;
+
+        let prefix = epoch.to_be_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf, prefix);
+        let mut changes = Vec::new();
+
+        for item in iter {
+            let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if key.len() < 8 || key[..8] != prefix {
+                break;
+            }
+            let change: crate::consensus::PendingValidatorChange =
+                serde_json::from_slice(&value)
+                    .map_err(|e| format!("Failed to deserialize PendingValidatorChange: {}", e))?;
+            changes.push(change);
+        }
+
+        Ok(changes)
+    }
+
+    /// Clear all pending validator changes for a specific epoch (after they've been applied).
+    pub fn clear_pending_validator_changes(&self, epoch: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PENDING_VALIDATOR_CHANGES)
+            .ok_or_else(|| "Pending validator changes CF not found".to_string())?;
+
+        let prefix = epoch.to_be_bytes();
+        let keys: Vec<Box<[u8]>> = self
+            .db
+            .prefix_iterator_cf(&cf, prefix)
+            .filter_map(|item| {
+                let (key, _) = item.ok()?;
+                if key.len() >= 8 && key[..8] == prefix {
+                    Some(key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut batch = rocksdb::WriteBatch::default();
+        for key in &keys {
+            batch.delete_cf(&cf, key);
+        }
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to clear pending validator changes: {}", e))?;
+
         Ok(())
     }
 

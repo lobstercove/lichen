@@ -415,6 +415,40 @@ pub fn is_epoch_boundary(slot: u64) -> bool {
     slot > 0 && slot.is_multiple_of(SLOTS_PER_EPOCH)
 }
 
+/// Type of validator set change applied at epoch boundaries.
+///
+/// Following the Ethereum beacon chain and Cosmos/Tendermint patterns: structural
+/// changes to the validator set are deferred to epoch transitions for deterministic,
+/// disruption-free activation. Mid-epoch changes would alter quorum denominators and
+/// leader schedules, potentially stalling BFT consensus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ValidatorChangeType {
+    /// Validator joining the active consensus set.
+    Add,
+    /// Validator leaving the active consensus set.
+    Remove,
+    /// Validator's effective stake changed (affects leader weight).
+    StakeUpdate { new_stake: u64 },
+}
+
+/// A pending validator set change, queued for application at the next epoch boundary.
+///
+/// All structural validator set mutations flow through this queue to guarantee:
+/// 1. Deterministic activation — every node applies the same changes at the same slot.
+/// 2. No mid-epoch quorum disruption — supermajority thresholds stay stable.
+/// 3. Predictable leader rotation — the leader schedule is fixed for the epoch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingValidatorChange {
+    /// The validator being added, removed, or updated.
+    pub pubkey: Pubkey,
+    /// Type of change to apply.
+    pub change_type: ValidatorChangeType,
+    /// Slot when this change was queued.
+    pub queued_at_slot: u64,
+    /// Epoch at whose boundary this change takes effect.
+    pub effective_epoch: u64,
+}
+
 /// Summary of an epoch's parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpochInfo {
@@ -423,6 +457,12 @@ pub struct EpochInfo {
     pub end_slot: u64,
     pub total_stake: u64,
     pub validator_count: usize,
+    /// SHA-256 hash of the frozen active validator set for this epoch.
+    #[serde(default)]
+    pub validator_set_hash: [u8; 32],
+    /// Number of validators pending activation for the next epoch.
+    #[serde(default)]
+    pub pending_count: usize,
 }
 
 impl EpochInfo {
@@ -435,6 +475,8 @@ impl EpochInfo {
             end_slot: epoch_start_slot(epoch + 1) - 1,
             total_stake,
             validator_count,
+            validator_set_hash: [0u8; 32],
+            pending_count: 0,
         }
     }
 }
@@ -2271,6 +2313,12 @@ pub struct ValidatorInfo {
     /// Total transactions processed (included in blocks produced by this validator)
     #[serde(default)]
     pub transactions_processed: u64,
+    /// When true, this validator is awaiting epoch-boundary activation and does
+    /// not participate in consensus (leader selection, voting, quorum).
+    /// Set to true when a new validator announces mid-epoch; set to false at
+    /// the next epoch boundary to admit them to the active consensus set.
+    #[serde(default)]
+    pub pending_activation: bool,
 }
 
 fn default_commission_rate() -> u64 {
@@ -2291,6 +2339,7 @@ impl ValidatorInfo {
             last_active_slot: joined_slot,
             commission_rate: 500, // 5% default (basis points)
             transactions_processed: 0,
+            pending_activation: false,
         }
     }
 
@@ -2316,6 +2365,9 @@ impl ValidatorInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorSet {
     validators: Vec<ValidatorInfo>,
+    /// The epoch this set was frozen for. 0 = initial / not yet epoch-frozen.
+    #[serde(default)]
+    frozen_epoch: u64,
 }
 
 impl Default for ValidatorSet {
@@ -2329,7 +2381,55 @@ impl ValidatorSet {
     pub fn new() -> Self {
         ValidatorSet {
             validators: Vec::new(),
+            frozen_epoch: 0,
         }
+    }
+
+    /// Get the epoch this set is frozen for (0 = not frozen).
+    pub fn frozen_epoch(&self) -> u64 {
+        self.frozen_epoch
+    }
+
+    /// Set the epoch this set is frozen for.
+    pub fn set_frozen_epoch(&mut self, epoch: u64) {
+        self.frozen_epoch = epoch;
+    }
+
+    /// Return a consensus-ready snapshot: only validators NOT pending activation.
+    /// Used for height-frozen snapshots during BFT consensus to ensure
+    /// mid-epoch announcements don't alter quorum or leader schedules.
+    pub fn consensus_set(&self) -> ValidatorSet {
+        let active: Vec<ValidatorInfo> = self
+            .validators
+            .iter()
+            .filter(|v| !v.pending_activation)
+            .cloned()
+            .collect();
+        ValidatorSet {
+            validators: active,
+            frozen_epoch: self.frozen_epoch,
+        }
+    }
+
+    /// Count of validators pending activation at the next epoch boundary.
+    pub fn pending_count(&self) -> usize {
+        self.validators
+            .iter()
+            .filter(|v| v.pending_activation)
+            .count()
+    }
+
+    /// Activate all pending validators (called at epoch boundaries).
+    /// Returns the pubkeys of validators that were activated.
+    pub fn activate_pending_validators(&mut self) -> Vec<Pubkey> {
+        let mut activated = Vec::new();
+        for v in &mut self.validators {
+            if v.pending_activation {
+                v.pending_activation = false;
+                activated.push(v.pubkey);
+            }
+        }
+        activated
     }
 
     /// Add validator to set
@@ -5704,11 +5804,7 @@ mod tests {
         let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
         let expected = per_slot * SLOTS_PER_EPOCH;
         // Allow rounding error of up to SLOTS_PER_EPOCH shells
-        let diff = if epoch_mint > expected {
-            epoch_mint - expected
-        } else {
-            expected - epoch_mint
-        };
+        let diff = epoch_mint.abs_diff(expected);
         assert!(
             diff <= SLOTS_PER_EPOCH,
             "Epoch mint {} should be within {} of {} (SLOTS_PER_EPOCH × per_slot)",

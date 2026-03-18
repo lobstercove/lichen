@@ -4,7 +4,7 @@
 # ============================================================================
 #
 # The official script for starting a MoltChain validator node. Handles both
-# first-boot genesis creation AND joining an existing network.
+# first-boot genesis creation AND bootstrapping from an existing network.
 #
 # Usage:
 #   ./moltchain-start.sh testnet              # Start testnet validator
@@ -22,13 +22,13 @@
 # First-boot behavior:
 #   If no existing blockchain state is found, the validator starts in genesis
 #   mode: it creates the chain, treasury keys (500M MOLT supply), and auto-runs
-#   first-boot-deploy.sh to deploy all 26 smart contracts (DEX, wrapped tokens,
+#   first-boot-deploy.sh to deploy all 29 smart contracts (DEX, wrapped tokens,
 #   core infrastructure), seed AMM pools, and fund the insurance reserve.
 #
-# Joining behavior:
+# Bootstrap behavior:
 #   If --bootstrap is provided, the validator syncs genesis + state from the
-#   specified peer and joins the network as a new validator with a 10,000 MOLT
-#   bootstrap grant.
+#   specified peer and bootstraps into the network as a new validator with a
+#   10,000 MOLT bootstrap grant.
 #
 # ============================================================================
 
@@ -140,7 +140,7 @@ REAL_HOME="$HOME"
 
 mkdir -p "$LOG_DIR"
 
-# ── Detect first boot vs joining ──
+# ── Detect first boot vs bootstrap ──
 # !! Must happen BEFORE mkdir "$VALIDATOR_HOME" — creating the home subdir would
 #    make the DB_PATH non-empty and falsely trigger RESUME mode.
 IS_GENESIS=false
@@ -150,7 +150,7 @@ if [ -d "$DB_PATH" ] && [ -f "$DB_PATH/CURRENT" ]; then
 fi
 
 if [ -n "$BOOTSTRAP_PEERS" ]; then
-    : # joining mode — detected below in banner
+    : # bootstrap mode — detected below in banner
 elif ! $HAS_CHAIN_STATE; then
     IS_GENESIS=true
 fi
@@ -187,7 +187,7 @@ echo -e "  ${BOLD}Logs:${NC}       $LOG_DIR"
 echo -e ""
 
 if [ -n "$BOOTSTRAP_PEERS" ]; then
-    echo -e "  ${BOLD}Mode:${NC}       ${CYAN}JOINING${NC} — bootstrapping from $BOOTSTRAP_PEERS"
+    echo -e "  ${BOLD}Mode:${NC}       ${CYAN}BOOTSTRAP${NC} — syncing from $BOOTSTRAP_PEERS"
 elif $IS_GENESIS; then
     echo -e "  ${BOLD}Mode:${NC}       ${GREEN}GENESIS${NC} — first validator, creating new chain"
 else

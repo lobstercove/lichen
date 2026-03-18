@@ -2497,10 +2497,7 @@ mod tests {
             DEFAULT_WASM_MEMORY_PAGES, 16,
             "Default should be 16 pages (1MB)"
         );
-        assert!(
-            DEFAULT_WASM_MEMORY_PAGES < MAX_WASM_MEMORY_PAGES,
-            "Default must be less than max"
-        );
+        const { assert!(DEFAULT_WASM_MEMORY_PAGES < MAX_WASM_MEMORY_PAGES) };
     }
 
     #[test]

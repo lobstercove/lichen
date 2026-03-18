@@ -158,6 +158,7 @@ pub const CU_SLASH_VALIDATOR: u64 = 500;
 pub const CU_NONCE: u64 = 200;
 pub const CU_GOVERNANCE_PARAM: u64 = 300;
 pub const CU_ORACLE_ATTESTATION: u64 = 500;
+pub const CU_DEREGISTER_VALIDATOR: u64 = 500;
 
 /// Minimum number of assets name bytes (e.g. "BTC" = 3).
 pub const ORACLE_ASSET_MIN_LEN: usize = 1;
@@ -191,6 +192,7 @@ pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
         28 => CU_NONCE,
         29 => CU_GOVERNANCE_PARAM,
         30 => CU_ORACLE_ATTESTATION,
+        31 => CU_DEREGISTER_VALIDATOR,
         _ => 100, // Unknown — default cost
     }
 }
@@ -2173,6 +2175,8 @@ impl TxProcessor {
             29 => self.system_governance_param_change(ix),
             // Oracle multi-source price attestation (N/M validator threshold)
             30 => self.system_oracle_attestation(ix),
+            // Voluntary validator deregistration (queued for next epoch boundary)
+            31 => self.system_deregister_validator(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -3983,6 +3987,66 @@ impl TxProcessor {
                 e
             )
         })?;
+
+        Ok(())
+    }
+
+    /// System program: DeregisterValidator (opcode 31).
+    ///
+    /// Voluntary validator exit following the Ethereum beacon chain pattern.
+    /// The validator signals intent to leave; actual removal happens at the next
+    /// epoch boundary. Their bootstrap grant (if any) is returned to the treasury
+    /// and their stake pool entry is marked inactive.
+    ///
+    /// Instruction layout: `[31]`
+    /// Accounts: `[validator_pubkey]`
+    ///
+    /// This transaction MUST be signed by the validator's keypair (enforced by
+    /// the signer check in the transaction processing pipeline).
+    fn system_deregister_validator(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("DeregisterValidator requires [validator] account".to_string());
+        }
+
+        let validator_pubkey = ix.accounts[0];
+
+        // Verify the validator exists in the stake pool
+        let mut pool = self.b_get_stake_pool()?;
+        let stake_info = pool
+            .get_stake(&validator_pubkey)
+            .ok_or_else(|| {
+                format!(
+                    "DeregisterValidator: validator {} not found in stake pool",
+                    validator_pubkey.to_base58()
+                )
+            })?
+            .clone();
+
+        // Idempotency: if already inactive, return Ok
+        if !stake_info.is_active {
+            return Ok(());
+        }
+
+        // Deactivate in stake pool
+        if let Some(si) = pool.get_stake_mut(&validator_pubkey) {
+            si.is_active = false;
+        }
+        self.b_put_stake_pool(&pool)?;
+
+        // Queue a pending validator change for the next epoch boundary.
+        // The actual removal from ValidatorSet happens at epoch transition in
+        // the validator main loop.
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        let current_epoch = crate::consensus::slot_to_epoch(current_slot);
+        let change = crate::consensus::PendingValidatorChange {
+            pubkey: validator_pubkey,
+            change_type: crate::consensus::ValidatorChangeType::Remove,
+            queued_at_slot: current_slot,
+            effective_epoch: current_epoch + 1,
+        };
+        self.state
+            .queue_pending_validator_change(&change)
+            .map_err(|e| format!("DeregisterValidator: failed to queue pending change: {}", e))?;
 
         Ok(())
     }

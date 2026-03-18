@@ -3223,6 +3223,7 @@ async fn apply_block_effects(
                 } else {
                     block.transactions.len() as u64
                 },
+                pending_activation: false, // Block producers are already active
             };
             vs.add_validator(new_validator);
         }
@@ -5537,6 +5538,7 @@ async fn run_validator() {
                     joined_slot: 0,
                     commission_rate: 500,
                     transactions_processed: 0,
+                    pending_activation: false, // Genesis validators active immediately
                 };
 
                 set.add_validator(validator);
@@ -5563,8 +5565,10 @@ async fn run_validator() {
                     .iter()
                     .any(|v| v.pubkey == validator_pubkey.to_base58())
                 {
-                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT)",
-                        on_chain_stake / 1_000_000_000);
+                    // Non-genesis validator: pending if chain is already running
+                    let pending = current_tip > 0;
+                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
+                        on_chain_stake / 1_000_000_000, pending);
                     set.add_validator(ValidatorInfo {
                         pubkey: validator_pubkey,
                         stake: on_chain_stake,
@@ -5576,6 +5580,7 @@ async fn run_validator() {
                         joined_slot: current_tip,
                         commission_rate: 500,
                         transactions_processed: 0,
+                        pending_activation: pending,
                     });
                 }
             } else {
@@ -5586,8 +5591,9 @@ async fn run_validator() {
             .iter()
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
-            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT)",
-                on_chain_stake / 1_000_000_000);
+            let pending = current_tip > 0;
+            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
+                on_chain_stake / 1_000_000_000, pending);
             set.add_validator(ValidatorInfo {
                 pubkey: validator_pubkey,
                 stake: on_chain_stake,
@@ -5599,6 +5605,7 @@ async fn run_validator() {
                 joined_slot: current_tip,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: pending,
             });
         }
 
@@ -6545,6 +6552,21 @@ async fn run_validator() {
                                  accepting anyway (may be from older protocol version)",
                                 block_slot
                             );
+                        }
+
+                        // Cross-reference validators_hash: if the block records
+                        // which validator set produced it, verify it matches our
+                        // view. Mismatches indicate a fork or state divergence.
+                        if block.header.validators_hash != Hash([0u8; 32]) {
+                            let expected = compute_validators_hash(&vs, &pool);
+                            if block.header.validators_hash != expected {
+                                warn!(
+                                    "⚠️  Block {} validators_hash mismatch (block={}, local={}) — possible state divergence",
+                                    block_slot,
+                                    block.header.validators_hash.to_hex(),
+                                    expected.to_hex(),
+                                );
+                            }
                         }
                     }
                 }
@@ -8193,6 +8215,13 @@ async fn run_validator() {
                         .map(|a| a.staked)
                         .unwrap_or(0);
 
+                    // Epoch-based activation: new validators are added for
+                    // P2P routing immediately but flagged pending_activation=true
+                    // so they're excluded from consensus until the next epoch
+                    // boundary. This prevents mid-epoch quorum changes.
+                    let current_slot = announcement.current_slot;
+                    let current_epoch = moltchain_core::slot_to_epoch(current_slot);
+                    let pending = current_slot > 0; // Genesis validators activate immediately
                     let new_validator = ValidatorInfo {
                         pubkey: announcement.pubkey,
                         reputation: 100,
@@ -8200,21 +8229,48 @@ async fn run_validator() {
                         votes_cast: 0,
                         correct_votes: 0,
                         stake: on_chain_stake,
-                        joined_slot: announcement.current_slot,
-                        last_active_slot: announcement.current_slot,
+                        joined_slot: current_slot,
+                        last_active_slot: current_slot,
                         commission_rate: 500,
                         transactions_processed: 0,
+                        pending_activation: pending,
                     };
                     vs.add_validator(new_validator);
 
+                    // Queue the pending change in state for observability and restart recovery
+                    if pending {
+                        let change = moltchain_core::PendingValidatorChange {
+                            pubkey: announcement.pubkey,
+                            change_type: moltchain_core::ValidatorChangeType::Add,
+                            queued_at_slot: current_slot,
+                            effective_epoch: current_epoch + 1,
+                        };
+                        if let Err(e) = state_for_validators.queue_pending_validator_change(&change)
+                        {
+                            warn!(
+                                "⚠️  Failed to queue pending validator change for {}: {}",
+                                announcement.pubkey.to_base58(),
+                                e
+                            );
+                        }
+                    }
+
                     if on_chain_stake == 0 {
                         info!(
-                            "📋 New validator {} added for peer routing (no on-chain stake yet — must submit RegisterValidator tx)",
-                            announcement.pubkey.to_base58()
+                            "📋 New validator {} added for peer routing (pending activation at epoch {}, no on-chain stake yet)",
+                            announcement.pubkey.to_base58(),
+                            current_epoch + 1,
+                        );
+                    } else if pending {
+                        info!(
+                            "⏳ Validator {} queued for consensus activation at epoch {} ({} MOLT staked)",
+                            announcement.pubkey.to_base58(),
+                            current_epoch + 1,
+                            on_chain_stake / 1_000_000_000,
                         );
                     } else {
                         info!(
-                            "✅ Validator {} added with on-chain stake {} MOLT",
+                            "✅ Validator {} added with on-chain stake {} MOLT (genesis activation)",
                             announcement.pubkey.to_base58(),
                             on_chain_stake / 1_000_000_000
                         );
@@ -8225,8 +8281,16 @@ async fn run_validator() {
                 if let Err(e) = state_for_validators.save_validator_set(&vs) {
                     warn!("⚠️  Failed to save validator set: {}", e);
                 } else {
-                    let count = vs.validators().len();
-                    info!("✅ Updated validator set (now {} validators)", count);
+                    let active = vs
+                        .validators()
+                        .iter()
+                        .filter(|v| !v.pending_activation)
+                        .count();
+                    let pending = vs.pending_count();
+                    info!(
+                        "✅ Updated validator set ({} active, {} pending)",
+                        active, pending
+                    );
                 }
                 drop(vs);
             }
@@ -9134,6 +9198,7 @@ async fn run_validator() {
                                                 last_active_slot: remote_val.last_active_slot,
                                                 commission_rate: 500,
                                                 transactions_processed: 0,
+                                                pending_activation: remote_val.pending_activation,
                                             };
                                             vs.add_validator(new_val);
                                             merged_count += 1;
@@ -11103,11 +11168,16 @@ async fn run_validator() {
     // Tendermint-style deferred activation: snapshot the validator set and
     // stake pool at the START of each height. ALL consensus operations
     // during that height use this frozen snapshot. New validators only
-    // enter the BFT quorum at the NEXT height. Without this, a concurrent
-    // P2P announcement adding a validator mid-height changes the quorum
-    // denominator (e.g., 3→4 validators), making 2/3 unreachable and
-    // stalling the chain.
-    let mut height_vs: ValidatorSet = validator_set.read().await.clone();
+    // enter the BFT quorum at the NEXT EPOCH BOUNDARY. Without this, a
+    // concurrent P2P announcement adding a validator mid-height changes
+    // the quorum denominator (e.g., 3→4 validators), making 2/3
+    // unreachable and stalling the chain.
+    //
+    // Epoch-based freezing: height_vs comes from consensus_set() which
+    // filters out validators with pending_activation=true. These pending
+    // validators are visible for P2P routing but excluded from consensus
+    // until the next epoch boundary activates them.
+    let mut height_vs: ValidatorSet = validator_set.read().await.consensus_set();
     let mut height_pool: StakePool = stake_pool.read().await.clone();
 
     // ── Main BFT event loop ──
@@ -11125,10 +11195,76 @@ async fn run_validator() {
             consensus_wal.log_height_start(new_height);
             parent_hash = get_parent_hash(&state);
 
-            // Re-snapshot for the new height (picks up validators added
-            // during the previous height — deferred activation).
-            height_vs = validator_set.read().await.clone();
+            // Re-snapshot for the new height.
+            // Epoch-based validator set: consensus_set() filters out pending
+            // validators. Activations happen only at epoch boundaries (below).
             height_pool = stake_pool.read().await.clone();
+
+            // ── Epoch boundary: process pending validator changes ──
+            if moltchain_core::is_epoch_boundary(new_height) {
+                let epoch = moltchain_core::slot_to_epoch(new_height);
+                {
+                    let mut vs = validator_set.write().await;
+
+                    // 1. Process deregistrations (Remove changes from DeregisterValidator txs)
+                    if let Ok(pending) = state.get_pending_validator_changes(epoch) {
+                        for change in &pending {
+                            if change.change_type == moltchain_core::ValidatorChangeType::Remove {
+                                vs.remove_validator(&change.pubkey);
+                                if let Err(e) = state.delete_validator(&change.pubkey) {
+                                    warn!(
+                                        "⚠️  Failed to remove deregistered validator {} from state: {}",
+                                        change.pubkey.to_base58(), e
+                                    );
+                                }
+                                info!(
+                                    "🔒 Epoch {}: Deregistered validator {} (voluntary exit)",
+                                    epoch,
+                                    change.pubkey.to_base58()
+                                );
+                            }
+                        }
+                    }
+
+                    // 2. Activate pending validators (new joins from P2P announcements)
+                    let activated = vs.activate_pending_validators();
+                    if !activated.is_empty() {
+                        for pk in &activated {
+                            info!(
+                                "🔓 Epoch {}: Activated validator {} for consensus",
+                                epoch,
+                                pk.to_base58()
+                            );
+                        }
+                    }
+
+                    if let Err(e) = state.save_validator_set(&vs) {
+                        warn!(
+                            "⚠️  Failed to persist validator set after epoch transition: {}",
+                            e
+                        );
+                    }
+                }
+                if let Err(e) = state.clear_pending_validator_changes(epoch) {
+                    warn!(
+                        "⚠️  Failed to clear pending validator changes for epoch {}: {}",
+                        epoch, e
+                    );
+                }
+                let mut frozen = validator_set.read().await.consensus_set();
+                frozen.set_frozen_epoch(epoch);
+                height_vs = frozen;
+                info!(
+                    "🧊 Epoch {}: Froze validator set ({} active, {} pending)",
+                    epoch,
+                    height_vs.validators().len(),
+                    validator_set.read().await.pending_count(),
+                );
+            } else {
+                // Non-epoch boundary: refresh consensus snapshot (pool may
+                // have changed from rewards, but validator membership is stable)
+                height_vs = validator_set.read().await.consensus_set();
+            }
 
             // G-10 fix: Replay any buffered future messages for this height.
             // This is critical for fast catch-up — proposals and votes that
@@ -11585,9 +11721,69 @@ async fn run_validator() {
                     consensus_wal.log_height_start(new_height);
                     parent_hash = get_parent_hash(&state);
 
-                    // Re-snapshot for the new height (deferred activation)
-                    height_vs = validator_set.read().await.clone();
+                    // Re-snapshot for the new height.
+                    // Epoch-based: consensus_set() filters pending validators.
                     height_pool = stake_pool.read().await.clone();
+
+                    if moltchain_core::is_epoch_boundary(new_height) {
+                        let epoch = moltchain_core::slot_to_epoch(new_height);
+                        {
+                            let mut vs = validator_set.write().await;
+
+                            // Process deregistrations
+                            if let Ok(pending) = state.get_pending_validator_changes(epoch) {
+                                for change in &pending {
+                                    if change.change_type
+                                        == moltchain_core::ValidatorChangeType::Remove
+                                    {
+                                        vs.remove_validator(&change.pubkey);
+                                        state.delete_validator(&change.pubkey).ok();
+                                        info!(
+                                            "🔒 Epoch {}: Deregistered validator {} (voluntary exit)",
+                                            epoch,
+                                            change.pubkey.to_base58()
+                                        );
+                                    }
+                                }
+                            }
+
+                            // Activate pending validators
+                            let activated = vs.activate_pending_validators();
+                            if !activated.is_empty() {
+                                for pk in &activated {
+                                    info!(
+                                        "🔓 Epoch {}: Activated validator {} for consensus",
+                                        epoch,
+                                        pk.to_base58()
+                                    );
+                                }
+                            }
+
+                            if let Err(e) = state.save_validator_set(&vs) {
+                                warn!(
+                                    "⚠️  Failed to persist validator set after epoch transition: {}",
+                                    e
+                                );
+                            }
+                        }
+                        if let Err(e) = state.clear_pending_validator_changes(epoch) {
+                            warn!(
+                                "⚠️  Failed to clear pending validator changes for epoch {}: {}",
+                                epoch, e
+                            );
+                        }
+                        let mut frozen = validator_set.read().await.consensus_set();
+                        frozen.set_frozen_epoch(epoch);
+                        height_vs = frozen;
+                        info!(
+                            "🧊 Epoch {}: Froze validator set ({} active, {} pending)",
+                            epoch,
+                            height_vs.validators().len(),
+                            validator_set.read().await.pending_count(),
+                        );
+                    } else {
+                        height_vs = validator_set.read().await.consensus_set();
+                    }
 
                     // G-10 fix: Replay buffered future messages
                     let replay_action = bft.drain_future_messages(&height_vs, &height_pool);

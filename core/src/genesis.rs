@@ -323,6 +323,7 @@ impl GenesisConfig {
                 joined_slot: 0,
                 commission_rate: 500, // 5% default commission
                 transactions_processed: 0,
+                pending_activation: false, // Genesis validators active immediately
             };
 
             validators.push(validator);

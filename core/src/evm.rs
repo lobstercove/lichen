@@ -1332,8 +1332,8 @@ mod tests {
         for (i, addr) in all.iter().enumerate() {
             assert_eq!(addr.len(), 20, "Precompile {} address must be 20 bytes", i);
             // All leading bytes zero, only last byte nonzero
-            for j in 0..19 {
-                assert_eq!(addr[j], 0, "Precompile {} byte {} should be 0", i, j);
+            for (j, byte) in addr[..19].iter().enumerate() {
+                assert_eq!(*byte, 0, "Precompile {} byte {} should be 0", i, j);
             }
         }
     }
