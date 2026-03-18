@@ -2313,10 +2313,12 @@ pub struct ValidatorInfo {
     /// Total transactions processed (included in blocks produced by this validator)
     #[serde(default)]
     pub transactions_processed: u64,
-    /// When true, this validator is awaiting epoch-boundary activation and does
-    /// not participate in consensus (leader selection, voting, quorum).
-    /// Set to true when a new validator announces mid-epoch; set to false at
-    /// the next epoch boundary to admit them to the active consensus set.
+    /// When true, this validator has been discovered but is not yet admitted to
+    /// the locally frozen consensus snapshot for the next height.
+    ///
+    /// Validators are activated deterministically from committed on-chain stake
+    /// at a height boundary, never mid-height. This preserves quorum stability
+    /// without tying activation to multi-day epoch boundaries.
     #[serde(default)]
     pub pending_activation: bool,
 }
@@ -2396,8 +2398,8 @@ impl ValidatorSet {
     }
 
     /// Return a consensus-ready snapshot: only validators NOT pending activation.
-    /// Used for height-frozen snapshots during BFT consensus to ensure
-    /// mid-epoch announcements don't alter quorum or leader schedules.
+    /// Used for height-frozen snapshots during BFT consensus to ensure newly
+    /// discovered validators never alter quorum or leader schedules mid-height.
     pub fn consensus_set(&self) -> ValidatorSet {
         let active: Vec<ValidatorInfo> = self
             .validators
@@ -2505,7 +2507,7 @@ impl ValidatorSet {
 
     /// Check if validator is leader for slot using weighted selection
     pub fn is_leader_weighted(&self, slot: u64, pubkey: &Pubkey, stake_pool: &StakePool) -> bool {
-        self.select_leader_weighted(slot, stake_pool)
+        self.select_leader_weighted(slot, stake_pool, &[], MIN_VALIDATOR_STAKE)
             .map(|leader| leader == *pubkey)
             .unwrap_or(false)
     }
@@ -2515,14 +2517,8 @@ impl ValidatorSet {
     /// vs rep 100 (instead of 10x with linear).  Ensures fairer block distribution.
     ///
     /// A5-01: Mixes optional `randomness_seed` (previous block hash) into the
-    /// selection hash to prevent predictability beyond one slot ahead. Without
-    /// a seed, falls back to SHA-256(slot) for backward compatibility.
-    pub fn select_leader_weighted(&self, slot: u64, stake_pool: &StakePool) -> Option<Pubkey> {
-        self.select_leader_weighted_with_seed(slot, stake_pool, &[])
-    }
-
-    /// Select leader with explicit randomness seed (e.g., previous block hash).
-    /// This is the primary entry point for production validators.
+    /// selection hash to prevent predictability beyond one slot ahead.
+    /// `min_validator_stake` must come from the active chain configuration.
     ///
     /// Uses **Tendermint-style weighted round-robin** (CometBFT proposer
     /// selection) to guarantee fair, proportional leader rotation:
@@ -2539,13 +2535,14 @@ impl ValidatorSet {
     /// validators deterministically agree on who the leader is for any given
     /// (slot, seed) pair. Reputation has no influence on leader selection.
     ///
-    /// Validators below MIN_VALIDATOR_STAKE are EXCLUDED from leader rotation.
-    /// This prevents 0-stake (slashed) validators from producing blocks.
-    pub fn select_leader_weighted_with_seed(
+    /// Validators below `min_validator_stake` are excluded from leader rotation.
+    /// This prevents 0-stake or under-collateralized validators from producing blocks.
+    pub fn select_leader_weighted(
         &self,
         slot: u64,
         stake_pool: &StakePool,
         randomness_seed: &[u8],
+        min_validator_stake: u64,
     ) -> Option<Pubkey> {
         if self.validators.is_empty() {
             return None;
@@ -2561,7 +2558,7 @@ impl ValidatorSet {
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
                     .unwrap_or(v.stake);
-                stake >= MIN_VALIDATOR_STAKE
+                stake >= min_validator_stake
             })
             .collect();
 
@@ -3694,15 +3691,15 @@ mod tests {
         pool.stake(pk2, 150_000_000_000_000, 0).unwrap(); // 150k MOLT
 
         // Same slot → same leader every time
-        let l1 = set.select_leader_weighted(10, &pool);
-        let l2 = set.select_leader_weighted(10, &pool);
+        let l1 = set.select_leader_weighted(10, &pool, &[], MIN_VALIDATOR_STAKE);
+        let l2 = set.select_leader_weighted(10, &pool, &[], MIN_VALIDATOR_STAKE);
         assert_eq!(l1, l2);
 
         // Different slot may pick different leader
         let mut found_pk1 = false;
         let mut found_pk2 = false;
         for slot in 0..100 {
-            match set.select_leader_weighted(slot, &pool) {
+            match set.select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE) {
                 Some(pk) if pk == pk1 => found_pk1 = true,
                 Some(pk) if pk == pk2 => found_pk2 = true,
                 _ => {}
@@ -3724,7 +3721,7 @@ mod tests {
         // MIN-STAKE GUARD: With no validators meeting MIN_VALIDATOR_STAKE,
         // leader selection returns None (chain halts) — never produces blocks
         // with 0-stake validators.
-        let leader = set.select_leader_weighted(0, &pool);
+        let leader = set.select_leader_weighted(0, &pool, &[], MIN_VALIDATOR_STAKE);
         assert_eq!(
             leader, None,
             "Should return None when no validator meets MIN_VALIDATOR_STAKE"
@@ -3765,8 +3762,8 @@ mod tests {
         let seed_b = [0xBB; 32];
 
         // Same slot + same seed → deterministic
-        let r1 = set.select_leader_weighted_with_seed(42, &pool, &seed_a);
-        let r2 = set.select_leader_weighted_with_seed(42, &pool, &seed_a);
+        let r1 = set.select_leader_weighted(42, &pool, &seed_a, MIN_VALIDATOR_STAKE);
+        let r2 = set.select_leader_weighted(42, &pool, &seed_a, MIN_VALIDATOR_STAKE);
         assert_eq!(r1, r2, "Same slot and seed must produce same leader");
 
         // Different seeds may produce different leader distribution
@@ -3774,10 +3771,12 @@ mod tests {
         let mut results_a = std::collections::HashMap::new();
         let mut results_b = std::collections::HashMap::new();
         for slot in 0..200 {
-            if let Some(pk) = set.select_leader_weighted_with_seed(slot, &pool, &seed_a) {
+            if let Some(pk) = set.select_leader_weighted(slot, &pool, &seed_a, MIN_VALIDATOR_STAKE)
+            {
                 *results_a.entry(pk).or_insert(0u32) += 1;
             }
-            if let Some(pk) = set.select_leader_weighted_with_seed(slot, &pool, &seed_b) {
+            if let Some(pk) = set.select_leader_weighted(slot, &pool, &seed_b, MIN_VALIDATOR_STAKE)
+            {
                 *results_b.entry(pk).or_insert(0u32) += 1;
             }
         }
@@ -3787,10 +3786,10 @@ mod tests {
             "Different seeds must produce different leader distributions"
         );
 
-        // Empty seed should match select_leader_weighted (backward compat)
+        // Empty seed should match the same selector with an explicit empty seed.
         for slot in 0..50 {
-            let no_seed = set.select_leader_weighted(slot, &pool);
-            let empty_seed = set.select_leader_weighted_with_seed(slot, &pool, &[]);
+            let no_seed = set.select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE);
+            let empty_seed = set.select_leader_weighted(slot, &pool, &[], MIN_VALIDATOR_STAKE);
             assert_eq!(
                 no_seed, empty_seed,
                 "Empty seed must match no-seed variant at slot {}",

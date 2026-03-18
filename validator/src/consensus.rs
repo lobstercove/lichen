@@ -81,6 +81,7 @@ pub struct ConsensusEngine {
     // ── Identity ────────────────────────────────────────────────────
     keypair: Keypair,
     pub validator_pubkey: Pubkey,
+    min_validator_stake: u64,
 
     // ── Round state ─────────────────────────────────────────────────
     /// Current block height (tip_slot + 1).
@@ -134,9 +135,19 @@ pub struct ConsensusEngine {
 impl ConsensusEngine {
     /// Create a new consensus engine for the given validator identity.
     pub fn new(keypair: Keypair, validator_pubkey: Pubkey) -> Self {
+        Self::new_with_min_stake(keypair, validator_pubkey, MIN_VALIDATOR_STAKE)
+    }
+
+    /// Create a new consensus engine with a network-specific minimum stake.
+    pub fn new_with_min_stake(
+        keypair: Keypair,
+        validator_pubkey: Pubkey,
+        min_validator_stake: u64,
+    ) -> Self {
         Self {
             keypair,
             validator_pubkey,
+            min_validator_stake,
             height: 0,
             round: 0,
             step: RoundStep::Commit, // Not active until start_height()
@@ -329,8 +340,12 @@ impl ConsensusEngine {
         // Verify proposer is the correct leader for (height, round)
         let parent_hash = proposal.block.header.parent_hash;
         let leader_slot = self.height * 1000 + proposal.round as u64;
-        let expected_leader =
-            validator_set.select_leader_weighted_with_seed(leader_slot, stake_pool, &parent_hash.0);
+        let expected_leader = validator_set.select_leader_weighted(
+            leader_slot,
+            stake_pool,
+            &parent_hash.0,
+            self.min_validator_stake,
+        );
         if expected_leader != Some(proposal.proposer) {
             warn!(
                 "🚨 BFT: Proposal from non-leader {:?} (expected {:?})",
@@ -1359,8 +1374,12 @@ impl ConsensusEngine {
         parent_hash: &Hash,
     ) -> bool {
         let leader_slot = self.height * 1000 + self.round as u64;
-        let leader =
-            validator_set.select_leader_weighted_with_seed(leader_slot, stake_pool, &parent_hash.0);
+        let leader = validator_set.select_leader_weighted(
+            leader_slot,
+            stake_pool,
+            &parent_hash.0,
+            self.min_validator_stake,
+        );
         let is_us = leader == Some(self.validator_pubkey);
         if is_us {
             info!(
@@ -1376,7 +1395,7 @@ impl ConsensusEngine {
                             .get_stake(&v.pubkey)
                             .map(|s| s.total_stake())
                             .unwrap_or(v.stake);
-                        s >= MIN_VALIDATOR_STAKE
+                        s >= self.min_validator_stake
                     })
                     .count()
             );

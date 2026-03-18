@@ -32,8 +32,8 @@ use moltchain_core::{
     ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
     VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, MIN_VALIDATOR_STAKE,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
@@ -677,8 +677,8 @@ fn load_embedded_seed_peers(chain_id: &str) -> Vec<String> {
 #[derive(Serialize)]
 struct ValidatorHashEntry {
     pubkey: Pubkey,
-    reputation: u64,
     stake: u64,
+    pending_activation: bool,
 }
 
 fn hash_validator_set(set: &ValidatorSet) -> Hash {
@@ -687,8 +687,8 @@ fn hash_validator_set(set: &ValidatorSet) -> Hash {
         .into_iter()
         .map(|validator| ValidatorHashEntry {
             pubkey: validator.pubkey,
-            reputation: validator.reputation,
             stake: validator.stake,
+            pending_activation: validator.pending_activation,
         })
         .collect();
 
@@ -3099,6 +3099,7 @@ async fn apply_block_effects(
     vote_aggregator: &Arc<RwLock<VoteAggregator>>,
     block: &Block,
     skip_rewards: bool,
+    min_validator_stake: u64,
 ) {
     if block.header.slot == 0 || block.header.validator == [0u8; 32] {
         return;
@@ -3203,7 +3204,7 @@ async fn apply_block_effects(
             // During live sync, the AUDIT-FIX C5 active-set gate already
             // filters non-member validators, so this branch only runs for
             // producers whose blocks were accepted into the chain.
-            let effective_stake = if stake_amount >= MIN_VALIDATOR_STAKE {
+            let effective_stake = if stake_amount >= min_validator_stake {
                 stake_amount
             } else {
                 BOOTSTRAP_GRANT_AMOUNT
@@ -3689,6 +3690,100 @@ async fn apply_block_effects(
     }
 
     // record_block_activity is called in emit_program_and_nft_events, not here
+}
+
+async fn activate_pending_validators_for_height(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    height_pool: &StakePool,
+    new_height: u64,
+    min_validator_stake: u64,
+) {
+    let validator_snapshot: Vec<(Pubkey, u64, bool)> = validator_set
+        .read()
+        .await
+        .validators()
+        .iter()
+        .map(|validator| {
+            (
+                validator.pubkey,
+                validator.stake,
+                validator.pending_activation,
+            )
+        })
+        .collect();
+
+    if validator_snapshot.is_empty() {
+        return;
+    }
+
+    let mut reconciled = Vec::new();
+    for (pubkey, current_stake, pending_activation) in validator_snapshot {
+        let resolved_stake = height_pool
+            .get_stake(&pubkey)
+            .map(|stake| stake.total_stake())
+            .or_else(|| {
+                state
+                    .get_account(&pubkey)
+                    .ok()
+                    .flatten()
+                    .map(|account| account.staked)
+            })
+            .unwrap_or(current_stake);
+
+        if resolved_stake != current_stake
+            || (pending_activation && resolved_stake >= min_validator_stake)
+        {
+            reconciled.push((pubkey, resolved_stake, pending_activation));
+        }
+    }
+
+    if reconciled.is_empty() {
+        return;
+    }
+
+    let mut vs = validator_set.write().await;
+    let mut activated = Vec::new();
+    let mut changed = false;
+    for (pubkey, resolved_stake, pending_activation) in reconciled {
+        if let Some(validator) = vs.get_validator_mut(&pubkey) {
+            if validator.stake != resolved_stake {
+                validator.stake = resolved_stake;
+                changed = true;
+            }
+            if pending_activation
+                && validator.pending_activation
+                && resolved_stake >= min_validator_stake
+            {
+                validator.pending_activation = false;
+                changed = true;
+                activated.push(pubkey);
+            }
+        }
+    }
+
+    if !changed {
+        return;
+    }
+
+    let snapshot = vs.clone();
+    drop(vs);
+
+    if let Err(e) = state.save_validator_set(&snapshot) {
+        warn!(
+            "⚠️  Failed to persist validator set after height-boundary activation: {}",
+            e
+        );
+        return;
+    }
+
+    for pubkey in activated {
+        info!(
+            "🔓 Height {}: Activated validator {} for consensus",
+            new_height,
+            pubkey.to_base58()
+        );
+    }
 }
 
 /// Periodic checkpoint creation — called after every block to check if
@@ -5377,6 +5472,7 @@ async fn run_validator() {
         &genesis_keypairs_dir,
         &genesis_config.chain_id,
     );
+    let min_validator_stake = genesis_config.consensus.min_validator_stake;
 
     // ========================================================================
     // VALIDATOR IDENTITY
@@ -5969,7 +6065,7 @@ async fn run_validator() {
                 .unwrap_or(None)
                 .map(|a| a.staked)
                 .unwrap_or(0);
-            if on_chain_stake >= moltchain_core::consensus::MIN_VALIDATOR_STAKE {
+            if on_chain_stake >= min_validator_stake {
                 match pool.try_bootstrap_with_fingerprint(
                     validator_pubkey,
                     on_chain_stake,
@@ -6915,6 +7011,7 @@ async fn run_validator() {
                                     &vote_agg_for_effects,
                                     &pending_block,
                                     false,
+                                    min_validator_stake,
                                 )
                                 .await;
                                 apply_oracle_from_block(&state_for_blocks, &pending_block);
@@ -7133,6 +7230,7 @@ async fn run_validator() {
                             &vote_agg_for_effects,
                             &block,
                             false,
+                            min_validator_stake,
                         )
                         .await;
                         apply_oracle_from_block(&state_for_blocks, &block);
@@ -7268,6 +7366,7 @@ async fn run_validator() {
                                 &vote_agg_for_effects,
                                 &block,
                                 false,
+                                min_validator_stake,
                             )
                             .await;
                             apply_oracle_from_block(&state_for_blocks, &block);
@@ -7320,6 +7419,7 @@ async fn run_validator() {
                                         &vote_agg_for_effects,
                                         &pending_block,
                                         false,
+                                        min_validator_stake,
                                     )
                                     .await;
                                     apply_oracle_from_block(&state_for_blocks, &pending_block);
@@ -7713,6 +7813,7 @@ async fn run_validator() {
                                         &vote_agg_for_effects,
                                         &block,
                                         false,
+                                        min_validator_stake,
                                     )
                                     .await;
                                     apply_oracle_from_block(&state_for_blocks, &block);
@@ -7772,6 +7873,7 @@ async fn run_validator() {
                                                 &vote_agg_for_effects,
                                                 &pending_block,
                                                 false,
+                                                min_validator_stake,
                                             )
                                             .await;
                                             apply_oracle_from_block(
@@ -8215,10 +8317,10 @@ async fn run_validator() {
                         .map(|a| a.staked)
                         .unwrap_or(0);
 
-                    // Epoch-based activation: new validators are added for
+                    // Height-based activation: new validators are added for
                     // P2P routing immediately but flagged pending_activation=true
-                    // so they're excluded from consensus until the next epoch
-                    // boundary. This prevents mid-epoch quorum changes.
+                    // so they're excluded from consensus until the next height
+                    // boundary after their on-chain stake is visible locally.
                     let current_slot = announcement.current_slot;
                     let current_epoch = moltchain_core::slot_to_epoch(current_slot);
                     let pending = current_slot > 0; // Genesis validators activate immediately
@@ -9167,7 +9269,7 @@ async fn run_validator() {
                                         let has_verified_stake = state_for_snapshot_apply
                                             .get_account(&remote_val.pubkey)
                                             .unwrap_or(None)
-                                            .map(|a| a.staked >= MIN_VALIDATOR_STAKE)
+                                            .map(|a| a.staked >= min_validator_stake)
                                             .unwrap_or(false);
 
                                         if has_verified_stake {
@@ -9186,19 +9288,28 @@ async fn run_validator() {
                                                 );
                                                 continue;
                                             }
-                                            // On-chain stake verified — safe to add
+                                            // On-chain stake verified — safe to add.
+                                            // Do not trust remote pending_activation;
+                                            // newly imported validators must be
+                                            // activated locally at the next height
+                                            // boundary from committed stake.
+                                            let local_stake = state_for_snapshot_apply
+                                                .get_account(&remote_val.pubkey)
+                                                .unwrap_or(None)
+                                                .map(|account| account.staked)
+                                                .unwrap_or(remote_val.stake);
                                             let new_val = ValidatorInfo {
                                                 pubkey: remote_val.pubkey,
                                                 reputation: 100,
                                                 blocks_proposed: remote_val.blocks_proposed,
                                                 votes_cast: remote_val.votes_cast,
                                                 correct_votes: remote_val.correct_votes,
-                                                stake: remote_val.stake,
+                                                stake: local_stake,
                                                 joined_slot: remote_val.joined_slot,
                                                 last_active_slot: remote_val.last_active_slot,
                                                 commission_rate: 500,
                                                 transactions_processed: 0,
-                                                pending_activation: remote_val.pending_activation,
+                                                pending_activation: our_tip > 0,
                                             };
                                             vs.add_validator(new_val);
                                             merged_count += 1;
@@ -9303,7 +9414,7 @@ async fn run_validator() {
                                     let has_on_chain_stake = state_for_snapshot_apply
                                         .get_account(&entry_validator)
                                         .unwrap_or(None)
-                                        .map(|a| a.staked >= MIN_VALIDATOR_STAKE)
+                                        .map(|a| a.staked >= min_validator_stake)
                                         .unwrap_or(false);
                                     if !has_on_chain_stake {
                                         debug!(
@@ -11001,7 +11112,8 @@ async fn run_validator() {
 
     // ── Initialize BFT consensus engine ──
     let bft_keypair = Keypair::from_seed(validator_keypair.secret_key());
-    let mut bft = ConsensusEngine::new(bft_keypair, validator_pubkey);
+    let mut bft =
+        ConsensusEngine::new_with_min_stake(bft_keypair, validator_pubkey, min_validator_stake);
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
     // ── Initialize Consensus WAL (G-1/G-2 fix) ──
@@ -11127,6 +11239,7 @@ async fn run_validator() {
                 &mut parent_hash,
                 slot_duration_ms,
                 &validator_keypair,
+                min_validator_stake,
             )
             .await;
             // Schedule timeout for the step we landed on after proposing
@@ -11196,8 +11309,8 @@ async fn run_validator() {
             parent_hash = get_parent_hash(&state);
 
             // Re-snapshot for the new height.
-            // Epoch-based validator set: consensus_set() filters out pending
-            // validators. Activations happen only at epoch boundaries (below).
+            // Consensus uses a height-frozen validator set. Newly discovered
+            // validators are admitted only after a committed height boundary.
             height_pool = stake_pool.read().await.clone();
 
             // ── Epoch boundary: process pending validator changes ──
@@ -11226,18 +11339,6 @@ async fn run_validator() {
                         }
                     }
 
-                    // 2. Activate pending validators (new joins from P2P announcements)
-                    let activated = vs.activate_pending_validators();
-                    if !activated.is_empty() {
-                        for pk in &activated {
-                            info!(
-                                "🔓 Epoch {}: Activated validator {} for consensus",
-                                epoch,
-                                pk.to_base58()
-                            );
-                        }
-                    }
-
                     if let Err(e) = state.save_validator_set(&vs) {
                         warn!(
                             "⚠️  Failed to persist validator set after epoch transition: {}",
@@ -11251,6 +11352,14 @@ async fn run_validator() {
                         epoch, e
                     );
                 }
+                activate_pending_validators_for_height(
+                    &state,
+                    &validator_set,
+                    &height_pool,
+                    new_height,
+                    min_validator_stake,
+                )
+                .await;
                 let mut frozen = validator_set.read().await.consensus_set();
                 frozen.set_frozen_epoch(epoch);
                 height_vs = frozen;
@@ -11261,8 +11370,14 @@ async fn run_validator() {
                     validator_set.read().await.pending_count(),
                 );
             } else {
-                // Non-epoch boundary: refresh consensus snapshot (pool may
-                // have changed from rewards, but validator membership is stable)
+                activate_pending_validators_for_height(
+                    &state,
+                    &validator_set,
+                    &height_pool,
+                    new_height,
+                    min_validator_stake,
+                )
+                .await;
                 height_vs = validator_set.read().await.consensus_set();
             }
 
@@ -11292,6 +11407,7 @@ async fn run_validator() {
                 &mut parent_hash,
                 slot_duration_ms,
                 &validator_keypair,
+                min_validator_stake,
             )
             .await;
 
@@ -11342,6 +11458,7 @@ async fn run_validator() {
                     &mut parent_hash,
                     slot_duration_ms,
                     &validator_keypair,
+                    min_validator_stake,
                 )
                 .await;
                 // Schedule timeout for post-proposal step
@@ -11424,6 +11541,7 @@ async fn run_validator() {
                     &mut parent_hash,
                     slot_duration_ms,
                     &validator_keypair,
+                    min_validator_stake,
                 ).await;
             }
 
@@ -11452,6 +11570,7 @@ async fn run_validator() {
                     &mut parent_hash,
                     slot_duration_ms,
                     &validator_keypair,
+                    min_validator_stake,
                 ).await;
             }
 
@@ -11480,6 +11599,7 @@ async fn run_validator() {
                     &mut parent_hash,
                     slot_duration_ms,
                     &validator_keypair,
+                    min_validator_stake,
                 ).await;
             }
 
@@ -11545,6 +11665,7 @@ async fn run_validator() {
                             &mut parent_hash,
                             slot_duration_ms,
                             &validator_keypair,
+                            min_validator_stake,
                         ).await;
                         // Schedule timeout for post-proposal step
                         timeout_handle = match bft.step {
@@ -11597,6 +11718,7 @@ async fn run_validator() {
                         &mut parent_hash,
                         slot_duration_ms,
                         &validator_keypair,
+                        min_validator_stake,
                     ).await;
 
                     // After timeout handling, if we moved to a new round's Propose step
@@ -11648,6 +11770,7 @@ async fn run_validator() {
                                 &mut parent_hash,
                                 slot_duration_ms,
                                 &validator_keypair,
+                                min_validator_stake,
                             ).await;
                     }
                 }
@@ -11722,7 +11845,9 @@ async fn run_validator() {
                     parent_hash = get_parent_hash(&state);
 
                     // Re-snapshot for the new height.
-                    // Epoch-based: consensus_set() filters pending validators.
+                    // Consensus uses a height-frozen validator set. Newly
+                    // discovered validators are admitted only after a
+                    // committed height boundary.
                     height_pool = stake_pool.read().await.clone();
 
                     if moltchain_core::is_epoch_boundary(new_height) {
@@ -11747,18 +11872,6 @@ async fn run_validator() {
                                 }
                             }
 
-                            // Activate pending validators
-                            let activated = vs.activate_pending_validators();
-                            if !activated.is_empty() {
-                                for pk in &activated {
-                                    info!(
-                                        "🔓 Epoch {}: Activated validator {} for consensus",
-                                        epoch,
-                                        pk.to_base58()
-                                    );
-                                }
-                            }
-
                             if let Err(e) = state.save_validator_set(&vs) {
                                 warn!(
                                     "⚠️  Failed to persist validator set after epoch transition: {}",
@@ -11772,6 +11885,14 @@ async fn run_validator() {
                                 epoch, e
                             );
                         }
+                        activate_pending_validators_for_height(
+                            &state,
+                            &validator_set,
+                            &height_pool,
+                            new_height,
+                            min_validator_stake,
+                        )
+                        .await;
                         let mut frozen = validator_set.read().await.consensus_set();
                         frozen.set_frozen_epoch(epoch);
                         height_vs = frozen;
@@ -11782,6 +11903,14 @@ async fn run_validator() {
                             validator_set.read().await.pending_count(),
                         );
                     } else {
+                        activate_pending_validators_for_height(
+                            &state,
+                            &validator_set,
+                            &height_pool,
+                            new_height,
+                            min_validator_stake,
+                        )
+                        .await;
                         height_vs = validator_set.read().await.consensus_set();
                     }
 
@@ -11809,6 +11938,7 @@ async fn run_validator() {
                         &mut parent_hash,
                         slot_duration_ms,
                         &validator_keypair,
+                        min_validator_stake,
                     )
                     .await;
 
@@ -11923,6 +12053,7 @@ async fn execute_consensus_actions(
     parent_hash: &mut Hash,
     slot_duration_ms: u64,
     validator_keypair: &Keypair,
+    min_validator_stake: u64,
 ) {
     match action {
         ConsensusAction::None => {}
@@ -12030,6 +12161,7 @@ async fn execute_consensus_actions(
                 vote_aggregator,
                 &block,
                 false,
+                min_validator_stake,
             )
             .await;
             apply_oracle_from_block(state, &block);
@@ -12236,6 +12368,7 @@ async fn execute_consensus_actions(
                     parent_hash,
                     slot_duration_ms,
                     validator_keypair,
+                    min_validator_stake,
                 ))
                 .await;
             }
