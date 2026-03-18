@@ -933,6 +933,7 @@ mod tests {
                 last_active_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: false,
             };
             vs.add_validator(vi);
         }
@@ -999,6 +1000,7 @@ mod tests {
                 last_active_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: false,
             };
             vs.add_validator(vi);
         }
@@ -1057,6 +1059,7 @@ mod tests {
                 last_active_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: false,
             };
             vs.add_validator(vi);
         }
@@ -1130,6 +1133,7 @@ mod tests {
                 last_active_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: false,
             });
             sp.stake(crate::Pubkey(*k), 100_000_000_000_000, 0).ok();
         }
@@ -1195,6 +1199,7 @@ mod tests {
                 last_active_slot: 0,
                 commission_rate: 500,
                 transactions_processed: 0,
+                pending_activation: false,
             });
             sp.stake(crate::Pubkey(k), stake, 0).ok();
         }
@@ -1247,6 +1252,7 @@ mod tests {
             last_active_slot: 0,
             commission_rate: 500,
             transactions_processed: 0,
+            pending_activation: false,
         });
         sp.stake(crate::Pubkey(k), stake, 0).ok();
 

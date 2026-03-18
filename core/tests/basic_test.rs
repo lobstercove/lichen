@@ -116,6 +116,7 @@ fn test_validator_set() {
         joined_slot: 0,
         commission_rate: 500,
         transactions_processed: 0,
+        pending_activation: false,
     });
 
     assert!(!set.validators().is_empty());

@@ -119,6 +119,7 @@ fn make_validator_info(kp: &Keypair, stake: u64) -> ValidatorInfo {
         joined_slot: 0,
         commission_rate: 500,
         transactions_processed: 0,
+        pending_activation: false,
     }
 }
 

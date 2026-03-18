@@ -3004,7 +3004,7 @@ async fn test_evm_eth_get_logs_with_stored_evm_logs() {
     .unwrap();
     assert_valid_rpc(&resp);
     let result = resp["result"].as_array().expect("should be array");
-    assert!(result.len() >= 1, "Should return at least 1 EVM log");
+    assert!(!result.is_empty(), "Should return at least 1 EVM log");
 
     // Verify the structured EVM log fields
     let log = &result[0];
