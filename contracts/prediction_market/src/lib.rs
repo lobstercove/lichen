@@ -2630,13 +2630,13 @@ pub fn submit_resolution(
 
     // Verify MoltOracle attestation via cross-contract call.
     // Sends the attestation_hash as args and expects the oracle to return
-    // attestation data if it exists. Format: [data_hash(32) + sig_count(1) + ...]
+    // the attestation record payload from get_attestation_data.
     // If oracle is not configured, skip verification (allows testing/genesis).
     let oracle_addr = load_addr(ORACLE_ADDR_KEY);
     if !is_zero(&oracle_addr) {
         let cross_call = CrossCall::new(
             Address(oracle_addr),
-            "get_attestation",
+            "get_attestation_data",
             attestation_hash.to_vec(),
         );
         match call_contract(cross_call) {
@@ -4527,8 +4527,14 @@ mod tests {
 
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xCC; 32];
         let result = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
+        let (_, function, args, value) = test_mock::get_last_cross_call()
+            .expect("oracle attestation lookup must perform a cross-contract call");
+        assert_eq!(function, "get_attestation_data");
+        assert_eq!(args, att_hash.to_vec());
+        assert_eq!(value, 0);
         // Mock returns empty vec → "attestation not found" → rejection
         assert_eq!(result, 0, "Should reject when oracle returns empty data");
     }

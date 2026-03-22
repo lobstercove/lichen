@@ -5,10 +5,11 @@ use crate::kademlia::{KademliaTable, NodeId};
 use crate::message::{
     validator_announcement_signing_message, MessageType, P2PMessage, SnapshotKind,
 };
-use crate::peer::PeerManager;
+use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
 use moltchain_core::{
-    Block, Precommit, Prevote, Proposal, Pubkey, StakePool, Transaction, ValidatorSet, Vote,
+    Block, BlockHeader, CommitSignature, Precommit, Prevote, Proposal, Pubkey, StakePool,
+    Transaction, ValidatorSet, Vote,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -174,8 +175,17 @@ pub struct SnapshotResponseMsg {
     /// For StateSnapshotResponse: (category, chunk_index, total_chunks, snapshot_slot, state_root, entries)
     #[allow(clippy::type_complexity)]
     pub state_snapshot_data: Option<(String, u64, u64, u64, [u8; 32], Vec<u8>)>,
-    /// For CheckpointMetaResponse: (slot, state_root, total_accounts)
-    pub checkpoint_meta: Option<(u64, [u8; 32], u64)>,
+    /// For CheckpointMetaResponse:
+    /// (slot, state_root, total_accounts, checkpoint_header, commit_round, commit_signatures)
+    #[allow(clippy::type_complexity)]
+    pub checkpoint_meta: Option<(
+        u64,
+        [u8; 32],
+        u64,
+        Option<BlockHeader>,
+        u32,
+        Vec<CommitSignature>,
+    )>,
 }
 
 /// P3-3: Compact block received from a peer
@@ -923,6 +933,9 @@ impl P2PNetwork {
                 slot,
                 state_root,
                 total_accounts,
+                checkpoint_header,
+                commit_round,
+                commit_signatures,
             } => {
                 let response = SnapshotResponseMsg {
                     requester: peer_addr,
@@ -930,7 +943,14 @@ impl P2PNetwork {
                     validator_set: None,
                     stake_pool: None,
                     state_snapshot_data: None,
-                    checkpoint_meta: Some((slot, state_root, total_accounts)),
+                    checkpoint_meta: Some((
+                        slot,
+                        state_root,
+                        total_accounts,
+                        checkpoint_header,
+                        commit_round,
+                        commit_signatures,
+                    )),
                 };
                 if let Err(e) = self.snapshot_response_tx.try_send(response) {
                     warn!(
@@ -1309,11 +1329,14 @@ impl P2PNetwork {
         Ok(())
     }
 
-    /// Broadcast a block to all peers
+    /// Disseminate a block through the non-consensus gossip path.
     pub async fn broadcast_block(&self, block: Block) {
         info!("🦞 P2P: Broadcasting block slot {}", block.header.slot);
+        let target_id = block.hash().0;
         let message = P2PMessage::new(MessageType::Block(block), self.local_addr);
-        self.peer_manager.broadcast(message).await;
+        self.peer_manager
+            .route_to_closest(&target_id, NON_CONSENSUS_FANOUT, message)
+            .await;
     }
 
     /// Broadcast a vote to all peers
@@ -1323,11 +1346,14 @@ impl P2PNetwork {
         self.peer_manager.broadcast(message).await;
     }
 
-    /// Broadcast a transaction to all peers
+    /// Disseminate a transaction through the non-consensus gossip path.
     pub async fn broadcast_transaction(&self, tx: Transaction) {
         info!("🦞 P2P: Broadcasting transaction");
+        let target_id = tx.hash().0;
         let message = P2PMessage::new(MessageType::Transaction(tx), self.local_addr);
-        self.peer_manager.broadcast(message).await;
+        self.peer_manager
+            .route_to_closest(&target_id, NON_CONSENSUS_FANOUT, message)
+            .await;
     }
 
     /// Get connected peers

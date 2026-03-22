@@ -76,16 +76,6 @@ fn setup_multi_market() -> ([u8; 32], u64) {
     (admin, mid)
 }
 
-fn read_return_u64() -> u64 {
-    let rd = moltchain_sdk::test_mock::get_return_data();
-    u64::from_le_bytes(rd[0..8].try_into().unwrap())
-}
-
-fn read_price(market_id: u64, outcome: u8) -> u64 {
-    assert_eq!(get_price(market_id, outcome), 1);
-    read_return_u64()
-}
-
 fn itoa_test(n: u64) -> Vec<u8> {
     if n == 0 {
         return vec![b'0'];
@@ -148,7 +138,7 @@ fn market_winning_outcome_from_record(data: &[u8]) -> u8 {
 
 #[test]
 fn test_close_market_after_close_slot() {
-    let (admin, mid) = setup_large_market();
+    let (_admin, mid) = setup_large_market();
     // Advance past close_slot
     moltchain_sdk::test_mock::set_slot(101_001);
     let anyone = [5u8; 32];
@@ -213,7 +203,7 @@ fn test_close_market_already_closed() {
 
 #[test]
 fn test_submit_resolution_requires_closed() {
-    let (admin, mid) = setup_large_market();
+    let (_admin, mid) = setup_large_market();
     // Market is ACTIVE, not CLOSED
     let resolver = [2u8; 32];
     let att_hash = [99u8; 32];
@@ -730,9 +720,9 @@ fn test_full_lifecycle_binary_resolve_yes() {
     buy_shares(t_both.as_ptr(), mid, 1, 2_000_000); // NO
 
     let (yes_shares_t1, _) = read_position(mid, &t_yes, 0);
-    let (no_shares_t2, _) = read_position(mid, &t_no, 1);
+    let (_no_shares_t2, _) = read_position(mid, &t_no, 1);
     let (yes_shares_t3, _) = read_position(mid, &t_both, 0);
-    let (no_shares_t3, _) = read_position(mid, &t_both, 1);
+    let (_no_shares_t3, _) = read_position(mid, &t_both, 1);
 
     // Close
     moltchain_sdk::test_mock::set_slot(101_001);

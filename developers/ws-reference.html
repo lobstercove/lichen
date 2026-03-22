@@ -121,7 +121,8 @@
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
-                    <p><strong>Default endpoint:</strong> <code>ws://localhost:8900</code></p>
+                    <p><strong>Production endpoint:</strong> <code>wss://ws.moltchain.network</code></p>
+                    <p><strong>Local development:</strong> <code>ws://localhost:8900</code></p>
                     <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
                         format.</p>
                 </div>
@@ -308,7 +309,10 @@ await conn.offBlock(subId);</code></pre>
             <!-- subscribeTransactions -->
             <div class="method-card" id="subscribeTransactions">
                 <h3 class="method-name">subscribeTransactions / unsubscribeTransactions</h3>
-                <p class="method-desc">Stream every confirmed transaction in real-time.</p>
+                <p class="method-desc">Stream transactions observed in canonical blocks in real-time. Use
+                    <code>subscribeSignatureStatus</code> when you need explicit processed / confirmed / finalized
+                    commitment updates for one signature.
+                </p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>None</p>
@@ -699,7 +703,8 @@ await conn.offMarketSales(subId);</code></pre>
             <div class="method-card" id="subscribeSignatureStatus">
                 <h3 class="method-name">subscribeSignatureStatus / signatureSubscribe</h3>
                 <p class="method-desc">Track the confirmation status of a specific transaction signature through
-                    processed → confirmed → finalized.</p>
+                    processed → confirmed → finalized. <code>finalized</code> means the transaction's block is covered
+                    by the node's BFT finality tracker after commit supermajority.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -887,7 +892,9 @@ await conn.offSignatureStatus(subId);</code></pre>
 
             <div class="method-card" id="event-transaction">
                 <h3 class="method-name">Transaction Event</h3>
-                <p class="method-desc">Emitted for each confirmed transaction.</p>
+                <p class="method-desc">Emitted for each transaction observed in the canonical block stream. This event
+                    does not by itself imply <code>finalized</code>; use signature status subscriptions when commitment
+                    level matters.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
                     <pre><code>{
@@ -926,7 +933,8 @@ await conn.offSignatureStatus(subId);</code></pre>
             <div class="method-card" id="event-market">
                 <h3 class="method-name">MarketListing / MarketSale Event</h3>
                 <p class="method-desc">Emitted for marketplace activity. Both events share the same structure with an
-                    <code>event</code> discriminator field.</p>
+                    <code>event</code> discriminator field.
+                </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
                     <pre><code>{
@@ -1120,7 +1128,7 @@ await conn.offSignatureStatus(subId);</code></pre>
                     GitHub</a>
                 <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
                 <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
             <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
         </div>

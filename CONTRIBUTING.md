@@ -75,6 +75,14 @@ cargo clippy --workspace -- -D warnings
 3. `cargo test --workspace`
 4. If you touched contracts: `cargo build --target wasm32-unknown-unknown --release -p <contract>`
 
+## Secrets And Public Repo Boundaries
+
+- Public source, docs, deployment manifests, infra configs, and frontend/app code belong in the repository.
+- Never commit credentials, private keys, seed phrases, `.env` files, or operator-only runbooks with live secrets.
+- Put redacted operational documentation in tracked public paths such as `docs/`, `deploy/`, `infra/`, and `monitoring/`.
+- Keep private operator material in ignored paths such as `internal-docs/`, `VPS_CREDENTIALS.md`, local wallet directories, and other gitignored secret files.
+- If a document mixes public architecture with secret values, split it into a tracked redacted document plus an ignored local companion.
+
 ## Building WASM Contracts
 
 MoltChain ships 29 on-chain contracts under `contracts/`. Each is its own crate:
@@ -139,6 +147,10 @@ Feature requests are welcome — label them `enhancement`.
 | `contracts/`| On-chain WASM smart contracts        |
 | `sdk/`      | JavaScript/TypeScript SDK            |
 | `tools/`    | Deployment & testing utilities       |
+| `docs/`     | Public architecture, strategy, and guides |
+| `deploy/`   | Public deployment manifests and service files |
+| `infra/`    | Public infrastructure configuration  |
+| `monitoring/` | Public monitoring dashboard sources |
 | `explorer/` | Block explorer web app               |
 | `wallet/`   | Wallet application                   |
 

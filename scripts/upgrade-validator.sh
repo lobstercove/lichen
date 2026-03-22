@@ -24,6 +24,10 @@ echo "🦞 MoltChain Validator Upgrade"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
+print_error "This script is legacy and unvalidated for the current production deployment model."
+print_info "Use deploy/setup.sh and docs/deployment/PRODUCTION_DEPLOYMENT.md for validator upgrades."
+exit 1
+
 # Check if validator is running
 if systemctl is-active --quiet moltchain-validator 2>/dev/null; then
     print_info "Validator is running, will stop for upgrade"

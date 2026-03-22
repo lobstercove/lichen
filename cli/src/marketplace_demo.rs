@@ -306,6 +306,8 @@ async fn send_tx(
     let message = Message {
         instructions,
         recent_blockhash: Hash::new(bh),
+        compute_budget: None,
+        compute_unit_price: None,
     };
 
     let signature = signer.sign(&message.serialize());

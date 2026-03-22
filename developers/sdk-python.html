@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,9 +10,12 @@
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 </head>
+
 <body>
     <nav class="nav">
         <div class="nav-container">
@@ -37,7 +41,8 @@
                 <select id="devNetworkSelect" class="network-select">
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle"
+                aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -106,17 +111,20 @@
             </div>
 
             <h1>Python SDK</h1>
-            <p>The official async Python SDK for MoltChain. Built on <code>httpx</code> and <code>websockets</code> with full type hints.</p>
+            <p>The official async Python SDK for MoltChain. Built on <code>httpx</code> and <code>websockets</code> with
+                full type hints.</p>
 
             <!-- Installation -->
             <section id="installation">
                 <h2>Installation</h2>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>pip install moltchain</code></pre>
                 </div>
                 <div class="callout callout-info">
-                    <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>, <code>PyNaCl</code>, <code>base58</code>.</p>
+                    <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>,
+                        <code>PyNaCl</code>, <code>base58</code>.</p>
                 </div>
             </section>
 
@@ -124,7 +132,8 @@
             <section id="quick-start">
                 <h2>Quick Start</h2>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>import asyncio
 from moltchain import Connection, Keypair, PublicKey, TransactionBuilder
 
@@ -169,10 +178,27 @@ asyncio.run(main())</code></pre>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
-                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <tr><td>rpc_url</td><td><span class="param-type">str</span></td><td>Yes</td><td>HTTP JSON-RPC endpoint URL</td></tr>
-                            <tr><td>ws_url</td><td><span class="param-type">Optional[str]</span></td><td>No</td><td>WebSocket endpoint URL (required for subscriptions)</td></tr>
+                            <tr>
+                                <td>rpc_url</td>
+                                <td><span class="param-type">str</span></td>
+                                <td>Yes</td>
+                                <td>HTTP JSON-RPC endpoint URL</td>
+                            </tr>
+                            <tr>
+                                <td>ws_url</td>
+                                <td><span class="param-type">Optional[str]</span></td>
+                                <td>No</td>
+                                <td>WebSocket endpoint URL (required for subscriptions)</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -211,7 +237,8 @@ asyncio.run(main())</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await get_metrics() -&gt; Dict[str, Any]</h3>
-                <p class="method-desc">Get chain performance metrics — TPS, total transactions, total blocks, average block time.</p>
+                <p class="method-desc">Get chain performance metrics — TPS, total transactions, total blocks, average
+                    block time.</p>
             </div>
 
             <div class="method-card">
@@ -226,7 +253,8 @@ asyncio.run(main())</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await get_network_info() -&gt; Dict[str, Any]</h3>
-                <p class="method-desc">Get network information — chain ID, network ID, version, slot, validator/peer count.</p>
+                <p class="method-desc">Get network information — chain ID, network ID, version, slot, validator/peer
+                    count.</p>
             </div>
 
             <div class="method-card">
@@ -246,7 +274,8 @@ asyncio.run(main())</code></pre>
                 <h3 class="method-name">await get_balance(pubkey: PublicKey) -&gt; Dict[str, int]</h3>
                 <p class="method-desc">Get account balance in shells and MOLT.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
 print(balance["shells"])  # 5000000000
 print(balance["molt"])    # 5.0</code></pre>
@@ -264,7 +293,8 @@ print(balance["molt"])    # 5.0</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10) -&gt; Dict[str, Any]</h3>
+                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10) -&gt;
+                    Dict[str, Any]</h3>
                 <p class="method-desc">Get paginated transaction history for an account.</p>
             </div>
 
@@ -275,7 +305,8 @@ print(balance["molt"])    # 5.0</code></pre>
                 <h3 class="method-name">await send_transaction(transaction: Transaction) -&gt; str</h3>
                 <p class="method-desc">Serialize and submit a signed transaction. Returns the signature string.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>blockhash = await conn.get_recent_blockhash()
 tx = (TransactionBuilder()
     .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
@@ -311,17 +342,20 @@ print(f"Signature: {sig}")</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await stake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str</h3>
+                <h3 class="method-name">await stake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str
+                </h3>
                 <p class="method-desc">Build, sign, and send a stake transaction. Amount in shells.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>validator = PublicKey("ValidatorPubkey...")
 sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await unstake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str</h3>
+                <h3 class="method-name">await unstake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt;
+                    str</h3>
                 <p class="method-desc">Build, sign, and send an unstake request.</p>
             </div>
 
@@ -405,19 +439,23 @@ sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</code></pre>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await get_nft_activity(collection_id: PublicKey, token_id: int) -&gt; Dict[str, Any]</h3>
+                <h3 class="method-name">await get_nft_activity(collection_id: PublicKey, token_id: int) -&gt; Dict[str,
+                    Any]</h3>
                 <p class="method-desc">Get activity history for a specific NFT.</p>
             </div>
 
             <!-- WebSocket Subscriptions -->
             <h3 id="connection-ws">WebSocket Subscriptions</h3>
-            <p>All subscription methods are <code>async</code> and require <code>ws_url</code> in the Connection constructor. Each <code>on_*</code> method returns a subscription ID for unsubscribing with the corresponding <code>off_*</code> method. Callbacks can be sync or async.</p>
+            <p>All subscription methods are <code>async</code> and require <code>ws_url</code> in the Connection
+                constructor. Each <code>on_*</code> method returns a subscription ID for unsubscribing with the
+                corresponding <code>off_*</code> method. Callbacks can be sync or async.</p>
 
             <div class="method-card">
                 <h3 class="method-name">await on_slot(callback: Callable[[int], None]) -&gt; int</h3>
                 <p class="method-desc">Subscribe to slot updates. Unsubscribe with <code>off_slot(sub_id)</code>.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>sub_id = await conn.on_slot(lambda slot: print(f"Slot: {slot}"))
 # ... later
 await conn.off_slot(sub_id)</code></pre>
@@ -431,37 +469,47 @@ await conn.off_slot(sub_id)</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await on_transaction(callback) -&gt; int</h3>
-                <p class="method-desc">Subscribe to all confirmed transactions. Unsubscribe with <code>off_transaction(sub_id)</code>.</p>
+                <p class="method-desc">Subscribe to transactions observed in canonical blocks. Use signature status
+                    subscriptions when you need explicit processed / confirmed / finalized commitment tracking.
+                    Unsubscribe with <code>off_transaction(sub_id)</code>.</p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_account_change(pubkey: PublicKey, callback) -&gt; int</h3>
-                <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with <code>off_account_change(sub_id)</code>.</p>
+                <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with
+                    <code>off_account_change(sub_id)</code>.</p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_logs(callback, contract_id: Optional[PublicKey] = None) -&gt; int</h3>
-                <p class="method-desc">Stream contract logs. Optional contract filter. Unsubscribe with <code>off_logs(sub_id)</code>.</p>
+                <p class="method-desc">Stream contract logs. Optional contract filter. Unsubscribe with
+                    <code>off_logs(sub_id)</code>.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await on_program_updates(callback) / on_program_calls(callback, program_id?)</h3>
-                <p class="method-desc">Program deploy/upgrade events and invocations. Unsubscribe with <code>off_program_updates</code> / <code>off_program_calls</code>.</p>
+                <h3 class="method-name">await on_program_updates(callback) / on_program_calls(callback, program_id?)
+                </h3>
+                <p class="method-desc">Program deploy/upgrade events and invocations. Unsubscribe with
+                    <code>off_program_updates</code> / <code>off_program_calls</code>.</p>
             </div>
 
             <div class="method-card">
-                <h3 class="method-name">await on_nft_mints(callback, collection_id?) / on_nft_transfers(callback, collection_id?)</h3>
-                <p class="method-desc">NFT mint and transfer events. Optional collection filter. Unsubscribe with <code>off_nft_mints</code> / <code>off_nft_transfers</code>.</p>
+                <h3 class="method-name">await on_nft_mints(callback, collection_id?) / on_nft_transfers(callback,
+                    collection_id?)</h3>
+                <p class="method-desc">NFT mint and transfer events. Optional collection filter. Unsubscribe with
+                    <code>off_nft_mints</code> / <code>off_nft_transfers</code>.</p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await on_market_listings(callback) / on_market_sales(callback)</h3>
-                <p class="method-desc">Marketplace listing and sale events. Unsubscribe with <code>off_market_listings</code> / <code>off_market_sales</code>.</p>
+                <p class="method-desc">Marketplace listing and sale events. Unsubscribe with
+                    <code>off_market_listings</code> / <code>off_market_sales</code>.</p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await close()</h3>
-                <p class="method-desc">Close the WebSocket connection, cancel background tasks, and clear subscriptions.</p>
+                <p class="method-desc">Close the WebSocket connection, cancel background tasks, and clear subscriptions.
+                </p>
             </div>
 
             <!-- ═══════════════════════════════════════════════════════ -->
@@ -474,7 +522,8 @@ await conn.off_slot(sub_id)</code></pre>
                 <h3 class="method-name">Keypair.generate() -&gt; Keypair</h3>
                 <p class="method-desc">Generate a new random keypair.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>kp = Keypair.generate()
 print(f"Address: {kp.public_key()}")</code></pre>
                 </div>
@@ -482,7 +531,8 @@ print(f"Address: {kp.public_key()}")</code></pre>
 
             <div class="method-card" id="keypair-from-seed">
                 <h3 class="method-name">Keypair.from_seed(seed: bytes) -&gt; Keypair</h3>
-                <p class="method-desc">Derive a keypair from a 32-byte seed. Raises <code>ValueError</code> if seed is not 32 bytes.</p>
+                <p class="method-desc">Derive a keypair from a 32-byte seed. Raises <code>ValueError</code> if seed is
+                    not 32 bytes.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span></div>
                     <pre><code>seed = b'\x00' * 32
@@ -492,9 +542,11 @@ kp = Keypair.from_seed(seed)</code></pre>
 
             <div class="method-card" id="keypair-load-save">
                 <h3 class="method-name">Keypair.load(path: Path) -&gt; Keypair / keypair.save(path: Path)</h3>
-                <p class="method-desc">Load a keypair from a JSON file or save it to one. The JSON contains <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.</p>
+                <p class="method-desc">Load a keypair from a JSON file or save it to one. The JSON contains
+                    <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>from pathlib import Path
 
 kp = Keypair.generate()
@@ -529,9 +581,11 @@ assert kp.public_key() == kp2.public_key()</code></pre>
 
             <div class="method-card" id="publickey-constructor">
                 <h3 class="method-name">PublicKey(value: Union[str, bytes, list])</h3>
-                <p class="method-desc">Create from a base58 string, bytes, or list of ints. Raises <code>ValueError</code> if not 32 bytes.</p>
+                <p class="method-desc">Create from a base58 string, bytes, or list of ints. Raises
+                    <code>ValueError</code> if not 32 bytes.</p>
                 <div class="code-block">
-                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
                     <pre><code>pk1 = PublicKey("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")
 pk2 = PublicKey(b'\x00' * 32)
 pk3 = PublicKey([0] * 32)</code></pre>
@@ -541,22 +595,66 @@ pk3 = PublicKey([0] * 32)</code></pre>
             <div class="method-card" id="publickey-methods">
                 <h3 class="method-name">Methods</h3>
                 <table class="param-table">
-                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Returns</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>to_base58()</td><td><span class="param-type">str</span></td><td>Base58-encoded string representation</td></tr>
-                        <tr><td>to_bytes()</td><td><span class="param-type">bytes</span></td><td>Raw 32-byte bytes</td></tr>
-                        <tr><td>__str__()</td><td><span class="param-type">str</span></td><td>Same as to_base58()</td></tr>
-                        <tr><td>__eq__(other)</td><td><span class="param-type">bool</span></td><td>Byte-level equality</td></tr>
-                        <tr><td>__hash__()</td><td><span class="param-type">int</span></td><td>Hashable for use in sets/dicts</td></tr>
+                        <tr>
+                            <td>to_base58()</td>
+                            <td><span class="param-type">str</span></td>
+                            <td>Base58-encoded string representation</td>
+                        </tr>
+                        <tr>
+                            <td>to_bytes()</td>
+                            <td><span class="param-type">bytes</span></td>
+                            <td>Raw 32-byte bytes</td>
+                        </tr>
+                        <tr>
+                            <td>__str__()</td>
+                            <td><span class="param-type">str</span></td>
+                            <td>Same as to_base58()</td>
+                        </tr>
+                        <tr>
+                            <td>__eq__(other)</td>
+                            <td><span class="param-type">bool</span></td>
+                            <td>Byte-level equality</td>
+                        </tr>
+                        <tr>
+                            <td>__hash__()</td>
+                            <td><span class="param-type">int</span></td>
+                            <td>Hashable for use in sets/dicts</td>
+                        </tr>
                     </tbody>
                 </table>
                 <h4 style="margin-top:1rem;">Class Methods</h4>
                 <table class="param-table">
-                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Returns</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>PublicKey.from_base58(s)</td><td><span class="param-type">PublicKey</span></td><td>Create from base58 string</td></tr>
-                        <tr><td>PublicKey.from_bytes(b)</td><td><span class="param-type">PublicKey</span></td><td>Create from bytes</td></tr>
-                        <tr><td>PublicKey.new_unique()</td><td><span class="param-type">PublicKey</span></td><td>Random key (testing only)</td></tr>
+                        <tr>
+                            <td>PublicKey.from_base58(s)</td>
+                            <td><span class="param-type">PublicKey</span></td>
+                            <td>Create from base58 string</td>
+                        </tr>
+                        <tr>
+                            <td>PublicKey.from_bytes(b)</td>
+                            <td><span class="param-type">PublicKey</span></td>
+                            <td>Create from bytes</td>
+                        </tr>
+                        <tr>
+                            <td>PublicKey.new_unique()</td>
+                            <td><span class="param-type">PublicKey</span></td>
+                            <td>Random key (testing only)</td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
@@ -592,25 +690,63 @@ class Transaction:
                 <h3 class="method-name">TransactionBuilder</h3>
                 <p class="method-desc">Fluent builder for constructing and signing transactions.</p>
                 <table class="param-table">
-                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Returns</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>add(instruction)</td><td><span class="param-type">TransactionBuilder</span></td><td>Append an instruction</td></tr>
-                        <tr><td>set_recent_blockhash(hash)</td><td><span class="param-type">TransactionBuilder</span></td><td>Set the recent blockhash</td></tr>
-                        <tr><td>build()</td><td><span class="param-type">Message</span></td><td>Build unsigned message</td></tr>
-                        <tr><td>build_and_sign(keypair)</td><td><span class="param-type">Transaction</span></td><td>Build, sign, and return a Transaction</td></tr>
+                        <tr>
+                            <td>add(instruction)</td>
+                            <td><span class="param-type">TransactionBuilder</span></td>
+                            <td>Append an instruction</td>
+                        </tr>
+                        <tr>
+                            <td>set_recent_blockhash(hash)</td>
+                            <td><span class="param-type">TransactionBuilder</span></td>
+                            <td>Set the recent blockhash</td>
+                        </tr>
+                        <tr>
+                            <td>build()</td>
+                            <td><span class="param-type">Message</span></td>
+                            <td>Build unsigned message</td>
+                        </tr>
+                        <tr>
+                            <td>build_and_sign(keypair)</td>
+                            <td><span class="param-type">Transaction</span></td>
+                            <td>Build, sign, and return a Transaction</td>
+                        </tr>
                     </tbody>
                 </table>
                 <h4 style="margin-top:1rem;">Static Instruction Builders</h4>
                 <table class="param-table">
-                    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td>TransactionBuilder.transfer(from_pubkey, to_pubkey, amount)</td><td>Create a MOLT transfer instruction (type 0). Amount in shells.</td></tr>
-                        <tr><td>TransactionBuilder.stake(from_pubkey, validator, amount)</td><td>Create a stake instruction (type 9)</td></tr>
-                        <tr><td>TransactionBuilder.unstake(from_pubkey, validator, amount)</td><td>Create an unstake instruction (type 10)</td></tr>
+                        <tr>
+                            <td>TransactionBuilder.transfer(from_pubkey, to_pubkey, amount)</td>
+                            <td>Create a MOLT transfer instruction (type 0). Amount in shells.</td>
+                        </tr>
+                        <tr>
+                            <td>TransactionBuilder.stake(from_pubkey, validator, amount)</td>
+                            <td>Create a stake instruction (type 9)</td>
+                        </tr>
+                        <tr>
+                            <td>TransactionBuilder.unstake(from_pubkey, validator, amount)</td>
+                            <td>Create an unstake instruction (type 10)</td>
+                        </tr>
                     </tbody>
                 </table>
                 <div class="callout callout-tip">
-                    <p><strong>Serialization helpers:</strong> <code>TransactionBuilder.message_to_bincode(msg)</code> and <code>TransactionBuilder.transaction_to_bincode(tx)</code> are available for custom serialization workflows.</p>
+                    <p><strong>Serialization helpers:</strong> <code>TransactionBuilder.message_to_bincode(msg)</code>
+                        and <code>TransactionBuilder.transaction_to_bincode(tx)</code> are available for custom
+                        serialization workflows.</p>
                 </div>
             </div>
 
@@ -618,10 +754,12 @@ class Transaction:
             <!-- ERROR HANDLING -->
             <!-- ═══════════════════════════════════════════════════════ -->
             <h2 id="error-handling">Error Handling</h2>
-            <p>All RPC methods raise standard Python <code>Exception</code> with descriptive messages from the server.</p>
+            <p>All RPC methods raise standard Python <code>Exception</code> with descriptive messages from the server.
+            </p>
 
             <div class="code-block">
-                <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
+                            class="fas fa-copy"></i></button></div>
                 <pre><code>try:
     balance = await conn.get_balance(pubkey)
 except Exception as e:
@@ -650,4 +788,5 @@ except Exception as e:
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
 </body>
+
 </html>

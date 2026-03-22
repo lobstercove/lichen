@@ -455,9 +455,9 @@ fn simulated_yield(rate_bps: u64, deployed: u64, elapsed_slots: u64) -> u64 {
         as u64
 }
 
-/// Query a real DeFi protocol for accrued yield via CrossCall.
-/// Returns `Some(yield_amount)` if protocol address is configured and call succeeds with ≥8 bytes.
-/// Returns `None` otherwise (fallback to simulated).
+/// Query a connected protocol for a vault-yield quote via CrossCall.
+/// Returns `Some(yield_amount)` if the protocol address is configured and the export returns >=8 bytes.
+/// Returns `None` when the strategy has no configured or supported external quote surface.
 fn query_protocol_yield(
     addr_key: &[u8],
     function: &str,
@@ -479,7 +479,6 @@ fn query_protocol_yield(
     let call = CrossCall::new(Address(addr), function, args);
     match call_contract(call) {
         Ok(result) if result.len() >= 8 => Some(bytes_to_u64(&result)),
-        // Empty result (test mode) or error → None → fallback to simulated
         _ => None,
     }
 }
@@ -611,7 +610,7 @@ pub extern "C" fn harvest() -> u32 {
 
     let strategy_count = load_u64(b"cv_strategy_count") as usize;
     let mut total_yield: u64 = 0;
-    let mut missing_addresses: u32 = 0;
+    let mut unavailable_yield_surfaces: u32 = 0;
 
     // Yield from each strategy — use real protocol data only (G25-02: no simulated fallback)
     for i in 0..strategy_count {
@@ -623,8 +622,8 @@ pub extern "C" fn harvest() -> u32 {
 
         let deployed = total_assets * allocation / 100;
 
-        // G25-02: Only real yield from connected protocols — no phantom inflation
-        // CON-10: Track missing addresses so we can report rather than silently skip
+        // G25-02: Only real yield from connected protocols — no phantom inflation.
+        // CON-10: Track unavailable quote surfaces so we can report instead of pretending.
         let strategy_yield = match strategy_type {
             STRATEGY_LENDING => {
                 match query_protocol_yield(
@@ -636,27 +635,20 @@ pub extern "C" fn harvest() -> u32 {
                     Some(y) => y,
                     None => {
                         log_info(
-                            "harvest: LobsterLend address not configured — skipping lending yield",
+                            "harvest: LobsterLend yield quote unavailable — skipping lending yield",
                         );
-                        missing_addresses += 1;
+                        unavailable_yield_surfaces += 1;
                         0
                     }
                 }
             }
             STRATEGY_LP => {
-                match query_protocol_yield(
-                    MOLTSWAP_ADDRESS_KEY,
-                    "get_lp_rewards",
-                    deployed,
-                    elapsed_slots,
-                ) {
-                    Some(y) => y,
-                    None => {
-                        log_info("harvest: MoltSwap address not configured — skipping LP yield");
-                        missing_addresses += 1;
-                        0
-                    }
-                }
+                let _ = (deployed, elapsed_slots);
+                log_info(
+                    "harvest: MoltSwap LP yield is embedded in pool share value; no standalone reward export",
+                );
+                unavailable_yield_surfaces += 1;
+                0
             }
             STRATEGY_STAKING => {
                 // Staking yield requires a real staking protocol endpoint
@@ -692,13 +684,13 @@ pub extern "C" fn harvest() -> u32 {
         log_info("Harvest & auto-compound complete");
     }
 
-    // CON-10: If ALL yield-producing strategies had missing addresses,
+    // CON-10: If strategies are configured but expose no usable external quote surface,
     // do NOT update last_harvest — the harvest interval is not consumed
     // and the next call can retry once addresses are configured.
-    if missing_addresses > 0 && total_yield == 0 && strategy_count > 0 {
-        log_info("harvest: no yield collected due to missing protocol addresses");
+    if unavailable_yield_surfaces > 0 && total_yield == 0 && strategy_count > 0 {
+        log_info("harvest: no yield collected because connected strategies exposed no usable quote surface");
         reentrancy_exit();
-        return 2; // Distinct code: partial configuration, harvest not applied
+        return 2; // Distinct code: strategies configured, but no harvestable external yield
     }
 
     store_u64(b"cv_last_harvest", now);
@@ -1636,19 +1628,20 @@ mod tests {
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
-        // Set protocol address — call_contract returns Ok(Vec::new()) in test mode
+        // Set protocol address — call_contract returns the test-configured mock response.
         let lobsterlend = [0xAA; 32];
         let zero = [0u8; 32];
         set_protocol_addresses(admin.as_ptr(), lobsterlend.as_ptr(), zero.as_ptr());
 
-        // Empty result → None → fallback to simulated
+        test_mock::set_cross_call_response(Some(u64_to_bytes(777).to_vec()));
+
         let result = query_protocol_yield(
             LOBSTERLEND_ADDRESS_KEY,
             "get_accrued_interest",
             1_000_000,
             100,
         );
-        assert!(result.is_none());
+        assert_eq!(result, Some(777));
     }
 
     #[test]
@@ -1675,16 +1668,17 @@ mod tests {
         test_mock::set_value(1_000_000_000_000);
         deposit(user.as_ptr(), 1_000_000_000_000);
 
+        test_mock::set_cross_call_response(Some(u64_to_bytes(2_500).to_vec()));
+
         // Advance time
         test_mock::set_timestamp(401_000);
-        // CON-10: All yield-producing strategies have missing addresses → returns 2
-        assert_eq!(harvest(), 2);
+        assert_eq!(harvest(), 0);
 
-        // G25-02: No simulated fallback — test mode cross-calls return empty → 0 yield
+        // Only the lending strategy yields because MoltSwap exposes no standalone LP reward export.
         let total_assets = load_u64(b"cv_total_assets");
-        assert_eq!(total_assets, 1_000_000_000_000);
+        assert_eq!(total_assets, 1_000_000_002_250);
         let total_earned = load_u64(b"cv_total_earned");
-        assert_eq!(total_earned, 0);
+        assert_eq!(total_earned, 2_250);
     }
 
     #[test]

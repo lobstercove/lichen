@@ -16,6 +16,54 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
+/// Fallback genesis prices (used only if env vars are not set).
+const DEFAULT_MOLT_PRICE_8DEC: u64 = 10_000_000;
+const DEFAULT_WSOL_PRICE_8DEC: u64 = 8_970_000_000;
+const DEFAULT_WETH_PRICE_8DEC: u64 = 215_229_000_000;
+const DEFAULT_WBNB_PRICE_8DEC: u64 = 64_249_000_000;
+
+/// Convert a USD price string (e.g. "145.23") to 8-decimal fixed-point.
+fn usd_to_8dec(usd: f64) -> u64 {
+    if usd <= 0.0 {
+        return 0;
+    }
+    (usd * 100_000_000.0) as u64
+}
+
+/// Read a genesis price from environment variable (set by moltchain-start.sh
+/// which fetches real-time Binance prices), falling back to the compiled default.
+fn env_price_8dec(var_name: &str, default: u64) -> u64 {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(usd_to_8dec)
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
+}
+
+/// Live genesis price for MOLT (env: GENESIS_MOLT_USD, default $0.10).
+pub fn genesis_molt_price_8dec() -> u64 {
+    env_price_8dec("GENESIS_MOLT_USD", DEFAULT_MOLT_PRICE_8DEC)
+}
+/// Live genesis price for wSOL (env: GENESIS_SOL_USD, default $89.70).
+pub fn genesis_wsol_price_8dec() -> u64 {
+    env_price_8dec("GENESIS_SOL_USD", DEFAULT_WSOL_PRICE_8DEC)
+}
+/// Live genesis price for wETH (env: GENESIS_ETH_USD, default $2152.29).
+pub fn genesis_weth_price_8dec() -> u64 {
+    env_price_8dec("GENESIS_ETH_USD", DEFAULT_WETH_PRICE_8DEC)
+}
+/// Live genesis price for wBNB (env: GENESIS_BNB_USD, default $642.49).
+pub fn genesis_wbnb_price_8dec() -> u64 {
+    env_price_8dec("GENESIS_BNB_USD", DEFAULT_WBNB_PRICE_8DEC)
+}
+
+/// Backward-compat aliases — prefer the function forms above.
+pub const GENESIS_MOLT_PRICE_8DEC: u64 = DEFAULT_MOLT_PRICE_8DEC;
+pub const GENESIS_WSOL_PRICE_8DEC: u64 = DEFAULT_WSOL_PRICE_8DEC;
+pub const GENESIS_WETH_PRICE_8DEC: u64 = DEFAULT_WETH_PRICE_8DEC;
+pub const GENESIS_WBNB_PRICE_8DEC: u64 = DEFAULT_WBNB_PRICE_8DEC;
+
 fn resolve_contracts_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("MOLTCHAIN_CONTRACTS_DIR") {
         let path = PathBuf::from(value);
@@ -52,73 +100,25 @@ fn contract_wasm_path(contracts_dir: &Path, dir_name: &str) -> PathBuf {
         .join(format!("{}.wasm", dir_name))
 }
 
-/// Fetch live prices from Binance REST API at genesis time.
-/// Returns (sol_usd, eth_usd, bnb_usd). Falls back to env vars, then hardcoded defaults.
-pub fn fetch_live_prices() -> (f64, f64, f64) {
-    // Try Binance REST first (binance.com, then binance.us)
-    let endpoints = [
-        "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
-        "https://api.binance.us/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
-    ];
-
-    for url in &endpoints {
-        match ureq::get(url)
-            .timeout(std::time::Duration::from_secs(5))
-            .call()
-        {
-            Ok(resp) => {
-                if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
-                    let mut sol = 0.0_f64;
-                    let mut eth = 0.0_f64;
-                    let mut bnb = 0.0_f64;
-                    for t in &tickers {
-                        let p: f64 = t.price.parse().unwrap_or(0.0);
-                        match t.symbol.as_str() {
-                            "SOLUSDT" => sol = p,
-                            "ETHUSDT" => eth = p,
-                            "BNBUSDT" => bnb = p,
-                            _ => {}
-                        }
-                    }
-                    if sol > 0.0 && eth > 0.0 && bnb > 0.0 {
-                        info!(
-                            "  📡 Live prices from Binance: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-                            sol, eth, bnb
-                        );
-                        return (sol, eth, bnb);
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("  ⚠️  Binance REST fetch failed ({}): {}", url, e);
-            }
-        }
-    }
-
-    // Fallback to env vars
-    let sol = std::env::var("GENESIS_SOL_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(145.0);
-    let eth = std::env::var("GENESIS_ETH_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2600.0);
-    let bnb = std::env::var("GENESIS_BNB_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(620.0);
-    warn!(
-        "  ⚠️  Using fallback prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-        sol, eth, bnb
-    );
-    (sol, eth, bnb)
+fn price_8dec_to_f64(price: u64) -> f64 {
+    price as f64 / 100_000_000.0
 }
 
-#[derive(serde::Deserialize)]
-struct BinanceTicker {
-    symbol: String,
-    price: String,
+fn genesis_pair_prices() -> [(u64, f64); 7] {
+    let molt_usd = price_8dec_to_f64(genesis_molt_price_8dec());
+    let wsol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
+    let weth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
+    let wbnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
+
+    [
+        (1, molt_usd),
+        (2, wsol_usd),
+        (3, weth_usd),
+        (4, wsol_usd / molt_usd),
+        (5, weth_usd / molt_usd),
+        (6, wbnb_usd),
+        (7, wbnb_usd / molt_usd),
+    ]
 }
 
 pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
@@ -485,7 +485,12 @@ pub fn genesis_exec_contract(
     }
 }
 
-pub fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+pub fn genesis_initialize_contracts(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+    genesis_timestamp: u64,
+) {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Initializing all contracts", label);
     info!("──────────────────────────────────────────────────────");
@@ -1009,6 +1014,179 @@ pub fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey
         info!("  ✅ Registered 10 genesis routes (5 CLOB + 5 AMM)");
     }
 
+    // ── DEX Core → DEX Analytics: wire analytics address for trade recording ──
+    // Opcode 28 = set_analytics_address. Format: [28][admin 32B][analytics_addr 32B]
+    // Without this, dex_core silently skips analytics cross-contract calls after trades,
+    // leaving candle data, 24h stats, volume, and last prices frozen/stale.
+    if let (Some(dex_core_pk), Some(analytics_pk)) = (
+        address_map.get("dex_core"),
+        address_map.get("dex_analytics"),
+    ) {
+        let mut args = Vec::with_capacity(65);
+        args.push(28u8); // opcode 28 = set_analytics_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&analytics_pk.0);
+        if genesis_exec_contract(
+            state,
+            dex_core_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_core(set_analytics_address)",
+        ) {
+            info!("  SET dex_core(set_analytics_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_core analytics address");
+        }
+    }
+
+    // ── DEX Analytics ← DEX Core: authorize dex_core as trade recorder ──
+    // Opcode 11 = set_authorized_caller. Format: [11][admin 32B][dex_core_addr 32B]
+    // Without this, dex_analytics rejects all record_trade calls (error 200).
+    if let (Some(analytics_pk), Some(dex_core_pk)) = (
+        address_map.get("dex_analytics"),
+        address_map.get("dex_core"),
+    ) {
+        let mut args = Vec::with_capacity(65);
+        args.push(11u8); // opcode 11 = set_authorized_caller
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&dex_core_pk.0);
+        if genesis_exec_contract(
+            state,
+            analytics_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_analytics(set_authorized_caller)",
+        ) {
+            info!("  SET dex_analytics(set_authorized_caller)");
+        } else {
+            warn!("  WARN: Failed to set dex_analytics authorized caller");
+        }
+    }
+
+    // ── DEX Rewards: wire MOLT token address for reward payouts ──
+    // Opcode 12 = set_moltcoin_address. Format: [12][admin 32B][moltcoin_addr 32B]
+    // Without this, claim_trading_rewards / claim_lp_rewards / claim_referral_rewards
+    // all fail with error 5 — rewards cannot be claimed.
+    if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
+        let mut args = Vec::with_capacity(65);
+        args.push(12u8); // opcode 12 = set_moltcoin_address
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            dex_rewards_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_rewards(set_moltcoin_address)",
+        ) {
+            info!("  SET dex_rewards(set_moltcoin_address)");
+        } else {
+            warn!("  WARN: Failed to set dex_rewards moltcoin address");
+        }
+    }
+
+    // ── ClawPay: wire MOLT token address + self-address for stream escrow ──
+    // Without set_token_address, create_stream fails with error 30.
+    // Without set_self_address, create_stream fails with error 31.
+    if let Some(clawpay_pk) = address_map.get("clawpay") {
+        // Named export: set_token_address. Args: [admin 32B][moltcoin_addr 32B]
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            clawpay_pk,
+            deployer_pubkey,
+            "set_token_address",
+            &args,
+            "clawpay(set_token_address)",
+        ) {
+            info!("  SET clawpay(set_token_address)");
+        } else {
+            warn!("  WARN: Failed to set clawpay token address");
+        }
+
+        // Named export: set_self_address. Args: [admin 32B][clawpay_addr 32B]
+        let mut self_args = Vec::with_capacity(64);
+        self_args.extend_from_slice(&admin);
+        self_args.extend_from_slice(&clawpay_pk.0);
+        if genesis_exec_contract(
+            state,
+            clawpay_pk,
+            deployer_pubkey,
+            "set_self_address",
+            &self_args,
+            "clawpay(set_self_address)",
+        ) {
+            info!("  SET clawpay(set_self_address)");
+        } else {
+            warn!("  WARN: Failed to set clawpay self address");
+        }
+    }
+
+    // ── ClawPump: wire MOLT token address for sell() payouts ──
+    // Without this, sell() silently fails (returns 0), locking seller funds.
+    if let Some(clawpump_pk) = address_map.get("clawpump") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            clawpump_pk,
+            deployer_pubkey,
+            "set_molt_token",
+            &args,
+            "clawpump(set_molt_token)",
+        ) {
+            info!("  SET clawpump(set_molt_token)");
+        } else {
+            warn!("  WARN: Failed to set clawpump molt token address");
+        }
+    }
+
+    // ── ClawVault: wire MOLT token address for withdraw() payouts ──
+    // Without this, withdraw() silently fails, locking depositor funds.
+    if let Some(clawvault_pk) = address_map.get("clawvault") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            clawvault_pk,
+            deployer_pubkey,
+            "set_molt_token",
+            &args,
+            "clawvault(set_molt_token)",
+        ) {
+            info!("  SET clawvault(set_molt_token)");
+        } else {
+            warn!("  WARN: Failed to set clawvault molt token address");
+        }
+    }
+
+    // ── Compute Market: wire MOLT token address for job escrow ──
+    // Without this, submit_job fails — job creation blocked entirely.
+    if let Some(compute_pk) = address_map.get("compute_market") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            compute_pk,
+            deployer_pubkey,
+            "set_token_address",
+            &args,
+            "compute_market(set_token_address)",
+        ) {
+            info!("  SET compute_market(set_token_address)");
+        } else {
+            warn!("  WARN: Failed to set compute_market token address");
+        }
+    }
+
     // ── MoltDAO: wire MoltyID address for identity verification ──
     // Named export: set_moltyid_address. Args: [admin 32B][moltyid_addr 32B]
     if let Some(dao_pk) = address_map.get("moltdao") {
@@ -1454,10 +1632,6 @@ pub fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey
         let mut attest_entries: Vec<AttestEntry> = Vec::new();
 
         let mut attest_count: u64 = 0;
-        let now_ts: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
 
         // Each system identity attests the NEXT identity's skills (round-robin)
         for i in 0..system_addrs.len() {
@@ -1486,7 +1660,7 @@ pub fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey
                 // Attestation data: level (1 byte) + timestamp (8 bytes)
                 let mut att_data = Vec::with_capacity(9);
                 att_data.push(5u8); // Level 5 (highest) for system attestations
-                att_data.extend_from_slice(&now_ts.to_le_bytes());
+                att_data.extend_from_slice(&genesis_timestamp.to_le_bytes());
 
                 if state
                     .put_contract_storage(moltyid_pk, &att_key, &att_data)
@@ -1710,12 +1884,10 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
     //
-    // Prices fetched live from Binance at genesis time for accuracy.
-    let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.10);
-    let (sol_usd, eth_usd, bnb_usd) = fetch_live_prices();
+    let molt_usd = price_8dec_to_f64(genesis_molt_price_8dec());
+    let sol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
+    let eth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
+    let bnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
 
     info!(
         "  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
@@ -1790,7 +1962,12 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
 //  This ensures oracle-adjusted rewards work from the very first block.
 // ========================================================================
 
-pub fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+pub fn genesis_seed_oracle(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    label: &str,
+    genesis_timestamp: u64,
+) {
     info!("──────────────────────────────────────────────────────");
     info!("  {} Seeding oracle price feeds", label);
     info!("──────────────────────────────────────────────────────");
@@ -1852,17 +2029,22 @@ pub fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: 
         warn!("  SKIP initial price submission failed");
     }
 
-    // ── Step 3: Seed external asset price feeds (wSOL, wETH, wBNB) ──
-    // These provide reference prices for oracle-priced DEX pairs.
-    // Prices fetched live from Binance; the background WebSocket price feeder
-    // will keep them updated after genesis.
-    let (sol_usd, eth_usd, bnb_usd) = fetch_live_prices();
-    let price_8dec = |usd: f64| -> u64 { (usd * 100_000_000.0) as u64 };
-
     let external_feeds: [(&[u8], u64, String); 3] = [
-        (b"wSOL", price_8dec(sol_usd), format!("${:.2}", sol_usd)),
-        (b"wETH", price_8dec(eth_usd), format!("${:.2}", eth_usd)),
-        (b"wBNB", price_8dec(bnb_usd), format!("${:.2}", bnb_usd)),
+        (
+            b"wSOL",
+            genesis_wsol_price_8dec(),
+            format!("${:.2}", price_8dec_to_f64(genesis_wsol_price_8dec())),
+        ),
+        (
+            b"wETH",
+            genesis_weth_price_8dec(),
+            format!("${:.2}", price_8dec_to_f64(genesis_weth_price_8dec())),
+        ),
+        (
+            b"wBNB",
+            genesis_wbnb_price_8dec(),
+            format!("${:.2}", price_8dec_to_f64(genesis_wbnb_price_8dec())),
+        ),
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
@@ -1915,7 +2097,7 @@ pub fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: 
     // ── Step 4: Seed initial analytics prices for oracle-priced pairs ──
     // Write ana_lp_{pair_id} so the RPC /pairs endpoint shows prices from
     // the very first request, before the background price feeder starts.
-    genesis_seed_analytics_prices(state, deployer_pubkey);
+    genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp);
 
     info!("──────────────────────────────────────────────────────");
     info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH + wBNB)");
@@ -1929,7 +2111,11 @@ pub fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: 
 //  prices immediately, before any trades occur or the live feeder starts.
 // ========================================================================
 
-pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
+pub fn genesis_seed_analytics_prices(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    genesis_timestamp: u64,
+) {
     let analytics_pk = match derive_contract_address(deployer_pubkey, "dex_analytics") {
         Some(pk) => pk,
         None => {
@@ -1939,25 +2125,7 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000;
-
-    // Pair IDs match genesis_create_trading_pairs order:
-    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
-    //   6=wBNB/mUSD, 7=wBNB/MOLT
-    let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.10);
-    let (wsol_usd, weth_usd, wbnb_usd) = fetch_live_prices();
-
-    let pair_prices: [(u64, f64); 7] = [
-        (1, molt_usd),
-        (2, wsol_usd),
-        (3, weth_usd),
-        (4, wsol_usd / molt_usd),
-        (5, weth_usd / molt_usd),
-        (6, wbnb_usd),
-        (7, wbnb_usd / molt_usd),
-    ];
+    let pair_prices = genesis_pair_prices();
 
     for (pair_id, price_f64) in &pair_prices {
         let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
@@ -1987,10 +2155,6 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
 
     // Also write initial candles for each pair so TradingView has data
     // Use unix timestamp for the candle period start, matching the oracle feeder
-    let genesis_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     // All 9 intervals so every TF has a seed candle
     let all_intervals: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
     for (pair_id, price_f64) in &pair_prices {
@@ -2007,7 +2171,7 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
         candle.extend_from_slice(&0u64.to_le_bytes());
 
         for interval in &all_intervals {
-            let candle_start = (genesis_ts / interval) * interval;
+            let candle_start = (genesis_timestamp / interval) * interval;
             // Store period-start time so TradingView bars align to boundaries
             candle[40..48].copy_from_slice(&candle_start.to_le_bytes());
             let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, 0);
@@ -2037,7 +2201,11 @@ pub fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubke
 //  Prices fetched live from Binance REST API at genesis time.
 // ========================================================================
 
-pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
+pub fn genesis_seed_margin_prices(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    genesis_timestamp: u64,
+) {
     let margin_pk = match derive_contract_address(deployer_pubkey, "dex_margin") {
         Some(pk) => pk,
         None => {
@@ -2047,29 +2215,7 @@ pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) 
     };
 
     const PRICE_SCALE: u64 = 1_000_000_000;
-    let molt_usd: f64 = std::env::var("GENESIS_MOLT_USD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.10);
-    let (wsol_usd, weth_usd, wbnb_usd) = fetch_live_prices();
-
-    // Pair IDs match genesis_create_trading_pairs order:
-    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
-    //   6=wBNB/mUSD, 7=wBNB/MOLT
-    let pair_prices: [(u64, f64); 7] = [
-        (1, molt_usd),
-        (2, wsol_usd),
-        (3, weth_usd),
-        (4, wsol_usd / molt_usd),
-        (5, weth_usd / molt_usd),
-        (6, wbnb_usd),
-        (7, wbnb_usd / molt_usd),
-    ];
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let pair_prices = genesis_pair_prices();
 
     // Collect all storage writes to also update embedded ContractAccount
     let mut margin_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -2081,7 +2227,7 @@ pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) 
         let mark_key = format!("mrg_mark_{}", pair_id);
         let mut mark_val = Vec::with_capacity(16);
         mark_val.extend_from_slice(&price_scaled.to_le_bytes());
-        mark_val.extend_from_slice(&now_secs.to_le_bytes());
+        mark_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
         let _ = state.put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val);
         margin_entries.push((mark_key.into_bytes(), mark_val));
 
@@ -2089,7 +2235,7 @@ pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) 
         let idx_key = format!("mrg_idx_{}", pair_id);
         let mut idx_val = Vec::with_capacity(16);
         idx_val.extend_from_slice(&price_scaled.to_le_bytes());
-        idx_val.extend_from_slice(&now_secs.to_le_bytes());
+        idx_val.extend_from_slice(&genesis_timestamp.to_le_bytes());
         let _ = state.put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val);
         margin_entries.push((idx_key.into_bytes(), idx_val));
 
@@ -2119,5 +2265,21 @@ pub fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) 
                 let _ = state.put_account(&margin_pk, &updated);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_genesis_pair_prices_are_deterministic() {
+        let pair_prices = genesis_pair_prices();
+        assert_eq!(pair_prices.len(), 7);
+        assert_eq!(pair_prices[0].0, 1);
+        assert!((pair_prices[0].1 - 0.10).abs() < f64::EPSILON);
+        assert!((pair_prices[1].1 - 89.70).abs() < f64::EPSILON);
+        assert!((pair_prices[2].1 - 2152.29).abs() < f64::EPSILON);
+        assert!((pair_prices[5].1 - 642.49).abs() < f64::EPSILON);
     }
 }

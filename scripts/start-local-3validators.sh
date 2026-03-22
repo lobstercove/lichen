@@ -15,10 +15,12 @@ NETWORK="${MOLT_LOCAL_NETWORK:-testnet}"
 case "$NETWORK" in
   testnet)
     RPC1=8899; RPC2=8901; RPC3=8903
+    WS1=8900; WS2=8902; WS3=8904
     P2P1=7001; P2P2=7002; P2P3=7003
     ;;
   mainnet)
     RPC1=9899; RPC2=9901; RPC3=9903
+    WS1=9900; WS2=9902; WS3=9904
     P2P1=8001; P2P2=8002; P2P3=8003
     ;;
   *)
@@ -33,7 +35,7 @@ rpc_ok() {
   local port="$1"
   curl -sf "http://127.0.0.1:${port}" \
     -X POST -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}' >/dev/null 2>&1
+    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' | grep -q '"status":"ok"'
 }
 
 wait_rpc() {
@@ -79,7 +81,14 @@ stop_cluster() {
     rm -f "$PID_FILE"
   fi
 
-  for port in "$RPC1" "$RPC2" "$RPC3" "$P2P1" "$P2P2" "$P2P3"; do
+  pkill -f "$ROOT/scripts/validator-supervisor.sh ${NETWORK}-v" 2>/dev/null || true
+  pkill -f "$ROOT/run-validator.sh ${NETWORK} " 2>/dev/null || true
+  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P1}" 2>/dev/null || true
+  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P2}" 2>/dev/null || true
+  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P3}" 2>/dev/null || true
+  sleep 1
+
+  for port in "$RPC1" "$RPC2" "$RPC3" "$WS1" "$WS2" "$WS3" "$P2P1" "$P2P2" "$P2P3" 9301 9302 9303; do
     kill_port_listener "$port"
   done
 }
@@ -116,17 +125,17 @@ start_cluster() {
   fi
 
   echo "[local-3validators] starting V1 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=0.0.0.0:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
+  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
   V1PID=$!
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V2 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=0.0.0.0:9302 RUST_LOG=warn "$RUNNER" "$NETWORK" 2 --dev-mode >"$LOG2" 2>&1 &
+  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9302 RUST_LOG=warn "$RUNNER" "$NETWORK" 2 --dev-mode >"$LOG2" 2>&1 &
   V2PID=$!
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V3 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=0.0.0.0:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
+  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
   V3PID=$!
 
   if ! wait_rpc "$RPC1" 90 1 || ! wait_rpc "$RPC2" 90 1 || ! wait_rpc "$RPC3" 90 1; then

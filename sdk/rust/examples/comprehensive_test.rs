@@ -1,7 +1,7 @@
 //! Comprehensive Rust SDK test - All features
 //! Tests every RPC method and SDK capability
 
-use moltchain_sdk::{Client, Keypair, TransactionBuilder};
+use moltchain_client_sdk::{Client, Keypair, TransactionBuilder};
 use moltchain_core::{Instruction, Pubkey, Hash};
 
 #[tokio::main]
@@ -125,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(validators) = client.get_validators().await {
         if let Some(v) = validators.first() {
             if let Some(validator_str) = v.get("pubkey").and_then(|p| p.as_str()) {
-                let validator = Pubkey::from_base58(validator_str)?;
+                let _validator = Pubkey::from_base58(validator_str)?;
                 
                 // Test getStakingStatus
                 print!("getStakingStatus... ");

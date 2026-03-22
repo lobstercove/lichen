@@ -46,11 +46,13 @@ cleanup_timeout = 300
 # max_peers = 20
 
 # Reserved relay/seed addresses (never evicted during peer cleanup)
-# reserved_peers = ["relay1.moltchain.io:9900", "relay2.moltchain.io:9900"]
+# reserved_peers = ["seed-01.moltchain.network:8001", "seed-02.moltchain.network:8001"]
 
 [consensus]
 # Minimum stake required to validate (in shells)
-# Testnet: 75 MOLT (bootstrap grants are 100 MOLT), Mainnet: 1000 MOLT
+# This template defaults to testnet-scale staking.
+# Testnet: 75 MOLT (bootstrap grants are 100 MOLT)
+# Mainnet genesis uses 75,000 MOLT and should be configured from the canonical mainnet genesis.json.
 min_validator_stake = 75000000000
 
 # Slot duration in milliseconds
@@ -70,9 +72,9 @@ bind_address = "0.0.0.0"
 enable_cors = true
 
 # D1-01: Allowed CORS origins (comma-separated hostnames).
-# Override via env var: MOLTCHAIN_CORS_ORIGINS="localhost,127.0.0.1,app.moltchain.io"
-# Default: localhost, 127.0.0.1, moltchain.io, app/rpc/api/explorer.moltchain.io
-# cors_origins = "localhost,127.0.0.1,moltchain.io,app.moltchain.io,rpc.moltchain.io,api.moltchain.io,explorer.moltchain.io"
+# Override via env var: MOLTCHAIN_CORS_ORIGINS="localhost,127.0.0.1,developers.moltchain.network"
+# Default: localhost, 127.0.0.1, moltchain.network, developers/rpc/explorer.moltchain.network
+# cors_origins = "localhost,127.0.0.1,moltchain.network,developers.moltchain.network,rpc.moltchain.network,explorer.moltchain.network,monitoring.moltchain.network"
 
 # Maximum concurrent connections
 max_connections = 10000

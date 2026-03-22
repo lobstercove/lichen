@@ -1,7 +1,8 @@
 //! Generate real test transactions for explorer
 
-use moltchain_sdk::{Client, Keypair};
+use moltchain_client_sdk::{Client, Keypair};
 use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
+use base64::Engine;
 use std::error::Error;
 
 #[tokio::main]
@@ -65,11 +66,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let tx = Transaction {
             signatures: vec![signature],
             message,
+            tx_type: Default::default(),
         };
         
         // Serialize with bincode
         let tx_bytes = bincode::serialize(&tx)?;
-        let tx_base64 = base64::encode(&tx_bytes);
+        let tx_base64 = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
         
         // Send transaction
         match client.send_raw_transaction(&tx_base64).await {

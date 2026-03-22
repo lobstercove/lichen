@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "tweetnacl": "^1.0.3",
+    "wrangler": "^4.70.0"
+  }
+}

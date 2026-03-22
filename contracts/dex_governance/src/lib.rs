@@ -718,7 +718,7 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
 }
 
 /// Execute a passed proposal (after timelock)
-/// Returns: 0=success, 1=not found, 2=not passed, 3=timelock not expired
+/// Returns: 0=success, 1=not found, 2=not passed, 3=timelock not expired, 4=downstream call failed
 pub fn execute_proposal(proposal_id: u64) -> u32 {
     let pk = proposal_key(proposal_id);
     let mut data = match storage_get(&pk) {
@@ -766,7 +766,8 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
                     storage_set(&rk, &result);
                 }
                 Err(_) => {
-                    log_info("Proposal executed: pair creation call dispatched (pending runtime)");
+                    log_info("Proposal execution failed: pair creation cross-contract call failed");
+                    return 4;
                 }
             }
         }
@@ -785,19 +786,20 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
             match call_contract(call) {
                 Ok(_) => {
                     log_info("Proposal executed: fees updated");
+                    // Store executed fee params for auditability
+                    let mut fk = Vec::from(&b"gov_exec_fees_"[..]);
+                    fk.extend_from_slice(&u64_to_bytes(proposal_id));
+                    let mut fee_record = Vec::new();
+                    fee_record.extend_from_slice(&u64_to_bytes(pair_id));
+                    fee_record.extend_from_slice(&maker_fee.to_le_bytes());
+                    fee_record.extend_from_slice(&taker_fee.to_le_bytes());
+                    storage_set(&fk, &fee_record);
                 }
                 Err(_) => {
-                    log_info("Proposal executed: fee update call dispatched (pending runtime)");
+                    log_info("Proposal execution failed: fee update cross-contract call failed");
+                    return 4;
                 }
             }
-            // Store executed fee params for auditability
-            let mut fk = Vec::from(&b"gov_exec_fees_"[..]);
-            fk.extend_from_slice(&u64_to_bytes(proposal_id));
-            let mut fee_record = Vec::new();
-            fee_record.extend_from_slice(&u64_to_bytes(pair_id));
-            fee_record.extend_from_slice(&maker_fee.to_le_bytes());
-            fee_record.extend_from_slice(&taker_fee.to_le_bytes());
-            storage_set(&fk, &fee_record);
         }
         PROPOSAL_DELIST => {
             // Cross-call dex_core::pause_pair(admin, pair_id) to halt trading
@@ -812,7 +814,8 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
                     log_info("Proposal executed: pair delisted");
                 }
                 Err(_) => {
-                    log_info("Proposal executed: delist call dispatched (pending runtime)");
+                    log_info("Proposal execution failed: pair delist cross-contract call failed");
+                    return 4;
                 }
             }
         }
@@ -1722,6 +1725,47 @@ mod tests {
         assert!(
             storage_get(&rk).is_some(),
             "execution result must be stored"
+        );
+    }
+
+    #[test]
+    fn test_execute_new_pair_failure_keeps_proposal_retryable() {
+        let _admin = setup_with_reputation();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+
+        pass_and_timelock(1, 100);
+        test_mock::set_cross_call_should_fail(true);
+
+        assert_eq!(execute_proposal(1), 4);
+
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_status(&pd), STATUS_PASSED);
+
+        let mut ek = Vec::from(&b"gov_exec_slot_"[..]);
+        ek.extend_from_slice(&u64_to_bytes(1));
+        assert_eq!(load_u64(&ek), 0, "failed execution must not record a slot");
+
+        let mut rk = Vec::from(&b"gov_exec_result_"[..]);
+        rk.extend_from_slice(&u64_to_bytes(1));
+        assert!(
+            storage_get(&rk).is_none(),
+            "failed execution must not store a success result"
+        );
+
+        let logs = test_mock::get_logs();
+        assert!(
+            logs.iter().any(|log| {
+                log.contains("Proposal execution failed: pair creation cross-contract call failed")
+            }),
+            "failure log must describe the downstream execution error"
         );
     }
 

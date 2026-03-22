@@ -160,12 +160,15 @@ fn build_contract_call_tx_b64(
     let message = Message {
         instructions: vec![instruction],
         recent_blockhash,
+        compute_budget: None,
+        compute_unit_price: None,
     };
 
     let signature = caller.sign(&message.serialize());
     let tx = Transaction {
         signatures: vec![signature],
         message,
+        tx_type: Default::default(),
     };
 
     let tx_bytes = bincode::serialize(&tx)?;

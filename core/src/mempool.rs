@@ -1,7 +1,10 @@
-// MoltChain Mempool - Fee-Only Transaction Priority Queue
+// MoltChain Mempool - CU-Priced Transaction Priority Queue
 //
-// M-8 FIX: Express lane removed. All transactions ordered strictly by fee.
-// Reputation may influence fee discounts but NEVER queue priority.
+// Transactions are ordered by effective compute unit price (fee per CU),
+// then by total fee as tiebreaker, then FIFO. This incentivizes users to
+// set appropriate CU budgets and priority fees for block inclusion.
+//
+// M-8 FIX: Express lane removed. No reputation bonus for queue priority.
 
 use crate::hash::Hash;
 use crate::transaction::Transaction;
@@ -18,6 +21,9 @@ const MAX_PENDING_PER_SENDER: usize = 100;
 struct PrioritizedTransaction {
     transaction: Transaction,
     fee: u64,
+    /// Effective CU price in micro-shells per CU (fee * 1_000_000 / compute_budget).
+    /// Higher values = higher priority for block inclusion.
+    effective_cu_price: u64,
     timestamp: u64,
     hash: Hash,
 }
@@ -39,20 +45,38 @@ impl PartialOrd for PrioritizedTransaction {
 
 impl Ord for PrioritizedTransaction {
     fn cmp(&self, other: &Self) -> Ordering {
-        // M-8 FIX: Strict fee-only ordering. No reputation bonus.
-        match self.fee.cmp(&other.fee) {
+        // Primary: highest effective CU price first (incentivizes priority fees)
+        match self.effective_cu_price.cmp(&other.effective_cu_price) {
             Ordering::Equal => {
-                // If fees equal, older timestamp = higher priority (FIFO)
-                other.timestamp.cmp(&self.timestamp)
+                // Secondary: highest total fee first
+                match self.fee.cmp(&other.fee) {
+                    Ordering::Equal => {
+                        // Tertiary: older timestamp = higher priority (FIFO)
+                        other.timestamp.cmp(&self.timestamp)
+                    }
+                    ord => ord,
+                }
             }
             ord => ord,
         }
     }
 }
 
-/// Transaction mempool with fee-based priority queue
+/// Compute effective CU price for a transaction (micro-shells per CU).
+/// This normalizes fee by compute budget so that a 100-CU transfer paying
+/// 1M shells gets higher priority than a 200K-CU contract call paying 1M.
+fn compute_effective_cu_price(fee: u64, tx: &Transaction) -> u64 {
+    let budget = tx.message.effective_compute_budget();
+    if budget == 0 {
+        return fee; // Fallback: use raw fee for edge case
+    }
+    // fee * 1_000_000 / budget (micro-shells per CU), capped at u64::MAX
+    ((fee as u128 * 1_000_000) / budget as u128).min(u64::MAX as u128) as u64
+}
+
+/// Transaction mempool with CU-priced priority queue
 pub struct Mempool {
-    /// Priority queue of transactions (ordered by fee, then FIFO)
+    /// Priority queue of transactions (ordered by effective CU price, then fee, then FIFO)
     queue: BinaryHeap<PrioritizedTransaction>,
 
     /// Transaction hash -> transaction (for deduplication)
@@ -116,9 +140,12 @@ impl Mempool {
             .unwrap_or_default()
             .as_secs();
 
+        let effective_cu_price = compute_effective_cu_price(fee, &transaction);
+
         let prioritized = PrioritizedTransaction {
             transaction: transaction.clone(),
             fee,
+            effective_cu_price,
             timestamp,
             hash: tx_hash,
         };
@@ -130,7 +157,7 @@ impl Mempool {
         Ok(())
     }
 
-    /// Get top N transactions by priority (highest fee first, then FIFO).
+    /// Get top N transactions by priority (highest CU price first, then fee, then FIFO).
     pub fn get_top_transactions(&mut self, count: usize) -> Vec<Transaction> {
         let mut result = Vec::new();
         let mut temp = Vec::new();

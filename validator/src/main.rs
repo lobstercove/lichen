@@ -26,19 +26,20 @@ pub mod wal;
 use futures_util::{SinkExt, StreamExt};
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
-    compute_validators_hash, evm_tx_hash, Account, Block, ContractInstruction, FeeConfig,
-    FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash, Keypair, MarketActivity,
-    MarketActivityKind, Mempool, NftActivity, NftActivityKind, Precommit, Prevote,
-    ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence, SlashingOffense, StakePool,
-    StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
-    VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
+    ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet,
+    Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
+    Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
+    SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
+    Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
-    genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices,
-    genesis_seed_oracle,
+    genesis_initialize_contracts, genesis_molt_price_8dec, genesis_seed_analytics_prices,
+    genesis_seed_margin_prices, genesis_seed_oracle, genesis_wbnb_price_8dec,
+    genesis_weth_price_8dec, genesis_wsol_price_8dec, GENESIS_MOLT_PRICE_8DEC,
 };
 use moltchain_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
@@ -57,7 +58,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sync::SyncManager;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
@@ -86,17 +87,17 @@ const EXIT_CODE_RESTART: i32 = 75;
 const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 
 // =========================================================================
-//  SHARED ORACLE PRICES — Thread-safe container for Binance price data
+//  SHARED ORACLE PRICES — Thread-safe container for external feeder data
 //
 //  The background oracle price feeder (WebSocket + REST) updates these
-//  atomics. The block production loop reads them to include in each block.
-//  All validators then apply the same prices deterministically from the
-//  block data, ensuring oracle state is consensus-propagated.
+//  atomics. The feeder turns those observations into signed native oracle
+//  attestation transactions. Downstream DEX/analytics state mirrors the
+//  finalized consensus oracle rather than raw proposer snapshots.
 // =========================================================================
 
 /// Thread-safe container for oracle prices fetched from external sources.
-/// The background oracle feeder updates these atomics; block production reads them
-/// and includes them in every produced block via `Block::oracle_prices`.
+/// The background oracle feeder updates these atomics before submitting
+/// native oracle attestation transactions into the mempool.
 #[derive(Clone)]
 struct SharedOraclePrices {
     wsol_micro: Arc<AtomicU64>,
@@ -113,25 +114,6 @@ impl SharedOraclePrices {
             wbnb_micro: Arc::new(AtomicU64::new(0)),
             ws_healthy: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    /// Snapshot current prices into block-embeddable format.
-    /// Returns vec of (asset_symbol, price_microcents) pairs with non-zero prices.
-    fn snapshot(&self) -> Vec<(String, u64)> {
-        let mut prices = Vec::with_capacity(3);
-        let wsol = self.wsol_micro.load(Ordering::Relaxed);
-        let weth = self.weth_micro.load(Ordering::Relaxed);
-        let wbnb = self.wbnb_micro.load(Ordering::Relaxed);
-        if wsol > 0 {
-            prices.push(("wSOL".to_string(), wsol));
-        }
-        if weth > 0 {
-            prices.push(("wETH".to_string(), weth));
-        }
-        if wbnb > 0 {
-            prices.push(("wBNB".to_string(), wbnb));
-        }
-        prices
     }
 }
 
@@ -694,6 +676,46 @@ fn hash_validator_set(set: &ValidatorSet) -> Hash {
 
     let data = serde_json::to_vec(&entries).unwrap_or_default();
     Hash::hash(&data)
+}
+
+fn make_sync_observed_validator_info(
+    producer: Pubkey,
+    slot: u64,
+    stake_amount: u64,
+    transaction_count: usize,
+    reward_already: bool,
+) -> ValidatorInfo {
+    ValidatorInfo {
+        pubkey: producer,
+        stake: stake_amount,
+        reputation: 100,
+        blocks_proposed: if reward_already { 0 } else { 1 },
+        votes_cast: 0,
+        correct_votes: 0,
+        joined_slot: slot,
+        last_active_slot: slot,
+        commission_rate: 500,
+        transactions_processed: if reward_already {
+            0
+        } else {
+            transaction_count as u64
+        },
+        pending_activation: false,
+    }
+}
+
+fn load_local_account_stake(state: &StateStore, validator: &Pubkey) -> Option<u64> {
+    state
+        .get_account(validator)
+        .ok()
+        .flatten()
+        .map(|account| account.staked)
+}
+
+fn load_local_stake_pool_amount(stake_pool: &StakePool, validator: &Pubkey) -> Option<u64> {
+    stake_pool
+        .get_stake(validator)
+        .map(|stake| stake.total_stake())
 }
 
 fn hash_stake_pool(pool: &StakePool) -> Hash {
@@ -2323,6 +2345,8 @@ struct SnapshotSync {
     stake_pool: bool,
 }
 
+const MIN_WARP_CHECKPOINT_ANCHOR_PEERS: usize = 2;
+
 impl SnapshotSync {
     fn new(is_joining_network: bool) -> Self {
         if is_joining_network {
@@ -2367,7 +2391,21 @@ fn block_vote_weight(
     0
 }
 
-fn block_fee_at_index(block: &Block, tx_index: usize, fallback_fee: u64) -> u64 {
+fn block_fee_at_index(
+    state: &StateStore,
+    block: &Block,
+    tx_index: usize,
+    fee_config: &FeeConfig,
+) -> u64 {
+    let Some(tx) = block.transactions.get(tx_index) else {
+        return 0;
+    };
+
+    if let Some(exact_fee) = TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config) {
+        return exact_fee;
+    }
+
+    let fallback_fee = TxProcessor::compute_transaction_fee(tx, fee_config);
     if block.tx_fees_paid.len() == block.transactions.len() {
         block
             .tx_fees_paid
@@ -2379,42 +2417,46 @@ fn block_fee_at_index(block: &Block, tx_index: usize, fallback_fee: u64) -> u64 
     }
 }
 
-fn block_total_fees_paid(block: &Block, fee_config: &FeeConfig) -> u64 {
-    if block.tx_fees_paid.len() == block.transactions.len() {
-        block.tx_fees_paid.iter().copied().sum()
-    } else {
-        block
-            .transactions
-            .iter()
-            .map(|tx| TxProcessor::compute_transaction_fee(tx, fee_config))
-            .sum()
-    }
+fn block_total_fees_paid(state: &StateStore, block: &Block, fee_config: &FeeConfig) -> u64 {
+    block
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(tx_index, tx)| {
+            TxProcessor::exact_transaction_fee_from_state(state, tx, fee_config).unwrap_or_else(
+                || {
+                    if block.tx_fees_paid.len() == block.transactions.len() {
+                        block
+                            .tx_fees_paid
+                            .get(tx_index)
+                            .copied()
+                            .unwrap_or_else(|| TxProcessor::compute_transaction_fee(tx, fee_config))
+                    } else {
+                        TxProcessor::compute_transaction_fee(tx, fee_config)
+                    }
+                },
+            )
+        })
+        .sum()
 }
 
 // =========================================================================
-//  CONSENSUS-PROPAGATED ORACLE — Deterministic oracle data from blocks
+//  CONSENSUS ORACLE MIRROR — Deterministic derived state from finalized prices
 //
-//  Oracle prices are embedded in each block by the leader validator and
-//  applied identically by ALL validators during block processing. This
-//  ensures every validator has identical oracle state, preventing any
-//  divergence in DEX WASM execution (price band checks etc.).
+//  Validators submit signed native oracle attestation transactions. After a
+//  block executes, every validator reads the same finalized consensus oracle
+//  state and mirrors it into legacy contract storage layouts used by DEX,
+//  analytics, and compatibility surfaces.
 // =========================================================================
 
-/// Apply oracle price data from a block to the local state.
+/// Apply consensus-oracle derived state after a block is processed.
 ///
-/// Called on ALL validators (both the block producer and receivers) after
-/// `apply_block_effects`. The oracle prices come from `block.oracle_prices`
-/// which the block producer populated from its `SharedOraclePrices` atomics.
-///
-/// This function writes:
-/// 1. Oracle price feeds to the ORACLE contract storage (moltoracle)
-/// 2. DEX price bands to the DEX contract storage (dex_core)
-/// 3. Analytics indicative prices to ANALYTICS contract storage (dex_analytics)
-///
-/// Since all validators apply the SAME prices from the SAME block, the
-/// resulting state is deterministic and identical across the network.
+/// Called on ALL validators after `apply_block_effects`. This function does
+/// not trust proposer-carried oracle payloads. Instead, it reads the native
+/// consensus oracle state finalized by the block's transactions and mirrors
+/// that data into legacy contract storage layouts.
 fn apply_oracle_from_block(state: &StateStore, block: &Block) {
-    if block.oracle_prices.is_empty() || block.header.slot == 0 {
+    if block.header.slot == 0 {
         return;
     }
 
@@ -2439,63 +2481,46 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         _ => return,
     };
 
-    const ORACLE_DECIMALS: u8 = 8;
     const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
-    const MICRO_SCALE_DIV: f64 = 1_000_000.0;
+    const ORACLE_DECIMALS: u8 = 8;
 
-    // Parse prices from block data
-    let mut wsol_usd: f64 = 0.0;
-    let mut weth_usd: f64 = 0.0;
-    let mut wbnb_usd: f64 = 0.0;
-
-    for (symbol, micro) in &block.oracle_prices {
-        let price_usd = *micro as f64 / MICRO_SCALE_DIV;
-        match symbol.as_str() {
-            "wSOL" => wsol_usd = price_usd,
-            "wETH" => weth_usd = price_usd,
-            "wBNB" => wbnb_usd = price_usd,
-            _ => {}
-        }
-    }
+    let wsol_usd =
+        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wSOL").unwrap_or(0.0);
+    let weth_usd =
+        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
+    let wbnb_usd =
+        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
 
     if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
         return;
     }
 
-    // Read MOLT price from oracle (or use default 0.10)
-    let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
-        Ok(Some(feed)) if feed.len() >= 8 => {
-            let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-            if raw > 0 {
-                raw as f64 / 100_000_000.0
-            } else {
-                0.10
-            }
-        }
-        _ => 0.10,
-    };
+    let molt_usd = moltchain_core::consensus::molt_price_from_state(state);
 
-    // ── Phase A: Write oracle price feeds to ORACLE contract ──
-    let oracle_feeds: [(&[u8], f64); 3] = [
-        (b"wSOL", wsol_usd),
-        (b"wETH", weth_usd),
-        (b"wBNB", wbnb_usd),
-    ];
-
-    for (asset, price_usd) in &oracle_feeds {
-        if *price_usd <= 0.0 {
+    // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
+    for asset in ["MOLT", "wSOL", "wETH", "wBNB"] {
+        let consensus_feed =
+            moltchain_core::consensus::read_consensus_oracle_price_from_state(state, asset)
+                .map(|(price_raw, decimals, _)| (price_raw, decimals))
+                .or_else(|| {
+                    if asset == "MOLT" {
+                        Some((genesis_molt_price_8dec(), ORACLE_DECIMALS))
+                    } else {
+                        None
+                    }
+                });
+        let Some((price_raw, decimals)) = consensus_feed else {
             continue;
-        }
-        let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
+        };
 
         // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
         let mut feed = Vec::with_capacity(49);
         feed.extend_from_slice(&price_raw.to_le_bytes());
         feed.extend_from_slice(&now_ts.to_le_bytes());
-        feed.push(ORACLE_DECIMALS);
+        feed.push(decimals);
         feed.extend_from_slice(&feeder);
 
-        let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
+        let price_key = format!("price_{}", asset);
         let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
 
         // Also write indexed key for aggregation
@@ -2553,9 +2578,8 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     }
 
     // ── Phase C: Write analytics indicative prices + CANDLES ──
-    // Oracle-driven candle writes happen HERE (deterministic, consensus-replicated).
-    // Every validator processes the same block.oracle_prices and writes identical
-    // candles, ensuring all validators have the exact same charting data.
+    // Every validator reads the same finalized consensus oracle prices and
+    // writes identical derived analytics state.
     // Candle intervals: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
     const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
 
@@ -2673,7 +2697,7 @@ fn compute_proposed_timestamp(
         return None;
     }
 
-    let bft_ts = moltchain_core::compute_bft_timestamp(
+    let bft_ts = compute_bft_timestamp(
         &parent.commit_signatures,
         validator_set,
         stake_pool,
@@ -2681,8 +2705,6 @@ fn compute_proposed_timestamp(
     )?;
 
     // Clamp BFT timestamp to wall-clock + 1s to prevent future-drift blocks.
-    // Validators with skewed clocks can push the weighted median ahead of real
-    // time, which confuses explorers and time-dependent contract logic.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2711,6 +2733,7 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
         );
     }
     let results = processor.process_transactions_parallel(&block.transactions, &producer_pubkey);
+    let exact_fees_present = block.tx_fees_paid.len() == block.transactions.len();
     for (tx, result) in block.transactions.iter().zip(results.iter()) {
         if result.success {
             info!(
@@ -2726,6 +2749,26 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
                 result.error.as_deref().unwrap_or_default()
             );
         }
+    }
+
+    if exact_fees_present {
+        for (tx_index, result) in results.iter().enumerate() {
+            if let Some(block_fee) = block.tx_fees_paid.get(tx_index) {
+                if *block_fee != result.fee_paid {
+                    warn!(
+                        "⚠️  Slot {} tx {} fee metadata mismatch: block={} local={}",
+                        block.header.slot, tx_index, block_fee, result.fee_paid,
+                    );
+                }
+            }
+        }
+    } else if !block.tx_fees_paid.is_empty() {
+        warn!(
+            "⚠️  Slot {} fee metadata length mismatch: block has {} entries for {} transactions",
+            block.header.slot,
+            block.tx_fees_paid.len(),
+            block.transactions.len(),
+        );
     }
 }
 
@@ -2777,7 +2820,7 @@ async fn revert_block_effects(
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-    let total_fee = block_total_fees_paid(old_block, &fee_config);
+    let total_fee = block_total_fees_paid(state, old_block, &fee_config);
 
     if total_fee > 0 {
         let producer_share = total_fee * fee_config.fee_producer_percent / 100;
@@ -2962,8 +3005,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         // 2. Refund fee to fee payer
         if let Some(first_ix) = tx.message.instructions.first() {
             if let Some(&fee_payer) = first_ix.accounts.first() {
-                let fallback_fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
-                let fee = block_fee_at_index(old_block, tx_index, fallback_fee);
+                let fee = block_fee_at_index(state, old_block, tx_index, &fee_config);
                 if fee > 0 {
                     let payer = overlay.entry(fee_payer).or_insert_with(|| {
                         state
@@ -3099,7 +3141,7 @@ async fn apply_block_effects(
     vote_aggregator: &Arc<RwLock<VoteAggregator>>,
     block: &Block,
     skip_rewards: bool,
-    min_validator_stake: u64,
+    _min_validator_stake: u64,
 ) {
     if block.header.slot == 0 || block.header.validator == [0u8; 32] {
         return;
@@ -3124,45 +3166,6 @@ async fn apply_block_effects(
 
     let producer = Pubkey(block.header.validator);
     let slot = block.header.slot;
-
-    // SYNC-FIX: Ensure block producers have stake pool entries.
-    // The genesis validator's pool entry is created by direct state write on
-    // the genesis node (genesis bootstrap) and is NOT replicated to joining
-    // nodes through block transactions or snapshot sync. During initial sync,
-    // the pool is empty even though the block producer is legitimate (their
-    // block passed signature verification). Add the producer so that the
-    // RegisterValidator tx for joining validators sees the complete set,
-    // preventing eligible=1 state divergence (should be eligible=2+).
-    {
-        let pool_read = stake_pool.read().await;
-        let missing = pool_read.get_stake(&producer).is_none();
-        drop(pool_read);
-        if missing {
-            let mut pool_write = stake_pool.write().await;
-            if pool_write.get_stake(&producer).is_none() {
-                // Use try_bootstrap_with_fingerprint (not upsert_stake) to create
-                // byte-identical StakeInfo as the genesis bootstrap: bootstrap_index=0,
-                // bootstrap_debt=amount, status=Bootstrapping. Slot 0 matches genesis.
-                let _ = pool_write.try_bootstrap_with_fingerprint(
-                    producer,
-                    BOOTSTRAP_GRANT_AMOUNT,
-                    0,
-                    [0u8; 32],
-                );
-                let pool_snapshot = pool_write.clone();
-                drop(pool_write);
-                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
-                    warn!("⚠️  Failed to persist healed pool entry: {}", e);
-                } else {
-                    info!(
-                        "🩹 Pool healed: added block producer {} with {} MOLT stake",
-                        producer.to_base58(),
-                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                    );
-                }
-            }
-        }
-    }
 
     let has_user_transactions = block_has_user_transactions(block);
     let is_heartbeat = !has_user_transactions;
@@ -3196,36 +3199,17 @@ async fn apply_block_effects(
             val_info.last_active_slot = slot;
             val_info.update_reputation(true);
         } else {
-            // During header-first sync, RegisterValidator TXs may not have
-            // been replayed, so the on-chain stake reads as 0 even though the
-            // producer was legitimate when the block was created.  Use the
-            // bootstrap grant as a default so the validator set is populated
-            // before the full-execution window is reached.
-            // During live sync, the AUDIT-FIX C5 active-set gate already
-            // filters non-member validators, so this branch only runs for
-            // producers whose blocks were accepted into the chain.
-            let effective_stake = if stake_amount >= min_validator_stake {
-                stake_amount
-            } else {
-                BOOTSTRAP_GRANT_AMOUNT
-            };
-            let new_validator = ValidatorInfo {
-                pubkey: producer,
-                stake: effective_stake,
-                reputation: 100,
-                blocks_proposed: if reward_already { 0 } else { 1 },
-                votes_cast: 0,
-                correct_votes: 0,
-                joined_slot: slot,
-                last_active_slot: slot,
-                commission_rate: 500,
-                transactions_processed: if reward_already {
-                    0
-                } else {
-                    block.transactions.len() as u64
-                },
-                pending_activation: false, // Block producers are already active
-            };
+            // Header-first sync can observe legitimate historical producers
+            // before their RegisterValidator transaction is replayed locally.
+            // Track the producer for activity/reputation, but never infer
+            // bootstrap stake or local voting power from that observation.
+            let new_validator = make_sync_observed_validator_info(
+                producer,
+                slot,
+                stake_amount,
+                block.transactions.len(),
+                reward_already,
+            );
             vs.add_validator(new_validator);
         }
 
@@ -3288,10 +3272,37 @@ async fn apply_block_effects(
             let completed_epoch_start = moltchain_core::epoch_start_slot(
                 moltchain_core::consensus::slot_to_epoch(slot).saturating_sub(1),
             );
+            let epoch_mint =
+                moltchain_core::compute_epoch_mint(completed_epoch_start, total_supply);
+            let reef_reward_pool = match state.get_reefstake_pool() {
+                Ok(reef_pool) if reef_pool.st_molt_token.total_supply > 0 => {
+                    let (_, reef_reward_pool) = moltchain_core::consensus::split_epoch_mint(
+                        completed_epoch_start,
+                        total_supply,
+                    );
+                    reef_reward_pool
+                }
+                Ok(_) => 0,
+                Err(e) => {
+                    warn!(
+                        "⚠️  Failed to load ReefStake pool before epoch distribution: {}",
+                        e
+                    );
+                    0
+                }
+            };
+            let staker_reward_pool = if reef_reward_pool > 0 {
+                epoch_mint.saturating_sub(reef_reward_pool)
+            } else {
+                epoch_mint
+            };
+
             let (total_minted, distributions) = {
                 let mut pool = stake_pool.write().await;
-                let result =
-                    pool.distribute_epoch_staker_rewards(completed_epoch_start, total_supply);
+                let result = pool.distribute_epoch_staker_rewards_from_pool(
+                    staker_reward_pool,
+                    completed_epoch_start,
+                );
                 let pool_snapshot = pool.clone();
                 drop(pool);
                 if let Err(e) = state.put_stake_pool(&pool_snapshot) {
@@ -3350,17 +3361,13 @@ async fn apply_block_effects(
                 // ── ReefStake liquid staking reward distribution ──
                 // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
                 // to the ReefStake pool, funding stMOLT yield.
-                let epoch_mint =
-                    moltchain_core::compute_epoch_mint(completed_epoch_start, total_supply);
-                let reef_share = (epoch_mint as u128
-                    * moltchain_core::REEFSTAKE_BLOCK_SHARE_BPS as u128
-                    / 10_000) as u64;
-                if reef_share > 0 {
+                if reef_reward_pool > 0 {
                     match state.get_reefstake_pool() {
                         Ok(mut reef_pool) => {
                             if reef_pool.st_molt_token.total_supply > 0 {
-                                reef_pool.distribute_rewards(reef_share);
-                                if let Err(e) = state.atomic_mint_reefstake(&reef_pool, reef_share)
+                                reef_pool.distribute_rewards(reef_reward_pool);
+                                if let Err(e) =
+                                    state.atomic_mint_reefstake(&reef_pool, reef_reward_pool)
                                 {
                                     warn!(
                                         "⚠️  Failed to persist ReefStake epoch distribution: {}",
@@ -3369,7 +3376,7 @@ async fn apply_block_effects(
                                 } else {
                                     debug!(
                                         "🌊 ReefStake: minted {:.6} MOLT to {} stakers (epoch)",
-                                        reef_share as f64 / 1_000_000_000.0,
+                                        reef_reward_pool as f64 / 1_000_000_000.0,
                                         reef_pool.positions.len(),
                                     );
                                 }
@@ -3402,7 +3409,7 @@ async fn apply_block_effects(
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-    let total_fee = block_total_fees_paid(block, &fee_config);
+    let total_fee = block_total_fees_paid(state, block, &fee_config);
 
     if total_fee == 0 {
         return;
@@ -3699,7 +3706,7 @@ async fn activate_pending_validators_for_height(
     new_height: u64,
     min_validator_stake: u64,
 ) {
-    let validator_snapshot: Vec<(Pubkey, u64, bool)> = validator_set
+    let validator_snapshot: Vec<(Pubkey, u64, bool, u64)> = validator_set
         .read()
         .await
         .validators()
@@ -3709,6 +3716,7 @@ async fn activate_pending_validators_for_height(
                 validator.pubkey,
                 validator.stake,
                 validator.pending_activation,
+                validator.joined_slot,
             )
         })
         .collect();
@@ -3718,7 +3726,11 @@ async fn activate_pending_validators_for_height(
     }
 
     let mut reconciled = Vec::new();
-    for (pubkey, current_stake, pending_activation) in validator_snapshot {
+    for (pubkey, current_stake, pending_activation, joined_slot) in validator_snapshot {
+        // Resolve stake: pool first, then on-chain account, then keep current.
+        // The pool may not have the validator yet (P2P announcement arrives
+        // before RegisterValidator tx is processed), so fall back to the
+        // on-chain staked balance which is authoritative.
         let resolved_stake = height_pool
             .get_stake(&pubkey)
             .map(|stake| stake.total_stake())
@@ -3731,10 +3743,10 @@ async fn activate_pending_validators_for_height(
             })
             .unwrap_or(current_stake);
 
-        if resolved_stake != current_stake
-            || (pending_activation && resolved_stake >= min_validator_stake)
-        {
-            reconciled.push((pubkey, resolved_stake, pending_activation));
+        // Always include pending validators so they get checked for activation
+        // every height, even if their stake hasn't changed yet.
+        if resolved_stake != current_stake || pending_activation {
+            reconciled.push((pubkey, resolved_stake, pending_activation, joined_slot));
         }
     }
 
@@ -3745,7 +3757,7 @@ async fn activate_pending_validators_for_height(
     let mut vs = validator_set.write().await;
     let mut activated = Vec::new();
     let mut changed = false;
-    for (pubkey, resolved_stake, pending_activation) in reconciled {
+    for (pubkey, resolved_stake, pending_activation, joined_slot) in reconciled {
         if let Some(validator) = vs.get_validator_mut(&pubkey) {
             if validator.stake != resolved_stake {
                 validator.stake = resolved_stake;
@@ -3754,6 +3766,7 @@ async fn activate_pending_validators_for_height(
             if pending_activation
                 && validator.pending_activation
                 && resolved_stake >= min_validator_stake
+                && new_height > joined_slot.saturating_add(1)
             {
                 validator.pending_activation = false;
                 changed = true;
@@ -3784,6 +3797,89 @@ async fn activate_pending_validators_for_height(
             pubkey.to_base58()
         );
     }
+}
+
+async fn freeze_consensus_snapshot_for_height(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    height: u64,
+    min_validator_stake: u64,
+) -> (ValidatorSet, StakePool) {
+    let height_pool = stake_pool.read().await.clone();
+
+    if moltchain_core::is_epoch_boundary(height) {
+        let epoch = moltchain_core::slot_to_epoch(height);
+        {
+            let mut vs = validator_set.write().await;
+
+            if let Ok(pending) = state.get_pending_validator_changes(epoch) {
+                for change in &pending {
+                    if change.change_type == moltchain_core::ValidatorChangeType::Remove {
+                        vs.remove_validator(&change.pubkey);
+                        if let Err(e) = state.delete_validator(&change.pubkey) {
+                            warn!(
+                                "⚠️  Failed to remove deregistered validator {} from state: {}",
+                                change.pubkey.to_base58(),
+                                e
+                            );
+                        }
+                        info!(
+                            "🔒 Epoch {}: Deregistered validator {} (voluntary exit)",
+                            epoch,
+                            change.pubkey.to_base58()
+                        );
+                    }
+                }
+            }
+
+            if let Err(e) = state.save_validator_set(&vs) {
+                warn!(
+                    "⚠️  Failed to persist validator set after epoch transition: {}",
+                    e
+                );
+            }
+        }
+        if let Err(e) = state.clear_pending_validator_changes(epoch) {
+            warn!(
+                "⚠️  Failed to clear pending validator changes for epoch {}: {}",
+                epoch, e
+            );
+        }
+
+        activate_pending_validators_for_height(
+            state,
+            validator_set,
+            &height_pool,
+            height,
+            min_validator_stake,
+        )
+        .await;
+
+        let (mut frozen, pending_count) = {
+            let vs = validator_set.read().await;
+            (vs.consensus_set(), vs.pending_count())
+        };
+        frozen.set_frozen_epoch(epoch);
+        info!(
+            "🧊 Epoch {}: Froze validator set ({} active, {} pending)",
+            epoch,
+            frozen.validators().len(),
+            pending_count,
+        );
+        return (frozen, height_pool);
+    }
+
+    activate_pending_validators_for_height(
+        state,
+        validator_set,
+        &height_pool,
+        height,
+        min_validator_stake,
+    )
+    .await;
+
+    (validator_set.read().await.consensus_set(), height_pool)
 }
 
 /// Periodic checkpoint creation — called after every block to check if
@@ -3822,17 +3918,197 @@ async fn maybe_create_checkpoint(
     }
 }
 
+fn latest_verified_checkpoint(
+    data_dir: &str,
+    state: &StateStore,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Option<(moltchain_core::CheckpointMeta, String, Block)> {
+    let (meta, path) = StateStore::latest_checkpoint(data_dir)?;
+    let finalized_slot = state.get_last_finalized_slot().ok()?;
+    if meta.slot == 0 || meta.slot > finalized_slot {
+        return None;
+    }
+
+    let block = state.get_block_by_slot(meta.slot).ok().flatten()?;
+    if block.header.state_root.0 != meta.state_root {
+        warn!(
+            "⚠️  Rejecting checkpoint at slot {}: state root does not match committed block",
+            meta.slot
+        );
+        return None;
+    }
+    if let Err(err) = verify_committed_block_authenticity(&block, validator_set, stake_pool) {
+        warn!(
+            "⚠️  Rejecting checkpoint at slot {}: commit verification failed: {}",
+            meta.slot, err
+        );
+        return None;
+    }
+
+    Some((meta, path, block))
+}
+
+fn verify_committed_block_authenticity(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Result<(), String> {
+    if block.header.slot == 0 {
+        return Ok(());
+    }
+
+    if block.commit_signatures.is_empty() {
+        return Err(format!(
+            "block {} has no commit certificate",
+            block.header.slot
+        ));
+    }
+
+    block.verify_commit(validator_set, stake_pool)
+}
+
+fn verify_checkpoint_anchor(
+    slot: u64,
+    state_root: [u8; 32],
+    checkpoint_header: Option<&moltchain_core::BlockHeader>,
+    commit_round: u32,
+    commit_signatures: &[moltchain_core::CommitSignature],
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+) -> Result<(), String> {
+    let header = checkpoint_header.ok_or_else(|| "missing checkpoint header".to_string())?;
+    if header.slot != slot {
+        return Err(format!(
+            "checkpoint header slot mismatch: expected {}, got {}",
+            slot, header.slot
+        ));
+    }
+    if header.state_root.0 != state_root {
+        return Err("checkpoint header state root mismatch".to_string());
+    }
+
+    let block = Block {
+        header: header.clone(),
+        transactions: Vec::new(),
+        tx_fees_paid: Vec::new(),
+        oracle_prices: Vec::new(),
+        commit_round,
+        commit_signatures: commit_signatures.to_vec(),
+    };
+    if !block.verify_signature() {
+        return Err("checkpoint header signature verification failed".to_string());
+    }
+    verify_committed_block_authenticity(&block, validator_set, stake_pool)
+}
+
+fn verify_block_validators_hash(
+    block: &Block,
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    min_validator_stake: u64,
+) -> Result<(), String> {
+    if block.header.validators_hash == Hash([0u8; 32]) {
+        return Ok(());
+    }
+
+    let consensus_set = validator_set.consensus_set();
+    let expected = compute_validators_hash(&consensus_set, stake_pool);
+    if block.header.validators_hash != expected {
+        if let Some(promoted_expected) =
+            compute_promoted_pending_validators_hash(validator_set, stake_pool, min_validator_stake)
+        {
+            if block.header.validators_hash == promoted_expected {
+                return Ok(());
+            }
+        }
+
+        return Err(format!(
+            "validators_hash mismatch (block={}, local={})",
+            block.header.validators_hash.to_hex(),
+            expected.to_hex(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn compute_promoted_pending_validators_hash(
+    validator_set: &ValidatorSet,
+    stake_pool: &StakePool,
+    min_validator_stake: u64,
+) -> Option<Hash> {
+    let mut promoted = validator_set.clone();
+    let mut changed = false;
+
+    for validator in promoted.validators_mut() {
+        if !validator.pending_activation {
+            continue;
+        }
+
+        let resolved_stake = stake_pool
+            .get_stake(&validator.pubkey)
+            .map(|stake| stake.total_stake())
+            .unwrap_or(validator.stake);
+
+        if resolved_stake >= min_validator_stake {
+            validator.stake = resolved_stake;
+            validator.pending_activation = false;
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+
+    Some(compute_validators_hash(
+        &promoted.consensus_set(),
+        stake_pool,
+    ))
+}
+
+fn should_add_local_validator_as_pending(is_joining_network: bool, current_tip: u64) -> bool {
+    // A validator discovered after genesis must cross at least one full local
+    // height boundary before it can enter the frozen consensus snapshot.
+    // This keeps restart and late-discovery behavior aligned across nodes.
+    is_joining_network || current_tip > 0
+}
+
+fn should_add_announced_validator_as_pending(
+    local_tip: u64,
+    local_stake: u64,
+    min_validator_stake: u64,
+) -> bool {
+    // Announcements are asynchronous relative to block commits. Even if stake
+    // is already visible locally, a validator first discovered after genesis
+    // must wait for the next locally completed height before activation.
+    local_tip > 0 || local_stake < min_validator_stake
+}
+
+fn checkpoint_anchor_support(
+    anchors: &HashMap<SocketAddr, (u64, [u8; 32])>,
+    slot: u64,
+    state_root: [u8; 32],
+) -> usize {
+    anchors
+        .values()
+        .filter(|(anchor_slot, anchor_root)| *anchor_slot == slot && *anchor_root == state_root)
+        .count()
+}
+
 // ========================================================================
 // FIRST-BOOT CONTRACT AUTO-DEPLOY
 // ========================================================================
 //  BACKGROUND ORACLE PRICE FEEDER — Real-time Binance WebSocket price feed
-//  with REST API fallback. Writes to moltoracle + dex_analytics storage.
+//  with REST API fallback. Submits native oracle attestations and broadcasts
+//  consensus-derived analytics updates.
 //
 //  Architecture:
 //    1. WebSocket reader: connects to Binance aggTrade streams for SOL/ETH,
 //       stores latest prices in lock-free AtomicU64 (microdollars).
-//    2. Storage writer: 1-second tick reads atomics, writes to oracle +
-//       analytics contract storage only when prices have changed.
+//    2. Attestation writer: periodic tick reads atomics and submits signed
+//       oracle-attestation transactions when prices change or need refresh.
 //    3. REST fallback: if WebSocket is unhealthy (no message in 30s),
 //       fetches prices from Binance REST API as backup.
 //    4. Auto-reconnect: exponential backoff 1s → 2s → 4s → ... → 30s max.
@@ -3859,10 +4135,137 @@ struct BinanceTicker {
     price: String,
 }
 
+fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64) {
+    for (asset, price_raw) in [
+        ("MOLT", genesis_molt_price_8dec()),
+        ("wSOL", genesis_wsol_price_8dec()),
+        ("wETH", genesis_weth_price_8dec()),
+        ("wBNB", genesis_wbnb_price_8dec()),
+    ] {
+        let has_price = state
+            .get_oracle_consensus_price(asset)
+            .ok()
+            .flatten()
+            .is_some();
+        if has_price {
+            continue;
+        }
+        let _ = state.put_oracle_consensus_price(asset, price_raw, 8, slot, 0);
+    }
+}
+
+fn build_oracle_attestation_tx(
+    state: &StateStore,
+    validator_seed: &[u8; 32],
+    validator_pubkey: Pubkey,
+    asset: &str,
+    price_raw: u64,
+    decimals: u8,
+) -> Result<Transaction, String> {
+    if price_raw == 0 {
+        return Err("oracle attestation price must be > 0".to_string());
+    }
+    if decimals > 18 {
+        return Err("oracle attestation decimals must be 0..=18".to_string());
+    }
+
+    let pool = state.get_stake_pool()?;
+    let stake_info = pool
+        .get_stake(&validator_pubkey)
+        .ok_or_else(|| "validator has no stake for oracle attestation".to_string())?;
+    if !stake_info.is_active || !stake_info.meets_minimum() {
+        return Err("validator is not active for oracle attestation".to_string());
+    }
+
+    let tip = state.get_last_slot().unwrap_or(0);
+    let recent_blockhash = state
+        .get_block_by_slot(tip)?
+        .map(|block| block.hash())
+        .ok_or_else(|| "oracle attestation requires a recent blockhash".to_string())?;
+
+    let asset_bytes = asset.as_bytes();
+    let mut data = Vec::with_capacity(2 + asset_bytes.len() + 8 + 1);
+    data.push(30u8);
+    data.push(asset_bytes.len() as u8);
+    data.extend_from_slice(asset_bytes);
+    data.extend_from_slice(&price_raw.to_le_bytes());
+    data.push(decimals);
+
+    let ix = moltchain_core::Instruction {
+        program_id: CORE_SYSTEM_PROGRAM_ID,
+        accounts: vec![validator_pubkey],
+        data,
+    };
+    let msg = moltchain_core::Message::new(vec![ix], recent_blockhash);
+    let mut tx = Transaction::new(msg);
+    let kp = Keypair::from_seed(validator_seed);
+    tx.signatures.push(kp.sign(&tx.message.serialize()));
+    Ok(tx)
+}
+
+#[derive(Clone)]
+struct OracleFeedTxContext {
+    mempool: Arc<Mutex<Mempool>>,
+    p2p_peer_manager: Option<Arc<moltchain_p2p::PeerManager>>,
+    p2p_config: P2PConfig,
+    validator_seed: [u8; 32],
+    validator_pubkey: Pubkey,
+}
+
+async fn submit_oracle_attestation_tx(
+    state: &StateStore,
+    tx_context: &OracleFeedTxContext,
+    asset: &str,
+    price_raw: u64,
+    decimals: u8,
+) -> bool {
+    let tx = match build_oracle_attestation_tx(
+        state,
+        &tx_context.validator_seed,
+        tx_context.validator_pubkey,
+        asset,
+        price_raw,
+        decimals,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => {
+            debug!("Skipping oracle attestation for {}: {}", asset, e);
+            return false;
+        }
+    };
+
+    {
+        let fee_config = FeeConfig::default_from_constants();
+        let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let mut pool = tx_context.mempool.lock().await;
+        if let Err(e) = pool.add_transaction(tx.clone(), computed_fee, 0) {
+            debug!(
+                "Failed to add oracle attestation tx for {} to mempool: {}",
+                asset, e
+            );
+            return false;
+        }
+    }
+
+    if let Some(peer_mgr) = &tx_context.p2p_peer_manager {
+        let target_id = tx.hash().0;
+        let msg = moltchain_p2p::P2PMessage::new(
+            moltchain_p2p::MessageType::Transaction(tx),
+            tx_context.p2p_config.listen_addr,
+        );
+        peer_mgr
+            .route_to_closest(&target_id, moltchain_p2p::NON_CONSENSUS_FANOUT, msg)
+            .await;
+    }
+
+    true
+}
+
 fn spawn_oracle_price_feeder(
     state: StateStore,
     shared_prices: SharedOraclePrices,
     dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
+    tx_context: OracleFeedTxContext,
 ) {
     tokio::spawn(async move {
         // Configurable Binance endpoints via env vars (for geo-blocked regions)
@@ -3873,8 +4276,7 @@ fn spawn_oracle_price_feeder(
         info!("🔮 Oracle WS: {}", oracle_ws_url);
         info!("🔮 Oracle REST: {}", oracle_rest_url);
 
-        // Use the shared atomics — block production reads these to include
-        // oracle prices in each block for consensus propagation.
+        // Use the shared atomics to source validator oracle attestations.
         let wsol_micro = shared_prices.wsol_micro.clone();
         let weth_micro = shared_prices.weth_micro.clone();
         let wbnb_micro = shared_prices.wbnb_micro.clone();
@@ -3928,10 +4330,11 @@ fn spawn_oracle_price_feeder(
 
         let rest_url = oracle_rest_url.clone();
 
-        info!("🔮 Oracle price feeder started (WebSocket real-time → SharedOraclePrices → block consensus)");
+        info!("🔮 Oracle price feeder started (WebSocket real-time → signed oracle attestations)");
 
         let candle_intervals: [u64; 9] =
             [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+        let mut last_attested: HashMap<&'static str, (u64, Instant)> = HashMap::new();
 
         const PRICE_SCALE_F: f64 = 1_000_000_000.0; // 1e9 for DEX price scaling
 
@@ -3984,8 +4387,31 @@ fn spawn_oracle_price_feeder(
             // NOTE: Oracle feed writes, DEX price band writes, candle writes,
             // last-price writes, and 24h stats writes are ALL handled
             // deterministically in apply_oracle_from_block() during block effects.
-            // This feeder ONLY updates SharedOraclePrices atomics (for block production)
-            // and reads consensus-written state to broadcast WS events.
+            // This feeder submits signed native oracle attestation txs and
+            // reads consensus-written state to broadcast WS events.
+
+            for (asset, price_raw) in [
+                ("MOLT", GENESIS_MOLT_PRICE_8DEC),
+                ("wSOL", cur_wsol.saturating_mul(100)),
+                ("wETH", cur_weth.saturating_mul(100)),
+                ("wBNB", cur_wbnb.saturating_mul(100)),
+            ] {
+                if price_raw == 0 {
+                    continue;
+                }
+                let should_submit = match last_attested.get(asset) {
+                    Some((last_price, last_at)) => {
+                        *last_price != price_raw || last_at.elapsed() >= Duration::from_secs(60)
+                    }
+                    None => true,
+                };
+                if !should_submit {
+                    continue;
+                }
+                if submit_oracle_attestation_tx(&state, &tx_context, asset, price_raw, 8).await {
+                    last_attested.insert(asset, (price_raw, Instant::now()));
+                }
+            }
 
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
@@ -4672,12 +5098,18 @@ async fn run_validator() {
         Err(_) => {
             let offset = p2p_port % 1000;
             let derived_port = 9200u16.saturating_add(offset);
-            Some(format!("0.0.0.0:{}", derived_port))
+            Some(format!("127.0.0.1:{}", derived_port))
         }
     };
 
     if let Some(bind) = signer_bind {
         if let Ok(addr) = bind.parse::<SocketAddr>() {
+            if !addr.ip().is_loopback() {
+                warn!(
+                    "MOLTCHAIN_SIGNER_BIND is exposed on {}. Use loopback or a private interface only.",
+                    addr
+                );
+            }
             let signer_data_dir = data_dir_path.clone();
             tokio::spawn(async move {
                 threshold_signer::start_signer_server(addr, &signer_data_dir).await;
@@ -4723,7 +5155,14 @@ async fn run_validator() {
     // ========================================================================
 
     // Load genesis configuration from file or use defaults
-    let genesis_config = if let Some(ref genesis_file) = genesis_path {
+    let data_dir_genesis = data_dir_path.join("genesis.json");
+    let effective_genesis_path = genesis_path.clone().or_else(|| {
+        data_dir_genesis
+            .exists()
+            .then(|| data_dir_genesis.display().to_string())
+    });
+
+    let genesis_config = if let Some(ref genesis_file) = effective_genesis_path {
         info!("📜 Loading genesis from: {}", genesis_file);
         match GenesisConfig::from_file(genesis_file) {
             Ok(config) => {
@@ -5389,6 +5828,12 @@ async fn run_validator() {
                 .as_ref()
                 .map(|w| w.pubkey)
                 .unwrap_or(Pubkey([0u8; 32]));
+            let genesis_timestamp = state
+                .get_block_by_slot(0)
+                .ok()
+                .flatten()
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
 
             // Check if analytics seed data is present (ana_lp_1 = MOLT/mUSD)
             let ana_lp_1_exists = state
@@ -5397,9 +5842,11 @@ async fn run_validator() {
 
             if !ana_lp_1_exists {
                 info!("🔄 RECONCILE: Analytics price seeds missing — writing initial prices");
-                genesis_seed_analytics_prices(&state, &genesis_pk);
+                genesis_seed_analytics_prices(&state, &genesis_pk, genesis_timestamp);
                 info!("  ✓ Analytics prices seeded for pairs 1-5");
             }
+
+            seed_bootstrap_consensus_oracle_prices(&state, state.get_last_slot().unwrap_or(0));
 
             // Check if oracle price feeds are present (price_MOLT)
             let molt_price_exists = state.get_program_storage("ORACLE", b"price_MOLT").is_some();
@@ -5409,7 +5856,7 @@ async fn run_validator() {
 
             if !mrg_mark_1_exists {
                 info!("🔄 RECONCILE: Margin prices missing — seeding mark/index prices");
-                genesis_seed_margin_prices(&state, &genesis_pk);
+                genesis_seed_margin_prices(&state, &genesis_pk, genesis_timestamp);
                 info!("  ✓ Margin prices seeded for pairs 1-5");
             }
 
@@ -5420,14 +5867,11 @@ async fn run_validator() {
                 if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "moltoracle") {
                     const ORACLE_DECIMALS: u8 = 8;
                     let oracle_feeds: &[(&str, u64)] = &[
-                        ("MOLT", 10_000_000),      // $0.10
-                        ("wSOL", 8_200_000_000),   // $82
-                        ("wETH", 197_900_000_000), // $1,979
+                        ("MOLT", genesis_molt_price_8dec()),
+                        ("wSOL", genesis_wsol_price_8dec()),
+                        ("wETH", genesis_weth_price_8dec()),
+                        ("wBNB", genesis_wbnb_price_8dec()),
                     ];
-                    let now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
 
                     for (asset, price) in oracle_feeds {
                         // price_{asset}: 8 bytes LE (u64)
@@ -5443,7 +5887,7 @@ async fn run_validator() {
                         let _ = state.put_contract_storage(
                             &oracle_pk,
                             ts_key.as_bytes(),
-                            &now_secs.to_le_bytes(),
+                            &genesis_timestamp.to_le_bytes(),
                         );
 
                         // price_{asset}_dec: 1 byte (decimals)
@@ -5661,8 +6105,8 @@ async fn run_validator() {
                     .iter()
                     .any(|v| v.pubkey == validator_pubkey.to_base58())
                 {
-                    // Non-genesis validator: pending if chain is already running
-                    let pending = current_tip > 0;
+                    let pending =
+                        should_add_local_validator_as_pending(is_joining_network, current_tip);
                     info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
                         on_chain_stake / 1_000_000_000, pending);
                     set.add_validator(ValidatorInfo {
@@ -5687,7 +6131,7 @@ async fn run_validator() {
             .iter()
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
-            let pending = current_tip > 0;
+            let pending = should_add_local_validator_as_pending(is_joining_network, current_tip);
             info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
                 on_chain_stake / 1_000_000_000, pending);
             set.add_validator(ValidatorInfo {
@@ -5837,39 +6281,69 @@ async fn run_validator() {
     //   4. All nodes process identically: treasury debited, account created, staked
     //
     // Genesis validators are created by the genesis tool — no registration needed.
+    let is_genesis_validator = genesis_config
+        .initial_validators
+        .iter()
+        .any(|validator| validator.pubkey == validator_pubkey.to_base58());
     let mut needs_on_chain_registration = {
         let validator_account = state.get_account(&validator_pubkey).unwrap_or_else(|e| {
             eprintln!("Failed to read validator account: {e}");
             None
         });
-        match validator_account {
-            Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
-                info!(
-                    "✓ Validator account exists: {} MOLT",
-                    account.balance_molt()
-                );
-                info!(
-                    "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
-                    account.spendable as f64 / 1_000_000_000.0,
-                    account.staked as f64 / 1_000_000_000.0,
-                    account.locked as f64 / 1_000_000_000.0
-                );
-                false
+        if is_genesis_validator {
+            match validator_account {
+                Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
+                    info!(
+                        "✓ Genesis validator account exists: {} MOLT",
+                        account.balance_molt()
+                    );
+                }
+                Some(account) => {
+                    warn!(
+                        "⚠️  Genesis validator account stake is below expected bootstrap amount ({:.2} MOLT)",
+                        account.staked as f64 / 1_000_000_000.0,
+                    );
+                    warn!(
+                        "   Skipping RegisterValidator auto-submit because genesis validators must come from genesis state"
+                    );
+                }
+                None => {
+                    warn!(
+                        "⚠️  Genesis validator account missing from local state; skipping RegisterValidator auto-submit because genesis validators must come from genesis state"
+                    );
+                }
             }
-            Some(account) => {
-                info!(
-                    "⚠️  Validator account exists but insufficient stake ({:.2} MOLT < {} MOLT required)",
-                    account.staked as f64 / 1_000_000_000.0,
-                    BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
-                );
-                info!("   Will auto-submit RegisterValidator transaction after sync");
-                true
-            }
-            None => {
-                info!(
-                    "📋 No validator account found — will auto-submit RegisterValidator transaction after sync"
-                );
-                true
+            false
+        } else {
+            match validator_account {
+                Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
+                    info!(
+                        "✓ Validator account exists: {} MOLT",
+                        account.balance_molt()
+                    );
+                    info!(
+                        "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
+                        account.spendable as f64 / 1_000_000_000.0,
+                        account.staked as f64 / 1_000_000_000.0,
+                        account.locked as f64 / 1_000_000_000.0
+                    );
+                    false
+                }
+                Some(account) => {
+                    info!(
+                        "⚠️  Validator account exists but insufficient stake ({:.2} MOLT < {} MOLT required)",
+                        account.staked as f64 / 1_000_000_000.0,
+                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+                    );
+                    info!("   Will auto-submit RegisterValidator transaction after sync");
+                    true
+                }
+                None => {
+                    info!(
+                        "📋 No validator account found — will auto-submit RegisterValidator transaction after sync"
+                    );
+                    true
+                }
             }
         }
     };
@@ -5884,7 +6358,8 @@ async fn run_validator() {
     let finality_tracker = FinalityTracker::new(initial_confirmed, initial_finalized);
     info!(
         "🔒 Finality tracker initialized (confirmed={}, finalized={})",
-        initial_confirmed, initial_finalized
+        finality_tracker.confirmed_slot(),
+        finality_tracker.finalized_slot()
     );
 
     // AUDIT-FIX M7: Load slashing tracker from disk for restart-proof evidence
@@ -6632,38 +7107,21 @@ async fn run_validator() {
                     // accepting forged blocks that were never actually committed
                     // by the BFT quorum. Skip for blocks in header-only sync
                     // window since those are verified by parent-hash chain.
-                    if !block.commit_signatures.is_empty() {
-                        let pool = stake_pool_for_blocks.read().await;
-                        // Try round 0 first (most common), then round 1-3
-                        let mut verified = false;
-                        for try_round in 0..4u32 {
-                            if block.verify_commit(try_round, &vs, &pool).is_ok() {
-                                verified = true;
-                                break;
-                            }
-                        }
-                        if !verified {
-                            warn!(
-                                "⚠️  Block {} has commit signatures but verification FAILED — \
-                                 accepting anyway (may be from older protocol version)",
-                                block_slot
-                            );
-                        }
+                    let pool = stake_pool_for_blocks.read().await;
+                    if let Err(err) = verify_committed_block_authenticity(&block, &vs, &pool) {
+                        warn!("⚠️  Rejecting block {} — {}", block_slot, err);
+                        continue;
+                    }
 
-                        // Cross-reference validators_hash: if the block records
-                        // which validator set produced it, verify it matches our
-                        // view. Mismatches indicate a fork or state divergence.
-                        if block.header.validators_hash != Hash([0u8; 32]) {
-                            let expected = compute_validators_hash(&vs, &pool);
-                            if block.header.validators_hash != expected {
-                                warn!(
-                                    "⚠️  Block {} validators_hash mismatch (block={}, local={}) — possible state divergence",
-                                    block_slot,
-                                    block.header.validators_hash.to_hex(),
-                                    expected.to_hex(),
-                                );
-                            }
-                        }
+                    // Cross-reference validators_hash: committed blocks that
+                    // advertise a validator-set commitment must match our local
+                    // active-set view or they are rejected as unauthenticated
+                    // state-divergence candidates.
+                    if let Err(err) =
+                        verify_block_validators_hash(&block, &vs, &pool, min_validator_stake)
+                    {
+                        warn!("⚠️  Rejecting block {} — {}", block_slot, err);
+                        continue;
                     }
                 }
 
@@ -6736,11 +7194,18 @@ async fn run_validator() {
                                                 warn!("⚠️  Failed to add SlashValidator tx to mempool: {}", e);
                                             }
                                         }
+                                        let target_id = tx.hash().0;
                                         let slash_msg = moltchain_p2p::P2PMessage::new(
                                             moltchain_p2p::MessageType::Transaction(tx),
                                             p2p_config_for_slash_blocks.listen_addr,
                                         );
-                                        p2p_pm_for_slash_blocks.broadcast(slash_msg).await;
+                                        p2p_pm_for_slash_blocks
+                                            .route_to_closest(
+                                                &target_id,
+                                                moltchain_p2p::NON_CONSENSUS_FANOUT,
+                                                slash_msg,
+                                            )
+                                            .await;
                                         info!(
                                             "📝 Submitted SlashValidator tx for DoubleBlock by {}",
                                             Pubkey(block.header.validator).to_base58()
@@ -6953,17 +7418,145 @@ async fn run_validator() {
                                 }
                             }
 
+                            // 6b. Reconstruct explicit slot-0 validator registrations.
+                            if let Ok(Some(treasury_pubkey)) =
+                                state_for_blocks.get_treasury_pubkey()
+                            {
+                                if let Ok(Some(mut treasury_account)) =
+                                    state_for_blocks.get_account(&treasury_pubkey)
+                                {
+                                    let mut pool = state_for_blocks
+                                        .get_stake_pool()
+                                        .unwrap_or_else(|_| StakePool::new());
+                                    for tx in block.transactions.iter().skip(1) {
+                                        let Some(ix) = tx.message.instructions.first() else {
+                                            continue;
+                                        };
+                                        if ix.data.first() != Some(&26) || ix.accounts.is_empty() {
+                                            continue;
+                                        }
+
+                                        let validator_pubkey = ix.accounts[0];
+                                        if treasury_account
+                                            .deduct_spendable(BOOTSTRAP_GRANT_AMOUNT)
+                                            .is_err()
+                                        {
+                                            warn!(
+                                                "⚠️  [sync] Treasury could not fund explicit genesis validator {}",
+                                                validator_pubkey.to_base58()
+                                            );
+                                            continue;
+                                        }
+
+                                        let mut account = state_for_blocks
+                                            .get_account(&validator_pubkey)
+                                            .ok()
+                                            .flatten()
+                                            .unwrap_or_else(|| Account::new(0, Pubkey([0x01; 32])));
+                                        account.shells =
+                                            account.shells.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                        account.staked =
+                                            account.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                        account.spendable = 0;
+                                        state_for_blocks
+                                            .put_account(&validator_pubkey, &account)
+                                            .ok();
+
+                                        if let Err(err) = pool.try_bootstrap_with_fingerprint(
+                                            validator_pubkey,
+                                            BOOTSTRAP_GRANT_AMOUNT,
+                                            0,
+                                            [0u8; 32],
+                                        ) {
+                                            warn!(
+                                                "⚠️  [sync] Failed to reconstruct genesis validator {}: {}",
+                                                validator_pubkey.to_base58(),
+                                                err
+                                            );
+                                        }
+                                    }
+
+                                    state_for_blocks
+                                        .put_account(&treasury_pubkey, &treasury_account)
+                                        .ok();
+                                    state_for_blocks.put_stake_pool(&pool).ok();
+
+                                    {
+                                        let mut live_pool = stake_pool_for_blocks.write().await;
+                                        *live_pool = pool.clone();
+                                    }
+
+                                    {
+                                        let mut live_vs = validator_set_for_blocks.write().await;
+                                        for entry in pool.stake_entries() {
+                                            let resolved_stake = entry.total_stake();
+                                            if resolved_stake < min_validator_stake {
+                                                continue;
+                                            }
+
+                                            if let Some(existing) =
+                                                live_vs.get_validator_mut(&entry.validator)
+                                            {
+                                                existing.stake = resolved_stake;
+                                                existing.pending_activation = false;
+                                            } else {
+                                                live_vs.add_validator(ValidatorInfo {
+                                                    pubkey: entry.validator,
+                                                    stake: resolved_stake,
+                                                    reputation: 100,
+                                                    blocks_proposed: 0,
+                                                    votes_cast: 0,
+                                                    correct_votes: 0,
+                                                    last_active_slot: 0,
+                                                    joined_slot: 0,
+                                                    commission_rate: 500,
+                                                    transactions_processed: 0,
+                                                    pending_activation: false,
+                                                });
+                                            }
+                                        }
+
+                                        if let Err(err) =
+                                            state_for_blocks.save_validator_set(&live_vs)
+                                        {
+                                            warn!(
+                                                "⚠️  [sync] Failed to persist reconstructed validator set: {}",
+                                                err
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             // 7. Genesis transactions already stored + indexed
                             //    by put_block() above (CF_TRANSACTIONS + CF_TX_TO_SLOT
                             //    + CF_TX_BY_SLOT in one atomic WriteBatch).
 
                             // 8. Auto-deploy contracts
                             genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
-                            genesis_initialize_contracts(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_initialize_contracts(
+                                &state_for_blocks,
+                                &gpk,
+                                "📡 [sync]",
+                                block.header.timestamp,
+                            );
                             genesis_create_trading_pairs(&state_for_blocks, &gpk, "📡 [sync]");
-                            genesis_seed_oracle(&state_for_blocks, &gpk, "📡 [sync]");
-                            genesis_seed_margin_prices(&state_for_blocks, &gpk);
-                            genesis_seed_analytics_prices(&state_for_blocks, &gpk);
+                            genesis_seed_oracle(
+                                &state_for_blocks,
+                                &gpk,
+                                "📡 [sync]",
+                                block.header.timestamp,
+                            );
+                            genesis_seed_margin_prices(
+                                &state_for_blocks,
+                                &gpk,
+                                block.header.timestamp,
+                            );
+                            genesis_seed_analytics_prices(
+                                &state_for_blocks,
+                                &gpk,
+                                block.header.timestamp,
+                            );
 
                             info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
@@ -6995,8 +7588,10 @@ async fn run_validator() {
                                 &state_for_blocks,
                                 pending_block.header.timestamp,
                             );
-                            if state_for_blocks.put_block(&pending_block).is_ok() {
-                                state_for_blocks.set_last_slot(pending_slot).ok();
+                            if state_for_blocks
+                                .put_block_atomic(&pending_block, None, None)
+                                .is_ok()
+                            {
                                 *last_block_time_for_blocks.lock().await =
                                     std::time::Instant::now();
                                 info!("✅ Applied pending block {}", pending_slot);
@@ -7255,8 +7850,10 @@ async fn run_validator() {
                         );
                         run_sltp_triggers_from_state(&state_for_blocks);
                         reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
-                        if state_for_blocks.put_block(&block).is_ok() {
-                            state_for_blocks.set_last_slot(block_slot).ok();
+                        if state_for_blocks
+                            .put_block_atomic(&block, None, None)
+                            .is_ok()
+                        {
                             *last_block_time_for_blocks.lock().await = std::time::Instant::now();
                             // FIX-FORK-1: Record ONLY after successful application
                             {
@@ -7406,8 +8003,10 @@ async fn run_validator() {
                                     &state_for_blocks,
                                     pending_block.header.timestamp,
                                 );
-                                if state_for_blocks.put_block(&pending_block).is_ok() {
-                                    state_for_blocks.set_last_slot(pending_slot).ok();
+                                if state_for_blocks
+                                    .put_block_atomic(&pending_block, None, None)
+                                    .is_ok()
+                                {
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     info!("✅ Applied pending block {}", pending_slot);
@@ -7652,14 +8251,7 @@ async fn run_validator() {
                             if !existing.commit_signatures.is_empty() {
                                 let vs = validator_set_for_blocks.read().await;
                                 let pool = stake_pool_for_blocks.read().await;
-                                let mut commit_valid = false;
-                                for try_round in 0..4u32 {
-                                    if existing.verify_commit(try_round, &vs, &pool).is_ok() {
-                                        commit_valid = true;
-                                        break;
-                                    }
-                                }
-                                if commit_valid {
+                                if existing.verify_commit(&vs, &pool).is_ok() {
                                     debug!(
                                         "🛡️  BFT FINALITY: Block {} has valid commit certificate — \
                                          rejecting fork choice replacement",
@@ -7727,8 +8319,8 @@ async fn run_validator() {
 
                             // PHASE-3: Finality-bound fork choice — NEVER revert a
                             // finalized block.  This is how Ethereum, Cosmos and every
-                            // production PoS chain works: once a block passes the
-                            // finality threshold (confirmed + FINALITY_DEPTH) it is
+                            // production PoS chain works: once a block has a valid
+                            // BFT supermajority commit it is
                             // irreversible.  Accepting a reorg past finality would
                             // break the safety guarantee for all downstream consumers
                             // (exchanges, bridges, wallets).
@@ -7776,8 +8368,10 @@ async fn run_validator() {
                                     &state_for_blocks,
                                     block.header.timestamp,
                                 );
-                                if state_for_blocks.put_block(&block).is_ok() {
-                                    state_for_blocks.set_last_slot(current_slot).ok();
+                                if state_for_blocks
+                                    .put_block_atomic(&block, None, None)
+                                    .is_ok()
+                                {
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     // FIX-FORK-1: Record after fork adoption
@@ -7854,8 +8448,10 @@ async fn run_validator() {
                                             &state_for_blocks,
                                             pending_block.header.timestamp,
                                         );
-                                        if state_for_blocks.put_block(&pending_block).is_ok() {
-                                            state_for_blocks.set_last_slot(pending_slot).ok();
+                                        if state_for_blocks
+                                            .put_block_atomic(&pending_block, None, None)
+                                            .is_ok()
+                                        {
                                             *last_block_time_for_blocks.lock().await =
                                                 std::time::Instant::now();
                                             info!(
@@ -7924,8 +8520,10 @@ async fn run_validator() {
                 // Do not reject based on local account balance here: peers can be
                 // briefly behind in state sync, and strict pre-checks cause mempool
                 // imbalance (one validator receives TXs, others drop them).
+                let fee_config = FeeConfig::default_from_constants();
+                let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
                 let mut pool = mempool_for_txs.lock().await;
-                if let Err(e) = pool.add_transaction(tx, BASE_FEE, 0) {
+                if let Err(e) = pool.add_transaction(tx, computed_fee, 0) {
                     info!("Mempool: {}", e);
                 }
             }
@@ -8040,11 +8638,18 @@ async fn run_validator() {
                                         }
                                     }
                                     if let Some(ref peer_mgr) = peer_mgr_for_slash {
+                                        let target_id = tx.hash().0;
                                         let slash_msg = moltchain_p2p::P2PMessage::new(
                                             moltchain_p2p::MessageType::Transaction(tx),
                                             p2p_config_for_slash_votes.listen_addr,
                                         );
-                                        peer_mgr.broadcast(slash_msg).await;
+                                        peer_mgr
+                                            .route_to_closest(
+                                                &target_id,
+                                                moltchain_p2p::NON_CONSENSUS_FANOUT,
+                                                slash_msg,
+                                            )
+                                            .await;
                                     }
                                     info!(
                                         "📝 Submitted SlashValidator tx for DoubleVote by {}",
@@ -8316,6 +8921,15 @@ async fn run_validator() {
                         .unwrap_or(None)
                         .map(|a| a.staked)
                         .unwrap_or(0);
+                    let local_tip = state_for_validators.get_last_slot().unwrap_or(0);
+                    let local_stake = state_for_validators
+                        .get_stake_pool()
+                        .ok()
+                        .and_then(|pool| {
+                            pool.get_stake(&announcement.pubkey)
+                                .map(|stake| stake.total_stake())
+                        })
+                        .unwrap_or(on_chain_stake);
 
                     // Height-based activation: new validators are added for
                     // P2P routing immediately but flagged pending_activation=true
@@ -8323,7 +8937,11 @@ async fn run_validator() {
                     // boundary after their on-chain stake is visible locally.
                     let current_slot = announcement.current_slot;
                     let current_epoch = moltchain_core::slot_to_epoch(current_slot);
-                    let pending = current_slot > 0; // Genesis validators activate immediately
+                    let pending = should_add_announced_validator_as_pending(
+                        local_tip,
+                        local_stake,
+                        min_validator_stake,
+                    );
                     let new_validator = ValidatorInfo {
                         pubkey: announcement.pubkey,
                         reputation: 100,
@@ -8764,16 +9382,41 @@ async fn run_validator() {
 
                 // Handle CheckpointMetaRequest
                 if request.is_meta_request {
-                    let (slot, state_root, total_accounts) =
-                        match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
-                            Some((meta, _)) => (meta.slot, meta.state_root, meta.total_accounts),
-                            None => (0, [0u8; 32], 0),
-                        };
+                    let (
+                        slot,
+                        state_root,
+                        total_accounts,
+                        checkpoint_header,
+                        commit_round,
+                        commit_signatures,
+                    ) = {
+                        let vs = validator_set_for_snapshot.read().await;
+                        let pool = stake_pool_for_snapshot.read().await;
+                        match latest_verified_checkpoint(
+                            &data_dir_for_snapshot,
+                            &state_for_snapshot_serve,
+                            &vs,
+                            &pool,
+                        ) {
+                            Some((meta, _, block)) => (
+                                meta.slot,
+                                meta.state_root,
+                                meta.total_accounts,
+                                Some(block.header.clone()),
+                                block.commit_round,
+                                block.commit_signatures.clone(),
+                            ),
+                            None => (0, [0u8; 32], 0, None, 0, Vec::new()),
+                        }
+                    };
                     let msg = P2PMessage::new(
                         MessageType::CheckpointMetaResponse {
                             slot,
                             state_root,
                             total_accounts,
+                            checkpoint_header,
+                            commit_round,
+                            commit_signatures,
                         },
                         local_addr_for_snapshot,
                     );
@@ -8789,29 +9432,28 @@ async fn run_validator() {
                 // Handle StateSnapshotRequest (chunked state transfer)
                 if let Some((ref category, chunk_index, chunk_size)) = request.state_snapshot_params
                 {
-                    // Find latest checkpoint and serve from it
-                    let checkpoint_store =
-                        match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
-                            Some((meta, path)) => match StateStore::open_checkpoint(&path) {
-                                Ok(store) => Some((store, meta)),
-                                Err(e) => {
-                                    warn!("⚠️  Failed to open checkpoint for snapshot: {}", e);
-                                    None
+                    // Serve state only from a finalized checkpoint backed by a verified commit.
+                    let checkpoint_store = {
+                        let vs = validator_set_for_snapshot.read().await;
+                        let pool = stake_pool_for_snapshot.read().await;
+                        match latest_verified_checkpoint(
+                            &data_dir_for_snapshot,
+                            &state_for_snapshot_serve,
+                            &vs,
+                            &pool,
+                        ) {
+                            Some((meta, path, _block)) => {
+                                match StateStore::open_checkpoint(&path) {
+                                    Ok(store) => Some((store, meta)),
+                                    Err(e) => {
+                                        warn!("⚠️  Failed to open checkpoint for snapshot: {}", e);
+                                        None
+                                    }
                                 }
-                            },
-                            None => {
-                                // No checkpoint — serve from live state (less ideal but functional)
-                                let meta = moltchain_core::CheckpointMeta {
-                                    slot: state_for_snapshot_serve.get_last_slot().unwrap_or(0),
-                                    state_root: state_for_snapshot_serve.compute_state_root().0,
-                                    created_at: 0,
-                                    total_accounts: state_for_snapshot_serve
-                                        .count_accounts()
-                                        .unwrap_or(0),
-                                };
-                                Some((state_for_snapshot_serve.clone(), meta))
                             }
-                        };
+                            None => None,
+                        }
+                    };
 
                     if let Some((store, meta)) = checkpoint_store {
                         // RPC-M06 FIX: Use cursor-paginated export so serving
@@ -8970,18 +9612,41 @@ async fn run_validator() {
                     }
                     SnapshotKind::StateCheckpoint => {
                         // Generic StateCheckpoint request — respond with meta
-                        let (slot, state_root, total_accounts) =
-                            match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
-                                Some((meta, _)) => {
-                                    (meta.slot, meta.state_root, meta.total_accounts)
-                                }
-                                None => (0, [0u8; 32], 0),
-                            };
+                        let (
+                            slot,
+                            state_root,
+                            total_accounts,
+                            checkpoint_header,
+                            commit_round,
+                            commit_signatures,
+                        ) = {
+                            let vs = validator_set_for_snapshot.read().await;
+                            let pool = stake_pool_for_snapshot.read().await;
+                            match latest_verified_checkpoint(
+                                &data_dir_for_snapshot,
+                                &state_for_snapshot_serve,
+                                &vs,
+                                &pool,
+                            ) {
+                                Some((meta, _, block)) => (
+                                    meta.slot,
+                                    meta.state_root,
+                                    meta.total_accounts,
+                                    Some(block.header.clone()),
+                                    block.commit_round,
+                                    block.commit_signatures.clone(),
+                                ),
+                                None => (0, [0u8; 32], 0, None, 0, Vec::new()),
+                            }
+                        };
                         P2PMessage::new(
                             MessageType::CheckpointMetaResponse {
                                 slot,
                                 state_root,
                                 total_accounts,
+                                checkpoint_header,
+                                commit_round,
+                                commit_signatures,
                             },
                             local_addr_for_snapshot,
                         )
@@ -9013,21 +9678,93 @@ async fn run_validator() {
             // Track state snapshot download progress per category
             let mut state_snap_progress: std::collections::HashMap<String, (u64, u64)> =
                 std::collections::HashMap::new(); // category -> (received_chunks, total_chunks)
+            let mut verified_checkpoint_anchors: std::collections::HashMap<
+                std::net::SocketAddr,
+                (u64, [u8; 32]),
+            > = std::collections::HashMap::new();
+            let mut active_snapshot_anchor: Option<(u64, [u8; 32])> = None;
 
             while let Some(response) = snapshot_response_rx.recv().await {
                 // Handle CheckpointMetaResponse
-                if let Some((slot, _state_root, total_accounts)) = response.checkpoint_meta {
+                if let Some((
+                    slot,
+                    state_root,
+                    total_accounts,
+                    checkpoint_header,
+                    commit_round,
+                    commit_signatures,
+                )) = response.checkpoint_meta
+                {
                     if slot > 0 && total_accounts > 0 {
+                        let anchor_verified = {
+                            let vs = validator_set_for_snapshot_apply.read().await;
+                            let pool = stake_pool_for_snapshot_apply.read().await;
+                            verify_checkpoint_anchor(
+                                slot,
+                                state_root,
+                                checkpoint_header.as_ref(),
+                                commit_round,
+                                &commit_signatures,
+                                &vs,
+                                &pool,
+                            )
+                        };
+                        if let Err(err) = anchor_verified {
+                            warn!(
+                                "⚠️  Rejecting checkpoint metadata from {}: {}",
+                                response.requester, err
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        }
+                        verified_checkpoint_anchors.insert(response.requester, (slot, state_root));
+                        let support = checkpoint_anchor_support(
+                            &verified_checkpoint_anchors,
+                            slot,
+                            state_root,
+                        );
                         info!(
-                            "📋 Peer {} has checkpoint at slot {} ({} accounts)",
-                            response.requester, slot, total_accounts
+                            "📋 Peer {} has checkpoint at slot {} ({} accounts, {} corroboration{})",
+                            response.requester,
+                            slot,
+                            total_accounts,
+                            support,
+                            if support == 1 { "" } else { "s" }
                         );
                         let local_slot = state_for_snapshot_apply.get_last_slot().unwrap_or(0);
                         if slot > local_slot + 100 {
+                            if support < MIN_WARP_CHECKPOINT_ANCHOR_PEERS {
+                                info!(
+                                    "⏳ Awaiting corroborated checkpoint anchor before warp snapshot download (have {}, need {})",
+                                    support,
+                                    MIN_WARP_CHECKPOINT_ANCHOR_PEERS,
+                                );
+                                continue;
+                            }
+
+                            if let Some((active_slot, active_root)) = active_snapshot_anchor {
+                                if active_slot != slot || active_root != state_root {
+                                    info!(
+                                        "⏳ Ignoring alternate checkpoint anchor from {} while snapshot sync is already pinned to slot {}",
+                                        response.requester,
+                                        active_slot,
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            if active_snapshot_anchor.is_some() {
+                                continue;
+                            }
+
+                            active_snapshot_anchor = Some((slot, state_root));
                             // Peer is significantly ahead — request state snapshot
                             info!(
-                                "🔄 Requesting state snapshot from {} (local slot {}, peer slot {})",
-                                response.requester, local_slot, slot
+                                "🔄 Requesting state snapshot from {} after {}-peer checkpoint corroboration (local slot {}, peer slot {})",
+                                response.requester,
+                                support,
+                                local_slot,
+                                slot
                             );
 
                             // P3-1: Send StateSnapshotRequest for each category
@@ -9053,20 +9790,27 @@ async fn run_validator() {
                             }
                         }
                     } else {
-                        warn!(
-                            "📋 Peer {} has no checkpoint available — falling back to block-range sync",
-                            response.requester
-                        );
+                        verified_checkpoint_anchors.remove(&response.requester);
+                        warn!("📋 Peer {} has no checkpoint available", response.requester);
                         // Warp sync is impossible without a checkpoint.  Complete the
                         // current sync batch and switch to HeaderOnly so the next
                         // should_sync() call can re-trigger with block-range requests.
                         let current_mode = sync_mgr_for_snapshot.get_sync_mode().await;
-                        if current_mode == crate::sync::SyncMode::Warp {
+                        let known_peers = peer_mgr_for_snapshot_apply.get_peer_infos().len();
+                        if current_mode == crate::sync::SyncMode::Warp
+                            && active_snapshot_anchor.is_none()
+                            && verified_checkpoint_anchors.is_empty()
+                            && known_peers <= 1
+                        {
                             sync_mgr_for_snapshot
                                 .set_sync_mode(crate::sync::SyncMode::HeaderOnly)
                                 .await;
                             sync_mgr_for_snapshot.complete_sync().await;
                             sync_mgr_for_snapshot.record_sync_failure().await;
+                        } else if current_mode == crate::sync::SyncMode::Warp {
+                            info!(
+                                "⏳ Waiting for corroborated checkpoint metadata from other peers before abandoning warp sync"
+                            );
                         }
                     }
                     continue;
@@ -9078,10 +9822,35 @@ async fn run_validator() {
                     chunk_index,
                     total_chunks,
                     snapshot_slot,
-                    _state_root,
+                    state_root,
                     ref entries_bytes,
                 )) = response.state_snapshot_data
                 {
+                    match verified_checkpoint_anchors.get(&response.requester) {
+                        Some((expected_slot, expected_root))
+                            if *expected_slot == snapshot_slot && *expected_root == state_root => {}
+                        Some((expected_slot, expected_root)) => {
+                            warn!(
+                                "⚠️  Rejecting {} snapshot chunk from {}: anchor mismatch (expected slot {} root {}, got slot {} root {})",
+                                category,
+                                response.requester,
+                                expected_slot,
+                                hex::encode(&expected_root[..8]),
+                                snapshot_slot,
+                                hex::encode(&state_root[..8]),
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        }
+                        None => {
+                            warn!(
+                                "⚠️  Rejecting {} snapshot chunk from {} without a verified checkpoint anchor",
+                                category, response.requester
+                            );
+                            peer_mgr_for_snapshot_apply.record_violation(&response.requester);
+                            continue;
+                        }
+                    }
                     info!(
                         "📥 Received {} snapshot chunk {}/{} from {} (slot {})",
                         category,
@@ -9176,7 +9945,7 @@ async fn run_validator() {
                         // P3-1: Verify the state root matches what the peer reported.
                         // Recompute our Merkle root from imported accounts and compare
                         // against the snapshot's advertised state_root.
-                        let expected_root = _state_root;
+                        let expected_root = state_root;
                         let computed_root =
                             state_for_snapshot_apply.compute_state_root_cold_start();
                         if computed_root.0 == expected_root {
@@ -9216,6 +9985,10 @@ async fn run_validator() {
                             ),
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
+                        active_snapshot_anchor = None;
+                        state_snap_progress.clear();
+                        verified_checkpoint_anchors.clear();
+                        verified_checkpoint_anchors.remove(&response.requester);
                     }
 
                     continue;
@@ -9257,22 +10030,31 @@ async fn run_validator() {
                                         {
                                             local_val.last_active_slot =
                                                 remote_val.last_active_slot;
-                                            local_val.stake = remote_val.stake;
+                                            let local_pool_stake = {
+                                                let pool =
+                                                    stake_pool_for_snapshot_apply.read().await;
+                                                load_local_stake_pool_amount(
+                                                    &pool,
+                                                    &remote_val.pubkey,
+                                                )
+                                            }
+                                            .unwrap_or(0);
+                                            local_val.stake = local_pool_stake;
                                         }
                                         merged_count += 1;
                                     } else {
-                                        // AUDIT-FIX 2.11 (revised): Verify unknown validators
-                                        // from snapshot by checking on-chain staked balance.
-                                        // Only add if they have sufficient on-chain stake,
-                                        // which proves they went through the proper bootstrap
-                                        // or self-funding process on another validator.
-                                        let has_verified_stake = state_for_snapshot_apply
-                                            .get_account(&remote_val.pubkey)
-                                            .unwrap_or(None)
-                                            .map(|a| a.staked >= min_validator_stake)
-                                            .unwrap_or(false);
+                                        // Unknown validators from peer snapshots are only
+                                        // eligible if the local node already has a canonical
+                                        // stake-pool entry for them. A plain staked account is
+                                        // not enough to confer validator eligibility.
+                                        let local_pool_stake = {
+                                            let pool = stake_pool_for_snapshot_apply.read().await;
+                                            load_local_stake_pool_amount(&pool, &remote_val.pubkey)
+                                        };
 
-                                        if has_verified_stake {
+                                        if let Some(local_pool_stake) = local_pool_stake
+                                            .filter(|stake| *stake >= min_validator_stake)
+                                        {
                                             // PHANTOM GUARD: Also check slot plausibility
                                             let our_tip = state_for_snapshot_apply
                                                 .get_last_slot()
@@ -9288,23 +10070,17 @@ async fn run_validator() {
                                                 );
                                                 continue;
                                             }
-                                            // On-chain stake verified — safe to add.
                                             // Do not trust remote pending_activation;
-                                            // newly imported validators must be
-                                            // activated locally at the next height
-                                            // boundary from committed stake.
-                                            let local_stake = state_for_snapshot_apply
-                                                .get_account(&remote_val.pubkey)
-                                                .unwrap_or(None)
-                                                .map(|account| account.staked)
-                                                .unwrap_or(remote_val.stake);
+                                            // newly imported validators must be activated
+                                            // locally at the next height boundary from the
+                                            // locally frozen stake pool.
                                             let new_val = ValidatorInfo {
                                                 pubkey: remote_val.pubkey,
                                                 reputation: 100,
                                                 blocks_proposed: remote_val.blocks_proposed,
                                                 votes_cast: remote_val.votes_cast,
                                                 correct_votes: remote_val.correct_votes,
-                                                stake: local_stake,
+                                                stake: local_pool_stake,
                                                 joined_slot: remote_val.joined_slot,
                                                 last_active_slot: remote_val.last_active_slot,
                                                 commission_rate: 500,
@@ -9314,14 +10090,15 @@ async fn run_validator() {
                                             vs.add_validator(new_val);
                                             merged_count += 1;
                                             info!(
-                                                "✅ Snapshot: added verified validator {} from peer {} (on-chain stake confirmed)",
+                                                "✅ Snapshot: added locally verified validator {} from peer {} (stake-pool entry confirmed)",
                                                 remote_val.pubkey.to_base58(),
                                                 response.requester
                                             );
                                         } else {
-                                            // No on-chain stake — reject (prevents injection)
+                                            // No local stake-pool entry — reject (prevents
+                                            // phantom validator admission from peer snapshots).
                                             warn!(
-                                                "⚠️  Snapshot: rejecting unverified validator {} from peer {} (no on-chain stake)",
+                                                "⚠️  Snapshot: rejecting unverified validator {} from peer {} (no local stake-pool entry)",
                                                 hex::encode(remote_val.pubkey.0),
                                                 response.requester
                                             );
@@ -9411,21 +10188,31 @@ async fn run_validator() {
                                     }
 
                                     // Verify on-chain stake before accepting entry
-                                    let has_on_chain_stake = state_for_snapshot_apply
-                                        .get_account(&entry_validator)
-                                        .unwrap_or(None)
-                                        .map(|a| a.staked >= min_validator_stake)
-                                        .unwrap_or(false);
-                                    if !has_on_chain_stake {
+                                    let Some(local_account_stake) = load_local_account_stake(
+                                        &state_for_snapshot_apply,
+                                        &entry_validator,
+                                    )
+                                    .filter(|stake| *stake >= min_validator_stake) else {
                                         debug!(
                                             "Snapshot: skipping stake entry for {} from {} (no on-chain stake)",
                                             entry.validator.to_base58(),
                                             response.requester
                                         );
                                         continue;
-                                    }
+                                    };
 
-                                    pool.upsert_stake_full(entry.clone());
+                                    let mut sanitized_entry = entry.clone();
+                                    sanitized_entry.amount = local_account_stake;
+                                    if let Some(local_entry) = pool.get_stake(&entry_validator) {
+                                        if local_entry.amount != local_account_stake {
+                                            pool.upsert_stake(
+                                                entry_validator,
+                                                local_account_stake,
+                                                0,
+                                            );
+                                        }
+                                    }
+                                    pool.upsert_stake_full(sanitized_entry);
                                     merged_count += 1;
                                     // NOTE: No bootstrap account creation here.
                                     // Validator accounts are created through consensus
@@ -9453,6 +10240,14 @@ async fn run_validator() {
                                     // Only mark ready if the merged pool is non-empty.
                                     if !merged_pool.stake_entries().is_empty() {
                                         snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                        activate_pending_validators_for_height(
+                                            &state_for_snapshot_apply,
+                                            &validator_set_for_snapshot_apply,
+                                            &merged_pool,
+                                            state_for_snapshot_apply.get_last_slot().unwrap_or(0),
+                                            min_validator_stake,
+                                        )
+                                        .await;
                                     } else {
                                         warn!("⚠️  Stake pool merge produced empty pool — snapshot not ready");
                                     }
@@ -9461,9 +10256,18 @@ async fn run_validator() {
                                 // Hashes match — local pool is already correct (from block replay).
                                 // Only mark ready if the local pool is non-empty.
                                 let pool_non_empty = !pool.stake_entries().is_empty();
+                                let snapshot_pool = pool.clone();
                                 drop(pool);
                                 if pool_non_empty {
                                     snapshot_sync_for_apply.lock().await.stake_pool = true;
+                                    activate_pending_validators_for_height(
+                                        &state_for_snapshot_apply,
+                                        &validator_set_for_snapshot_apply,
+                                        &snapshot_pool,
+                                        state_for_snapshot_apply.get_last_slot().unwrap_or(0),
+                                        min_validator_stake,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -9567,19 +10371,24 @@ async fn run_validator() {
 
             // Add to mempool
             {
+                let fee_config = FeeConfig::default_from_constants();
+                let computed_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
                 let mut pool = mempool_for_rpc_txs.lock().await;
-                if let Err(e) = pool.add_transaction(tx.clone(), BASE_FEE, reputation) {
+                if let Err(e) = pool.add_transaction(tx.clone(), computed_fee, reputation) {
                     info!("Mempool add failed: {}", e);
                 }
             }
 
             // Broadcast to P2P network
             if let Some(ref peer_mgr) = p2p_peer_manager_for_txs {
+                let target_id = tx.hash().0;
                 let msg = moltchain_p2p::P2PMessage::new(
                     moltchain_p2p::MessageType::Transaction(tx),
                     p2p_config_for_txs.listen_addr,
                 );
-                peer_mgr.broadcast(msg).await;
+                peer_mgr
+                    .route_to_closest(&target_id, moltchain_p2p::NON_CONSENSUS_FANOUT, msg)
+                    .await;
                 info!("📡 Broadcasted transaction to network");
             }
         }
@@ -9613,7 +10422,9 @@ async fn run_validator() {
 
     // Start WebSocket server FIRST so we can share its broadcasters with RPC
     let (ws_event_tx, ws_dex_broadcaster, ws_prediction_broadcaster, _ws_handle) =
-        match moltchain_rpc::start_ws_server(state_for_ws, ws_port).await {
+        match moltchain_rpc::start_ws_server(state_for_ws, ws_port, Some(finality_tracker.clone()))
+            .await
+        {
             Ok(result) => {
                 info!("✅ WebSocket server starting on ws://0.0.0.0:{}", ws_port);
                 result
@@ -9648,6 +10459,7 @@ async fn run_validator() {
             p2p_for_rpc,
             chain_id_for_rpc,
             network_id_for_rpc,
+            min_validator_stake,
             admin_token,
             finality_for_rpc,
             Some(dex_bc_for_rpc),
@@ -9663,11 +10475,11 @@ async fn run_validator() {
 
     // Start the oracle price feeder background task
     // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
-    // and writes to moltoracle + dex_analytics storage every 1s when prices change.
+    // and submits signed native oracle-attestation transactions.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
     // Can be disabled via MOLTCHAIN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
-    // Create shared oracle prices — block production reads these atomics
-    // to embed oracle prices in each block for consensus propagation.
+    // Create shared oracle prices — the feeder converts these observations
+    // into native oracle-attestation transactions.
     let shared_oracle_prices = SharedOraclePrices::new();
 
     let oracle_disabled = std::env::var("MOLTCHAIN_DISABLE_ORACLE")
@@ -9681,6 +10493,13 @@ async fn run_validator() {
             state_for_oracle,
             shared_oracle_prices.clone(),
             ws_dex_broadcaster.clone(),
+            OracleFeedTxContext {
+                mempool: mempool.clone(),
+                p2p_peer_manager: p2p_peer_manager.clone(),
+                p2p_config: p2p_config.clone(),
+                validator_seed: validator_keypair.to_seed(),
+                validator_pubkey,
+            },
         );
     }
 
@@ -10247,6 +11066,7 @@ async fn run_validator() {
                             transactions,
                             tx_fees_paid: cb.tx_fees_paid,
                             oracle_prices: cb.oracle_prices,
+                            commit_round: cb.commit_round,
                             commit_signatures: cb.commit_signatures,
                         };
                         info!(
@@ -11189,18 +12009,24 @@ async fn run_validator() {
     }
     parent_hash = get_parent_hash(&state);
 
+    let (mut height_vs, mut height_pool) = freeze_consensus_snapshot_for_height(
+        &state,
+        &validator_set,
+        &stake_pool,
+        start_height,
+        min_validator_stake,
+    )
+    .await;
+
     // If we're the proposer for round 0, build a block
     {
-        let vs = validator_set.read().await;
-        let pool = stake_pool.read().await;
-        if bft.is_proposer(&vs, &pool, &parent_hash) {
+        if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
             info!(
                 "👑 BFT: We are proposer for height={} round=0",
                 start_height
             );
             let mut mp = mempool.lock().await;
-            let oracle_snapshot = shared_oracle_prices.snapshot();
-            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &vs, &pool);
+            let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
             let (mut block, _processed_hashes) = block_producer::build_block(
                 &state,
                 &mut mp,
@@ -11208,15 +12034,13 @@ async fn run_validator() {
                 start_height,
                 parent_hash,
                 &validator_pubkey,
-                oracle_snapshot,
+                Vec::new(),
                 bft_ts,
             );
             drop(mp);
-            block.header.validators_hash = compute_validators_hash(&vs, &pool);
+            block.header.validators_hash = compute_validators_hash(&height_vs, &height_pool);
             block.sign(&validator_keypair);
-            let action = bft.create_proposal(block, &vs, &pool);
-            drop(pool);
-            drop(vs);
+            let action = bft.create_proposal(block, &height_vs, &height_pool);
             execute_consensus_actions(
                 action,
                 &bft,
@@ -11261,8 +12085,6 @@ async fn run_validator() {
                 _ => {}
             }
         } else {
-            drop(pool);
-            drop(vs);
             // Not proposer — schedule propose timeout
             timeout_handle = Some((
                 RoundStep::Propose,
@@ -11286,13 +12108,6 @@ async fn run_validator() {
     // the quorum denominator (e.g., 3→4 validators), making 2/3
     // unreachable and stalling the chain.
     //
-    // Epoch-based freezing: height_vs comes from consensus_set() which
-    // filters out validators with pending_activation=true. These pending
-    // validators are visible for P2P routing but excluded from consensus
-    // until the next epoch boundary activates them.
-    let mut height_vs: ValidatorSet = validator_set.read().await.consensus_set();
-    let mut height_pool: StakePool = stake_pool.read().await.clone();
-
     // ── Main BFT event loop ──
     loop {
         // Check if chain tip advanced (block received via sync/P2P outside of BFT)
@@ -11311,75 +12126,14 @@ async fn run_validator() {
             // Re-snapshot for the new height.
             // Consensus uses a height-frozen validator set. Newly discovered
             // validators are admitted only after a committed height boundary.
-            height_pool = stake_pool.read().await.clone();
-
-            // ── Epoch boundary: process pending validator changes ──
-            if moltchain_core::is_epoch_boundary(new_height) {
-                let epoch = moltchain_core::slot_to_epoch(new_height);
-                {
-                    let mut vs = validator_set.write().await;
-
-                    // 1. Process deregistrations (Remove changes from DeregisterValidator txs)
-                    if let Ok(pending) = state.get_pending_validator_changes(epoch) {
-                        for change in &pending {
-                            if change.change_type == moltchain_core::ValidatorChangeType::Remove {
-                                vs.remove_validator(&change.pubkey);
-                                if let Err(e) = state.delete_validator(&change.pubkey) {
-                                    warn!(
-                                        "⚠️  Failed to remove deregistered validator {} from state: {}",
-                                        change.pubkey.to_base58(), e
-                                    );
-                                }
-                                info!(
-                                    "🔒 Epoch {}: Deregistered validator {} (voluntary exit)",
-                                    epoch,
-                                    change.pubkey.to_base58()
-                                );
-                            }
-                        }
-                    }
-
-                    if let Err(e) = state.save_validator_set(&vs) {
-                        warn!(
-                            "⚠️  Failed to persist validator set after epoch transition: {}",
-                            e
-                        );
-                    }
-                }
-                if let Err(e) = state.clear_pending_validator_changes(epoch) {
-                    warn!(
-                        "⚠️  Failed to clear pending validator changes for epoch {}: {}",
-                        epoch, e
-                    );
-                }
-                activate_pending_validators_for_height(
-                    &state,
-                    &validator_set,
-                    &height_pool,
-                    new_height,
-                    min_validator_stake,
-                )
-                .await;
-                let mut frozen = validator_set.read().await.consensus_set();
-                frozen.set_frozen_epoch(epoch);
-                height_vs = frozen;
-                info!(
-                    "🧊 Epoch {}: Froze validator set ({} active, {} pending)",
-                    epoch,
-                    height_vs.validators().len(),
-                    validator_set.read().await.pending_count(),
-                );
-            } else {
-                activate_pending_validators_for_height(
-                    &state,
-                    &validator_set,
-                    &height_pool,
-                    new_height,
-                    min_validator_stake,
-                )
-                .await;
-                height_vs = validator_set.read().await.consensus_set();
-            }
+            (height_vs, height_pool) = freeze_consensus_snapshot_for_height(
+                &state,
+                &validator_set,
+                &stake_pool,
+                new_height,
+                min_validator_stake,
+            )
+            .await;
 
             // G-10 fix: Replay any buffered future messages for this height.
             // This is critical for fast catch-up — proposals and votes that
@@ -11419,7 +12173,6 @@ async fn run_validator() {
             if bft.is_proposer(&height_vs, &height_pool, &parent_hash) {
                 info!("👑 BFT: We are proposer for height={} round=0", new_height);
                 let mut mp = mempool.lock().await;
-                let oracle_snapshot = shared_oracle_prices.snapshot();
                 let bft_ts =
                     compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                 let (mut block, _) = block_producer::build_block(
@@ -11429,7 +12182,7 @@ async fn run_validator() {
                     new_height,
                     parent_hash,
                     &validator_pubkey,
-                    oracle_snapshot,
+                    Vec::new(),
                     bft_ts,
                 );
                 drop(mp);
@@ -11627,7 +12380,6 @@ async fn run_validator() {
                             bft.height, bft.round
                         );
                         let mut mp = mempool.lock().await;
-                        let oracle_snapshot = shared_oracle_prices.snapshot();
                         let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                         let (mut block, _) = block_producer::build_block(
                             &state,
@@ -11636,7 +12388,7 @@ async fn run_validator() {
                             bft.height,
                             parent_hash,
                             &validator_pubkey,
-                            oracle_snapshot,
+                            Vec::new(),
                             bft_ts,
                         );
                         drop(mp);
@@ -11732,7 +12484,6 @@ async fn run_validator() {
                                 bft.height, bft.round
                             );
                             let mut mp = mempool.lock().await;
-                            let oracle_snapshot = shared_oracle_prices.snapshot();
                             let bft_ts = compute_proposed_timestamp(&state, &parent_hash, &height_vs, &height_pool);
                             let (mut block, _) = block_producer::build_block(
                                 &state,
@@ -11741,7 +12492,7 @@ async fn run_validator() {
                                 bft.height,
                                 parent_hash,
                                 &validator_pubkey,
-                                oracle_snapshot,
+                                Vec::new(),
                                 bft_ts,
                             );
                             drop(mp);
@@ -11848,71 +12599,14 @@ async fn run_validator() {
                     // Consensus uses a height-frozen validator set. Newly
                     // discovered validators are admitted only after a
                     // committed height boundary.
-                    height_pool = stake_pool.read().await.clone();
-
-                    if moltchain_core::is_epoch_boundary(new_height) {
-                        let epoch = moltchain_core::slot_to_epoch(new_height);
-                        {
-                            let mut vs = validator_set.write().await;
-
-                            // Process deregistrations
-                            if let Ok(pending) = state.get_pending_validator_changes(epoch) {
-                                for change in &pending {
-                                    if change.change_type
-                                        == moltchain_core::ValidatorChangeType::Remove
-                                    {
-                                        vs.remove_validator(&change.pubkey);
-                                        state.delete_validator(&change.pubkey).ok();
-                                        info!(
-                                            "🔒 Epoch {}: Deregistered validator {} (voluntary exit)",
-                                            epoch,
-                                            change.pubkey.to_base58()
-                                        );
-                                    }
-                                }
-                            }
-
-                            if let Err(e) = state.save_validator_set(&vs) {
-                                warn!(
-                                    "⚠️  Failed to persist validator set after epoch transition: {}",
-                                    e
-                                );
-                            }
-                        }
-                        if let Err(e) = state.clear_pending_validator_changes(epoch) {
-                            warn!(
-                                "⚠️  Failed to clear pending validator changes for epoch {}: {}",
-                                epoch, e
-                            );
-                        }
-                        activate_pending_validators_for_height(
-                            &state,
-                            &validator_set,
-                            &height_pool,
-                            new_height,
-                            min_validator_stake,
-                        )
-                        .await;
-                        let mut frozen = validator_set.read().await.consensus_set();
-                        frozen.set_frozen_epoch(epoch);
-                        height_vs = frozen;
-                        info!(
-                            "🧊 Epoch {}: Froze validator set ({} active, {} pending)",
-                            epoch,
-                            height_vs.validators().len(),
-                            validator_set.read().await.pending_count(),
-                        );
-                    } else {
-                        activate_pending_validators_for_height(
-                            &state,
-                            &validator_set,
-                            &height_pool,
-                            new_height,
-                            min_validator_stake,
-                        )
-                        .await;
-                        height_vs = validator_set.read().await.consensus_set();
-                    }
+                    (height_vs, height_pool) = freeze_consensus_snapshot_for_height(
+                        &state,
+                        &validator_set,
+                        &stake_pool,
+                        new_height,
+                        min_validator_stake,
+                    )
+                    .await;
 
                     // G-10 fix: Replay buffered future messages
                     let replay_action = bft.drain_future_messages(&height_vs, &height_pool);
@@ -12186,8 +12880,13 @@ async fn execute_consensus_actions(
                 Pubkey(block.header.validator).to_base58(),
             );
 
-            // Store block + update last_slot atomically
-            if let Err(e) = state.put_block_atomic(&block) {
+            let confirmed_slot = height;
+            let finalized_slot = height;
+
+            // Store block, tip, and commitment metadata atomically.
+            if let Err(e) =
+                state.put_block_atomic(&block, Some(confirmed_slot), Some(finalized_slot))
+            {
                 error!("Failed to store block at height {}: {e}", height);
             }
 
@@ -12208,6 +12907,7 @@ async fn execute_consensus_actions(
 
             // Broadcast block to network (compact + full fallback)
             if let Some(ref pm) = p2p_peer_manager {
+                let target_id = block.hash().0;
                 let compact = moltchain_p2p::CompactBlock::from_block(&block);
                 let compact_msg = P2PMessage::new(
                     MessageType::CompactBlockMsg(compact),
@@ -12215,7 +12915,12 @@ async fn execute_consensus_actions(
                 );
                 let pm_c = pm.clone();
                 tokio::spawn(async move {
-                    pm_c.broadcast(compact_msg).await;
+                    pm_c.route_to_closest(
+                        &target_id,
+                        moltchain_p2p::NON_CONSENSUS_FANOUT,
+                        compact_msg,
+                    )
+                    .await;
                 });
             }
 
@@ -12249,10 +12954,7 @@ async fn execute_consensus_actions(
             // Finality tracking
             {
                 let finality = finality_tracker.clone();
-                if finality.mark_confirmed(height) {
-                    let _ = state.set_last_confirmed_slot(finality.confirmed_slot());
-                    let _ = state.set_last_finalized_slot(finality.finalized_slot());
-                }
+                let _ = finality.mark_confirmed(height);
             }
 
             // Remove included transactions from mempool
@@ -12379,7 +13081,7 @@ async fn execute_consensus_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_core::{Instruction, Message};
+    use moltchain_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
 
     // ── Helper builders ─────────────────────────────────────────────
 
@@ -12393,6 +13095,8 @@ mod tests {
                     data: vec![opcode],
                 }],
                 recent_blockhash: Hash([0u8; 32]),
+                compute_budget: None,
+                compute_unit_price: None,
             },
             tx_type: Default::default(),
         }
@@ -12404,6 +13108,8 @@ mod tests {
             message: Message {
                 instructions: vec![],
                 recent_blockhash: Hash([0u8; 32]),
+                compute_budget: None,
+                compute_unit_price: None,
             },
             tx_type: Default::default(),
         }
@@ -12424,8 +13130,436 @@ mod tests {
             transactions: txs,
             tx_fees_paid: vec![],
             oracle_prices: vec![],
+            commit_round: 0,
             commit_signatures: vec![],
         }
+    }
+
+    fn register_test_symbol(state: &StateStore, symbol: &str, program: Pubkey) {
+        state
+            .register_symbol(
+                symbol,
+                moltchain_core::state::SymbolRegistryEntry {
+                    symbol: symbol.to_string(),
+                    program,
+                    owner: Pubkey([9u8; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                    decimals: None,
+                },
+            )
+            .expect("register symbol");
+    }
+
+    #[test]
+    fn latest_verified_checkpoint_requires_finalized_committed_block() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let committed_state_root = state.compute_state_root();
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            committed_state_root,
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
+        block.commit_signatures = vec![moltchain_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        state.put_block(&block).expect("put block");
+
+        let checkpoint_path = temp_dir.path().join("checkpoints/slot-1");
+        std::fs::create_dir_all(
+            checkpoint_path
+                .parent()
+                .expect("checkpoint parent directory exists"),
+        )
+        .expect("create checkpoints dir");
+        state
+            .create_checkpoint(checkpoint_path.to_str().expect("checkpoint path"), 1)
+            .expect("create checkpoint");
+
+        assert!(
+            latest_verified_checkpoint(
+                temp_dir.path().to_str().expect("data dir"),
+                &state,
+                &validator_set,
+                &stake_pool,
+            )
+            .is_none(),
+            "checkpoint should not be exposed before slot is finalized"
+        );
+
+        state
+            .set_last_finalized_slot(1)
+            .expect("set finalized slot");
+
+        let (meta, _, _) = latest_verified_checkpoint(
+            temp_dir.path().to_str().expect("data dir"),
+            &state,
+            &validator_set,
+            &stake_pool,
+        )
+        .expect("checkpoint should be exposed once finalized and verified");
+
+        assert_eq!(meta.slot, 1);
+        assert_eq!(meta.state_root, block.header.state_root.0);
+    }
+
+    #[test]
+    fn verify_checkpoint_anchor_requires_signed_committed_header() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"checkpoint-anchor-root"),
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+        block.commit_round = 0;
+
+        let block_hash = block.hash();
+        let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
+        let commit_signatures = vec![moltchain_core::CommitSignature {
+            validator: validator_pk.0,
+            signature: validator_kp.sign(&signable),
+            timestamp: 1_000,
+        }];
+
+        assert!(verify_checkpoint_anchor(
+            1,
+            block.header.state_root.0,
+            Some(&block.header),
+            0,
+            &commit_signatures,
+            &validator_set,
+            &stake_pool,
+        )
+        .is_ok());
+
+        assert!(verify_checkpoint_anchor(
+            1,
+            block.header.state_root.0,
+            None,
+            0,
+            &commit_signatures,
+            &validator_set,
+            &stake_pool,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn verify_committed_block_authenticity_rejects_missing_commit_certificate() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"missing-commit-cert"),
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.sign(&validator_kp);
+
+        let result = verify_committed_block_authenticity(&block, &validator_set, &stake_pool);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "block 1 has no commit certificate".to_string()
+        );
+    }
+
+    #[test]
+    fn verify_block_validators_hash_rejects_mismatch() {
+        let validator_kp = Keypair::generate();
+        let validator_pk = validator_kp.pubkey();
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator_pk, 100_000_000_000_000, 0)
+            .expect("stake validator");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"validators-hash-root"),
+            validator_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.header.validators_hash = Hash([9u8; 32]);
+
+        let err =
+            verify_block_validators_hash(&block, &validator_set, &stake_pool, MIN_VALIDATOR_STAKE)
+                .expect_err("mismatched validators_hash must be rejected");
+        assert!(err.contains("validators_hash mismatch"));
+    }
+
+    #[test]
+    fn checkpoint_anchor_support_counts_matching_peers() {
+        let root_a = [1u8; 32];
+        let root_b = [2u8; 32];
+        let anchors = HashMap::from([
+            (
+                "127.0.0.1:7001".parse::<SocketAddr>().expect("socket addr"),
+                (42u64, root_a),
+            ),
+            (
+                "127.0.0.1:7002".parse::<SocketAddr>().expect("socket addr"),
+                (42u64, root_a),
+            ),
+            (
+                "127.0.0.1:7003".parse::<SocketAddr>().expect("socket addr"),
+                (42u64, root_b),
+            ),
+        ]);
+
+        assert_eq!(checkpoint_anchor_support(&anchors, 42, root_a), 2);
+        assert_eq!(checkpoint_anchor_support(&anchors, 42, root_b), 1);
+        assert_eq!(checkpoint_anchor_support(&anchors, 43, root_a), 0);
+    }
+
+    #[test]
+    fn verify_block_validators_hash_ignores_pending_discovery_validators() {
+        let active_pk = Pubkey([1u8; 32]);
+        let pending_pk = Pubkey([2u8; 32]);
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: active_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 100_000_000_000_000,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: pending_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(active_pk, 100_000_000_000_000, 0)
+            .expect("stake active validator");
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"validators-hash-active-only-root"),
+            active_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.header.validators_hash =
+            compute_validators_hash(&validator_set.consensus_set(), &stake_pool);
+
+        verify_block_validators_hash(&block, &validator_set, &stake_pool, MIN_VALIDATOR_STAKE)
+            .expect("pending discovery validators must not affect validators_hash verification");
+    }
+
+    #[test]
+    fn verify_block_validators_hash_accepts_locally_verified_pending_validators() {
+        let active_pk = Pubkey([1u8; 32]);
+        let joining_pk = Pubkey([2u8; 32]);
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: active_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: MIN_VALIDATOR_STAKE,
+            joined_slot: 0,
+            last_active_slot: 0,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: joining_pk,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            stake: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(active_pk, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake active validator");
+        stake_pool
+            .stake(joining_pk, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake joining validator");
+
+        let mut promoted_set = validator_set.clone();
+        promoted_set
+            .get_validator_mut(&joining_pk)
+            .expect("joining validator present")
+            .pending_activation = false;
+        promoted_set
+            .get_validator_mut(&joining_pk)
+            .expect("joining validator present")
+            .stake = MIN_VALIDATOR_STAKE;
+
+        let mut block = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::hash(b"validators-hash-promoted-root"),
+            active_pk.0,
+            Vec::new(),
+            1_000,
+        );
+        block.header.validators_hash =
+            compute_validators_hash(&promoted_set.consensus_set(), &stake_pool);
+
+        verify_block_validators_hash(&block, &validator_set, &stake_pool, MIN_VALIDATOR_STAKE)
+            .expect(
+                "locally verified pending validators must satisfy validators_hash verification",
+            );
+    }
+
+    #[test]
+    fn local_validator_is_pending_only_during_fresh_join() {
+        assert!(should_add_local_validator_as_pending(true, 0));
+        assert!(should_add_local_validator_as_pending(false, 10));
+        assert!(!should_add_local_validator_as_pending(false, 0));
+    }
+
+    #[test]
+    fn unsynced_announcements_stay_pending_without_local_stake() {
+        assert!(should_add_announced_validator_as_pending(
+            0,
+            0,
+            MIN_VALIDATOR_STAKE
+        ));
+        assert!(!should_add_announced_validator_as_pending(
+            0,
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+        ));
+        assert!(should_add_announced_validator_as_pending(
+            25,
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+        ));
     }
 
     // ── is_reward_or_debt_tx ────────────────────────────────────────
@@ -12452,6 +13586,137 @@ mod tests {
     fn non_system_program_is_not_reward() {
         let tx = make_tx_with_opcode(Pubkey([99u8; 32]), 2);
         assert!(!is_reward_or_debt_tx(&tx));
+    }
+
+    #[test]
+    fn apply_oracle_from_block_uses_consensus_prices_not_block_payload() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        register_test_symbol(&state, "ORACLE", Pubkey([1u8; 32]));
+        register_test_symbol(&state, "ANALYTICS", Pubkey([2u8; 32]));
+        register_test_symbol(&state, "DEX", Pubkey([3u8; 32]));
+
+        let genesis_key = Keypair::generate();
+        state
+            .set_genesis_pubkey(&genesis_key.pubkey())
+            .expect("put genesis pubkey");
+
+        state
+            .put_oracle_consensus_price("MOLT", GENESIS_MOLT_PRICE_8DEC, 8, 7, 3)
+            .expect("seed MOLT consensus price");
+        state
+            .put_oracle_consensus_price("wSOL", 8_250_000_000, 8, 7, 3)
+            .expect("seed wSOL consensus price");
+        state
+            .put_oracle_consensus_price("wETH", 200_000_000_000, 8, 7, 3)
+            .expect("seed wETH consensus price");
+        state
+            .put_oracle_consensus_price("wBNB", 61_000_000_000, 8, 7, 3)
+            .expect("seed wBNB consensus price");
+
+        let mut block = make_block_with_txs(vec![]);
+        block.header.slot = 8;
+        block.header.timestamp = 1_700_000_000;
+        block.oracle_prices = vec![("wSOL".to_string(), 123), ("wETH".to_string(), 456)];
+
+        apply_oracle_from_block(&state, &block);
+
+        let oracle_program = state
+            .get_symbol_registry("ORACLE")
+            .expect("get ORACLE registry")
+            .expect("ORACLE registry present")
+            .program;
+        let analytics_program = state
+            .get_symbol_registry("ANALYTICS")
+            .expect("get ANALYTICS registry")
+            .expect("ANALYTICS registry present")
+            .program;
+        let dex_program = state
+            .get_symbol_registry("DEX")
+            .expect("get DEX registry")
+            .expect("DEX registry present")
+            .program;
+
+        let oracle_wsol = state
+            .get_contract_storage(&oracle_program, b"price_wSOL")
+            .expect("read ORACLE storage")
+            .expect("wSOL mirrored feed present");
+        assert!(oracle_wsol.len() >= 8);
+        assert_eq!(
+            u64::from_le_bytes(oracle_wsol[0..8].try_into().expect("wSOL raw")),
+            8_250_000_000
+        );
+
+        let dex_band = state
+            .get_contract_storage(&dex_program, b"dex_band_2")
+            .expect("read DEX band")
+            .expect("DEX band present");
+        assert!(dex_band.len() >= 8);
+        assert_eq!(
+            u64::from_le_bytes(dex_band[0..8].try_into().expect("dex band raw")),
+            82_500_000_000
+        );
+
+        let analytics_price = state
+            .get_contract_storage(&analytics_program, b"ana_lp_2")
+            .expect("read analytics price")
+            .expect("analytics price present");
+        assert_eq!(
+            u64::from_le_bytes(analytics_price[0..8].try_into().expect("analytics raw")),
+            82_500_000_000
+        );
+    }
+
+    #[test]
+    fn build_oracle_attestation_tx_encodes_native_instruction() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_kp = Keypair::generate();
+        let validator = validator_kp.pubkey();
+
+        let mut stake_pool = StakePool::new();
+        stake_pool
+            .stake(validator, moltchain_core::consensus::MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator");
+        state.put_stake_pool(&stake_pool).expect("put stake pool");
+
+        let mut tip = Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::default(),
+            validator.0,
+            Vec::new(),
+            1,
+        );
+        tip.sign(&validator_kp);
+        state.put_block(&tip).expect("put tip block");
+        state.set_last_slot(1).expect("set last slot");
+
+        let tx = build_oracle_attestation_tx(
+            &state,
+            &validator_kp.to_seed(),
+            validator,
+            "wSOL",
+            8_250_000_000,
+            8,
+        )
+        .expect("build oracle tx");
+
+        assert_eq!(tx.message.instructions.len(), 1);
+        let ix = &tx.message.instructions[0];
+        assert_eq!(ix.program_id, CORE_SYSTEM_PROGRAM_ID);
+        assert_eq!(ix.accounts, vec![validator]);
+        assert_eq!(ix.data[0], 30);
+        assert_eq!(ix.data[1] as usize, 4);
+        assert_eq!(&ix.data[2..6], b"wSOL");
+        assert_eq!(
+            u64::from_le_bytes(ix.data[6..14].try_into().expect("oracle price bytes")),
+            8_250_000_000
+        );
+        assert_eq!(ix.data[14], 8);
+        assert_eq!(tx.message.recent_blockhash, tip.hash());
+        assert_eq!(tx.signatures.len(), 1);
     }
 
     #[test]
@@ -12541,31 +13806,337 @@ mod tests {
         assert_eq!(parsed.token_id, Some(7));
     }
 
+    #[test]
+    fn sync_observed_validator_info_does_not_infer_bootstrap_stake() {
+        let producer = Keypair::generate().pubkey();
+
+        let info = make_sync_observed_validator_info(producer, 42, 0, 3, false);
+
+        assert_eq!(info.pubkey, producer);
+        assert_eq!(info.stake, 0);
+        assert_eq!(info.blocks_proposed, 1);
+        assert_eq!(info.transactions_processed, 3);
+        assert_eq!(info.last_active_slot, 42);
+        assert!(!info.pending_activation);
+    }
+
+    #[test]
+    fn newer_snapshot_activity_does_not_replace_local_stake() {
+        let existing = ValidatorInfo {
+            pubkey: Keypair::generate().pubkey(),
+            stake: 123,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 5,
+            last_active_slot: 10,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        };
+
+        let remote = ValidatorInfo {
+            stake: BOOTSTRAP_GRANT_AMOUNT,
+            last_active_slot: 25,
+            ..existing.clone()
+        };
+
+        let mut merged = existing.clone();
+        if remote.last_active_slot > merged.last_active_slot {
+            merged.last_active_slot = remote.last_active_slot;
+        }
+
+        assert_eq!(merged.last_active_slot, 25);
+        assert_eq!(merged.stake, existing.stake);
+    }
+
+    #[test]
+    fn pending_validator_requires_height_pool_entry_for_activation() {
+        // A validator with NO on-chain staked balance and NO pool entry
+        // should remain pending with stake=0.
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_pubkey = Keypair::generate().pubkey();
+
+        // Account exists but has zero staked balance
+        let account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+        state
+            .put_account(&validator_pubkey, &account)
+            .expect("persist validator account");
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pubkey,
+            stake: MIN_VALIDATOR_STAKE,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(activate_pending_validators_for_height(
+            &state,
+            &validator_set,
+            &StakePool::new(),
+            2,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let reconciled = runtime.block_on(async {
+            validator_set
+                .read()
+                .await
+                .get_validator(&validator_pubkey)
+                .cloned()
+                .expect("validator exists")
+        });
+
+        assert!(reconciled.pending_activation);
+        assert_eq!(reconciled.stake, 0);
+    }
+
+    #[test]
+    fn pending_validator_waits_one_height_after_discovery() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_pubkey = Keypair::generate().pubkey();
+
+        let mut account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+        account.staked = MIN_VALIDATOR_STAKE;
+        state
+            .put_account(&validator_pubkey, &account)
+            .expect("persist validator account");
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pubkey,
+            stake: 0,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let mut height_pool = StakePool::new();
+        height_pool
+            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator in height pool");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(activate_pending_validators_for_height(
+            &state,
+            &validator_set,
+            &height_pool,
+            2,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let reconciled = runtime.block_on(async {
+            validator_set
+                .read()
+                .await
+                .get_validator(&validator_pubkey)
+                .cloned()
+                .expect("validator exists")
+        });
+
+        assert!(reconciled.pending_activation);
+        assert_eq!(reconciled.stake, MIN_VALIDATOR_STAKE);
+    }
+
+    #[test]
+    fn pending_validator_activates_after_next_height_boundary() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let validator_pubkey = Keypair::generate().pubkey();
+
+        let mut account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+        account.staked = MIN_VALIDATOR_STAKE;
+        state
+            .put_account(&validator_pubkey, &account)
+            .expect("persist validator account");
+
+        let mut validator_set = ValidatorSet::new();
+        validator_set.add_validator(ValidatorInfo {
+            pubkey: validator_pubkey,
+            stake: 0,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let validator_set = Arc::new(RwLock::new(validator_set));
+        let mut height_pool = StakePool::new();
+        height_pool
+            .stake(validator_pubkey, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake validator in height pool");
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(activate_pending_validators_for_height(
+            &state,
+            &validator_set,
+            &height_pool,
+            3,
+            MIN_VALIDATOR_STAKE,
+        ));
+
+        let reconciled = runtime.block_on(async {
+            validator_set
+                .read()
+                .await
+                .get_validator(&validator_pubkey)
+                .cloned()
+                .expect("validator exists")
+        });
+
+        assert!(!reconciled.pending_activation);
+        assert_eq!(reconciled.stake, MIN_VALIDATOR_STAKE);
+    }
+
+    #[test]
+    fn frozen_snapshot_can_change_round_zero_proposer_selection() {
+        let local_kp = Keypair::generate();
+        let pending_kp = Keypair::generate();
+        let local_pubkey = local_kp.pubkey();
+        let pending_pubkey = pending_kp.pubkey();
+
+        let mut live_vs = ValidatorSet::new();
+        live_vs.add_validator(ValidatorInfo {
+            pubkey: local_pubkey,
+            stake: MIN_VALIDATOR_STAKE,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: false,
+        });
+        live_vs.add_validator(ValidatorInfo {
+            pubkey: pending_pubkey,
+            stake: 1_000_000_000_000_000,
+            reputation: 100,
+            blocks_proposed: 0,
+            votes_cast: 0,
+            correct_votes: 0,
+            joined_slot: 1,
+            last_active_slot: 1,
+            commission_rate: 500,
+            transactions_processed: 0,
+            pending_activation: true,
+        });
+
+        let frozen_vs = live_vs.consensus_set();
+        assert_eq!(frozen_vs.validators().len(), 1);
+
+        let mut pool = StakePool::new();
+        pool.stake(local_pubkey, MIN_VALIDATOR_STAKE, 0)
+            .expect("stake local validator");
+        pool.stake(pending_pubkey, 1_000_000_000_000_000, 0)
+            .expect("stake pending validator");
+
+        let mut bft = crate::consensus::ConsensusEngine::new_with_min_stake(
+            Keypair::from_seed(local_kp.secret_key()),
+            local_pubkey,
+            MIN_VALIDATOR_STAKE,
+        );
+        bft.start_height(2);
+
+        let mut mismatch_found = false;
+        for seed in 0..4096u64 {
+            let parent_hash = Hash::hash(&seed.to_le_bytes());
+            assert!(
+                bft.is_proposer(&frozen_vs, &pool, &parent_hash),
+                "single-validator frozen snapshot must always elect the local validator"
+            );
+            if !bft.is_proposer(&live_vs, &pool, &parent_hash) {
+                mismatch_found = true;
+                break;
+            }
+        }
+
+        assert!(
+            mismatch_found,
+            "live and frozen validator views should be able to disagree on the round-0 proposer"
+        );
+    }
+
     // ── block_fee_at_index ──────────────────────────────────────────
 
     #[test]
-    fn block_fee_at_index_uses_precomputed() {
+    fn block_fee_at_index_prefers_local_exact_fee() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let fee_config = FeeConfig::default_from_constants();
         let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
         let mut block = make_block_with_txs(vec![tx]);
         block.tx_fees_paid = vec![500];
-        assert_eq!(block_fee_at_index(&block, 0, 999), 500);
+        assert_eq!(
+            block_fee_at_index(&state, &block, 0, &fee_config),
+            TxProcessor::compute_transaction_fee(&block.transactions[0], &fee_config)
+        );
     }
 
     #[test]
     fn block_fee_at_index_fallback_when_mismatched() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let fee_config = FeeConfig::default_from_constants();
         let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
         let mut block = make_block_with_txs(vec![tx]);
         block.tx_fees_paid = vec![]; // length mismatch
-        assert_eq!(block_fee_at_index(&block, 0, 999), 999);
+        assert_eq!(
+            block_fee_at_index(&state, &block, 0, &fee_config),
+            TxProcessor::compute_transaction_fee(&block.transactions[0], &fee_config)
+        );
     }
 
     #[test]
     fn block_fee_at_index_out_of_bounds() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let fee_config = FeeConfig::default_from_constants();
         let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
         let mut block = make_block_with_txs(vec![tx]);
         block.tx_fees_paid = vec![100];
-        // Index 5 out of bounds → fallback
-        assert_eq!(block_fee_at_index(&block, 5, 999), 999);
+        assert_eq!(block_fee_at_index(&state, &block, 5, &fee_config), 0);
+    }
+
+    #[test]
+    fn block_total_fees_paid_ignores_tampered_native_fee_vector() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+        let fee_config = FeeConfig::default_from_constants();
+        let tx = make_tx_with_opcode(CORE_SYSTEM_PROGRAM_ID, 0);
+        let mut block = make_block_with_txs(vec![tx]);
+        block.tx_fees_paid = vec![1];
+
+        assert_eq!(
+            block_total_fees_paid(&state, &block, &fee_config),
+            TxProcessor::compute_transaction_fee(&block.transactions[0], &fee_config)
+        );
     }
 
     // ── resolve_peer_list ───────────────────────────────────────────

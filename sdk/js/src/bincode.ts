@@ -12,6 +12,20 @@ function encodeU64LE(value: number | bigint): Uint8Array {
   return out;
 }
 
+function encodeU32LE(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, value, true);
+  return out;
+}
+
+function encodeOptionU64(value?: number): Uint8Array {
+  if (value === undefined || value === null) {
+    return new Uint8Array([0x00]); // None
+  }
+  return concat([new Uint8Array([0x01]), encodeU64LE(value)]); // Some(value)
+}
+
 function concat(parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const out = new Uint8Array(total);
@@ -75,7 +89,9 @@ export function encodeMessage(message: Message): Uint8Array {
   if (blockhash.length !== 32) {
     throw new Error('Blockhash must be 32 bytes');
   }
-  return concat([instructions, blockhash]);
+  const computeBudget = encodeOptionU64(message.computeBudget);
+  const computeUnitPrice = encodeOptionU64(message.computeUnitPrice);
+  return concat([instructions, blockhash, computeBudget, computeUnitPrice]);
 }
 
 export function encodeTransaction(transaction: Transaction): Uint8Array {
@@ -91,5 +107,7 @@ export function encodeTransaction(transaction: Transaction): Uint8Array {
   });
   const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
   const messageBytes = encodeMessage(transaction.message);
-  return concat([encodedSigs, messageBytes]);
+  // tx_type: Native=0 (u32 LE)
+  const txType = encodeU32LE(0);
+  return concat([encodedSigs, messageBytes, txType]);
 }

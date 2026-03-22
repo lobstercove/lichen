@@ -30,6 +30,13 @@ function concat(parts) {
 }
 
 // This is the FIXED encodeTransaction logic
+function encodeU32LE(value) {
+  const out = new Uint8Array(4);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, value, true);
+  return out;
+}
+
 function encodeTransaction(signatures, messageBytes) {
   const sigBytes = signatures.map(hexSig => {
     const raw = hexToBytes(hexSig);
@@ -39,7 +46,9 @@ function encodeTransaction(signatures, messageBytes) {
     return raw;
   });
   const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
-  return concat([encodedSigs, messageBytes]);
+  // tx_type: Native=0 (u32 LE)
+  const txType = encodeU32LE(0);
+  return concat([encodedSigs, messageBytes, txType]);
 }
 
 // Test 1: Correct signature encoding (Vec<[u8; 64]> format)
@@ -51,8 +60,8 @@ function encodeTransaction(signatures, messageBytes) {
 
   const result = encodeTransaction([sigHex], message);
 
-  // Expected: 8 (vec len) + 64 (sig) + 40 (message) = 112
-  assert.strictEqual(result.length, 112, `Expected 112, got ${result.length}`);
+  // Expected: 8 (vec len) + 64 (sig) + 40 (message) + 4 (tx_type) = 116
+  assert.strictEqual(result.length, 116, `Expected 116, got ${result.length}`);
 
   // Vec length = 1 (little-endian u64)
   const view = new DataView(result.buffer);
@@ -82,8 +91,8 @@ function encodeTransaction(signatures, messageBytes) {
   const sig1 = '00'.repeat(64);
   const sig2 = 'ff'.repeat(64);
   const result = encodeTransaction([sig1, sig2], new Uint8Array(10));
-  // 8 + 64 + 64 + 10 = 146
-  assert.strictEqual(result.length, 146, `Expected 146, got ${result.length}`);
+  // 8 + 64 + 64 + 10 + 4 = 150
+  assert.strictEqual(result.length, 150, `Expected 150, got ${result.length}`);
   const view = new DataView(result.buffer);
   const vecLen = Number(view.getBigUint64(0, true));
   assert.strictEqual(vecLen, 2, `Expected vec len 2, got ${vecLen}`);

@@ -14,6 +14,17 @@
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        /* Page-specific: Contract reference table + sidebar layout */
+        .contract-sidebar {
+            position: sticky;
+            top: 5rem;
+        }
+
+        .contract-table th {
+            white-space: nowrap;
+        }
+    </style>
 </head>
 
 <body class="contract-ref-body">
@@ -1146,10 +1157,11 @@
                             fns</span><span class="meta-chip">16.4 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Decentralized oracle providing three services: <strong>price feeds</strong> (authorized feeders
+                    <p>Oracle contract providing three services: <strong>price feeds</strong> (owner-authorized feeders
                         submit prices per asset, max 1h staleness), <strong>verifiable random function (VRF)</strong>
                         (commit-reveal scheme for provably fair randomness), and <strong>data attestations</strong>
-                        (arbitrary signed data with on-chain verification). Critical for DeFi price discovery.</p>
+                        (arbitrary signed data with on-chain verification). It complements, rather than replaces, the
+                        native validator oracle used for consensus price surfaces.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -2530,7 +2542,7 @@
                     GitHub</a>
                 <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
                 <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
             <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
         </div>

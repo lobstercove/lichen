@@ -17,6 +17,15 @@ pub struct Instruction {
     pub data: Vec<u8>,
 }
 
+/// Default compute unit budget per transaction (200,000 CU).
+/// Users can request up to [`MAX_COMPUTE_BUDGET`] by setting
+/// `Message::compute_budget`.
+pub const DEFAULT_COMPUTE_BUDGET: u64 = 200_000;
+
+/// Maximum compute unit budget a transaction may request (1,400,000 CU).
+/// Mirrors Solana's per-transaction CU ceiling.
+pub const MAX_COMPUTE_BUDGET: u64 = 1_400_000;
+
 /// Transaction message (before signing)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -25,6 +34,21 @@ pub struct Message {
 
     /// Recent blockhash (for replay protection)
     pub recent_blockhash: Hash,
+
+    /// Compute unit budget for this transaction.
+    /// If `None` or `0`, defaults to [`DEFAULT_COMPUTE_BUDGET`] (200,000 CU).
+    /// Maximum allowed: [`MAX_COMPUTE_BUDGET`] (1,400,000 CU).
+    /// If execution exceeds this budget the transaction reverts and the
+    /// base fee is still charged (anti-DoS).
+    #[serde(default)]
+    pub compute_budget: Option<u64>,
+
+    /// Price per compute unit in micro-shells (μshells).
+    /// Priority fee = `effective_compute_budget × compute_unit_price`.
+    /// Set to `0` (default) for no priority fee. Validators order
+    /// transactions by effective CU price for block inclusion.
+    #[serde(default)]
+    pub compute_unit_price: Option<u64>,
 }
 
 impl Message {
@@ -32,7 +56,22 @@ impl Message {
         Message {
             instructions,
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         }
+    }
+
+    /// Effective compute budget — resolves `None`/`0` to the protocol default.
+    pub fn effective_compute_budget(&self) -> u64 {
+        match self.compute_budget {
+            Some(b) if b > 0 => b.min(MAX_COMPUTE_BUDGET),
+            _ => DEFAULT_COMPUTE_BUDGET,
+        }
+    }
+
+    /// Effective compute unit price in micro-shells.
+    pub fn effective_compute_unit_price(&self) -> u64 {
+        self.compute_unit_price.unwrap_or(0)
     }
 
     /// Serialize for signing.
@@ -620,6 +659,8 @@ mod tests {
         let msg = Message {
             instructions: vec![ix],
             recent_blockhash: crate::Hash::new([0xAA; 32]),
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let bytes = msg.serialize();
@@ -635,13 +676,14 @@ mod tests {
         //   data: Vec<u8> → u64_le(4) + [0x00, 0x01, 0x02, 0x03]
         // recent_blockhash: [u8; 32] → 32 raw bytes (0xAA repeated)
         let expected = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             "0100000000000000", // Vec<Ix> len = 1
             "0101010101010101010101010101010101010101010101010101010101010101", // program_id
             "0100000000000000", // Vec<Pubkey> len = 1
             "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
             "040000000000000000010203", // Vec<u8> len=4 + data
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
+            "0000",             // compute_budget: None (0x00) + compute_unit_price: None (0x00)
         );
 
         assert_eq!(
@@ -666,6 +708,8 @@ mod tests {
         let msg = Message {
             instructions: vec![ix],
             recent_blockhash: crate::Hash::new([0xAA; 32]),
+            compute_budget: None,
+            compute_unit_price: None,
         };
         let sig: [u8; 64] = [0xBB; 64];
         let tx = Transaction {
@@ -679,7 +723,7 @@ mod tests {
 
         let sig_hex = "bb".repeat(64); // 64 bytes = 128 hex chars
         let expected = format!(
-            "{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}",
             "0100000000000000", // Vec<[u8;64]> len = 1
             sig_hex,            // sig (64 bytes)
             // -- Message bytes (same as golden vector above) --
@@ -689,6 +733,7 @@ mod tests {
             "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
             "040000000000000000010203", // Vec<u8> len=4 + data
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
+            "0000",             // compute_budget: None + compute_unit_price: None
             "00000000",         // tx_type: Native (enum variant 0)
         );
 

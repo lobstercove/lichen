@@ -1,8 +1,8 @@
 //! MoltChain Genesis — standalone one-time genesis block creator.
 //!
 //! Usage:
-//!   moltchain-genesis --network testnet --db-path /var/lib/moltchain/state-testnet
-//!   moltchain-genesis --network mainnet --db-path /var/lib/moltchain/state-mainnet
+//!   moltchain-genesis --prepare-wallet --network testnet --output-dir ./artifacts/testnet
+//!   moltchain-genesis --network testnet --wallet-file ./artifacts/testnet/genesis-wallet.json --initial-validator <base58> --db-path /var/lib/moltchain/state-testnet
 
 use moltchain_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
@@ -24,6 +24,204 @@ const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
 const TREASURY_RESERVE_MOLT: u64 = 100_000_000;
 
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|pos| args.get(pos + 1))
+        .map(|value| value.as_str())
+}
+
+fn repeated_flag_values(args: &[String], flag: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == flag {
+            if let Some(value) = args.get(index + 1) {
+                values.push(value.clone());
+            }
+            index += 2;
+            continue;
+        }
+        index += 1;
+    }
+    values
+}
+
+fn parse_genesis_timestamp(genesis_time: &str) -> Result<u64, String> {
+    chrono::DateTime::parse_from_rfc3339(genesis_time)
+        .map(|dt| dt.timestamp() as u64)
+        .map_err(|err| format!("Failed to parse genesis_time '{}': {}", genesis_time, err))
+}
+
+fn load_hex_keypair(path: &std::path::Path) -> Result<Keypair, String> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read keypair file {}: {}", path.display(), err))?;
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|err| format!("Failed to parse keypair file {}: {}", path.display(), err))?;
+    let hex_seed = value
+        .get("secret_key")
+        .and_then(|entry| entry.as_str())
+        .or_else(|| value.get("seed").and_then(|entry| entry.as_str()))
+        .ok_or_else(|| {
+            format!(
+                "Keypair file {} must contain 'secret_key' or 'seed' hex bytes",
+                path.display()
+            )
+        })?;
+    let seed_bytes = hex::decode(hex_seed)
+        .map_err(|err| format!("Invalid hex seed in {}: {}", path.display(), err))?;
+    if seed_bytes.len() != 32 {
+        return Err(format!(
+            "Keypair file {} has invalid seed length {} (expected 32 bytes)",
+            path.display(),
+            seed_bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&seed_bytes);
+    Ok(Keypair::from_seed(&seed))
+}
+
+fn resolve_artifact_path(base_file: &std::path::Path, relative_or_absolute: &str) -> PathBuf {
+    let candidate = PathBuf::from(relative_or_absolute);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    base_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(candidate)
+}
+
+fn copy_optional_artifact(
+    source_wallet_path: &std::path::Path,
+    target_root: &std::path::Path,
+    relative_or_absolute: Option<&str>,
+) -> Result<(), String> {
+    let Some(artifact_path) = relative_or_absolute else {
+        return Ok(());
+    };
+
+    let source_path = resolve_artifact_path(source_wallet_path, artifact_path);
+    if !source_path.exists() {
+        return Ok(());
+    }
+
+    let target_path = target_root.join(artifact_path);
+
+    // Skip copy if source and target resolve to the same file to avoid
+    // truncating the file to 0 bytes (std::fs::copy opens target for
+    // write-truncate before reading the source).
+    if let (Ok(src_canon), Ok(tgt_canon)) = (source_path.canonicalize(), target_path.canonicalize())
+    {
+        if src_canon == tgt_canon {
+            return Ok(());
+        }
+    }
+
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create artifact directory {}: {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+    std::fs::copy(&source_path, &target_path).map_err(|err| {
+        format!(
+            "Failed to copy artifact {} -> {}: {}",
+            source_path.display(),
+            target_path.display(),
+            err
+        )
+    })?;
+    Ok(())
+}
+
+fn explicit_initial_validators(
+    args: &[String],
+    genesis_config: &GenesisConfig,
+) -> Result<Vec<Pubkey>, String> {
+    let bootstrap_grant_molt = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000;
+    let mut validators = Vec::new();
+
+    for validator in &genesis_config.initial_validators {
+        if validator.stake_molt != bootstrap_grant_molt {
+            return Err(format!(
+                "Genesis validator {} requests {} MOLT, but slot-0 registration is fixed at {} MOLT",
+                validator.pubkey, validator.stake_molt, bootstrap_grant_molt
+            ));
+        }
+        let pubkey = Pubkey::from_base58(&validator.pubkey).map_err(|err| {
+            format!(
+                "Invalid initial validator pubkey {}: {}",
+                validator.pubkey, err
+            )
+        })?;
+        if !validators.contains(&pubkey) {
+            validators.push(pubkey);
+        }
+    }
+
+    for raw in repeated_flag_values(args, "--initial-validator") {
+        let pubkey = Pubkey::from_base58(&raw)
+            .map_err(|err| format!("Invalid --initial-validator '{}': {}", raw, err))?;
+        if !validators.contains(&pubkey) {
+            validators.push(pubkey);
+        }
+    }
+
+    Ok(validators)
+}
+
+fn prepare_wallet_artifacts(args: &[String], genesis_config: &GenesisConfig) -> Result<(), String> {
+    let output_dir = flag_value(args, "--output-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(format!("./genesis-artifacts-{}", genesis_config.chain_id))
+        });
+    let keys_dir = output_dir.join("genesis-keys");
+    std::fs::create_dir_all(&keys_dir)
+        .map_err(|err| format!("Failed to create {}: {}", keys_dir.display(), err))?;
+
+    let is_mainnet = genesis_config.chain_id.contains("mainnet");
+    let default_signers = if is_mainnet { 5usize } else { 3usize };
+    let signer_count = flag_value(args, "--signers")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default_signers);
+
+    let (wallet, keypairs, distribution_keypairs) =
+        GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count)?;
+    let wallet_path = output_dir.join("genesis-wallet.json");
+    wallet.save(&wallet_path)?;
+    let keypair_paths =
+        GenesisWallet::save_keypairs(&keypairs, &keys_dir, &genesis_config.chain_id)?;
+    let distribution_paths = GenesisWallet::save_distribution_keypairs(
+        wallet.distribution_wallets.as_deref().unwrap_or(&[]),
+        &distribution_keypairs,
+        &keys_dir,
+        &genesis_config.chain_id,
+    )?;
+    if let Some(treasury_keypair) = distribution_keypairs.first() {
+        GenesisWallet::save_treasury_keypair(
+            treasury_keypair,
+            &keys_dir,
+            &genesis_config.chain_id,
+        )?;
+    }
+
+    info!("═══════════════════════════════════════════════════════");
+    info!("  Prepared deterministic genesis artifacts");
+    info!("═══════════════════════════════════════════════════════");
+    info!("  Wallet: {}", wallet_path.display());
+    info!("  Signers: {}", keypair_paths.len());
+    info!("  Distribution wallets: {}", distribution_paths.len());
+    info!("  Output dir: {}", output_dir.display());
+    info!("═══════════════════════════════════════════════════════");
+    Ok(())
+}
+
 fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -35,19 +233,12 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
 
-    // Parse --network
-    let network = args
-        .iter()
-        .position(|a| a == "--network")
-        .and_then(|pos| args.get(pos + 1))
-        .map(|s| s.as_str());
-
-    // Parse --db-path
-    let db_path = args
-        .iter()
-        .position(|a| a == "--db-path")
-        .and_then(|pos| args.get(pos + 1))
-        .cloned();
+    let network = flag_value(&args, "--network");
+    let db_path = flag_value(&args, "--db-path").map(str::to_string);
+    let wallet_file = flag_value(&args, "--wallet-file").map(PathBuf::from);
+    let genesis_keypair_file = flag_value(&args, "--genesis-keypair").map(PathBuf::from);
+    let prepare_wallet = args.iter().any(|arg| arg == "--prepare-wallet");
+    let config_path = flag_value(&args, "--config").map(PathBuf::from);
 
     let network_str = match network {
         Some(n @ ("mainnet" | "testnet")) => n,
@@ -59,7 +250,83 @@ fn main() {
             std::process::exit(1);
         }
         None => {
-            error!("Usage: moltchain-genesis --network <mainnet|testnet> [--db-path <path>]");
+            error!("Usage: moltchain-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--db-path <path>] [--config <path>]");
+            std::process::exit(1);
+        }
+    };
+
+    let genesis_config = if let Some(ref path) = config_path {
+        match GenesisConfig::from_file(path) {
+            Ok(config) => config,
+            Err(err) => {
+                error!("Failed to load genesis config {}: {}", path.display(), err);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match network_str {
+            "mainnet" => GenesisConfig::default_mainnet(),
+            _ => GenesisConfig::default_testnet(),
+        }
+    };
+
+    if prepare_wallet {
+        if let Err(err) = prepare_wallet_artifacts(&args, &genesis_config) {
+            error!("{}", err);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let wallet_file = match wallet_file {
+        Some(path) => path,
+        None => {
+            error!("Genesis creation now requires --wallet-file <path>. Use --prepare-wallet to generate artifacts explicitly.");
+            std::process::exit(1);
+        }
+    };
+
+    let genesis_timestamp = match parse_genesis_timestamp(&genesis_config.genesis_time) {
+        Ok(timestamp) => timestamp,
+        Err(err) => {
+            error!("{}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let wallet = match GenesisWallet::load(&wallet_file) {
+        Ok(wallet) => wallet,
+        Err(err) => {
+            error!("Failed to load wallet {}: {}", wallet_file.display(), err);
+            std::process::exit(1);
+        }
+    };
+    if wallet.chain_id != genesis_config.chain_id {
+        error!(
+            "Wallet chain_id {} does not match genesis chain_id {}",
+            wallet.chain_id, genesis_config.chain_id
+        );
+        std::process::exit(1);
+    }
+
+    let genesis_signer_path = genesis_keypair_file
+        .unwrap_or_else(|| resolve_artifact_path(&wallet_file, &wallet.keypair_path));
+    let genesis_signer = match load_hex_keypair(&genesis_signer_path) {
+        Ok(keypair) => keypair,
+        Err(err) => {
+            error!("{}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let initial_validators = match explicit_initial_validators(&args, &genesis_config) {
+        Ok(validators) if !validators.is_empty() => validators,
+        Ok(_) => {
+            error!("Genesis creation requires at least one explicit validator. Pass --initial-validator <base58> or provide initial_validators in --config.");
+            std::process::exit(1);
+        }
+        Err(err) => {
+            error!("{}", err);
             std::process::exit(1);
         }
     };
@@ -99,55 +366,16 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Load genesis configuration
-    let genesis_config = match network_str {
-        "mainnet" => GenesisConfig::default_mainnet(),
-        _ => GenesisConfig::default_testnet(),
-    };
     info!("Chain ID: {}", genesis_config.chain_id);
     info!("Total supply: {} MOLT", genesis_config.total_supply_molt());
+    info!("Genesis time: {}", genesis_config.genesis_time);
 
-    // Genesis wallet + keypairs directory
     let genesis_wallet_path = db_dir_path.join("genesis-wallet.json");
     let genesis_keypairs_dir = db_dir_path.join("genesis-keys");
     std::fs::create_dir_all(&genesis_keypairs_dir).ok();
 
-    // ════════════════════════════════════════════════════════════════════
-    // GENERATE GENESIS WALLET
-    // ════════════════════════════════════════════════════════════════════
-    info!("🔐 Generating FRESH genesis wallet (DYNAMIC GENERATION)");
-
-    let is_mainnet = genesis_config.chain_id.contains("mainnet");
-    let (signer_count, threshold_desc) = if is_mainnet {
-        (5, "3/5 production multi-sig")
-    } else {
-        (3, "2/3 testnet multi-sig")
-    };
-
-    info!("  🔐 Creating {} setup...", threshold_desc);
-
-    let (wallet, keypairs, distribution_keypairs) =
-        match GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count) {
-            Ok(result) => result,
-            Err(err) => {
-                error!("Failed to generate genesis wallet: {}", err);
-                std::process::exit(1);
-            }
-        };
-
-    let genesis_signer = match keypairs.first() {
-        Some(kp) => Keypair::from_seed(&kp.to_seed()),
-        None => {
-            error!("No keypairs generated");
-            std::process::exit(1);
-        }
-    };
-
     let genesis_pubkey = wallet.pubkey;
-    info!(
-        "  ✓ Generated genesis pubkey: {}",
-        genesis_pubkey.to_base58()
-    );
+    info!("  ✓ Loaded genesis pubkey: {}", genesis_pubkey.to_base58());
 
     if let Some(ref multisig) = wallet.multisig {
         info!("  ✓ Multi-sig configuration:");
@@ -180,73 +408,56 @@ fn main() {
         }
     }
 
-    // Save wallet info
     if let Err(err) = wallet.save(&genesis_wallet_path) {
         error!("Failed to save genesis wallet: {}", err);
         std::process::exit(1);
     }
     info!("  ✓ Wallet info saved: {}", genesis_wallet_path.display());
-
-    // Save signer keypairs
-    let keypair_paths = match GenesisWallet::save_keypairs(
-        &keypairs,
-        &genesis_keypairs_dir,
-        &genesis_config.chain_id,
+    if let Err(err) = copy_optional_artifact(&wallet_file, &db_dir_path, Some(&wallet.keypair_path))
+    {
+        error!("{}", err);
+        std::process::exit(1);
+    }
+    if let Err(err) = copy_optional_artifact(
+        &wallet_file,
+        &db_dir_path,
+        wallet.treasury_keypair_path.as_deref(),
     ) {
-        Ok(paths) => paths,
-        Err(err) => {
-            error!("Failed to save keypairs: {}", err);
+        error!("{}", err);
+        std::process::exit(1);
+    }
+    let effective_genesis_config_path = db_dir_path.join("genesis.json");
+    if let Some(ref config_path) = config_path {
+        if let Err(err) = std::fs::copy(config_path, &effective_genesis_config_path) {
+            error!(
+                "Failed to copy genesis config {} -> {}: {}",
+                config_path.display(),
+                effective_genesis_config_path.display(),
+                err
+            );
             std::process::exit(1);
         }
-    };
-
-    // Save distribution keypairs
-    let dist_keypair_paths = match GenesisWallet::save_distribution_keypairs(
-        wallet.distribution_wallets.as_deref().unwrap_or(&[]),
-        &distribution_keypairs,
-        &genesis_keypairs_dir,
-        &genesis_config.chain_id,
-    ) {
-        Ok(paths) => paths,
-        Err(err) => {
-            error!("Failed to save distribution keypairs: {}", err);
+    } else {
+        let json = match serde_json::to_string_pretty(&genesis_config) {
+            Ok(json) => json,
+            Err(err) => {
+                error!("Failed to serialize effective genesis config: {}", err);
+                std::process::exit(1);
+            }
+        };
+        if let Err(err) = std::fs::write(&effective_genesis_config_path, json) {
+            error!(
+                "Failed to write effective genesis config {}: {}",
+                effective_genesis_config_path.display(),
+                err
+            );
             std::process::exit(1);
         }
-    };
-
-    // Save treasury keypair separately
-    let treasury_seed_keypair = match distribution_keypairs.first() {
-        Some(keypair) => keypair,
-        None => {
-            error!("Missing distribution keypair for treasury");
-            std::process::exit(1);
-        }
-    };
-    let treasury_keypair_path = match GenesisWallet::save_treasury_keypair(
-        treasury_seed_keypair,
-        &genesis_keypairs_dir,
-        &genesis_config.chain_id,
-    ) {
-        Ok(path) => path,
-        Err(err) => {
-            error!("Failed to save treasury keypair: {}", err);
-            std::process::exit(1);
-        }
-    };
-
-    info!("  ✓ Saved {} signer keypair(s):", keypair_paths.len());
-    for path in &keypair_paths {
-        info!("    - {}", path);
     }
     info!(
-        "  ✓ Saved {} distribution keypair(s):",
-        dist_keypair_paths.len()
+        "  ✓ Genesis config saved: {}",
+        effective_genesis_config_path.display()
     );
-    for path in &dist_keypair_paths {
-        info!("    - {}", path);
-    }
-    info!("  ✓ Treasury keypair: {}", treasury_keypair_path);
-    info!("  ⚠️  KEEP THESE FILES SECURE - THEY CONTROL THE GENESIS TREASURY");
 
     // ════════════════════════════════════════════════════════════════════
     // CREATE GENESIS STATE
@@ -482,55 +693,6 @@ fn main() {
             }
         }
 
-        // Auto-generate & fund faucet keypair
-        let faucet_fund_molt: u64 = 100_000;
-        let faucet_fund_shells = Account::molt_to_shells(faucet_fund_molt);
-        let faucet_kp = Keypair::generate();
-        let faucet_pubkey = faucet_kp.pubkey();
-        let faucet_keypair_path =
-            genesis_keypairs_dir.join(format!("faucet-{}.json", genesis_config.chain_id));
-        let faucet_seed = faucet_kp.to_seed();
-        let faucet_seed_json = serde_json::json!({
-            "seed": hex::encode(faucet_seed),
-            "pubkey": faucet_pubkey.to_base58(),
-            "role": "faucet"
-        });
-        if let Err(e) = std::fs::write(
-            &faucet_keypair_path,
-            serde_json::to_string_pretty(&faucet_seed_json).unwrap_or_default(),
-        ) {
-            error!("Failed to save faucet keypair: {e}");
-        }
-        if let Some(treasury_dw) = dist_wallets
-            .iter()
-            .find(|dw| dw.role == "validator_rewards")
-        {
-            let mut treasury_acct = state
-                .get_account(&treasury_dw.pubkey)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-            if treasury_acct.spendable >= faucet_fund_shells {
-                treasury_acct.deduct_spendable(faucet_fund_shells).ok();
-                if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
-                    error!("Failed to debit treasury for faucet fund: {e}");
-                }
-                let mut faucet_acct = Account::new(0, faucet_pubkey);
-                faucet_acct.add_spendable(faucet_fund_shells).ok();
-                if let Err(e) = state.put_account(&faucet_pubkey, &faucet_acct) {
-                    error!("Failed to credit faucet account: {e}");
-                }
-                info!(
-                    "  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})",
-                    faucet_fund_molt,
-                    faucet_pubkey.to_base58(),
-                    faucet_keypair_path.display()
-                );
-            } else {
-                warn!("  ⚠️  Treasury has insufficient funds for faucet auto-fund");
-            }
-        }
-
         // Build distribution transactions for genesis block
         for dw in dist_wallets {
             let mut data = Vec::with_capacity(9);
@@ -654,14 +816,102 @@ fn main() {
     // Insert mint tx at the beginning
     genesis_txs.insert(0, mint_tx);
 
+    // Explicit slot-0 validator registrations.
+    let treasury_pubkey = match state.get_treasury_pubkey().ok().flatten() {
+        Some(pubkey) => pubkey,
+        None => {
+            error!("Treasury pubkey missing before validator bootstrap");
+            std::process::exit(1);
+        }
+    };
+    let mut treasury_account = match state.get_account(&treasury_pubkey).ok().flatten() {
+        Some(account) => account,
+        None => {
+            error!("Treasury account missing before validator bootstrap");
+            std::process::exit(1);
+        }
+    };
+    let mut stake_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+    for validator_pubkey in &initial_validators {
+        if let Err(err) = treasury_account.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT) {
+            error!(
+                "Treasury cannot fund explicit validator {}: {}",
+                validator_pubkey.to_base58(),
+                err
+            );
+            std::process::exit(1);
+        }
+
+        let mut validator_account = state
+            .get_account(validator_pubkey)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+        validator_account.shells = validator_account
+            .shells
+            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+        validator_account.staked = validator_account
+            .staked
+            .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+        validator_account.spendable = validator_account
+            .spendable
+            .saturating_sub(validator_account.spendable);
+        if let Err(err) = state.put_account(validator_pubkey, &validator_account) {
+            error!(
+                "Failed to store initial validator account {}: {}",
+                validator_pubkey.to_base58(),
+                err
+            );
+            std::process::exit(1);
+        }
+        if let Err(err) = stake_pool.try_bootstrap_with_fingerprint(
+            *validator_pubkey,
+            BOOTSTRAP_GRANT_AMOUNT,
+            0,
+            [0u8; 32],
+        ) {
+            error!(
+                "Failed to bootstrap initial validator {}: {}",
+                validator_pubkey.to_base58(),
+                err
+            );
+            std::process::exit(1);
+        }
+
+        let mut ix_data = vec![26u8];
+        ix_data.extend_from_slice(&[0u8; 32]);
+        let instruction = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![*validator_pubkey],
+            data: ix_data,
+        };
+        let message = Message::new(vec![instruction], Hash::default());
+        let mut tx = Transaction::new(message.clone());
+        tx.signatures
+            .push(genesis_signer.sign(&message.serialize()));
+        genesis_txs.push(tx);
+        info!(
+            "  ✓ Initial validator registered at genesis: {} ({} MOLT)",
+            validator_pubkey.to_base58(),
+            BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
+        );
+    }
+    if let Err(err) = state.put_account(&treasury_pubkey, &treasury_account) {
+        error!(
+            "Failed to update treasury after validator bootstrap: {}",
+            err
+        );
+        std::process::exit(1);
+    }
+    if let Err(err) = state.put_stake_pool(&stake_pool) {
+        error!("Failed to persist initial stake pool: {}", err);
+        std::process::exit(1);
+    }
+
     // ════════════════════════════════════════════════════════════════════
     // CREATE GENESIS BLOCK
     // ════════════════════════════════════════════════════════════════════
     let state_root = state.compute_state_root();
-    let genesis_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
     let genesis_block = Block::genesis(state_root, genesis_timestamp, genesis_txs);
     if let Err(e) = state.put_block(&genesis_block) {
         error!("Failed to store genesis block: {e}");
@@ -673,102 +923,6 @@ fn main() {
     }
     info!("✓ Genesis block created and stored (slot 0)");
     info!("  Genesis hash: {}", genesis_block.hash());
-
-    // ════════════════════════════════════════════════════════════════════
-    // PRE-REGISTER FOUNDING VALIDATOR IN STAKE POOL
-    // ════════════════════════════════════════════════════════════════════
-    // Generate a validator identity for the founding (genesis-producing) node
-    // and register it in the stake pool with a bootstrap grant.  This makes
-    // pool.bootstrap_grants_issued() >= 1 in the genesis state, which
-    // prevents ALL nodes that receive a copy of this state from triggering
-    // the runtime "genesis bootstrap" self-registration path.  Every
-    // subsequent validator MUST go through the consensus RegisterValidator
-    // transaction, producing a visible on-chain tx.
-    {
-        let founding_keypair = Keypair::new();
-        let founding_pubkey = founding_keypair.pubkey();
-
-        // Fund from treasury
-        let treasury_pk = state.get_treasury_pubkey().ok().flatten();
-        let grant = BOOTSTRAP_GRANT_AMOUNT;
-        let mut funded = false;
-
-        if let Some(tpk) = treasury_pk {
-            if let Ok(Some(mut treasury_acct)) = state.get_account(&tpk) {
-                if treasury_acct.deduct_spendable(grant).is_ok() {
-                    let _ = state.put_account(&tpk, &treasury_acct);
-
-                    // Create the founding validator account with staked shells
-                    let mut val_acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                    val_acct.shells = grant;
-                    val_acct.staked = grant;
-                    val_acct.spendable = 0;
-                    let _ = state.put_account(&founding_pubkey, &val_acct);
-
-                    // Register in stake pool
-                    let mut pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
-                    match pool.try_bootstrap_with_fingerprint(
-                        founding_pubkey,
-                        grant,
-                        0, // slot 0
-                        [0u8; 32],
-                    ) {
-                        Ok((idx, _)) => {
-                            info!(
-                                "  ✅ Founding validator pre-registered: {} MOLT staked (bootstrap #{})",
-                                grant / 1_000_000_000,
-                                idx
-                            );
-                            funded = true;
-                        }
-                        Err(e) => error!("  ❌ Stake pool bootstrap failed: {}", e),
-                    }
-                    if funded {
-                        if let Err(e) = state.put_stake_pool(&pool) {
-                            error!("  ❌ Failed to persist stake pool: {}", e);
-                        }
-                    }
-                } else {
-                    error!("  ❌ Treasury has insufficient funds for founding validator bootstrap");
-                }
-            }
-        }
-
-        if funded {
-            // Save founding validator keypair into the state directory so the
-            // genesis-producing node loads it automatically on first start.
-            let keypair_path = std::path::Path::new(&db_dir).join("validator-keypair.json");
-            let keypair_json = serde_json::json!({
-                "privateKey": founding_keypair.to_seed().to_vec(),
-                "publicKey": founding_pubkey.0.to_vec(),
-                "publicKeyBase58": founding_pubkey.to_base58(),
-            });
-            match std::fs::write(
-                &keypair_path,
-                serde_json::to_string_pretty(&keypair_json).unwrap_or_default(),
-            ) {
-                Ok(()) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(
-                            &keypair_path,
-                            std::fs::Permissions::from_mode(0o600),
-                        )
-                        .ok();
-                    }
-                    info!(
-                        "  ✅ Founding validator keypair saved: {}",
-                        keypair_path.display()
-                    );
-                    info!("     Pubkey: {}", founding_pubkey.to_base58());
-                }
-                Err(e) => error!("  ❌ Failed to save founding validator keypair: {}", e),
-            }
-        } else {
-            warn!("  ⚠️  Founding validator NOT pre-registered — runtime genesis bootstrap will be needed");
-        }
-    }
 
     // Store founding moltys vesting schedule
     if let Some(fm_dw) = wallet
@@ -795,11 +949,11 @@ fn main() {
     // AUTO-DEPLOY CONTRACTS
     // ════════════════════════════════════════════════════════════════════
     genesis_auto_deploy(&state, &genesis_pubkey, "GENESIS:");
-    genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:");
+    genesis_initialize_contracts(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
     genesis_create_trading_pairs(&state, &genesis_pubkey, "GENESIS:");
-    genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:");
-    genesis_seed_margin_prices(&state, &genesis_pubkey);
-    genesis_seed_analytics_prices(&state, &genesis_pubkey);
+    genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
+    genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp);
+    genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp);
 
     // Flush metrics counters to disk — contract deploy (index_program) and
     // any accounts created after the genesis block was stored need their

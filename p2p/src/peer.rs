@@ -207,6 +207,11 @@ pub struct PeerManager {
     kademlia: Arc<Mutex<crate::kademlia::KademliaTable>>,
 }
 
+/// Default fanout for non-consensus dissemination paths such as block and
+/// transaction gossip. Consensus votes continue to use validator-targeted or
+/// full broadcast paths for minimum latency.
+pub const NON_CONSENSUS_FANOUT: usize = 8;
+
 /// Check whether two IPs share the same subnet.
 /// IPv4: /24 prefix (first 3 octets).  IPv6: /48 prefix (first 3 hextets).
 fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
@@ -223,6 +228,10 @@ fn same_subnet(a: &IpAddr, b: &IpAddr) -> bool {
         }
         _ => false, // v4 vs v6 — different subnets by definition
     }
+}
+
+fn should_bypass_localhost_peer_limits(local: &IpAddr, peer: &IpAddr) -> bool {
+    local.is_loopback() && peer.is_loopback()
 }
 
 /// M-10: Compute an AS-level bucket ID for eclipse defense.
@@ -471,7 +480,9 @@ impl PeerManager {
             return Err("Peer is banned".to_string());
         }
         // Eclipse-attack resistance: limit peers per /24 subnet
-        if self.count_peers_in_subnet(&peer_addr.ip()) >= Self::MAX_PEERS_PER_SUBNET {
+        if !should_bypass_localhost_peer_limits(&self.local_addr.ip(), &peer_addr.ip())
+            && self.count_peers_in_subnet(&peer_addr.ip()) >= Self::MAX_PEERS_PER_SUBNET
+        {
             return Err(format!(
                 "Subnet limit reached ({}) for {}",
                 Self::MAX_PEERS_PER_SUBNET,
@@ -479,7 +490,9 @@ impl PeerManager {
             ));
         }
         // M-10: AS-level eclipse defense — limit peers per /16 (IPv4) or /32 (IPv6) bucket
-        if self.count_peers_in_asn_bucket(&peer_addr.ip()) >= Self::MAX_PEERS_PER_ASN_BUCKET {
+        if !should_bypass_localhost_peer_limits(&self.local_addr.ip(), &peer_addr.ip())
+            && self.count_peers_in_asn_bucket(&peer_addr.ip()) >= Self::MAX_PEERS_PER_ASN_BUCKET
+        {
             return Err(format!(
                 "ASN bucket limit reached ({}) for {}",
                 Self::MAX_PEERS_PER_ASN_BUCKET,
@@ -762,6 +775,19 @@ impl PeerManager {
         }
     }
 
+    fn non_consensus_targets(&self, target_id: &[u8; 32], fanout: usize) -> Vec<SocketAddr> {
+        let closest = {
+            let table = self.kademlia.lock().unwrap();
+            table.closest(target_id, fanout.max(1))
+        };
+
+        if !closest.is_empty() {
+            return closest.into_iter().map(|entry| entry.address).collect();
+        }
+
+        self.peers.iter().map(|entry| *entry.key()).collect()
+    }
+
     /// Get all peer addresses
     pub fn get_peers(&self) -> Vec<SocketAddr> {
         self.peers.iter().map(|entry| *entry.key()).collect()
@@ -848,14 +874,8 @@ impl PeerManager {
     /// P3-2: Route a message to the `count` closest peers by XOR distance
     /// to `target_id`. Falls back to all peers if the routing table is empty.
     pub async fn route_to_closest(&self, target_id: &[u8; 32], count: usize, message: P2PMessage) {
-        let closest = {
-            let table = self.kademlia.lock().unwrap();
-            table.closest(target_id, count)
-        };
-
-        if closest.is_empty() {
-            // Routing table empty — fall back to broadcast
-            self.broadcast(message).await;
+        let targets = self.non_consensus_targets(target_id, count);
+        if targets.is_empty() {
             return;
         }
 
@@ -867,14 +887,10 @@ impl PeerManager {
             }
         };
 
-        let mut handles = Vec::with_capacity(closest.len());
-        for entry in closest {
-            let conn = self
-                .peers
-                .get(&entry.address)
-                .and_then(|p| p.connection.clone());
+        let mut handles = Vec::with_capacity(targets.len());
+        for addr in targets {
+            let conn = self.peers.get(&addr).and_then(|p| p.connection.clone());
             let bytes = bytes.clone();
-            let addr = entry.address;
             handles.push(tokio::spawn(async move {
                 if let Some(conn) = conn {
                     match conn.open_uni().await {
@@ -1125,7 +1141,11 @@ impl PeerManager {
                                     .iter()
                                     .filter(|e| same_subnet(&e.key().ip(), &peer_addr.ip()))
                                     .count();
-                                if subnet_count >= PeerManager::MAX_PEERS_PER_SUBNET {
+                                if !should_bypass_localhost_peer_limits(
+                                    &local_addr.ip(),
+                                    &peer_addr.ip(),
+                                ) && subnet_count >= PeerManager::MAX_PEERS_PER_SUBNET
+                                {
                                     warn!(
                                         "P2P: Rejected inbound {} — subnet limit ({})",
                                         peer_addr,
@@ -2397,6 +2417,16 @@ mod tests {
         assert!(!same_subnet(&v4, &v6));
     }
 
+    #[test]
+    fn test_localhost_peer_limits_are_bypassed() {
+        let local: IpAddr = "127.0.0.1".parse().unwrap();
+        let peer: IpAddr = "127.0.0.1".parse().unwrap();
+        let remote: IpAddr = "10.0.1.5".parse().unwrap();
+
+        assert!(should_bypass_localhost_peer_limits(&local, &peer));
+        assert!(!should_bypass_localhost_peer_limits(&local, &remote));
+    }
+
     #[tokio::test]
     async fn test_subnet_limit_in_connect_peer() {
         let tmp = std::env::temp_dir().join(format!(
@@ -2596,6 +2626,76 @@ mod tests {
 
         let stats = mgr.bandwidth_stats(&"10.0.0.1:7001".parse().unwrap());
         assert!(stats.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_non_consensus_targets_use_bounded_kademlia_fanout() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-kad-fanout-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let peers = [
+            ([1u8; 32], "10.0.0.1:7001".parse().unwrap()),
+            ([2u8; 32], "10.0.0.2:7001".parse().unwrap()),
+            ([3u8; 32], "10.0.0.3:7001".parse().unwrap()),
+        ];
+
+        for (node_id, addr) in peers {
+            mgr.peers.insert(addr, PeerInfo::new(addr));
+            mgr.update_kademlia(node_id, addr);
+        }
+
+        let targets = mgr.non_consensus_targets(&[0u8; 32], 2);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0], "10.0.0.1:7001".parse::<SocketAddr>().unwrap());
+        assert_eq!(targets[1], "10.0.0.2:7001".parse::<SocketAddr>().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_non_consensus_targets_fall_back_to_all_peers_without_overlay_entries() {
+        let tmp = std::env::temp_dir().join(format!(
+            "molt-test-kad-fallback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (tx, _rx) = mpsc::channel(100);
+        let mgr = PeerManager::new(
+            "127.0.0.1:0".parse().unwrap(),
+            tx,
+            Some(tmp.clone()),
+            None,
+            50,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let addr_a: SocketAddr = "10.0.1.1:7001".parse().unwrap();
+        let addr_b: SocketAddr = "10.0.1.2:7001".parse().unwrap();
+        mgr.peers.insert(addr_a, PeerInfo::new(addr_a));
+        mgr.peers.insert(addr_b, PeerInfo::new(addr_b));
+
+        let targets = mgr.non_consensus_targets(&[9u8; 32], 1);
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&addr_a));
+        assert!(targets.contains(&addr_b));
     }
 
     #[test]

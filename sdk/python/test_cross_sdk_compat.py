@@ -38,6 +38,7 @@ def test_message_golden_vector():
         "0202020202020202020202020202020202020202020202020202020202020202"  # accounts[0]
         "040000000000000000010203"                                    # Vec<u8> len=4 + data
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # blockhash
+        "0000"                                                        # compute_budget: None + compute_unit_price: None
     )
 
     assert got == expected, (
@@ -64,6 +65,8 @@ def test_transaction_golden_vector():
         "0202020202020202020202020202020202020202020202020202020202020202"  # accounts[0]
         "040000000000000000010203"                                    # Vec<u8> len=4 + data
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # blockhash
+        "0000"                                                        # compute_budget: None + compute_unit_price: None
+        "00000000"                                                    # tx_type: Native (u32 LE)
     )
 
     assert got == expected, (

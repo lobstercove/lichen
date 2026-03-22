@@ -988,9 +988,11 @@ fn test_zero_amount_transfer() {
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 0);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let result = processor.process_transaction(&tx, &validator.pubkey());
+    assert!(!result.success, "Zero amount transfer should be rejected");
     assert!(
-        result.success,
-        "Zero amount transfer should succeed (pays fee only)"
+        result.error.as_ref().unwrap().contains("must be > 0"),
+        "Expected 'must be > 0', got: {:?}",
+        result.error
     );
 }
 

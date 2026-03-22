@@ -1,8 +1,8 @@
 // MoltChain Consensus Module
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
-use crate::contract::ContractAccount;
 use crate::genesis::ConsensusParams;
+use crate::reefstake::REEFSTAKE_BLOCK_SHARE_BPS;
 use crate::{Block, Hash, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -127,6 +127,19 @@ pub fn compute_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> u64 {
     (numerator / denominator) as u64
 }
 
+/// Split one epoch's inflation between active stakers and the ReefStake pool.
+pub fn split_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> (u64, u64) {
+    let epoch_mint = compute_epoch_mint(epoch_start_slot, total_supply);
+    if epoch_mint == 0 {
+        return (0, 0);
+    }
+
+    let reefstake_reward_pool =
+        (epoch_mint as u128 * REEFSTAKE_BLOCK_SHARE_BPS as u128 / 10_000u128) as u64;
+    let staker_reward_pool = epoch_mint.saturating_sub(reefstake_reward_pool);
+    (staker_reward_pool, reefstake_reward_pool)
+}
+
 // ============================================================================
 // FOUNDING MOLTYS VESTING
 // ============================================================================
@@ -191,8 +204,8 @@ pub const PERFORMANCE_BONUS_BPS: u64 = 15000;
 /// (1 epoch = 432,000 slots ≈ 2 days)
 pub const MIGRATION_COOLDOWN_SLOTS: u64 = 432_000;
 
-/// Oracle price staleness threshold (1 hour in seconds — matches moltoracle contract)
-const ORACLE_STALENESS_SECS: u64 = 3600;
+/// Reference MOLT price used when no consensus oracle price is available.
+const REFERENCE_MOLT_PRICE_USD: f64 = 0.10;
 
 // ============================================================================
 // PRICE-BASED REWARDS - Dynamic reward adjustment
@@ -203,7 +216,7 @@ pub trait PriceOracle: Send + Sync {
     fn get_molt_price_usd(&self) -> f64;
 }
 
-/// On-chain oracle that reads price data from the moltoracle contract's storage.
+/// On-chain oracle that reads validator-attested consensus prices.
 /// Falls back to the reference price ($0.10) if the oracle has no data or is stale.
 pub struct StateOracle {
     state: Arc<crate::state::StateStore>,
@@ -214,8 +227,8 @@ impl StateOracle {
         Self { state }
     }
 
-    /// Read the raw MOLT price feed from moltoracle contract storage.
-    /// Returns (price_raw, decimals, timestamp) or None if unavailable.
+    /// Read the raw MOLT consensus price.
+    /// Returns (price_raw, decimals, slot) or None if unavailable.
     #[allow(dead_code)]
     fn read_molt_price_feed(&self) -> Option<(u64, u8, u64)> {
         read_molt_price_feed_from_state(&self.state)
@@ -228,62 +241,49 @@ impl PriceOracle for StateOracle {
     }
 }
 
-/// Read the raw MOLT price feed from moltoracle contract storage.
-/// Returns (price_raw, decimals, timestamp) or None if unavailable.
-pub fn read_molt_price_feed_from_state(state: &crate::state::StateStore) -> Option<(u64, u8, u64)> {
-    // Resolve moltoracle program address via symbol registry
-    let entry = state.get_symbol_registry("moltoracle").ok()??;
-    let account = state.get_account(&entry.program).ok()??;
-    let contract: ContractAccount = serde_json::from_slice(&account.data).ok()?;
+/// Read the raw validator-attested consensus oracle price for an asset.
+/// Returns (price_raw, decimals, slot) or None if unavailable, invalid, or stale.
+pub fn read_consensus_oracle_price_from_state(
+    state: &crate::state::StateStore,
+    asset: &str,
+) -> Option<(u64, u8, u64)> {
+    let price = state.get_oracle_consensus_price(asset).ok()??;
+    let current_slot = state.get_last_slot().unwrap_or(price.slot);
 
-    // Read "price_MOLT" feed — 49 bytes: price(8) + timestamp(8) + decimals(1) + feeder(32)
-    let feed = contract.get_storage(b"price_MOLT")?;
-    if feed.len() < 17 {
+    if current_slot.saturating_sub(price.slot) > crate::processor::ORACLE_STALENESS_SLOTS {
+        return None;
+    }
+    if price.price == 0 || price.decimals > 18 {
         return None;
     }
 
-    let price_raw = u64::from_le_bytes(feed[0..8].try_into().ok()?);
-    let timestamp = u64::from_le_bytes(feed[8..16].try_into().ok()?);
-    let decimals = feed[16];
-
-    Some((price_raw, decimals, timestamp))
+    Some((price.price, price.decimals, price.slot))
 }
 
-/// Read the current MOLT price in USD from on-chain moltoracle storage.
+/// Read the raw MOLT consensus price.
+/// Returns (price_raw, decimals, slot) or None if unavailable.
+pub fn read_molt_price_feed_from_state(state: &crate::state::StateStore) -> Option<(u64, u8, u64)> {
+    read_consensus_oracle_price_from_state(state, "MOLT")
+}
+
+/// Read the current consensus oracle price in USD for an asset.
+pub fn consensus_oracle_price_from_state(
+    state: &crate::state::StateStore,
+    asset: &str,
+) -> Option<f64> {
+    let (price_raw, decimals, _) = read_consensus_oracle_price_from_state(state, asset)?;
+    let divisor = 10u64.pow(decimals as u32) as f64;
+    let price = price_raw as f64 / divisor;
+    if !(0.000001..=1_000_000.0).contains(&price) {
+        return None;
+    }
+    Some(price)
+}
+
+/// Read the current MOLT price in USD from the validator-attested consensus oracle.
 /// Falls back to $0.10 (launch reference price) if oracle data is unavailable or stale.
 pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
-    match read_molt_price_feed_from_state(state) {
-        Some((price_raw, decimals, timestamp)) => {
-            // A-5: Use deterministic block timestamp instead of SystemTime::now()
-            // This ensures all validators evaluating the same slot reach identical results.
-            let now = state
-                .get_last_slot()
-                .ok()
-                .and_then(|slot| state.get_block_by_slot(slot).ok().flatten())
-                .map(|block| block.header.timestamp)
-                .unwrap_or(0);
-
-            if now > 0 && timestamp > 0 && now.saturating_sub(timestamp) > ORACLE_STALENESS_SECS {
-                return 0.10; // Stale — fall back to reference price
-            }
-
-            if price_raw == 0 || decimals > 18 {
-                return 0.10; // Invalid data
-            }
-
-            // Convert to f64 USD price
-            let divisor = 10u64.pow(decimals as u32) as f64;
-            let price = price_raw as f64 / divisor;
-
-            // Sanity bounds: reject obviously wrong prices
-            if !(0.000001..=1_000_000.0).contains(&price) {
-                return 0.10;
-            }
-
-            price
-        }
-        None => 0.10, // No oracle data — use reference launch price
-    }
+    consensus_oracle_price_from_state(state, "MOLT").unwrap_or(REFERENCE_MOLT_PRICE_USD)
 }
 
 /// Reward configuration with price-based adjustment.
@@ -1228,13 +1228,22 @@ impl StakePool {
         epoch_start: u64,
         total_supply: u64,
     ) -> (u64, Vec<(Pubkey, u64, u64, u64)>) {
-        let epoch_mint = compute_epoch_mint(epoch_start, total_supply);
-        if epoch_mint == 0 {
+        let epoch_reward_pool = compute_epoch_mint(epoch_start, total_supply);
+        self.distribute_epoch_staker_rewards_from_pool(epoch_reward_pool, epoch_start)
+    }
+
+    /// Distribute a precomputed staker reward pool to all active stakers.
+    pub fn distribute_epoch_staker_rewards_from_pool(
+        &mut self,
+        epoch_reward_pool: u64,
+        epoch_start: u64,
+    ) -> (u64, Vec<(Pubkey, u64, u64, u64)>) {
+        if epoch_reward_pool == 0 {
             return (0, vec![]);
         }
 
         // Get proportional distribution to all active stakers
-        let distributions = self.distribute_epoch_rewards(epoch_mint);
+        let distributions = self.distribute_epoch_rewards(epoch_reward_pool);
 
         let num_active: u64 = self.stakes.values().filter(|info| info.is_active).count() as u64;
         let num_active = num_active.max(1);
@@ -2557,7 +2566,7 @@ impl ValidatorSet {
                 let stake = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake);
+                    .unwrap_or(0);
                 stake >= min_validator_stake
             })
             .collect();
@@ -2813,23 +2822,23 @@ impl VoteAggregator {
 // FINALITY TRACKER — Lock-free commitment level tracking
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Number of confirmed slots before a block is considered finalized.
-/// Matches Solana's 32-slot finality depth.
-pub const FINALITY_DEPTH: u64 = 32;
+/// Number of additional confirmed slots required before a block is considered finalized.
+/// Tendermint-style BFT finalizes a block at commit, so there is no extra depth delay.
+pub const FINALITY_DEPTH: u64 = 0;
 
 /// Lock-free finality tracker shared between validator consensus and RPC.
 ///
-/// Tracks three commitment levels (Solana-compatible):
+/// Tracks three commitment levels:
 ///   - **Processed**: Block stored on chain tip (existing behavior via `last_slot`)
 ///   - **Confirmed**: Block has received 2/3 stake-weighted supermajority votes
-///   - **Finalized**: Confirmed + FINALITY_DEPTH slots deep (safe from rollback)
+///   - **Finalized**: Block has a committed BFT supermajority and is safe from rollback
 ///
 /// Uses `AtomicU64` for zero-cost reads from RPC without locking the vote aggregator.
 #[derive(Debug, Clone)]
 pub struct FinalityTracker {
     /// Highest slot that has reached 2/3 supermajority
     confirmed_slot: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Highest slot considered finalized (confirmed_slot - FINALITY_DEPTH)
+    /// Highest slot considered finalized under the active commitment policy.
     finalized_slot: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -2838,9 +2847,11 @@ impl FinalityTracker {
     pub fn new(initial_confirmed: u64, initial_finalized: u64) -> Self {
         use std::sync::atomic::AtomicU64;
         use std::sync::Arc;
+        let normalized_finalized =
+            initial_finalized.max(initial_confirmed.saturating_sub(FINALITY_DEPTH));
         FinalityTracker {
             confirmed_slot: Arc::new(AtomicU64::new(initial_confirmed)),
-            finalized_slot: Arc::new(AtomicU64::new(initial_finalized)),
+            finalized_slot: Arc::new(AtomicU64::new(normalized_finalized)),
         }
     }
 
@@ -2850,7 +2861,6 @@ impl FinalityTracker {
         use std::sync::atomic::Ordering;
         let prev = self.confirmed_slot.fetch_max(slot, Ordering::Relaxed);
         if slot > prev {
-            // Advance finalized slot: any confirmed slot >= FINALITY_DEPTH behind tip
             let new_finalized = slot.saturating_sub(FINALITY_DEPTH);
             self.finalized_slot
                 .fetch_max(new_finalized, Ordering::Relaxed);
@@ -2866,7 +2876,7 @@ impl FinalityTracker {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Get the current finalized slot (confirmed + FINALITY_DEPTH deep)
+    /// Get the current finalized slot.
     pub fn finalized_slot(&self) -> u64 {
         self.finalized_slot
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2876,7 +2886,7 @@ impl FinalityTracker {
     ///   - `None` if the slot hasn't been processed
     ///   - `"processed"` if the tx is in a block but not yet confirmed
     ///   - `"confirmed"` if the block has 2/3 votes but isn't finalized yet
-    ///   - `"finalized"` if the block is confirmed + 32 slots deep
+    ///   - `"finalized"` if the block has a committed BFT supermajority
     pub fn commitment_for_slot(&self, slot: u64) -> &'static str {
         let finalized = self.finalized_slot();
         let confirmed = self.confirmed_slot();
@@ -3725,6 +3735,21 @@ mod tests {
         assert_eq!(
             leader, None,
             "Should return None when no validator meets MIN_VALIDATOR_STAKE"
+        );
+    }
+
+    #[test]
+    fn test_weighted_leader_ignores_cached_validator_stake_without_pool_entry() {
+        let mut set = ValidatorSet::new();
+        let pool = StakePool::new();
+        let pk1 = Pubkey::new([9u8; 32]);
+
+        set.add_validator(ValidatorInfo::new(pk1, MIN_VALIDATOR_STAKE));
+
+        let leader = set.select_leader_weighted(0, &pool, &[], MIN_VALIDATOR_STAKE);
+        assert_eq!(
+            leader, None,
+            "cached validator-set stake must not make a validator eligible without a stake-pool entry"
         );
     }
 
@@ -4761,6 +4786,26 @@ mod tests {
         // The extension at slot 110 should still be canonical (higher slot wins)
         assert_eq!(slot, 110, "Extension should win — slot priority");
         assert_eq!(selected, extension_hash);
+    }
+
+    #[test]
+    fn test_finality_tracker_finalizes_on_confirmation() {
+        let tracker = FinalityTracker::new(0, 0);
+
+        assert!(tracker.mark_confirmed(42));
+        assert_eq!(tracker.confirmed_slot(), 42);
+        assert_eq!(tracker.finalized_slot(), 42);
+        assert_eq!(tracker.commitment_for_slot(42), "finalized");
+        assert_eq!(tracker.commitment_for_slot(43), "processed");
+    }
+
+    #[test]
+    fn test_finality_tracker_normalizes_legacy_persisted_finalized_slot() {
+        let tracker = FinalityTracker::new(128, 96);
+
+        assert_eq!(tracker.confirmed_slot(), 128);
+        assert_eq!(tracker.finalized_slot(), 128);
+        assert_eq!(tracker.commitment_for_slot(128), "finalized");
     }
 
     /// P9-CORE-02: SlashingEvidence uses deterministic block_timestamp, not SystemTime::now()
@@ -5914,6 +5959,39 @@ mod tests {
     }
 
     #[test]
+    fn test_distribute_epoch_staker_rewards_from_reserved_pool() {
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        let v2 = Pubkey::new([2u8; 32]);
+
+        pool.stake(v1, 100_000_000_000_000, 0).unwrap();
+        if let Some(si) = pool.stakes.get_mut(&v1) {
+            si.status = BootstrapStatus::FullyVested;
+            si.bootstrap_debt = 0;
+        }
+        pool.stake(v2, 300_000_000_000_000, 0).unwrap();
+        if let Some(si) = pool.stakes.get_mut(&v2) {
+            si.status = BootstrapStatus::FullyVested;
+            si.bootstrap_debt = 0;
+        }
+
+        let (staker_reward_pool, reefstake_reward_pool) =
+            split_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        assert!(
+            reefstake_reward_pool > 0,
+            "reefstake share should be positive"
+        );
+
+        let (total_minted, results) =
+            pool.distribute_epoch_staker_rewards_from_pool(staker_reward_pool, 0);
+
+        assert_eq!(results.len(), 2);
+        let distributed_total: u64 = results.iter().map(|(_, reward, _, _)| *reward).sum();
+        assert!(distributed_total <= staker_reward_pool);
+        assert_eq!(total_minted, distributed_total);
+    }
+
+    #[test]
     fn test_fee_share_goes_through_vesting() {
         // Producer with bootstrap_debt should receive only ~50% of fee share as
         // liquid, with the rest repaying debt (same vesting pipeline as block rewards).
@@ -6046,7 +6124,6 @@ mod tests {
             unlocked, 0,
             "At cliff end, linear period hasn't started yielding"
         );
-
         // 1 second after cliff: tiny amount unlocked
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end + 1);
         assert!(
@@ -6111,5 +6188,34 @@ mod tests {
             unlocked > total * 99 / 100,
             "1 second before vest end: should be >99% vested"
         );
+    }
+
+    #[test]
+    fn test_consensus_oracle_price_from_state_reads_native_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::StateStore::open(dir.path()).unwrap();
+
+        state.set_last_slot(100).unwrap();
+        state
+            .put_oracle_consensus_price("MOLT", 12_500_000, 8, 95, 3)
+            .unwrap();
+
+        let price = consensus_oracle_price_from_state(&state, "MOLT");
+        assert_eq!(price, Some(0.125));
+    }
+
+    #[test]
+    fn test_molt_price_from_state_falls_back_when_consensus_price_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::state::StateStore::open(dir.path()).unwrap();
+
+        state
+            .set_last_slot(crate::processor::ORACLE_STALENESS_SLOTS + 10)
+            .unwrap();
+        state
+            .put_oracle_consensus_price("MOLT", 12_500_000, 8, 0, 3)
+            .unwrap();
+
+        assert_eq!(molt_price_from_state(&state), 0.10);
     }
 }

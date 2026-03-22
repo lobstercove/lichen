@@ -22,6 +22,8 @@ class Message:
     """Transaction message (before signing)"""
     instructions: List[Instruction]
     recent_blockhash: str
+    compute_budget: Optional[int] = None
+    compute_unit_price: Optional[int] = None
 
 
 @dataclass
@@ -66,7 +68,12 @@ class TransactionBuilder:
             EncodedInstruction(ix.program_id, ix.accounts, ix.data)
             for ix in message.instructions
         ]
-        message_bytes = encode_message(encoded_instructions, message.recent_blockhash)
+        message_bytes = encode_message(
+            encoded_instructions,
+            message.recent_blockhash,
+            message.compute_budget,
+            message.compute_unit_price,
+        )
         signature = keypair.sign(message_bytes)
         sig_hex = binascii.hexlify(signature).decode("ascii")
         return Transaction(signatures=[sig_hex], message=message)
@@ -77,7 +84,12 @@ class TransactionBuilder:
             EncodedInstruction(ix.program_id, ix.accounts, ix.data)
             for ix in message.instructions
         ]
-        return encode_message(encoded_instructions, message.recent_blockhash)
+        return encode_message(
+            encoded_instructions,
+            message.recent_blockhash,
+            message.compute_budget,
+            message.compute_unit_price,
+        )
 
     @staticmethod
     def transaction_to_bincode(transaction: Transaction) -> bytes:

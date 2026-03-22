@@ -1268,7 +1268,8 @@ molt call 7xK9...mN2q set_value --args '[42]'</code></pre>
                 <h2>Security Best Practices</h2>
 
                 <h3>1. Reentrancy Guards</h3>
-                <p>Cross-contract calls can be re-entered. Use a storage-based mutex pattern:</p>
+                <p>Cross-contract calls are synchronous and depth-bounded, but contracts should still guard sensitive
+                    state transitions around external calls with a storage-based mutex pattern:</p>
                 <div class="code-block">
                     <div class="code-header"><span>Reentrancy Guard</span><button class="code-copy-btn">Copy</button>
                     </div>

@@ -330,6 +330,9 @@ fn governance_voting_power(token_balance: u64, reputation: u64) -> u64 {
 // AUDIT-FIX CON-07: Was 210 but actual layout sums to 212 bytes
 // (5×32 + 6×8 + 4×1 = 160 + 48 + 4 = 212)
 const PROPOSAL_SIZE: usize = 212;
+// v0.4.4 proposals were stored at 210 bytes (missing stake_amount).
+// Accept legacy proposals for backward compatibility — missing bytes default to 0.
+const PROPOSAL_SIZE_LEGACY: usize = 210;
 
 #[no_mangle]
 pub extern "C" fn create_proposal(
@@ -631,7 +634,7 @@ pub extern "C" fn vote_with_reputation(
     // Load proposal
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
-        Some(data) if data.len() >= PROPOSAL_SIZE => data,
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
         _ => {
             log_info("Proposal not found");
             return 0;
@@ -732,7 +735,7 @@ pub extern "C" fn execute_proposal(
     // Load proposal
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
-        Some(data) if data.len() >= PROPOSAL_SIZE => data,
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
         _ => {
             log_info("Proposal not found");
             return 0;
@@ -999,7 +1002,7 @@ pub extern "C" fn veto_proposal(
 
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
-        Some(data) if data.len() >= PROPOSAL_SIZE => data,
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
         _ => {
             log_info("Proposal not found");
             return 0;
@@ -1070,7 +1073,7 @@ pub extern "C" fn cancel_proposal(canceller_ptr: *const u8, proposal_id: u64) ->
     // Load proposal
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
-        Some(data) if data.len() >= PROPOSAL_SIZE => data,
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
         _ => {
             log_info("Proposal not found");
             return 0;
@@ -1151,7 +1154,7 @@ pub extern "C" fn treasury_transfer(
     // Verify proposal is executed
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
-        Some(data) if data.len() >= PROPOSAL_SIZE => data,
+        Some(data) if data.len() >= PROPOSAL_SIZE_LEGACY => data,
         _ => {
             log_info("Proposal not found");
             reentrancy_exit();
@@ -1240,7 +1243,7 @@ pub extern "C" fn get_proposal(proposal_id: u64, result_ptr: *mut u8) -> u32 {
     let key = alloc::format!("proposal_{}", proposal_id);
 
     match storage_get(key.as_bytes()) {
-        Some(proposal) if proposal.len() >= PROPOSAL_SIZE => {
+        Some(proposal) if proposal.len() >= PROPOSAL_SIZE_LEGACY => {
             unsafe {
                 core::ptr::copy_nonoverlapping(proposal.as_ptr(), result_ptr, PROPOSAL_SIZE);
             }
@@ -1307,7 +1310,7 @@ pub extern "C" fn get_active_proposals(result_ptr: *mut u8, max_results: u32) ->
 
         let key = alloc::format!("proposal_{}", id);
         if let Some(proposal) = storage_get(key.as_bytes()) {
-            if proposal.len() >= PROPOSAL_SIZE {
+            if proposal.len() >= PROPOSAL_SIZE_LEGACY {
                 let end_time = bytes_to_u64(&proposal[168..176]);
                 let executed = proposal[192];
                 let cancelled = proposal[193];
@@ -1398,7 +1401,7 @@ pub extern "C" fn get_vote(proposal_id: u64, voter_ptr: *const u8) -> u32 {
 pub extern "C" fn get_vote_count(proposal_id: u64) -> u64 {
     let key = alloc::format!("proposal_{}", proposal_id);
     match storage_get(key.as_bytes()) {
-        Some(p) if p.len() >= PROPOSAL_SIZE => {
+        Some(p) if p.len() >= PROPOSAL_SIZE_LEGACY => {
             let votes_for = bytes_to_u64(&p[176..184]);
             let votes_against = bytes_to_u64(&p[184..192]);
             votes_for + votes_against

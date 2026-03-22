@@ -1,6 +1,7 @@
 // ClawPump v2 - Token Launchpad with Bonding Curves
 // Per whitepaper: fair-launch bonding curves for new token creation
-// Tokens graduate to ClawSwap DEX liquidity when market cap threshold is reached
+// Automatic DEX graduation is reserved for a future release once ClawPump
+// tokens have a real asset/pool migration path into ClawSwap.
 //
 // v2 additions:
 //   - Anti-manipulation: buy cooldown, max buy per tx, sell cooldown
@@ -15,9 +16,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use moltchain_sdk::{
-    bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address,
-    get_timestamp, get_value, log_info, set_return_data, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall,
+    bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_timestamp, get_value,
+    log_info, set_return_data, storage_get, storage_set, u64_to_bytes, Address,
 };
 
 // T5.12: Reentrancy guard
@@ -519,8 +519,6 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     let market_cap =
         (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
     if market_cap >= GRADUATION_MARKET_CAP {
-        // --- DEX Migration: create pair, create pool, seed liquidity ---
-        // AUDIT-FIX: Only set graduated flag AFTER successful DEX migration
         let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
         let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
 
@@ -534,65 +532,14 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             .unwrap_or(false);
 
         if has_core && has_amm {
-            let mut core_addr = [0u8; 32];
-            core_addr.copy_from_slice(dex_core_bytes.as_ref().unwrap());
-            let mut amm_addr = [0u8; 32];
-            amm_addr.copy_from_slice(dex_amm_bytes.as_ref().unwrap());
-
-            let price = current_price(new_supply);
-
-            // 1) Create trading pair on DEX core
-            //    args: token_id(8) + price(8) = 16 bytes
-            let mut create_pair_args = Vec::with_capacity(16);
-            create_pair_args.extend_from_slice(&u64_to_bytes(token_id));
-            create_pair_args.extend_from_slice(&u64_to_bytes(price));
-            let pair_call = CrossCall::new(Address(core_addr), "create_pair", create_pair_args);
-            let pair_ok = call_contract(pair_call).is_ok();
-
-            // 2) Create AMM pool
-            //    args: token_id(8) + initial_price(8) = 16 bytes
-            let mut create_pool_args = Vec::with_capacity(16);
-            create_pool_args.extend_from_slice(&u64_to_bytes(token_id));
-            create_pool_args.extend_from_slice(&u64_to_bytes(price));
-            let pool_call = CrossCall::new(Address(amm_addr), "create_pool", create_pool_args);
-            let pool_ok = call_contract(pool_call).is_ok();
-
-            // 3) Seed initial liquidity from raised MOLT
-            //    Split: 80% liquidity, 20% platform revenue
-            let liquidity_molt = new_raised * GRADUATION_LIQUIDITY_PERCENT / 100;
-            let platform_molt = new_raised * GRADUATION_PLATFORM_PERCENT / 100;
-
-            //    args: token_id(8) + molt_amount(8) + supply(8) = 24 bytes
-            let mut seed_args = Vec::with_capacity(24);
-            seed_args.extend_from_slice(&u64_to_bytes(token_id));
-            seed_args.extend_from_slice(&u64_to_bytes(liquidity_molt));
-            seed_args.extend_from_slice(&u64_to_bytes(new_supply));
-            let seed_call = CrossCall::new(Address(amm_addr), "add_liquidity", seed_args);
-            let seed_ok = call_contract(seed_call).is_ok();
-
-            if pair_ok && pool_ok && seed_ok {
-                // Track platform revenue only after full successful migration.
-                let prev_revenue = load_u64(b"cp_graduation_revenue");
-                store_u64(
-                    b"cp_graduation_revenue",
-                    prev_revenue.saturating_add(platform_molt),
-                );
-                log_info("Token graduated! DEX pair created, pool seeded with liquidity");
-                data[64] = 1; // AUDIT-FIX: Only mark graduated on full success
-                storage_set(&token_key, &data);
-            } else {
-                log_info(
-                    "DEX migration failed — graduation aborted, token remains on bonding curve",
-                );
-                // AUDIT-FIX: Do NOT set graduated flag on partial failure
-            }
+            let _ = (GRADUATION_LIQUIDITY_PERCENT, GRADUATION_PLATFORM_PERCENT);
+            log_info(
+                "Graduation threshold reached, but automatic DEX migration is disabled until ClawPump exposes a real ABI-compatible asset and pool migration path",
+            );
         } else {
-            // G24-01: DEX addresses not configured — still graduate the token
-            // to stop the bonding curve (prevents infinite retry every buy).
-            // Admin can manually migrate to DEX later.
-            log_info("Token graduated! DEX addresses not configured — manual migration needed");
-            data[64] = 1;
-            storage_set(&token_key, &data);
+            log_info(
+                "Graduation threshold reached, but no automatic DEX migration path is configured — token remains on bonding curve",
+            );
         }
     }
 
@@ -1098,7 +1045,7 @@ pub extern "C" fn set_dex_addresses(
 
     storage_set(DEX_CORE_ADDRESS_KEY, &core_addr);
     storage_set(DEX_AMM_ADDRESS_KEY, &amm_addr);
-    log_info("DEX addresses configured for graduation migration");
+    log_info("DEX addresses recorded for future graduation migration support");
     0
 }
 
@@ -1707,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn test_graduation_with_dex_migration() {
+    fn test_threshold_crossing_with_dex_addresses_keeps_token_on_curve() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -1722,69 +1669,37 @@ mod tests {
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let mut data = test_mock::get_storage(&token_key).unwrap();
+        let near_supply: u64 = 400_000_000_000_000;
+        data[32..40].copy_from_slice(&u64_to_bytes(near_supply));
+        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
+        storage_set(&token_key, &data);
 
-        // Set max buy very high to allow huge purchases
-        test_mock::set_caller(admin);
-        set_max_buy(admin.as_ptr(), u64::MAX);
-
-        // Buy massive amounts to trigger graduation
-        // Graduation needs market_cap >= GRADUATION_MARKET_CAP (100_000_000_000_000)
-        // market_cap = current_price(supply) * supply / 1e9
-        // We need to buy enough supply to push market cap over threshold
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
         test_mock::set_caller(buyer);
+        let buy_amt: u64 = 1_000_000_000_000;
+        test_mock::set_value(buy_amt);
+        assert!(buy(buyer.as_ptr(), token_id, buy_amt) > 0);
 
-        // Buy in large chunks. Each buy pushes supply higher.
-        // With linear bonding curve, we need substantial purchases.
-        // Let's use huge MOLT amounts to drive supply up quickly.
-        let huge_amount: u64 = 10_000_000_000_000_000; // 10M MOLT
-        test_mock::set_value(huge_amount);
-        let tokens = buy(buyer.as_ptr(), token_id, huge_amount);
-        assert!(tokens > 0, "First buy should succeed");
-
-        // Check if graduated
-        let id_hex = u64_to_hex(token_id);
-        let token_key = make_key(b"cpt:", &id_hex);
-        let data = test_mock::get_storage(&token_key).unwrap();
-
-        if data[64] == 1 {
-            // Graduated — check graduation revenue was tracked
-            let revenue = load_u64(b"cp_graduation_revenue");
-            assert!(revenue > 0, "Graduation revenue should be tracked");
-        } else {
-            // Need more buys to reach graduation
-            test_mock::set_timestamp(15_000);
-            let tokens2 = buy(buyer.as_ptr(), token_id, huge_amount);
-            assert!(
-                tokens2 > 0 || data[64] == 1,
-                "Should buy more or already graduated"
-            );
-
-            test_mock::set_timestamp(20_000);
-            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
-            test_mock::set_timestamp(25_000);
-            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
-            test_mock::set_timestamp(30_000);
-            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
-
-            let data2 = test_mock::get_storage(&token_key).unwrap();
-            // Token should eventually graduate with enough MOLT
-            if data2[64] == 1 {
-                let revenue = load_u64(b"cp_graduation_revenue");
-                assert!(revenue > 0, "Graduation revenue should be tracked");
-            }
-        }
+        let data2 = test_mock::get_storage(&token_key).unwrap();
+        assert_eq!(data2[64], 0, "token must not be marked graduated");
+        assert_eq!(
+            load_u64(b"cp_graduation_revenue"),
+            0,
+            "no graduation revenue should be tracked while auto migration is disabled"
+        );
     }
 
     #[test]
-    fn test_graduation_without_dex_addresses() {
+    fn test_threshold_crossing_without_dex_addresses_keeps_token_on_curve() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
-        // Do NOT set DEX addresses
         let creator = [2u8; 32];
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
@@ -1792,36 +1707,35 @@ mod tests {
         test_mock::set_caller(admin);
         set_max_buy(admin.as_ptr(), u64::MAX);
 
-        // Directly set token state to near-graduation threshold
-        // market_cap = current_price(supply) * supply / 1e9 >= GRADUATION_MARKET_CAP
-        // For supply=400T: price = 1000+400e12/1e6 = 400_001_000
-        //   market_cap = 400_001_000 * 400e12 / 1e9 = 160e15 >> 100e12 threshold
         let id_hex = u64_to_hex(token_id);
         let token_key = make_key(b"cpt:", &id_hex);
         let mut data = test_mock::get_storage(&token_key).unwrap();
         let near_supply: u64 = 400_000_000_000_000;
         data[32..40].copy_from_slice(&u64_to_bytes(near_supply));
-        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000)); // some raised MOLT
+        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
         storage_set(&token_key, &data);
 
-        // One more buy triggers graduation
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
         test_mock::set_caller(buyer);
-        let buy_amt: u64 = 1_000_000_000_000; // 1000 MOLT
+        let buy_amt: u64 = 1_000_000_000_000;
         test_mock::set_value(buy_amt);
-        let _ = buy(buyer.as_ptr(), token_id, buy_amt);
+        assert!(buy(buyer.as_ptr(), token_id, buy_amt) > 0);
 
-        // G24-01: Even without DEX addresses, token should still graduate
-        // (prevents infinite retry on every buy). No revenue tracked.
         let revenue = load_u64(b"cp_graduation_revenue");
         assert_eq!(revenue, 0, "No graduation revenue without DEX addresses");
 
-        // Verify token is graduated (bonding curve stops)
         let data2 = test_mock::get_storage(&token_key).unwrap();
         assert_eq!(
-            data2[64], 1,
-            "Token should be graduated even without DEX addresses"
+            data2[64], 0,
+            "Token should stay on the bonding curve without a real migration path"
+        );
+
+        test_mock::set_timestamp(15_000);
+        test_mock::set_value(1_000_000_000);
+        assert!(
+            buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0,
+            "further buys should remain possible"
         );
     }
 
@@ -1861,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn test_graduated_token_buy_blocked() {
+    fn test_threshold_crossing_does_not_block_buys() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -1876,40 +1790,36 @@ mod tests {
         test_mock::set_caller(creator);
         test_mock::set_value(CREATION_FEE);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
-        let buyer = [3u8; 32];
-
-        // Push to graduation
-        test_mock::set_timestamp(10_000);
-        test_mock::set_caller(buyer);
-        let huge: u64 = 10_000_000_000_000_000;
-        test_mock::set_value(huge);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(15_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(20_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(25_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(30_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-
-        // Check if graduated
         let id_hex = u64_to_hex(token_id);
         let token_key = make_key(b"cpt:", &id_hex);
-        let data = test_mock::get_storage(&token_key).unwrap();
-        if data[64] == 1 {
-            // Graduated — further buys should return 0
-            test_mock::set_timestamp(35_000);
-            assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), 0);
-        }
+        let mut data = test_mock::get_storage(&token_key).unwrap();
+        data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
+        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
+        storage_set(&token_key, &data);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
+        test_mock::set_value(1_000_000_000_000);
+        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
+
+        let data2 = test_mock::get_storage(&token_key).unwrap();
+        assert_eq!(data2[64], 0);
+
+        test_mock::set_timestamp(15_000);
+        test_mock::set_value(1_000_000_000);
+        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0);
     }
 
     #[test]
-    fn test_graduated_token_sell_blocked() {
+    fn test_threshold_crossing_does_not_block_sells() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        let molt = [42u8; 32];
+        set_molt_token(admin.as_ptr(), molt.as_ptr());
+        test_mock::set_cross_call_response(Some(vec![1u8]));
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         let creator = [2u8; 32];
@@ -1918,29 +1828,28 @@ mod tests {
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
 
-        // Buy and potentially graduate
         test_mock::set_timestamp(10_000);
         test_mock::set_caller(buyer);
-        let huge: u64 = 10_000_000_000_000_000;
-        test_mock::set_value(huge);
-        let bought = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(15_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(20_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(25_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
-        test_mock::set_timestamp(30_000);
-        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_value(1_000_000_000);
+        let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
+        assert!(bought > 0);
 
         let id_hex = u64_to_hex(token_id);
         let token_key = make_key(b"cpt:", &id_hex);
-        let data = test_mock::get_storage(&token_key).unwrap();
-        if data[64] == 1 && bought > 0 {
-            // Graduated — sell should return 0
-            test_mock::set_timestamp(40_000);
-            assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
-        }
+        let mut data = test_mock::get_storage(&token_key).unwrap();
+        data[32..40].copy_from_slice(&u64_to_bytes(400_000_000_000_000));
+        data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
+        storage_set(&token_key, &data);
+
+        test_mock::set_timestamp(15_000);
+        test_mock::set_value(1_000_000_000_000);
+        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
+
+        let data2 = test_mock::get_storage(&token_key).unwrap();
+        assert_eq!(data2[64], 0);
+
+        test_mock::set_timestamp(25_000);
+        assert!(sell(buyer.as_ptr(), token_id, bought / 2) > 0);
     }
 
     // ========================================================================
@@ -2074,8 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn test_g24_graduation_sets_flag_without_dex() {
-        // After graduation without DEX addresses, subsequent buys are blocked
+    fn test_g24_threshold_without_dex_keeps_curve_active() {
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -2096,19 +2004,17 @@ mod tests {
         data[40..48].copy_from_slice(&u64_to_bytes(50_000_000_000_000_000));
         storage_set(&token_key, &data);
 
-        // Buy triggers graduation
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
         test_mock::set_caller(buyer);
         test_mock::set_value(1_000_000_000_000);
-        let _ = buy(buyer.as_ptr(), token_id, 1_000_000_000_000);
+        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000_000) > 0);
 
-        // Token should be graduated
         let data2 = test_mock::get_storage(&token_key).unwrap();
-        assert_eq!(data2[64], 1);
+        assert_eq!(data2[64], 0);
 
-        // Subsequent buy blocked
         test_mock::set_timestamp(15_000);
-        assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), 0);
+        test_mock::set_value(1_000_000_000);
+        assert!(buy(buyer.as_ptr(), token_id, 1_000_000_000) > 0);
     }
 }

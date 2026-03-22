@@ -576,9 +576,9 @@ cargo build --release
                         <td><code>min_validator_stake</code></td>
                         <td>Integer</td>
                         <td><code>75000000000000</code></td>
-                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 75,000 MOLT (75K) minimum to
-                            participate in consensus. Bootstrap validators receive a 100,000 MOLT grant (25K buffer
-                            above minimum); validator 201+ must self-fund at least 75,000 MOLT.</td>
+                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). Mainnet uses 75,000 MOLT
+                            (75K); testnet genesis uses 75 MOLT to keep validator onboarding accessible. Bootstrap
+                            validators receive a 100,000 MOLT grant on the contributory-stake path.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -928,7 +928,8 @@ cargo build --release
             <h2 id="staking">Staking</h2>
 
             <p>Validators must stake MOLT tokens to participate in consensus. Stake weight determines your share of
-                block production slots and rewards.</p>
+                block production slots and epoch-settled staking rewards. Transaction-fee share is earned as you
+                produce blocks; inflationary staking rewards settle at epoch boundaries.</p>
 
             <h3>Stake via CLI</h3>
 
@@ -937,13 +938,13 @@ cargo build --release
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt stake add 75000000000000 --rpc-url https://testnet-rpc.moltchain.network
+                <pre><code>$ molt stake add 75000000000 --rpc-url https://testnet-rpc.moltchain.network
 
-<i class="fa-solid fa-shrimp"></i> Staking 75,000 MOLT for validator Mo1tVa1idAtoR...xYz789
+<i class="fa-solid fa-shrimp"></i> Staking 75 MOLT for validator Mo1tVa1idAtoR...xYz789
 
   Transaction: 5bN2...kQrT
   Bootstrap:   100,000.000000000 MOLT (granted, #47 of 200)
-  Debt:        100,000.000000000 MOLT (repay via 50% of rewards, or 75% at ≥95% uptime)
+    Debt:        100,000.000000000 MOLT (repaid from settled epoch rewards: 50% standard, 75% at ≥95% uptime)
   Uptime:      98.5% (≥ 95% → 75/25 debt/liquid split)
   Status:      Finalized (slot 1,204,817)
 
@@ -957,10 +958,12 @@ cargo build --release
                 </li>
                 <li><strong>Self-funded (validator 201+):</strong> Must provide your own 75,000 MOLT minimum —
                     immediately fully vested, no debt</li>
-                <li><strong>Vesting (standard):</strong> 50% of earned rewards go to debt repayment, 50% liquid — this
-                    is the default split for all bootstrap validators</li>
-                <li><strong>Performance bonus (≥95% uptime):</strong> 75% of earned rewards go to debt repayment, 25%
-                    liquid — accelerates graduation by ~1.5× (via <code>PERFORMANCE_BONUS_BPS = 15000</code>)</li>
+                <li><strong>Vesting (standard):</strong> 50% of settled epoch rewards go to debt repayment, 50% liquid
+                    — this is the default split for all bootstrap validators</li>
+                <li><strong>Performance bonus (≥95% uptime):</strong> 75% of settled epoch rewards go to debt
+                    repayment, 25% liquid — accelerates graduation by ~1.5× (via
+                    <code>PERFORMANCE_BONUS_BPS = 15000</code>)
+                </li>
                 <li><strong>Time cap:</strong> All remaining debt is forgiven after 547 days (~18 months) regardless of
                     repayment progress</li>
             </ul>
@@ -983,7 +986,7 @@ cargo build --release
                         <td>Standard</td>
                         <td>50% debt / 50% liquid</td>
                         <td>Bootstrap debt reaches 0</td>
-                        <td>Status → <code>FullyVested</code>, 100% liquid rewards</td>
+                        <td>Status → <code>FullyVested</code>, 100% of settled rewards become liquid</td>
                     </tr>
                     <tr>
                         <td>Performance Bonus</td>
@@ -1030,16 +1033,18 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
             <p><strong>Rule:</strong> One machine = one bootstrap grant. Self-funded validators (201+) are not
                 restricted by fingerprint.</p>
 
-            <h3>ReefStake Mechanism</h3>
-            <p>MoltChain uses <strong>ReefStake</strong>, a delegated proof-of-stake variant inspired by coral reef
-                ecosystems:</p>
+            <h3>Liquid Staking Mechanism</h3>
+            <p>MoltChain uses a delegated proof-of-stake liquid staking model inspired by coral reef ecosystems:</p>
             <ul>
                 <li><strong>Validator Coral:</strong> Each validator is a "coral head." Delegators attach stake to a
                     validator, growing the reef.</li>
-                <li><strong>Epoch Rotation:</strong> The active validator set is recalculated every epoch (~4 hours).
-                    The top validators by total stake are selected.</li>
-                <li><strong>Reward Distribution:</strong> Block rewards (heartbeat + transaction fees) are split
-                    proportionally between the validator (commission) and delegators.</li>
+                <li><strong>Epoch Activation:</strong> Validator-set changes settle at epoch boundaries (about 2 days on
+                    the live chain).
+                    Membership is applied by the protocol's epoch-transition rules, not a simple top-N stake
+                    leaderboard.</li>
+                <li><strong>Reward Distribution:</strong> Transaction-fee share is earned when your validator produces
+                    blocks, while staking inflation is distributed proportionally to validators and delegators when the
+                    epoch boundary settlement runs.</li>
                 <li><strong>Slashing:</strong> Double-signing or extended downtime results in a percentage of staked
                     MOLT being burned. With <code>enable_slashing = true</code>, evidence is gossiped via P2P and
                     processed by the <code>SlashingTracker</code>.</li>

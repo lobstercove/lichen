@@ -1,7 +1,7 @@
 // MoltChain Smart Contract System
 // WASM-based programmable contracts with proper host function implementations
 
-use crate::{Hash, Pubkey, StateStore};
+use crate::{Account, Hash, Pubkey, StateStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,8 @@ use wasmer::{
     Store, Type, Value,
 };
 use wasmer_compiler_cranelift::Cranelift;
-use wasmer_middlewares::metering::get_remaining_points;
 use wasmer_middlewares::metering::MeteringPoints;
+use wasmer_middlewares::metering::{get_remaining_points, set_remaining_points};
 use wasmer_middlewares::Metering;
 
 /// PERF-FIX 2 + P9-CORE-04: Global WASM compiled-module cache with LRU eviction.
@@ -42,6 +42,13 @@ thread_local! {
 /// use 2-3M instructions. 10M provides ample headroom for legitimate contracts
 /// while still preventing infinite loops.
 const MAX_WASM_COMPUTE_UNITS: u64 = 10_000_000;
+
+/// Conversion ratio: how many raw WASM instructions equal 1 CU.
+/// WASM instructions are much finer-grained than Solana-model CUs.
+/// With DIVISOR=50:  200K CU budget ≈ 10M WASM instructions (the hard limit).
+/// A simple contract (~500K WASM instructions) costs ~10K CU.
+pub const WASM_CU_DIVISOR: u64 = 50;
+
 /// Maximum WASM memory pages (1 page = 64KB, 1024 pages = 64MB) (T1.9, Task 3.5)
 pub const MAX_WASM_MEMORY_PAGES: u32 = 1024;
 /// Default minimum WASM memory pages (16 pages = 1MB) (Task 3.5)
@@ -56,8 +63,11 @@ pub const DEFAULT_WASM_MEMORY_PAGES: u32 = 16;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AbiType {
+    U8,
+    U16,
     U32,
     U64,
+    I16,
     I32,
     I64,
     // M12 fix: proper float types instead of mapping to U32/U64
@@ -67,6 +77,7 @@ pub enum AbiType {
     String,
     Bytes,
     /// 32-byte public key / address (passed as pointer to 32 bytes)
+    #[serde(alias = "Pubkey")]
     Pubkey,
     /// Arbitrary-length byte array with an explicit length param
     #[serde(rename = "bytes_with_len")]
@@ -81,6 +92,8 @@ pub struct AbiParam {
     /// Parameter type
     #[serde(rename = "type")]
     pub param_type: AbiType,
+    #[serde(default)]
+    pub optional: bool,
     /// Human-readable description (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -104,10 +117,14 @@ pub struct AbiFunction {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Parameters
+    #[serde(default)]
     pub params: Vec<AbiParam>,
     /// Return value (None = void)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returns: Option<AbiReturn>,
+    /// Opcode selector for contracts that expose a single `call()` export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opcode: Option<u8>,
     /// Whether this function only reads state (no writes)
     #[serde(default)]
     pub readonly: bool,
@@ -154,6 +171,7 @@ pub struct ContractAbi {
     /// ABI schema version
     pub version: String,
     /// Contract name
+    #[serde(alias = "contract")]
     pub name: String,
     /// Contract template/standard (e.g., "mt20", "mt721", "custom")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,6 +213,7 @@ impl ContractAbi {
                         .map(|(i, vt)| AbiParam {
                             name: format!("arg{}", i),
                             param_type: wasm_valtype_to_abi(vt),
+                            optional: false,
                             description: None,
                         })
                         .collect();
@@ -207,6 +226,7 @@ impl ContractAbi {
                         description: None,
                         params,
                         returns,
+                        opcode: None,
                         readonly: false,
                     })
                 } else {
@@ -228,6 +248,49 @@ impl ContractAbi {
             events: Vec::new(),
             errors: Vec::new(),
         })
+    }
+}
+
+fn build_opcode_dispatch_args(opcode: u8, args: &[u8]) -> Vec<u8> {
+    let mut dispatch_args = Vec::with_capacity(args.len() + 1);
+    dispatch_args.push(opcode);
+    dispatch_args.extend_from_slice(args);
+    dispatch_args
+}
+
+fn find_abi_function<'a>(
+    contract: &'a ContractAccount,
+    function_name: &str,
+) -> Option<&'a AbiFunction> {
+    contract.abi.as_ref().and_then(|abi| {
+        abi.functions
+            .iter()
+            .find(|function| function.name == function_name)
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeAccountOp {
+    Lock { account: Pubkey, amount: u64 },
+    Unlock { account: Pubkey, amount: u64 },
+    DeductLocked { account: Pubkey, amount: u64 },
+}
+
+impl NativeAccountOp {
+    pub(crate) fn account(&self) -> Pubkey {
+        match self {
+            Self::Lock { account, .. }
+            | Self::Unlock { account, .. }
+            | Self::DeductLocked { account, .. } => *account,
+        }
+    }
+
+    pub(crate) fn apply(&self, account: &mut Account) -> Result<(), String> {
+        match self {
+            Self::Lock { amount, .. } => account.lock(*amount),
+            Self::Unlock { amount, .. } => account.unlock(*amount),
+            Self::DeductLocked { amount, .. } => account.deduct_locked(*amount),
+        }
     }
 }
 
@@ -431,6 +494,11 @@ pub struct ContractContext {
     pub return_data: Vec<u8>,
     /// Remaining compute units (fuel). 0 = exhausted.
     pub compute_remaining: u64,
+    /// Transaction-level compute limit for this execution.
+    /// Defaults to `DEFAULT_COMPUTE_LIMIT` (10M). When called from the
+    /// transaction processor, set to the TX's remaining CU budget so that
+    /// WASM fuel metering respects the user-declared budget.
+    pub compute_limit: u64,
     /// Cross-contract storage entries injected by the processor.
     /// Merged into `storage` at execution time so contracts can read other
     /// contracts' data (e.g., MoltyID reputation) via normal `storage_read`.
@@ -455,6 +523,11 @@ pub struct ContractContext {
     /// StateBatch by the processor after execution, preventing the split-brain
     /// between direct state_store writes and the batch overlay.
     pub pending_ccc_value_deltas: Arc<Mutex<HashMap<Pubkey, i64>>>,
+    /// Native account balance operations requested through the zero-address
+    /// host call surface. These are applied atomically by the processor.
+    pub pending_native_account_ops: Vec<NativeAccountOp>,
+    /// Projected account state after applying `pending_native_account_ops`.
+    pub pending_native_account_state: HashMap<Pubkey, Account>,
     /// Current total storage bytes (keys + values). Tracked live during execution
     /// for protocol-level enforcement of MAX_TOTAL_STORAGE_BYTES (Task 4.3 M-4).
     pub storage_bytes_used: usize,
@@ -476,6 +549,7 @@ impl ContractContext {
             args: Vec::new(),
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            compute_limit: DEFAULT_COMPUTE_LIMIT,
             cross_contract_storage: HashMap::new(),
             state_store: None,
             call_depth: 0,
@@ -483,6 +557,8 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            pending_native_account_ops: Vec::new(),
+            pending_native_account_state: HashMap::new(),
             storage_bytes_used: 0,
         }
     }
@@ -510,6 +586,7 @@ impl ContractContext {
             args: Vec::new(),
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            compute_limit: DEFAULT_COMPUTE_LIMIT,
             cross_contract_storage: HashMap::new(),
             state_store: None,
             call_depth: 0,
@@ -517,6 +594,8 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            pending_native_account_ops: Vec::new(),
+            pending_native_account_state: HashMap::new(),
             storage_bytes_used,
         }
     }
@@ -545,6 +624,7 @@ impl ContractContext {
             args,
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            compute_limit: DEFAULT_COMPUTE_LIMIT,
             cross_contract_storage: HashMap::new(),
             state_store: None,
             call_depth: 0,
@@ -552,6 +632,8 @@ impl ContractContext {
             pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
             pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+            pending_native_account_ops: Vec::new(),
+            pending_native_account_state: HashMap::new(),
             storage_bytes_used,
         }
     }
@@ -591,6 +673,8 @@ pub struct ContractResult {
     /// AUDIT-FIX C-2: Accumulated value transfer deltas from cross-contract calls.
     /// Applied atomically through the StateBatch by the processor.
     pub ccc_value_deltas: HashMap<Pubkey, i64>,
+    /// Native account balance operations produced during execution.
+    pub native_account_ops: Vec<NativeAccountOp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -787,19 +871,12 @@ impl ContractRuntime {
         args: &[u8],
         context: ContractContext,
     ) -> Result<ContractResult, String> {
-        // Load contract's existing storage and args into context
-        let mut ctx = context;
-        ctx.storage = contract.storage.clone();
-        // Merge cross-contract storage entries (e.g., MoltyID reputation data)
-        // injected by the processor. These are available for reading via
-        // host_storage_read but are NOT tracked in storage_changes, so they
-        // won't be persisted back to the contract's canonical storage.
-        // Use entry().or_insert() so the contract's own data takes priority.
-        for (k, v) in std::mem::take(&mut ctx.cross_contract_storage) {
-            ctx.storage.entry(k).or_insert(v);
-        }
-        ctx.args = args.to_vec();
+        let ctx = Self::prepare_execution_context(context, args);
         let initial_compute = ctx.compute_remaining;
+        // Capture the TX-level compute limit. When called from the processor,
+        // this is the TX's remaining budget. For standalone/test calls it
+        // defaults to DEFAULT_COMPUTE_LIMIT (10M).
+        let compute_limit = ctx.compute_limit;
 
         // PERF-FIX 2 + P9-CORE-04: Compiled-module cache with LRU eviction.
         // Cranelift compilation takes 5-50ms per module. With 29 contracts and
@@ -860,6 +937,12 @@ impl ContractRuntime {
         let instance = Instance::new(&mut self.store, &module, &imports)
             .map_err(|e| format!("Failed to instantiate contract: {}", e))?;
 
+        // Set WASM fuel to the hard runtime ceiling.  The actual CU charge
+        // is post-computed by dividing raw WASM instructions by WASM_CU_DIVISOR,
+        // then checked against the TX-level compute_limit (Solana model).
+        let wasm_fuel_limit = MAX_WASM_COMPUTE_UNITS;
+        set_remaining_points(&mut self.store, &instance, wasm_fuel_limit);
+
         // Bind WASM linear memory to context for host function access
         if let Ok(memory) = instance.exports.get_memory("memory") {
             // T1.9: Enforce memory limit — reject contracts that declare too much memory
@@ -880,10 +963,30 @@ impl ContractRuntime {
             env.as_mut(&mut self.store).memory = Some(memory.clone());
         }
 
-        let func = instance
-            .exports
-            .get_function(function_name)
-            .map_err(|e| format!("Function '{}' not found: {}", function_name, e))?;
+        let (func, effective_args) = match instance.exports.get_function(function_name) {
+            Ok(function) => (function, args.to_vec()),
+            Err(named_error) => {
+                let abi_function = find_abi_function(contract, function_name).ok_or_else(|| {
+                    format!("Function '{}' not found: {}", function_name, named_error)
+                })?;
+                let opcode = abi_function.opcode.ok_or_else(|| {
+                    format!(
+                        "Function '{}' is not exported and has no opcode selector in ABI",
+                        function_name
+                    )
+                })?;
+                let fallback = instance
+                    .exports
+                    .get_function("call")
+                    .map_err(|call_error| {
+                        format!(
+                            "Function '{}' not found: {}. ABI selector fallback also failed: {}",
+                            function_name, named_error, call_error
+                        )
+                    })?;
+                (fallback, build_opcode_dispatch_args(opcode, args))
+            }
+        };
 
         // Build WASM-level call arguments by introspecting the function's type
         // signature. Contracts use two ABIs:
@@ -895,7 +998,7 @@ impl ContractRuntime {
         // This block handles both transparently.
         let func_type = func.ty(&self.store);
         let params: Vec<Type> = func_type.params().to_vec();
-        let call_args: Vec<Value> = if params.is_empty() || args.is_empty() {
+        let call_args: Vec<Value> = if params.is_empty() || effective_args.is_empty() {
             vec![]
         } else {
             // Grow WASM memory by 1 page (64KB) to get a safe buffer area for
@@ -915,22 +1018,24 @@ impl ContractRuntime {
             // auto-encode them to binary with a layout descriptor so the WASM
             // function receives correctly laid-out memory (base58 → 32 bytes,
             // strings → pointer data, integers → raw bytes).
-            let args = if !args.is_empty()
-                && args[0] == b'['
+            let encoded_args = if !effective_args.is_empty()
+                && effective_args[0] == b'['
                 && !params.is_empty()
-                && args[0] != 0xAB
-                && std::str::from_utf8(args).is_ok()
+                && effective_args[0] != 0xAB
+                && std::str::from_utf8(&effective_args).is_ok()
             {
-                if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
+                if let Ok(json_vals) =
+                    serde_json::from_slice::<Vec<serde_json::Value>>(&effective_args)
+                {
                     encode_json_args_to_binary(&json_vals, &params)
-                        .unwrap_or_else(|_| args.to_vec())
+                        .unwrap_or_else(|_| effective_args.clone())
                 } else {
-                    args.to_vec()
+                    effective_args.clone()
                 }
             } else {
-                args.to_vec()
+                effective_args.clone()
             };
-            let args = &args;
+            let args = &encoded_args;
 
             let view = memory.view(&self.store);
             view.write(args_base as u64, args)
@@ -1080,7 +1185,10 @@ impl ContractRuntime {
             MeteringPoints::Remaining(pts) => pts,
             MeteringPoints::Exhausted => 0,
         };
-        let wasm_compute_used = MAX_WASM_COMPUTE_UNITS.saturating_sub(metering_remaining);
+        // Convert raw WASM instructions to CU using the divisor.
+        // With WASM_CU_DIVISOR=50: 10M instructions → 200K CU.
+        let raw_wasm_instructions = wasm_fuel_limit.saturating_sub(metering_remaining);
+        let wasm_compute_used = raw_wasm_instructions / WASM_CU_DIVISOR;
 
         // T2.4: Post-execution memory growth check — enforce sandbox limits.
         // Catches contracts that call memory.grow() during execution.
@@ -1105,6 +1213,7 @@ impl ContractRuntime {
                     cross_call_events: Vec::new(),
                     cross_call_logs: Vec::new(),
                     ccc_value_deltas: HashMap::new(),
+                    native_account_ops: Vec::new(),
                 });
             }
         }
@@ -1115,9 +1224,10 @@ impl ContractRuntime {
         let compute_used = host_compute_used.saturating_add(wasm_compute_used);
 
         // AUDIT-FIX 2.3: Unified compute budget — total (WASM + host) must not exceed the limit.
-        // Previously WASM got 1.4M and host got 1M independently (~2.4M effective).
-        // Now the combined total is capped at DEFAULT_COMPUTE_LIMIT.
-        if compute_used > DEFAULT_COMPUTE_LIMIT {
+        // The limit is now driven by the transaction-level budget (compute_limit)
+        // rather than the hard DEFAULT_COMPUTE_LIMIT, aligning WASM metering with
+        // the user-declared CU budget (Solana model).
+        if compute_used > compute_limit {
             return Ok(ContractResult {
                 return_data: vec![],
                 logs: final_ctx.logs.clone(),
@@ -1125,8 +1235,8 @@ impl ContractRuntime {
                 storage_changes: HashMap::new(),
                 success: false,
                 error: Some(format!(
-                    "Contract exceeded unified compute budget: {} > {} (WASM: {}, host: {})",
-                    compute_used, DEFAULT_COMPUTE_LIMIT, wasm_compute_used, host_compute_used
+                    "Contract exceeded compute budget: {} > {} (WASM: {}, host: {})",
+                    compute_used, compute_limit, wasm_compute_used, host_compute_used
                 )),
                 compute_used,
                 return_code: None,
@@ -1134,6 +1244,7 @@ impl ContractRuntime {
                 cross_call_events: Vec::new(),
                 cross_call_logs: Vec::new(),
                 ccc_value_deltas: HashMap::new(),
+                native_account_ops: Vec::new(),
             });
         }
 
@@ -1187,6 +1298,7 @@ impl ContractRuntime {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .clone(),
+                    native_account_ops: final_ctx.pending_native_account_ops.clone(),
                 })
             }
             Err(e) => {
@@ -1208,9 +1320,18 @@ impl ContractRuntime {
                     cross_call_events: Vec::new(),
                     cross_call_logs: Vec::new(),
                     ccc_value_deltas: HashMap::new(),
+                    native_account_ops: Vec::new(),
                 })
             }
         }
+    }
+
+    fn prepare_execution_context(mut ctx: ContractContext, args: &[u8]) -> ContractContext {
+        for (k, v) in std::mem::take(&mut ctx.cross_contract_storage) {
+            ctx.storage.entry(k).or_insert(v);
+        }
+        ctx.args = args.to_vec();
+        ctx
     }
 }
 
@@ -1838,6 +1959,10 @@ fn host_cross_contract_call(
         }
     }
 
+    if target == Pubkey([0u8; 32]) {
+        return handle_native_account_call(env, &function_name, &args_buf, result_ptr, result_len);
+    }
+
     // ── Load target contract from state ──────────────────────────────
     let target_account = match state_store.get_account(&target) {
         Ok(Some(a)) if a.executable => a,
@@ -1852,7 +1977,11 @@ fn host_cross_contract_call(
     // If prior cross-contract calls in this transaction already modified the
     // target contract's storage, merge those pending changes so the callee
     // sees a consistent view.
-    let mut callee_storage = target_contract.storage.clone();
+    let mut callee_storage: HashMap<Vec<u8>, Vec<u8>> =
+        match state_store.load_contract_storage_map(&target) {
+            Ok(entries) => entries.into_iter().collect(),
+            Err(_) => return 0,
+        };
     {
         let changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(target_changes) = changes.get(&target) {
@@ -1888,6 +2017,7 @@ fn host_cross_contract_call(
         args: args_buf.clone(),
         return_data: Vec::new(),
         compute_remaining: caller_remaining,
+        compute_limit: caller_remaining,
         cross_contract_storage: HashMap::new(),
         state_store: Some(state_store.clone()),
         call_depth: call_depth + 1,
@@ -1897,6 +2027,8 @@ fn host_cross_contract_call(
         // AUDIT-FIX C-2: Fresh delta map so nested CCC deltas can be
         // rolled back if this callee fails.
         pending_ccc_value_deltas: Arc::new(Mutex::new(HashMap::new())),
+        pending_native_account_ops: Vec::new(),
+        pending_native_account_state: HashMap::new(),
         storage_bytes_used: callee_storage_bytes,
     };
 
@@ -2040,6 +2172,15 @@ fn host_cross_contract_call(
         }
     }
 
+    if !result.native_account_ops.is_empty() {
+        let ctx = env.data_mut();
+        for op in &result.native_account_ops {
+            if queue_native_account_op(ctx, &state_store, op.clone()).is_err() {
+                return 0;
+            }
+        }
+    }
+
     // ── Determine result data to write back to caller ────────────────
     // Priority: explicit return_data > return_code encoding > success byte
     let effective_result: Vec<u8> = if !result.return_data.is_empty() {
@@ -2076,6 +2217,88 @@ fn host_cross_contract_call(
         1
     } else {
         write_len as u32
+    }
+}
+
+fn queue_native_account_op(
+    ctx: &mut ContractContext,
+    state_store: &StateStore,
+    op: NativeAccountOp,
+) -> Result<(), String> {
+    let account_key = op.account();
+    let mut account = if let Some(account) = ctx.pending_native_account_state.get(&account_key) {
+        account.clone()
+    } else {
+        state_store
+            .get_account(&account_key)?
+            .ok_or_else(|| format!("Native account {} not found", account_key))?
+    };
+    op.apply(&mut account)?;
+    ctx.pending_native_account_state
+        .insert(account_key, account);
+    ctx.pending_native_account_ops.push(op);
+    Ok(())
+}
+
+fn handle_native_account_call(
+    mut env: FunctionEnvMut<ContractContext>,
+    function_name: &str,
+    args: &[u8],
+    result_ptr: u32,
+    result_len: u32,
+) -> u32 {
+    if args.len() < 40 {
+        return 0;
+    }
+
+    let state_store = match env.data().state_store.clone() {
+        Some(store) => store,
+        None => return 0,
+    };
+
+    let mut account_bytes = [0u8; 32];
+    account_bytes.copy_from_slice(&args[..32]);
+    let amount = u64::from_le_bytes(match args[32..40].try_into() {
+        Ok(bytes) => bytes,
+        Err(_) => return 0,
+    });
+
+    let op = match function_name {
+        "lock" => NativeAccountOp::Lock {
+            account: Pubkey(account_bytes),
+            amount,
+        },
+        "unlock" => NativeAccountOp::Unlock {
+            account: Pubkey(account_bytes),
+            amount,
+        },
+        "deduct" => NativeAccountOp::DeductLocked {
+            account: Pubkey(account_bytes),
+            amount,
+        },
+        _ => return 0,
+    };
+
+    {
+        let ctx = env.data_mut();
+        if queue_native_account_op(ctx, &state_store, op).is_err() {
+            return 0;
+        }
+    }
+
+    let write_len = (1usize).min(result_len as usize);
+    if write_len > 0 {
+        let memory = match env.data().memory.clone() {
+            Some(memory) => memory,
+            None => return 0,
+        };
+        let view = memory.view(&env);
+        if view.write(result_ptr as u64, &[1u8]).is_err() {
+            return 0;
+        }
+        1
+    } else {
+        1
     }
 }
 
@@ -2303,6 +2526,7 @@ mod tests {
             cross_call_events: Vec::new(),
             cross_call_logs: Vec::new(),
             ccc_value_deltas: HashMap::new(),
+            native_account_ops: Vec::new(),
         };
 
         assert!(result.success);
@@ -2466,9 +2690,48 @@ mod tests {
             cross_call_events: Vec::new(),
             cross_call_logs: Vec::new(),
             ccc_value_deltas: HashMap::new(),
+            native_account_ops: Vec::new(),
         };
         assert!(result.success);
         assert_eq!(result.return_code, Some(1));
+    }
+
+    #[test]
+    fn test_contract_abi_parses_repo_json_shape() {
+        let abi: ContractAbi = serde_json::from_str(
+            r#"{
+                "contract": "dex_core",
+                "version": "1.0",
+                "functions": [
+                    {
+                        "name": "update_pair_fees",
+                        "opcode": 7,
+                        "params": [
+                            {"name": "caller", "type": "Pubkey"},
+                            {"name": "pair_id", "type": "u64"},
+                            {"name": "maker_fee_bps", "type": "i16"},
+                            {"name": "taker_fee_bps", "type": "u16"},
+                            {"name": "enabled", "type": "bool", "optional": true}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(abi.name, "dex_core");
+        assert_eq!(abi.functions[0].opcode, Some(7));
+        assert_eq!(abi.functions[0].params[0].param_type, AbiType::Pubkey);
+        assert_eq!(abi.functions[0].params[2].param_type, AbiType::I16);
+        assert_eq!(abi.functions[0].params[3].param_type, AbiType::U16);
+        assert_eq!(abi.functions[0].params[4].param_type, AbiType::Bool);
+        assert!(abi.functions[0].params[4].optional);
+    }
+
+    #[test]
+    fn test_build_opcode_dispatch_args_prefixes_selector() {
+        let args = vec![1u8, 2, 3, 4];
+        assert_eq!(build_opcode_dispatch_args(9, &args), vec![9u8, 1, 2, 3, 4]);
     }
 
     /// P9-CORE-04: Verify MODULE_CACHE uses LRU with bounded capacity
@@ -2666,6 +2929,36 @@ mod tests {
             vec![1, 2, 3],
         );
         assert_eq!(ctx.storage_bytes_used, 2);
+    }
+
+    #[test]
+    fn test_prepare_execution_context_preserves_live_storage() {
+        let mut context = ContractContext::with_args(
+            Pubkey::new([1u8; 32]),
+            Pubkey::new([2u8; 32]),
+            0,
+            1,
+            HashMap::from([(b"key".to_vec(), b"cf-value".to_vec())]),
+            vec![1, 2, 3],
+        );
+        context
+            .cross_contract_storage
+            .insert(b"overlay-only".to_vec(), b"ccc".to_vec());
+        context
+            .cross_contract_storage
+            .insert(b"key".to_vec(), b"embedded-should-not-win".to_vec());
+
+        let prepared = ContractRuntime::prepare_execution_context(context, &[9, 8]);
+
+        assert_eq!(
+            prepared.storage.get(b"key" as &[u8]),
+            Some(&b"cf-value".to_vec())
+        );
+        assert_eq!(
+            prepared.storage.get(b"overlay-only" as &[u8]),
+            Some(&b"ccc".to_vec())
+        );
+        assert_eq!(prepared.args, vec![9, 8]);
     }
 
     #[test]

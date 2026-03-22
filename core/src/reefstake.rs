@@ -6,8 +6,9 @@ use crate::Pubkey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-/// Percentage of each block reward allocated to ReefStake stakers (basis points).
-/// 1000 bp = 10% of block reward funds the liquid staking pool.
+/// Percentage of epoch inflation allocated to ReefStake stakers (basis points).
+/// The constant name is preserved for compatibility with existing callers.
+/// 1000 bp = 10% of the settled epoch mint funds the liquid staking pool.
 pub const REEFSTAKE_BLOCK_SHARE_BPS: u64 = 1_000;
 
 /// Serde helper: serialize/deserialize HashMap<Pubkey, V> with base58 string keys.

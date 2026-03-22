@@ -594,6 +594,7 @@ fn test_byzantine_block_production() {
         transactions: vec![],
         tx_fees_paid: vec![],
         oracle_prices: vec![],
+        commit_round: 0,
         commit_signatures: vec![],
     };
 
@@ -611,6 +612,7 @@ fn test_byzantine_block_production() {
         transactions: vec![],
         tx_fees_paid: vec![],
         oracle_prices: vec![],
+        commit_round: 0,
         commit_signatures: vec![],
     };
 

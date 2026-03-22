@@ -1266,6 +1266,8 @@ mod tests {
     fn test_approve_work_with_token_transfer() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let contract_addr = [0xCC; 32];
+        test_mock::set_contract_address(contract_addr);
 
         // Configure token address
         let admin = [5u8; 32];
@@ -1289,16 +1291,25 @@ mod tests {
         test_mock::set_caller(worker);
         submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
 
-        // Approve — call_token_transfer returns Ok(false) in test mode
-        // SECURITY-FIX: bounty now reverts to OPEN when transfer fails
+        // Approve — default mock transfer succeeds and should use contract
+        // self-custody as the source account.
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
         let result = approve_work(creator.as_ptr(), 0, 0);
-        assert_eq!(result, 8);
+        assert_eq!(result, 0);
 
         let bk = bounty_key(0);
         let bounty = test_mock::get_storage(&bk).unwrap();
-        assert_eq!(bounty[80], BOUNTY_OPEN); // Reverted to open
+        assert_eq!(bounty[80], BOUNTY_COMPLETED);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("approve_work should perform a token transfer");
+        assert_eq!(target, token);
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &contract_addr);
+        assert_eq!(&args[32..64], &worker);
+        assert_eq!(bytes_to_u64(&args[64..72]), 500_000);
     }
 
     #[test]
@@ -1414,6 +1425,8 @@ mod tests {
     fn test_cancel_bounty_uses_correct_token_key() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let contract_addr = [0xCC; 32];
+        test_mock::set_contract_address(contract_addr);
 
         // Configure token address via set_token_address (writes TOKEN_ADDRESS_KEY)
         let admin = [5u8; 32];
@@ -1432,17 +1445,27 @@ mod tests {
         // Cancel — should use TOKEN_ADDRESS_KEY (not the old wrong key)
         test_mock::set_caller(creator);
         let result = cancel_bounty(creator.as_ptr(), 0);
-        // call_token_transfer returns Ok(false) in test mock → cancel reverts
-        assert_eq!(
-            result, 8,
-            "Cancel should attempt transfer and revert on failure"
-        );
+        assert_eq!(result, 0, "Cancel should refund successfully");
+
+        let bounty = test_mock::get_storage(&bounty_key(0)).unwrap();
+        assert_eq!(bounty[80], BOUNTY_CANCELLED);
+
+        let (target, function, args, value) = test_mock::get_last_cross_call()
+            .expect("cancel_bounty should perform a token transfer");
+        assert_eq!(target, token);
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &contract_addr);
+        assert_eq!(&args[32..64], &creator);
+        assert_eq!(bytes_to_u64(&args[64..72]), 300_000);
     }
 
     #[test]
     fn test_approve_uses_self_custody() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let contract_addr = [0xCC; 32];
+        test_mock::set_contract_address(contract_addr);
 
         let admin = [5u8; 32];
         test_mock::set_caller(admin);
@@ -1461,11 +1484,19 @@ mod tests {
         test_mock::set_caller(worker);
         submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
 
-        // Approve — in test mock call_token_transfer returns Ok(false),
-        // so bounty reverts to OPEN (proves transfer was attempted)
+        // Approve — verify self-custody transfer uses the contract address as
+        // the source account.
         test_mock::set_caller(creator);
         let result = approve_work(creator.as_ptr(), 0, 0);
-        assert_eq!(result, 8, "Approve should attempt self-custody transfer");
+        assert_eq!(result, 0, "Approve should succeed with token transfer");
+
+        let (_, function, args, value) =
+            test_mock::get_last_cross_call().expect("approve_work should perform a token transfer");
+        assert_eq!(function, "transfer");
+        assert_eq!(value, 0);
+        assert_eq!(&args[0..32], &contract_addr);
+        assert_eq!(&args[32..64], &worker);
+        assert_eq!(bytes_to_u64(&args[64..72]), 500_000);
     }
 
     #[test]

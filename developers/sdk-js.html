@@ -125,6 +125,13 @@
                 <div class="callout callout-info">
                     <p>The SDK requires Node.js 18+ or a browser environment with <code>fetch</code> support. WebSocket
                         features require the <code>ws</code> package in Node.js (included as a dependency).</p>
+                    <p>The package is not yet published to npm. For now, install from the local source in
+                        <code>sdk/js/</code>:</p>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>npm install ./sdk/js</code></pre>
                 </div>
             </section>
 
@@ -219,7 +226,8 @@ console.log('TX Signature:', signature);</code></pre>
             <div class="method-card">
                 <h3 class="method-name">getLatestBlock(): Promise&lt;Block&gt;</h3>
                 <p class="method-desc">Get the most recently produced block. Returns
-                    <code>{ slot, hash, parentHash, transactions, timestamp }</code>.</p>
+                    <code>{ slot, hash, parentHash, transactions, timestamp }</code>.
+                </p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">TypeScript</span></div>
                     <pre><code>const block = await conn.getLatestBlock();
@@ -248,7 +256,8 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
             <div class="method-card">
                 <h3 class="method-name">getMetrics(): Promise&lt;Metrics&gt;</h3>
                 <p class="method-desc">Get chain performance metrics:
-                    <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code>.</p>
+                    <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code>.
+                </p>
             </div>
 
             <div class="method-card">
@@ -266,7 +275,8 @@ console.log(`Slot ${block.slot}, ${block.transactions} txs`);</code></pre>
             <div class="method-card">
                 <h3 class="method-name">getNetworkInfo(): Promise&lt;NetworkInfo&gt;</h3>
                 <p class="method-desc">Get network info:
-                    <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code>.</p>
+                    <code>{ chainId, networkId, version, currentSlot, validatorCount, peerCount }</code>.
+                </p>
             </div>
 
             <div class="method-card">
@@ -530,7 +540,8 @@ const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</co
             <h3 id="connection-ws">WebSocket Subscriptions</h3>
             <p>All subscription methods require a <code>wsUrl</code> to be set in the Connection constructor. Each
                 <code>on*</code> method returns a subscription ID for later unsubscribing with the corresponding
-                <code>off*</code> method.</p>
+                <code>off*</code> method.
+            </p>
 
             <div class="method-card">
                 <h3 class="method-name">onSlot(callback: (slot: number) =&gt; void): Promise&lt;number&gt;</h3>
@@ -544,15 +555,19 @@ const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</co
 
             <div class="method-card">
                 <h3 class="method-name">onTransaction(callback: (tx: any) =&gt; void): Promise&lt;number&gt;</h3>
-                <p class="method-desc">Subscribe to all confirmed transactions. Unsubscribe with
-                    <code>offTransaction(subId)</code>.</p>
+                <p class="method-desc">Subscribe to transactions observed in canonical blocks. Use signature status
+                    subscriptions when you need explicit processed / confirmed / finalized commitment tracking.
+                    Unsubscribe with
+                    <code>offTransaction(subId)</code>.
+                </p>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">onAccountChange(pubkey: PublicKey, callback: (account: any) =&gt; void):
                     Promise&lt;number&gt;</h3>
                 <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with
-                    <code>offAccountChange(subId)</code>.</p>
+                    <code>offAccountChange(subId)</code>.
+                </p>
             </div>
 
             <div class="method-card">
@@ -578,7 +593,8 @@ const sig = await conn.stake(keypair, validator, 10_000_000_000); // 10 MOLT</co
             <div class="method-card">
                 <h3 class="method-name">onMarketListings(callback) / onMarketSales(callback)</h3>
                 <p class="method-desc">Subscribe to marketplace listing and sale events. Unsubscribe with
-                    <code>offMarketListings(subId)</code> / <code>offMarketSales(subId)</code>.</p>
+                    <code>offMarketListings(subId)</code> / <code>offMarketSales(subId)</code>.
+                </p>
             </div>
 
             <div class="method-card">

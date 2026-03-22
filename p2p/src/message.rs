@@ -72,6 +72,8 @@ pub struct CompactBlock {
     pub tx_fees_paid: Vec<u64>,
     /// Oracle price data from the block producer
     pub oracle_prices: Vec<(String, u64)>,
+    /// Consensus round that produced the commit certificate
+    pub commit_round: u32,
     /// Commit certificate signatures (2/3+ validator precommits)
     #[serde(default)]
     pub commit_signatures: Vec<CommitSignature>,
@@ -90,6 +92,7 @@ impl CompactBlock {
             short_ids,
             tx_fees_paid: block.tx_fees_paid.clone(),
             oracle_prices: block.oracle_prices.clone(),
+            commit_round: block.commit_round,
             commit_signatures: block.commit_signatures.clone(),
         }
     }
@@ -282,6 +285,13 @@ pub enum MessageType {
         state_root: [u8; 32],
         /// Total accounts
         total_accounts: u64,
+        /// Signed block header anchoring this checkpoint, if available.
+        checkpoint_header: Option<BlockHeader>,
+        /// Consensus round that produced the checkpoint anchor commit.
+        commit_round: u32,
+        /// Commit certificate for the checkpoint anchor block.
+        #[serde(default)]
+        commit_signatures: Vec<CommitSignature>,
     },
 
     /// Slashing evidence broadcast

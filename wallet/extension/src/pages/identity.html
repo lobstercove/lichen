@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoltWallet — Identity Details</title>
+  <link rel="stylesheet" href="../styles/shared-base-styles.css" />
+  <link rel="stylesheet" href="../styles/shared-theme.css" />
+  <link rel="stylesheet" href="../styles/wallet.css" />
+  <link rel="stylesheet" href="../styles/extension-overrides.css" />
+  <link rel="stylesheet" href="identity.css" />
+</head>
+<body class="wallet-body">
+  <main class="identity-shell container">
+    <section class="wallet-content">
+      <div class="identity-top">
+        <h2>Identity Details</h2>
+        <button id="refreshIdentity" class="btn btn-secondary btn-small">Refresh</button>
+      </div>
+      <div id="identityMeta" class="meta"></div>
+      <div class="identity-grid">
+        <section class="id-card"><h3>Profile</h3><div id="identityProfile"></div></section>
+        <section class="id-card"><h3>Skills</h3><div id="identitySkills"></div></section>
+        <section class="id-card"><h3>Vouches</h3><div id="identityVouches"></div></section>
+        <section class="id-card"><h3>Achievements</h3><div id="identityAchievements"></div></section>
+      </div>
+      <div class="id-action-grid">
+        <button id="actionRegister" class="btn btn-secondary btn-small">Register</button>
+        <button id="actionAddSkill" class="btn btn-secondary btn-small">Add Skill</button>
+        <button id="actionUpdateAgentType" class="btn btn-secondary btn-small">Agent Type</button>
+        <button id="actionVouch" class="btn btn-secondary btn-small">Vouch</button>
+        <button id="actionSetEndpoint" class="btn btn-secondary btn-small">Set Endpoint</button>
+        <button id="actionSetAvailability" class="btn btn-secondary btn-small">Set Availability</button>
+        <button id="actionSetRate" class="btn btn-secondary btn-small">Set Rate</button>
+        <button id="actionRegisterName" class="btn btn-secondary btn-small">Register .molt</button>
+        <button id="actionRenewName" class="btn btn-secondary btn-small">Renew .molt</button>
+        <button id="actionTransferName" class="btn btn-secondary btn-small">Transfer .molt</button>
+        <button id="actionReleaseName" class="btn btn-secondary btn-small">Release .molt</button>
+      </div>
+      <div id="identityActionStatus" class="meta" style="margin-top: 0.75rem;"></div>
+      <div class="id-actions">
+        <button id="backHome" class="btn btn-secondary">Back to Dashboard</button>
+      </div>
+    </section>
+  </main>
+  <script src="../../shared/utils.js"></script>
+  <script type="module" src="identity.js"></script>
+</body>
+</html>

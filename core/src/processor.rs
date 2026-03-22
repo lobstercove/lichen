@@ -13,6 +13,7 @@ use crate::transaction::{Instruction, Transaction};
 use crate::Hash;
 use alloy_primitives::U256;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -351,7 +352,12 @@ pub struct TxProcessor {
     batch: Mutex<Option<StateBatch>>,
     /// Metadata from the most recent contract call execution, accumulated
     /// during process_transaction and drained into TxResult.
-    contract_meta: Mutex<(Option<i64>, Vec<String>)>,
+    /// Fields: (return_code, logs, compute_used)
+    contract_meta: Mutex<(Option<i64>, Vec<String>, u64)>,
+    /// Per-transaction compute budget, set at the start of process_transaction_inner.
+    /// Read by contract_call() to pass the remaining budget to the WASM runtime
+    /// so that fuel metering respects the user-declared CU budget.
+    tx_compute_budget: Mutex<u64>,
     /// ZK proof verifier for shielded pool operations
     #[cfg(feature = "zk")]
     zk_verifier: Mutex<crate::zk::Verifier>,
@@ -362,7 +368,8 @@ impl TxProcessor {
         TxProcessor {
             state,
             batch: Mutex::new(None),
-            contract_meta: Mutex::new((None, Vec::new())),
+            contract_meta: Mutex::new((None, Vec::new(), 0)),
+            tx_compute_budget: Mutex::new(0),
             #[cfg(feature = "zk")]
             zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
@@ -370,9 +377,13 @@ impl TxProcessor {
 
     /// Drain accumulated contract execution metadata (return_code, logs).
     /// Called when building a TxResult to capture the contract's diagnostics.
-    fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>) {
+    fn drain_contract_meta(&self) -> (Option<i64>, Vec<String>, u64) {
         let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
-        (meta.0.take(), std::mem::take(&mut meta.1))
+        (
+            meta.0.take(),
+            std::mem::take(&mut meta.1),
+            std::mem::replace(&mut meta.2, 0),
+        )
     }
 
     /// Build a TxResult, draining any accumulated contract metadata.
@@ -383,7 +394,7 @@ impl TxProcessor {
         error: Option<String>,
         compute_units_used: u64,
     ) -> TxResult {
-        let (return_code, contract_logs) = self.drain_contract_meta();
+        let (return_code, contract_logs, _meta_cu) = self.drain_contract_meta();
         TxResult {
             success,
             fee_paid,
@@ -394,22 +405,39 @@ impl TxProcessor {
         }
     }
 
-    /// Calculate total fees for a transaction (base + program-specific).
-    /// All users pay the same flat rate — reputation discounts removed (Task 4.2 M-7).
+    /// Calculate total fees for a transaction (base + program-specific + priority).
+    ///
+    /// Fee formula (Solana-inspired CU model):
+    ///   `total = base_fee + instruction_premiums + priority_fee`
+    /// where
+    ///   `priority_fee = effective_compute_budget × compute_unit_price / 1_000_000`
+    /// (compute_unit_price is in micro-shells per CU).
+    ///
+    /// All users pay the same base rate — reputation discounts removed (Task 4.2 M-7).
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
-        // Internal system transaction types 2-5, 19, 26, 27 are fee-free:
-        //   2 = Reward distribution (validator block rewards from treasury)
+        let base_and_premiums = Self::compute_base_fee(tx, fee_config);
+        let priority = Self::compute_priority_fee(tx);
+        base_and_premiums.saturating_add(priority)
+    }
+
+    /// Compute only the base fee portion (base + instruction-specific premiums).
+    /// Does NOT include priority fee.
+    pub fn compute_base_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
+        // Internal system transaction types 2-5, 19, 26, 27, 30, 31 are fee-free:
+        //   2 = Reward distribution (epoch-settled minted validator rewards)
         //   3 = Grant/debt repayment (validator grant repayment to treasury)
         //   4 = Genesis transfer (initial treasury funding)
         //   5 = Genesis mint (initial supply creation)
         //  19 = Faucet airdrop (treasury-funded, already debits treasury)
         //  26 = RegisterValidator (bootstrap grant through consensus)
         //  27 = SlashValidator (consensus-based equivocation slashing)
+        //  30 = OracleAttestation (validator price feed, protocol-level)
+        //  31 = DeregisterValidator (voluntary validator exit, protocol-level)
         // These are created by the validator itself and must not be charged fees.
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2..=5 | 19 | 26 | 27) {
+                    if matches!(kind, 2..=5 | 19 | 26 | 27 | 30 | 31) {
                         return 0;
                     }
                 }
@@ -473,6 +501,55 @@ impl TxProcessor {
         }
 
         total
+    }
+
+    /// Compute the priority fee portion: `effective_compute_budget × compute_unit_price / 1_000_000`.
+    ///
+    /// `compute_unit_price` is denominated in micro-shells per CU.
+    /// Division by 1,000,000 converts to shells. This matches Solana's
+    /// micro-lamports-per-CU model.
+    ///
+    /// Example: 200,000 CU budget × 1,000 μshells/CU = 200,000,000 / 1,000,000 = 200 shells priority fee.
+    pub fn compute_priority_fee(tx: &Transaction) -> u64 {
+        let cu_price = tx.message.effective_compute_unit_price();
+        if cu_price == 0 {
+            return 0;
+        }
+        let budget = tx.message.effective_compute_budget();
+        // Use u128 to prevent overflow: budget (up to 1.4M) × price (up to u64::MAX)
+        let product = budget as u128 * cu_price as u128;
+        // Divide by 1_000_000 (micro-shells → shells), capped at u64::MAX
+        (product / 1_000_000).min(u64::MAX as u128) as u64
+    }
+
+    /// Derive the exact fee charged for a transaction from locally authoritative state.
+    ///
+    /// Native transaction fees are deterministic from the transaction contents
+    /// and fee config. EVM transaction fees depend on gas actually used, so the
+    /// exact value is available only after the local receipt has been stored.
+    /// Returns `None` when exact local fee data is unavailable.
+    pub fn exact_transaction_fee_from_state(
+        state: &StateStore,
+        tx: &Transaction,
+        fee_config: &FeeConfig,
+    ) -> Option<u64> {
+        let fallback_fee = Self::compute_transaction_fee(tx, fee_config);
+        let first_ix = tx.message.instructions.first()?;
+
+        if first_ix.program_id != EVM_PROGRAM_ID {
+            return Some(fallback_fee);
+        }
+
+        let evm_tx = decode_evm_transaction(&first_ix.data).ok()?;
+        let evm_hash: [u8; 32] = evm_tx.hash.into();
+        let receipt = state.get_evm_receipt(&evm_hash).ok().flatten()?;
+        let exact_fee = u256_to_shells(&(evm_tx.gas_price * U256::from(receipt.gas_used)));
+
+        Some(if exact_fee > 0 {
+            exact_fee
+        } else {
+            fallback_fee
+        })
     }
 
     /// Task 4.2 (M-7): Reputation-based fee discounts REMOVED.
@@ -655,6 +732,15 @@ impl TxProcessor {
         }
     }
 
+    fn b_put_tx_meta(&self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.put_tx_meta(sig, compute_units_used)
+        } else {
+            self.state.put_tx_meta(sig, compute_units_used)
+        }
+    }
+
     fn b_put_stake_pool(&self, pool: &crate::consensus::StakePool) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
@@ -717,6 +803,17 @@ impl TxProcessor {
         } else {
             self.state.put_contract_storage(program, storage_key, value)
         }
+    }
+
+    fn b_load_contract_storage_map(
+        &self,
+        program: &Pubkey,
+    ) -> Result<HashMap<Vec<u8>, Vec<u8>>, String> {
+        Ok(self
+            .state
+            .load_contract_storage_map(program)?
+            .into_iter()
+            .collect())
     }
 
     /// Delete contract storage key from CF_CONTRACT_STORAGE.
@@ -975,6 +1072,7 @@ impl TxProcessor {
             let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
             meta.0 = None;
             meta.1.clear();
+            meta.2 = 0;
         }
 
         // T1.7: Validate transaction structure (size limits)
@@ -1157,19 +1255,28 @@ impl TxProcessor {
         // Fee payer is the first account of the first instruction (must be verified)
         let fee_payer = tx.message.instructions[0].accounts[0];
 
-        // 2. Charge fee (flat fee — reputation discounts removed per Task 4.2 M-7)
+        // 2. Compute fee (base + premiums + priority)
         let fee_config = self
             .state
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
-        let base_fee = Self::compute_transaction_fee(tx, &fee_config);
-        let total_fee = base_fee;
+        let base_fee = Self::compute_base_fee(tx, &fee_config);
+        let priority_fee = Self::compute_priority_fee(tx);
+        let total_fee = base_fee.saturating_add(priority_fee);
+
+        let compute_budget = tx.message.effective_compute_budget();
+
+        // Store the TX compute budget for contract_call() to pass to the WASM runtime.
+        *self
+            .tx_compute_budget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = compute_budget;
 
         // M4 fix: charge fee BEFORE beginning the instruction batch.
         // This ensures fees are always collected even when instructions fail,
         // preventing free-compute DoS attacks via intentionally-failing TXs.
         if total_fee > 0 {
-            if let Err(e) = self.charge_fee_direct(&fee_payer, total_fee) {
+            if let Err(e) = self.charge_fee_with_priority(&fee_payer, total_fee, priority_fee) {
                 return self.make_result(false, 0, Some(format!("Fee error: {}", e)), 0);
             }
         }
@@ -1180,11 +1287,36 @@ impl TxProcessor {
         // 3. Apply rent for involved accounts
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
+            // Store the failed TX so getTransaction can find it (fee was charged).
+            let _ = self.state.put_transaction(tx);
+            let _ = self.state.put_tx_meta(&tx.signature(), 0);
             return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)), 0);
         }
 
         // Compute CU for native instructions upfront (WASM CU tracked separately)
         let native_cu = compute_units_for_tx(tx);
+
+        // ── CU budget enforcement ──
+        // Check native CU against budget BEFORE executing expensive WASM calls.
+        // If native instructions alone exceed the budget, revert early.
+        if native_cu > compute_budget {
+            self.rollback_batch();
+            // Store the failed TX so getTransaction can find it (fee was charged).
+            let _ = self.state.put_transaction(tx);
+            let _ = self.state.put_tx_meta(&tx.signature(), native_cu);
+            return self.make_result(
+                false,
+                total_fee, // Fee is NOT refunded — anti-DoS (Solana model)
+                Some(format!(
+                    "Compute budget exceeded: native instructions use {} CU, budget is {} CU",
+                    native_cu, compute_budget
+                )),
+                native_cu,
+            );
+        }
+
+        // Track cumulative CU across all instructions (native + WASM)
+        let mut total_cu = native_cu;
 
         // 4. Execute each instruction
         for instruction in &tx.message.instructions {
@@ -1201,16 +1333,44 @@ impl TxProcessor {
                     }
                 }
 
-                // Store the failed TX so developers can query what went wrong
+                // Store the failed TX so getTransaction can find it (fee was charged).
                 let _ = self.state.put_transaction(tx);
+                let _ = self.state.put_tx_meta(&tx.signature(), total_cu);
 
                 let actual_fee = total_fee.saturating_sub(premium);
                 return self.make_result(
                     false,
                     actual_fee,
                     Some(format!("Execution error: {}", e)),
-                    native_cu,
+                    total_cu,
                 );
+            }
+
+            // After WASM contract execution, check if accumulated CU exceeds budget.
+            // contract_meta.2 carries the real compute_used from ContractResult,
+            // tracked by Wasmer metering + host function costs.
+            if instruction.program_id == CONTRACT_PROGRAM_ID {
+                let wasm_cu = {
+                    let meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+                    meta.2
+                };
+                total_cu = native_cu.saturating_add(wasm_cu);
+
+                if total_cu > compute_budget {
+                    self.rollback_batch();
+                    // Store the failed TX so getTransaction can find it (fee was charged).
+                    let _ = self.state.put_transaction(tx);
+                    let _ = self.state.put_tx_meta(&tx.signature(), total_cu);
+                    return self.make_result(
+                        false,
+                        total_fee, // Fee NOT refunded — CU exceeded
+                        Some(format!(
+                            "Compute budget exceeded: used {} CU, budget is {} CU",
+                            total_cu, compute_budget
+                        )),
+                        total_cu,
+                    );
+                }
             }
         }
 
@@ -1232,9 +1392,12 @@ impl TxProcessor {
                 false,
                 actual_fee,
                 Some(format!("Transaction storage error: {}", e)),
-                native_cu,
+                total_cu,
             );
         }
+
+        // Store actual compute units used (native + WASM) for explorer/RPC
+        let _ = self.b_put_tx_meta(&tx.signature(), total_cu);
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
@@ -1250,11 +1413,11 @@ impl TxProcessor {
                 false,
                 actual_fee,
                 Some(format!("Atomic commit failed: {}", e)),
-                native_cu,
+                total_cu,
             );
         }
 
-        self.make_result(true, total_fee, None, native_cu)
+        self.make_result(true, total_fee, None, total_cu)
     }
 
     /// Process multiple transactions in parallel where possible.
@@ -1521,14 +1684,15 @@ impl TxProcessor {
             }
         }
 
-        // Compute fee (flat — reputation discounts removed per Task 4.2 M-7)
+        let compute_budget = tx.message.effective_compute_budget();
+
+        // Compute fee (base + priority)
         let fee_config = self
             .state
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
-        let base_fee = Self::compute_transaction_fee(tx, &fee_config);
+        let total_fee = Self::compute_transaction_fee(tx, &fee_config);
         let fee_payer = tx.message.instructions[0].accounts[0];
-        let total_fee = base_fee;
 
         // Check fee payer balance
         let balance = self.state.get_balance(&fee_payer).unwrap_or(0);
@@ -1547,7 +1711,10 @@ impl TxProcessor {
                 state_changes: 0,
             };
         }
-        logs.push(format!("Fee estimate: {} shells", total_fee));
+        logs.push(format!(
+            "Fee estimate: {} shells (budget: {} CU)",
+            total_fee, compute_budget
+        ));
 
         // Simulate each instruction (read-only)
         let mut total_compute = 0u64;
@@ -1575,14 +1742,26 @@ impl TxProcessor {
                                         {
                                             let current_slot =
                                                 self.state.get_last_slot().unwrap_or(0);
-                                            let context = ContractContext::with_args(
+                                            let live_storage = self
+                                                .state
+                                                .load_contract_storage_map(contract_addr)
+                                                .unwrap_or_default()
+                                                .into_iter()
+                                                .collect();
+                                            let mut context = ContractContext::with_args(
                                                 *caller,
                                                 *contract_addr,
                                                 value,
                                                 current_slot,
-                                                contract.storage.clone(),
+                                                live_storage,
                                                 args.clone(),
                                             );
+                                            // Pass remaining CU budget to WASM runtime
+                                            let remaining =
+                                                compute_budget.saturating_sub(total_compute);
+                                            context.compute_limit = remaining;
+                                            context.compute_remaining = remaining
+                                                .min(crate::contract::DEFAULT_COMPUTE_LIMIT);
                                             let mut runtime = ContractRuntime::get_pooled();
                                             let exec_result = runtime
                                                 .execute(&contract, &function, &args, context);
@@ -1616,6 +1795,22 @@ impl TxProcessor {
                                                         "[ix{}] Contract call '{}' OK, compute: {}, changes: {}",
                                                         idx, function, result.compute_used, result.storage_changes.len()
                                                     ));
+                                                    // CU budget enforcement during simulation
+                                                    if total_compute > compute_budget {
+                                                        return SimulationResult {
+                                                            success: false,
+                                                            fee: total_fee,
+                                                            logs,
+                                                            error: Some(format!(
+                                                                "Compute budget exceeded: used {} CU, budget is {} CU",
+                                                                total_compute, compute_budget
+                                                            )),
+                                                            compute_used: total_compute,
+                                                            return_data: last_return_data,
+                                                            return_code: last_return_code,
+                                                            state_changes: total_state_changes,
+                                                        };
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     return SimulationResult {
@@ -1690,6 +1885,22 @@ impl TxProcessor {
                     .unwrap_or(0);
                 total_compute += cu;
                 logs.push(format!("[ix{}] System instruction ({} CU)", idx, cu));
+                // CU budget enforcement during simulation
+                if total_compute > compute_budget {
+                    return SimulationResult {
+                        success: false,
+                        fee: total_fee,
+                        logs,
+                        error: Some(format!(
+                            "Compute budget exceeded: used {} CU, budget is {} CU",
+                            total_compute, compute_budget
+                        )),
+                        compute_used: total_compute,
+                        return_data: last_return_data,
+                        return_code: last_return_code,
+                        state_changes: total_state_changes,
+                    };
+                }
             } else if instruction.program_id == EVM_PROGRAM_ID {
                 logs.push(format!(
                     "[ix{}] EVM instruction (use eth_call for simulation)",
@@ -1985,13 +2196,28 @@ impl TxProcessor {
     ///
     /// L4-01 fix: all internal mutations (payer debit, burn counter, treasury
     /// credit) now land in a single atomic WriteBatch via `atomic_put_accounts`.
+    ///
+    /// Priority fee split (Solana model): 50% burned, 50% to block producer.
+    /// Base fee split: standard 40/30/10/10/10 distribution.
     fn charge_fee_direct(&self, payer: &Pubkey, fee: u64) -> Result<(), String> {
+        self.charge_fee_with_priority(payer, fee, 0)
+    }
+
+    /// Charge fee with separate base and priority fee handling.
+    /// `total_fee` = base + premiums + priority.
+    /// `priority_fee` = the priority portion (compute_budget × compute_unit_price).
+    fn charge_fee_with_priority(
+        &self,
+        payer: &Pubkey,
+        total_fee: u64,
+        priority_fee: u64,
+    ) -> Result<(), String> {
         let mut payer_account = self
             .state
             .get_account(payer)?
             .ok_or_else(|| "Payer account not found".to_string())?;
 
-        payer_account.deduct_spendable(fee)?;
+        payer_account.deduct_spendable(total_fee)?;
 
         // Split fee according to configured percentages
         let fee_config = self
@@ -1999,27 +2225,42 @@ impl TxProcessor {
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
 
-        // AUDIT-FIX L6-01: Use u128 intermediates to prevent overflow on fee split
-        let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
-        let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
-        let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
-        let community_amount =
-            (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
-        // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
-        let allocated = burn_amount
-            .saturating_add(producer_amount)
-            .saturating_add(voters_amount)
-            .saturating_add(community_amount);
-        let treasury_amount = fee.saturating_sub(allocated);
+        let base_portion = total_fee.saturating_sub(priority_fee);
 
-        let total_to_treasury = treasury_amount
-            .saturating_add(producer_amount)
-            .saturating_add(voters_amount)
-            .saturating_add(community_amount);
+        // ── Base fee split: standard 40/30/10/10/10 ──
+        // AUDIT-FIX L6-01: Use u128 intermediates to prevent overflow on fee split
+        let base_burn = (base_portion as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+        let base_producer =
+            (base_portion as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
+        let base_voters =
+            (base_portion as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
+        let base_community =
+            (base_portion as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
+        // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
+        let base_allocated = base_burn
+            .saturating_add(base_producer)
+            .saturating_add(base_voters)
+            .saturating_add(base_community);
+        let base_treasury = base_portion.saturating_sub(base_allocated);
+
+        // ── Priority fee split: 50% burned, 50% to block producer ──
+        // Matches Solana's priority fee model — incentivizes validators
+        // to include high-priority transactions.
+        let priority_burn = priority_fee / 2;
+        let priority_producer = priority_fee.saturating_sub(priority_burn);
+
+        // Combined totals
+        let burn_amount = base_burn.saturating_add(priority_burn);
+        let total_to_treasury = base_treasury
+            .saturating_add(base_producer)
+            .saturating_add(base_voters)
+            .saturating_add(base_community)
+            .saturating_add(priority_producer);
 
         // AUDIT-FIX B-5: Cap the total distributed to prevent shell creation from
         // malformed fee split percentages exceeding 100%.
-        let capped_to_treasury = std::cmp::min(total_to_treasury, fee.saturating_sub(burn_amount));
+        let capped_to_treasury =
+            std::cmp::min(total_to_treasury, total_fee.saturating_sub(burn_amount));
 
         // Build the atomic account set: payer is always included,
         // treasury only when there is something to credit.
@@ -2214,6 +2455,10 @@ impl TxProcessor {
             .try_into()
             .map_err(|_| "Invalid amount encoding".to_string())?;
         let amount = u64::from_le_bytes(amount_bytes);
+
+        if amount == 0 {
+            return Err("Transfer amount must be > 0".to_string());
+        }
 
         self.b_transfer(from, to, amount)
     }
@@ -4681,7 +4926,7 @@ impl TxProcessor {
             return Err("Account is not a contract".to_string());
         }
 
-        let mut contract: ContractAccount = serde_json::from_slice(&account.data)
+        let contract: ContractAccount = serde_json::from_slice(&account.data)
             .map_err(|e| format!("Failed to deserialize contract: {}", e))?;
 
         if value > 0 {
@@ -4694,7 +4939,7 @@ impl TxProcessor {
             *contract_address,
             value,
             current_slot,
-            contract.storage.clone(),
+            self.b_load_contract_storage_map(contract_address)?,
             args,
         );
 
@@ -4705,10 +4950,10 @@ impl TxProcessor {
         // The contract's existing code (load_u64("rep:{hex}")) will find the
         // injected data in ctx.storage after the merge in execute().
         {
-            let moltyid_program = contract
+            let moltyid_program = context
                 .storage
                 .get(b"pm_moltyid_addr" as &[u8])
-                .or_else(|| contract.storage.get(b"gov_moltyid_addr" as &[u8]))
+                .or_else(|| context.storage.get(b"gov_moltyid_addr" as &[u8]))
                 .and_then(|v| {
                     if v.len() == 32 && v.iter().any(|&x| x != 0) {
                         Some(v)
@@ -4740,19 +4985,40 @@ impl TxProcessor {
         // ── Inject state store for cross-contract calls ──────────────
         context.state_store = Some(self.state.clone());
 
+        // Pass the TX's remaining CU budget to the WASM runtime.
+        // This makes the WASM fuel meter respect the user-declared budget
+        // instead of always using the hard 10M ceiling.
+        {
+            let tx_budget = *self
+                .tx_compute_budget
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let cu_used_so_far = self
+                .contract_meta
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .2;
+            context.compute_limit = tx_budget.saturating_sub(cu_used_so_far);
+            context.compute_remaining = context
+                .compute_limit
+                .min(crate::contract::DEFAULT_COMPUTE_LIMIT);
+        }
+
         let mut runtime = ContractRuntime::get_pooled();
         let result = runtime.execute(&contract, &function, &context.args.clone(), context)?;
 
         // Return runtime to thread-local pool for reuse
         runtime.return_to_pool();
 
-        // Accumulate contract execution metadata (return_code, logs) for TxResult
+        // Accumulate contract execution metadata (return_code, logs, compute_used) for TxResult
         {
             let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
             meta.0 = result.return_code;
             meta.1.extend(result.logs.iter().cloned());
             // Also include logs from cross-contract sub-calls
             meta.1.extend(result.cross_call_logs.iter().cloned());
+            // Store actual compute_used — replaces broken log-parsing path
+            meta.2 = meta.2.saturating_add(result.compute_used);
         }
 
         // Fail the transaction when a contract returns a non-zero error code.
@@ -4798,6 +5064,15 @@ impl TxProcessor {
             self.b_put_account(addr, &acct)?;
         }
 
+        for op in &result.native_account_ops {
+            let address = op.account();
+            let mut account = self
+                .b_get_account(&address)?
+                .ok_or_else(|| format!("Native account op target {} not found", address))?;
+            op.apply(&mut account)?;
+            self.b_put_account(&address, &account)?;
+        }
+
         // Store contract events (top-level)
         for event in &result.events {
             self.b_put_contract_event(contract_address, event)?;
@@ -4808,29 +5083,18 @@ impl TxProcessor {
             self.b_put_contract_event(&event.program, event)?;
         }
 
-        // Apply storage changes from execution back to contract account
+        // Apply storage changes to the canonical external contract storage backend.
         if !result.storage_changes.is_empty() {
             for (key, value_opt) in &result.storage_changes {
                 match value_opt {
                     Some(val) => {
-                        contract.set_storage(key.clone(), val.clone());
-                        // Also write to CF_CONTRACT_STORAGE for fast-path reads
                         self.b_put_contract_storage(contract_address, key, val)?;
                     }
                     None => {
-                        contract.remove_storage(key);
-                        // Also remove from CF_CONTRACT_STORAGE
                         self.b_delete_contract_storage(contract_address, key)?;
                     }
                 }
             }
-            // Persist updated contract
-            let mut account = self
-                .b_get_account(contract_address)?
-                .ok_or("Contract not found after execution")?;
-            account.data = serde_json::to_vec(&contract)
-                .map_err(|e| format!("Failed to serialize contract: {}", e))?;
-            self.b_put_account(contract_address, &account)?;
         }
 
         // Index token balances from top-level storage changes
@@ -4848,26 +5112,19 @@ impl TxProcessor {
             let target_account = self
                 .b_get_account(target_addr)?
                 .ok_or_else(|| format!("Cross-call target {} not found", target_addr))?;
-            let mut target_contract: ContractAccount = serde_json::from_slice(&target_account.data)
+            let _: ContractAccount = serde_json::from_slice(&target_account.data)
                 .map_err(|e| format!("Failed to deserialize cross-call target: {}", e))?;
 
             for (key, value_opt) in changes {
                 match value_opt {
                     Some(val) => {
-                        target_contract.set_storage(key.clone(), val.clone());
                         self.b_put_contract_storage(target_addr, key, val)?;
                     }
                     None => {
-                        target_contract.remove_storage(key);
                         self.b_delete_contract_storage(target_addr, key)?;
                     }
                 }
             }
-            // Persist updated target contract
-            let mut updated_target = target_account;
-            updated_target.data = serde_json::to_vec(&target_contract)
-                .map_err(|e| format!("Failed to serialize cross-call target: {}", e))?;
-            self.b_put_account(target_addr, &updated_target)?;
 
             // Index token balances from cross-call storage changes
             self.index_token_balances_from_map(target_addr, changes)?;
@@ -4963,11 +5220,10 @@ impl TxProcessor {
             return Ok(()); // No identity — skip
         }
 
-        let _current_slot = self.b_get_last_slot().unwrap_or(0);
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let current_slot = self.b_get_last_slot().unwrap_or(0);
+        // Use slot as deterministic timestamp proxy — SystemTime::now() would cause
+        // consensus divergence across validators processing the same transaction.
+        let timestamp = current_slot;
 
         // Detect instruction type and award appropriate achievements
         if ix.program_id == SYSTEM_PROGRAM_ID {
@@ -6974,7 +7230,7 @@ mod tests {
         a.add_spendable(u64::MAX / 2).unwrap();
         state.put_account(&alice, &a).unwrap();
 
-        // A fee of 1e18 (~1 billion MOLT) times percent 50 would overflow u64 multiply
+        // A fee of 1e18 (~1e9 MOLT) times percent 50 would overflow u64 multiply
         let large_fee: u64 = 1_000_000_000_000_000_000; // 1e18 shells
         let result = processor.charge_fee_direct(&alice, large_fee);
         assert!(
@@ -7280,6 +7536,8 @@ mod tests {
         let msg = crate::transaction::Message {
             instructions: vec![ix],
             recent_blockhash: EVM_SENTINEL_BLOCKHASH,
+            compute_budget: None,
+            compute_unit_price: None,
         };
         let sig = alice_kp.sign(&msg.serialize());
         let tx = Transaction {
@@ -7320,6 +7578,8 @@ mod tests {
         let msg = crate::transaction::Message {
             instructions: vec![ix],
             recent_blockhash: EVM_SENTINEL_BLOCKHASH,
+            compute_budget: None,
+            compute_unit_price: None,
         };
         let tx = Transaction {
             signatures: vec![[0u8; 64]],
@@ -7452,7 +7712,7 @@ mod tests {
         let new_acct = new_kp.pubkey();
         let validator = Pubkey([42u8; 32]);
 
-        // Two instructions: 0-transfer (fee payer = alice), create_account (signer = new_acct)
+        // Two instructions: 1-shell transfer (fee payer = alice), create_account (signer = new_acct)
         let message = crate::transaction::Message::new(
             vec![
                 Instruction {
@@ -7460,7 +7720,7 @@ mod tests {
                     accounts: vec![alice, alice],
                     data: {
                         let mut d = vec![0u8];
-                        d.extend_from_slice(&0u64.to_le_bytes());
+                        d.extend_from_slice(&1u64.to_le_bytes());
                         d
                     },
                 },
@@ -7508,7 +7768,7 @@ mod tests {
                     accounts: vec![alice, alice],
                     data: {
                         let mut d = vec![0u8];
-                        d.extend_from_slice(&0u64.to_le_bytes());
+                        d.extend_from_slice(&1u64.to_le_bytes());
                         d
                     },
                 },
@@ -11002,5 +11262,346 @@ mod tests {
         let ca: crate::ContractAccount = serde_json::from_value(json).unwrap();
         assert_eq!(ca.upgrade_timelock_epochs, None);
         assert!(ca.pending_upgrade.is_none());
+    }
+
+    // ─── CU Budget & Priority Fee Tests ───────────────────────────────
+
+    /// Helper: build a transfer TX with custom compute_budget and compute_unit_price
+    fn make_transfer_tx_with_cu(
+        from_kp: &Keypair,
+        from: Pubkey,
+        to: Pubkey,
+        amount_molt: u64,
+        recent_blockhash: Hash,
+        compute_budget: Option<u64>,
+        compute_unit_price: Option<u64>,
+    ) -> Transaction {
+        let mut data = vec![0u8];
+        data.extend_from_slice(&Account::molt_to_shells(amount_molt).to_le_bytes());
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![from, to],
+            data,
+        };
+
+        let mut message = crate::transaction::Message::new(vec![ix], recent_blockhash);
+        message.compute_budget = compute_budget;
+        message.compute_unit_price = compute_unit_price;
+        let mut tx = Transaction::new(message);
+        let sig = from_kp.sign(&tx.message.serialize());
+        tx.signatures.push(sig);
+        tx
+    }
+
+    #[test]
+    fn test_default_compute_budget_applied() {
+        let msg = crate::transaction::Message::new(vec![], Hash::default());
+        assert_eq!(
+            msg.effective_compute_budget(),
+            crate::transaction::DEFAULT_COMPUTE_BUDGET
+        );
+    }
+
+    #[test]
+    fn test_custom_compute_budget_applied() {
+        let mut msg = crate::transaction::Message::new(vec![], Hash::default());
+        msg.compute_budget = Some(500_000);
+        assert_eq!(msg.effective_compute_budget(), 500_000);
+    }
+
+    #[test]
+    fn test_compute_budget_capped_at_max() {
+        let mut msg = crate::transaction::Message::new(vec![], Hash::default());
+        msg.compute_budget = Some(2_000_000);
+        assert_eq!(
+            msg.effective_compute_budget(),
+            crate::transaction::MAX_COMPUTE_BUDGET
+        );
+    }
+
+    #[test]
+    fn test_zero_compute_budget_uses_default() {
+        let mut msg = crate::transaction::Message::new(vec![], Hash::default());
+        msg.compute_budget = Some(0);
+        assert_eq!(
+            msg.effective_compute_budget(),
+            crate::transaction::DEFAULT_COMPUTE_BUDGET
+        );
+    }
+
+    #[test]
+    fn test_priority_fee_computation_zero_price() {
+        let (_, _, alice_kp, alice, _, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let priority = TxProcessor::compute_priority_fee(&tx);
+        assert_eq!(priority, 0);
+    }
+
+    #[test]
+    fn test_priority_fee_computation_with_price() {
+        let (_, _, alice_kp, alice, _, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        // compute_unit_price = 1000 μshells/CU, budget = 200_000 CU (default)
+        // priority = 200_000 × 1000 / 1_000_000 = 200 shells
+        let tx =
+            make_transfer_tx_with_cu(&alice_kp, alice, bob, 10, genesis_hash, None, Some(1000));
+        let priority = TxProcessor::compute_priority_fee(&tx);
+        assert_eq!(priority, 200);
+    }
+
+    #[test]
+    fn test_priority_fee_with_custom_budget() {
+        let (_, _, alice_kp, alice, _, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        // compute_unit_price = 5000 μshells/CU, budget = 400_000 CU
+        // priority = 400_000 × 5000 / 1_000_000 = 2000 shells
+        let tx = make_transfer_tx_with_cu(
+            &alice_kp,
+            alice,
+            bob,
+            10,
+            genesis_hash,
+            Some(400_000),
+            Some(5000),
+        );
+        let priority = TxProcessor::compute_priority_fee(&tx);
+        assert_eq!(priority, 2000);
+    }
+
+    #[test]
+    fn test_total_fee_includes_priority() {
+        let (_, _, alice_kp, alice, _, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let fee_config = FeeConfig::default_from_constants();
+
+        let tx_no_prio = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let base = TxProcessor::compute_base_fee(&tx_no_prio, &fee_config);
+        let total_no_prio = TxProcessor::compute_transaction_fee(&tx_no_prio, &fee_config);
+        assert_eq!(total_no_prio, base);
+
+        let tx_with_prio =
+            make_transfer_tx_with_cu(&alice_kp, alice, bob, 10, genesis_hash, None, Some(1000));
+        let total_with_prio = TxProcessor::compute_transaction_fee(&tx_with_prio, &fee_config);
+        let priority = TxProcessor::compute_priority_fee(&tx_with_prio);
+        assert_eq!(total_with_prio, base + priority);
+        assert!(total_with_prio > total_no_prio);
+    }
+
+    #[test]
+    fn test_priority_fee_charged_on_transfer() {
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let initial_balance = state.get_balance(&alice).unwrap();
+        let transfer_amount = Account::molt_to_shells(10);
+
+        // cu_price=1000 μshells/CU, default budget=200K → priority=200 shells
+        let tx =
+            make_transfer_tx_with_cu(&alice_kp, alice, bob, 10, genesis_hash, None, Some(1000));
+
+        let fee_config = FeeConfig::default_from_constants();
+        let expected_total = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        let expected_priority = TxProcessor::compute_priority_fee(&tx);
+        assert_eq!(expected_priority, 200);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success);
+        assert_eq!(result.fee_paid, expected_total);
+
+        let final_balance = state.get_balance(&alice).unwrap();
+        assert_eq!(
+            final_balance,
+            initial_balance - transfer_amount - expected_total
+        );
+    }
+
+    #[test]
+    fn test_compute_budget_capped_succeeds() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let mut data = vec![0u8];
+        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, bob],
+            data,
+        };
+        let mut message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        message.compute_budget = Some(crate::transaction::MAX_COMPUTE_BUDGET + 1);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        // effective_compute_budget() caps at MAX, so this should succeed
+        assert!(
+            result.success,
+            "Budget capped at MAX should succeed: {:?}",
+            result.error
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_no_cu_fields() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        assert!(tx.message.compute_budget.is_none());
+        assert!(tx.message.compute_unit_price.is_none());
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success);
+        assert_eq!(result.fee_paid, BASE_FEE);
+    }
+
+    #[test]
+    fn test_simulation_fee_includes_priority() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+
+        let tx = make_transfer_tx_with_cu(
+            &alice_kp,
+            alice,
+            bob,
+            10,
+            genesis_hash,
+            Some(300_000),
+            Some(500),
+        );
+        let sim = processor.simulate_transaction(&tx);
+        assert!(sim.success, "Simulation should succeed: {:?}", sim.error);
+        assert!(sim.compute_used > 0, "Should report compute used");
+        let fee_config = FeeConfig::default_from_constants();
+        let expected_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+        assert_eq!(sim.fee, expected_fee);
+    }
+
+    #[test]
+    fn test_fee_free_txs_zero_base_with_priority() {
+        let (_, _, alice_kp, alice, _, genesis_hash) = setup();
+        let fee_config = FeeConfig::default_from_constants();
+
+        // Type 4 = Genesis transfer (fee-free)
+        let mut data = vec![4u8];
+        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, Pubkey([9u8; 32])],
+            data,
+        };
+        let mut message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        message.compute_unit_price = Some(1000);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let base = TxProcessor::compute_base_fee(&tx, &fee_config);
+        assert_eq!(base, 0, "Fee-free tx should have 0 base fee");
+        let priority = TxProcessor::compute_priority_fee(&tx);
+        assert_eq!(priority, 200); // 200K CU × 1000 μshells / 1M
+    }
+
+    #[test]
+    fn test_mempool_cu_price_ordering() {
+        use crate::Mempool;
+        let mut pool = Mempool::new(100, 300);
+        let kp1 = Keypair::generate();
+        let kp2 = Keypair::generate();
+        let kp3 = Keypair::generate();
+        let hash = Hash::hash(b"test");
+
+        let tx1 = {
+            let ix = Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![kp1.pubkey()],
+                data: vec![0u8],
+            };
+            let msg = crate::transaction::Message::new(vec![ix], hash);
+            let mut tx = Transaction::new(msg);
+            tx.signatures.push(kp1.sign(&tx.message.serialize()));
+            tx
+        };
+
+        let tx2 = {
+            let ix = Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![kp2.pubkey()],
+                data: vec![0u8],
+            };
+            let mut msg = crate::transaction::Message::new(vec![ix], hash);
+            msg.compute_unit_price = Some(1000);
+            let mut tx = Transaction::new(msg);
+            tx.signatures.push(kp2.sign(&tx.message.serialize()));
+            tx
+        };
+
+        let tx3 = {
+            let ix = Instruction {
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![kp3.pubkey()],
+                data: vec![0u8],
+            };
+            let mut msg = crate::transaction::Message::new(vec![ix], hash);
+            msg.compute_unit_price = Some(5000);
+            let mut tx = Transaction::new(msg);
+            tx.signatures.push(kp3.sign(&tx.message.serialize()));
+            tx
+        };
+
+        let fee_config = FeeConfig::default_from_constants();
+        let fee1 = TxProcessor::compute_transaction_fee(&tx1, &fee_config);
+        let fee2 = TxProcessor::compute_transaction_fee(&tx2, &fee_config);
+        let fee3 = TxProcessor::compute_transaction_fee(&tx3, &fee_config);
+
+        pool.add_transaction(tx1, fee1, 0).unwrap();
+        pool.add_transaction(tx2, fee2, 0).unwrap();
+        pool.add_transaction(tx3, fee3, 0).unwrap();
+
+        let top = pool.get_top_transactions(3);
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0].sender(), kp3.pubkey(), "Highest CU price first");
+        assert_eq!(top[1].sender(), kp2.pubkey(), "Medium CU price second");
+        assert_eq!(top[2].sender(), kp1.pubkey(), "No CU price last");
+    }
+
+    #[test]
+    fn test_message_serde_with_cu_fields() {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1u8; 32])],
+            data: vec![0u8],
+        };
+        let mut msg = crate::transaction::Message::new(vec![ix], Hash::default());
+        msg.compute_budget = Some(500_000);
+        msg.compute_unit_price = Some(2000);
+
+        let serialized = msg.serialize();
+        let deserialized: crate::transaction::Message = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.compute_budget, Some(500_000));
+        assert_eq!(deserialized.compute_unit_price, Some(2000));
+        assert_eq!(deserialized.effective_compute_budget(), 500_000);
+        assert_eq!(deserialized.effective_compute_unit_price(), 2000);
+    }
+
+    #[test]
+    fn test_message_serde_backward_compat() {
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![Pubkey([1u8; 32])],
+            data: vec![0u8],
+        };
+        let msg = crate::transaction::Message::new(vec![ix], Hash::default());
+        assert!(msg.compute_budget.is_none());
+        assert!(msg.compute_unit_price.is_none());
+        assert_eq!(
+            msg.effective_compute_budget(),
+            crate::transaction::DEFAULT_COMPUTE_BUDGET
+        );
+        assert_eq!(msg.effective_compute_unit_price(), 0);
     }
 }

@@ -82,6 +82,7 @@ const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> Shie
 const CF_EVM_LOGS_BY_SLOT: &str = "evm_logs_by_slot"; // slot(8,BE) -> Vec<EvmLogEntry> (Task 3.4)
 const CF_ACCOUNT_SNAPSHOTS: &str = "account_snapshots"; // pubkey(32)+slot(8,BE) -> Account (Task 3.9 archive mode)
 const CF_PENDING_VALIDATOR_CHANGES: &str = "pending_validator_changes"; // epoch(8,BE)+slot(8,BE)+pubkey(8) -> PendingValidatorChange
+const CF_TX_META: &str = "tx_meta"; // tx_hash(32) -> compute_units_used(8,LE) — execution metadata
 
 // ─── P2-3: Cold storage column family names ─────────────────────────────────
 // Cold DB mirrors a subset of hot CFs for archival data (old blocks, txns).
@@ -1079,6 +1080,8 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_ACCOUNT_SNAPSHOTS, archival_opts(32)), // key=pubkey(32)+slot(8,BE) -> Account
             // Epoch-based pending validator changes queue
             ColumnFamilyDescriptor::new(CF_PENDING_VALIDATOR_CHANGES, prefix_scan_opts(8)), // key=epoch(8,BE)+slot(8,BE)+pubkey(8)
+            // Transaction execution metadata (compute_units_used)
+            ColumnFamilyDescriptor::new(CF_TX_META, point_lookup_opts(32)), // key=tx_hash(32) -> CU(8,LE)
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -1169,7 +1172,7 @@ impl StateStore {
             .map_err(|e| format!("Failed to store confirmed slot: {}", e))
     }
 
-    /// Get the last finalized slot (confirmed + 32 slots deep)
+    /// Get the last finalized slot under the active BFT commitment policy.
     pub fn get_last_finalized_slot(&self) -> Result<u64, String> {
         let cf = self
             .db
@@ -1281,7 +1284,16 @@ impl StateStore {
     /// PERF-OPT 1: All block-level, transaction, and index writes are collected
     /// into a single `WriteBatch` and committed with one WAL sync. This reduces
     /// ~1500 individual RocksDB puts (for a 500-TX block) to 1 atomic write.
-    pub fn put_block(&self, block: &Block) -> Result<(), String> {
+    /// Canonical `tx_by_slot` keys are derived from transaction order within the
+    /// block so this path does not advance any per-slot sequence counters outside
+    /// the batch.
+    fn write_block_batch(
+        &self,
+        block: &Block,
+        last_slot: Option<u64>,
+        confirmed_slot: Option<u64>,
+        finalized_slot: Option<u64>,
+    ) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_BLOCKS)
@@ -1321,9 +1333,18 @@ impl StateStore {
         // Block data + slot index
         batch.put_cf(&cf, block_hash.0, &value);
         batch.put_cf(&slot_cf, block.header.slot.to_le_bytes(), block_hash.0);
+        if let Some(slot) = last_slot {
+            batch.put_cf(&slot_cf, b"last_slot", slot.to_le_bytes());
+        }
+        if let Some(slot) = confirmed_slot {
+            batch.put_cf(&slot_cf, b"confirmed_slot", slot.to_le_bytes());
+        }
+        if let Some(slot) = finalized_slot {
+            batch.put_cf(&slot_cf, b"finalized_slot", slot.to_le_bytes());
+        }
 
         // Per-transaction writes: tx body + tx→slot + slot→tx indexes
-        for tx in &block.transactions {
+        for (tx_index, tx) in block.transactions.iter().enumerate() {
             let sig = tx.signature();
 
             // Serialize tx body into batch
@@ -1342,21 +1363,10 @@ impl StateStore {
             batch.put_cf(&tx_to_slot_cf, sig.0, block.header.slot.to_le_bytes());
 
             // slot+seq → tx hash (forward index)
-            // next_tx_slot_seq still does a read+write, but the seq counter
-            // must be sequential so we keep it outside the batch for correctness.
-            match self.next_tx_slot_seq(block.header.slot) {
-                Ok(seq) => {
-                    let mut key = Vec::with_capacity(16);
-                    key.extend_from_slice(&block.header.slot.to_be_bytes());
-                    key.extend_from_slice(&seq.to_be_bytes());
-                    batch.put_cf(&tx_by_slot_cf, &key, sig.0);
-                }
-                Err(e) => eprintln!(
-                    "Warning: failed to get seq for tx {} by slot: {}",
-                    sig.to_hex(),
-                    e
-                ),
-            }
+            let mut key = Vec::with_capacity(16);
+            key.extend_from_slice(&block.header.slot.to_be_bytes());
+            key.extend_from_slice(&(tx_index as u64).to_be_bytes());
+            batch.put_cf(&tx_by_slot_cf, &key, sig.0);
         }
 
         // AUDIT-FIX M7: Fold account-transaction indexes into the same atomic
@@ -1381,24 +1391,27 @@ impl StateStore {
         Ok(())
     }
 
+    pub fn put_block(&self, block: &Block) -> Result<(), String> {
+        self.write_block_batch(block, None, None, None)
+    }
+
     /// Get block by hash
     ///
-    /// G-5 fix: Use `put_block_atomic` for BFT-committed blocks to ensure
-    /// block storage + slot pointer advance happen in a single write.
-    pub fn put_block_atomic(&self, block: &Block) -> Result<(), String> {
-        // This method exists as an explicit API entry point for the BFT
-        // commit path. Internally, put_block already uses WriteBatch for
-        // all block data. We add set_last_slot into the same path by
-        // calling put_block (WriteBatch commit) then set_last_slot.
-        //
-        // RocksDB guarantees that if put_block's WriteBatch succeeds,
-        // the block is durable. set_last_slot is a single small write
-        // that will also succeed unless the disk is physically broken.
-        // On replay after crash, a node that sees the block but not the
-        // slot pointer simply re-derives the tip from the block index.
-        self.put_block(block)?;
-        self.set_last_slot(block.header.slot)?;
-        Ok(())
+    /// G-5 fix: Use `put_block_atomic` for canonical block application so
+    /// block storage, tip advance, and any known commitment metadata land in
+    /// the same durable WriteBatch.
+    pub fn put_block_atomic(
+        &self,
+        block: &Block,
+        confirmed_slot: Option<u64>,
+        finalized_slot: Option<u64>,
+    ) -> Result<(), String> {
+        self.write_block_batch(
+            block,
+            Some(block.header.slot),
+            confirmed_slot,
+            finalized_slot,
+        )
     }
 
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, String> {
@@ -1534,6 +1547,32 @@ impl StateStore {
         self.db
             .delete_cf(&cf, sig.0)
             .map_err(|e| format!("Failed to delete transaction: {}", e))
+    }
+
+    /// Store transaction execution metadata (compute_units_used).
+    pub fn put_tx_meta(&self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        self.db
+            .put_cf(&cf, sig.0, &compute_units_used.to_le_bytes())
+            .map_err(|e| format!("Failed to store tx meta: {}", e))
+    }
+
+    /// Get stored compute_units_used for a transaction.
+    pub fn get_tx_meta_cu(&self, sig: &Hash) -> Result<Option<u64>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        match self.db.get_cf(&cf, sig.0) {
+            Ok(Some(data)) if data.len() == 8 => {
+                Ok(Some(u64::from_le_bytes(data.try_into().unwrap())))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
     }
 
     /// Get account by pubkey
@@ -4403,6 +4442,17 @@ impl StateBatch {
         Ok(())
     }
 
+    /// Store compute_units_used metadata for a transaction in the batch.
+    pub fn put_tx_meta(&mut self, sig: &Hash, compute_units_used: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TX_META)
+            .ok_or_else(|| "TX meta CF not found".to_string())?;
+        self.batch
+            .put_cf(&cf, sig.0, &compute_units_used.to_le_bytes());
+        Ok(())
+    }
+
     /// Put stake pool into the batch.
     pub fn put_stake_pool(&mut self, pool: &crate::consensus::StakePool) -> Result<(), String> {
         let cf = self
@@ -7134,6 +7184,12 @@ impl StateStore {
         Ok(results)
     }
 
+    /// Load the full live storage map for a contract from CF_CONTRACT_STORAGE.
+    /// This is the canonical runtime source of truth for contract state.
+    pub fn load_contract_storage_map(&self, program: &Pubkey) -> Result<KvEntries, String> {
+        self.get_contract_storage_entries(program, usize::MAX, None)
+    }
+
     /// Get events for a specific program, newest first, with limit
     pub fn get_events_by_program(
         &self,
@@ -8951,6 +9007,73 @@ mod tests {
 
         state.open_cold_store(cold_dir.path()).unwrap();
         assert!(state.has_cold_storage());
+    }
+
+    #[test]
+    fn test_put_block_atomic_persists_slot_and_finality_metadata() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let block = make_test_block(7);
+        state.put_block_atomic(&block, Some(7), Some(7)).unwrap();
+
+        assert_eq!(state.get_last_slot().unwrap(), 7);
+        assert_eq!(state.get_last_confirmed_slot().unwrap(), 7);
+        assert_eq!(state.get_last_finalized_slot().unwrap(), 7);
+        assert_eq!(state.get_block_by_slot(7).unwrap().unwrap().header.slot, 7);
+    }
+
+    #[test]
+    fn test_put_block_atomic_does_not_persist_tx_slot_seq_side_counter() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let instruction = crate::transaction::Instruction {
+            program_id: Pubkey([9u8; 32]),
+            accounts: vec![Pubkey([1u8; 32]), Pubkey([2u8; 32])],
+            data: vec![1, 2, 3],
+        };
+        let message = crate::transaction::Message::new(vec![instruction], Hash::hash(b"recent"));
+        let tx = crate::transaction::Transaction::new(message);
+        let tx_hash = tx.signature();
+        let block = crate::Block::new_with_timestamp(
+            8,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![tx],
+            123,
+        );
+
+        state.put_block_atomic(&block, Some(8), Some(8)).unwrap();
+
+        let cf_stats = state.db.cf_handle(CF_STATS).unwrap();
+        let mut counter_key = Vec::with_capacity(12);
+        counter_key.extend_from_slice(b"txs:");
+        counter_key.extend_from_slice(&8u64.to_be_bytes());
+        assert!(state.db.get_cf(&cf_stats, &counter_key).unwrap().is_none());
+
+        let cf_tx_by_slot = state.db.cf_handle(CF_TX_BY_SLOT).unwrap();
+        let mut first_tx_key = Vec::with_capacity(16);
+        first_tx_key.extend_from_slice(&8u64.to_be_bytes());
+        first_tx_key.extend_from_slice(&0u64.to_be_bytes());
+        assert_eq!(
+            state
+                .db
+                .get_cf(&cf_tx_by_slot, &first_tx_key)
+                .unwrap()
+                .unwrap(),
+            tx_hash.0.to_vec()
+        );
+
+        let mut second_tx_key = Vec::with_capacity(16);
+        second_tx_key.extend_from_slice(&8u64.to_be_bytes());
+        second_tx_key.extend_from_slice(&1u64.to_be_bytes());
+        assert!(state
+            .db
+            .get_cf(&cf_tx_by_slot, &second_tx_key)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

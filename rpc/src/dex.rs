@@ -36,7 +36,6 @@ const DEX_ANALYTICS_PROGRAM: &str = "ANALYTICS";
 const DEX_ROUTER_PROGRAM: &str = "DEXROUTER";
 const DEX_REWARDS_PROGRAM: &str = "DEXREWARDS";
 const DEX_GOVERNANCE_PROGRAM: &str = "DEXGOV";
-const ORACLE_PROGRAM: &str = "ORACLE";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -1042,59 +1041,15 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
                 let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &lp_key);
                 if lp_raw > 0 {
                     pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
-                } else {
-                    // Oracle price fallback: read from moltoracle if no analytics
-                    if let Some(ref base_sym) = pair.base_symbol {
-                        let oracle_asset = match base_sym.as_str() {
-                            "wSOL" | "SOL" => Some("wSOL"),
-                            "wETH" | "ETH" => Some("wETH"),
-                            "wBNB" | "BNB" => Some("wBNB"),
-                            "MOLT" => Some("MOLT"),
-                            _ => None,
-                        };
-                        if let Some(asset_name) = oracle_asset {
-                            let oracle_key = format!("price_{}", asset_name);
-                            if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &oracle_key) {
-                                if feed.len() >= 8 {
-                                    let raw =
-                                        u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-                                    if raw > 0 {
-                                        // Oracle uses 8 decimals; convert to f64 USD
-                                        let oracle_price = raw as f64 / 100_000_000.0;
-                                        // If quote is mUSD, price = oracle_price
-                                        // If quote is MOLT, price = oracle_price / molt_price
-                                        let final_price = match pair.quote_symbol.as_deref() {
-                                            Some("MOLT") => {
-                                                let molt_key = "price_MOLT";
-                                                let molt_raw =
-                                                    read_bytes(&state, ORACLE_PROGRAM, molt_key)
-                                                        .and_then(|f| {
-                                                            if f.len() >= 8 {
-                                                                Some(u64::from_le_bytes(
-                                                                    f[0..8]
-                                                                        .try_into()
-                                                                        .unwrap_or([0; 8]),
-                                                                ))
-                                                            } else {
-                                                                None
-                                                            }
-                                                        })
-                                                        .unwrap_or(10_000_000); // $0.10 default
-                                                let molt_usd = molt_raw as f64 / 100_000_000.0;
-                                                if molt_usd > 0.0 {
-                                                    oracle_price / molt_usd
-                                                } else {
-                                                    0.0
-                                                }
-                                            }
-                                            _ => oracle_price,
-                                        };
-                                        if final_price > 0.0 {
-                                            pair.last_price = Some(final_price);
-                                        }
-                                    }
-                                }
-                            }
+                }
+
+                // If no real trades, prefer consensus oracle price over genesis seed
+                let trade_ts_key = format!("ana_last_trade_ts_{}", pair.pair_id);
+                let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
+                if !has_real_trades {
+                    if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair.pair_id) {
+                        if oracle_price > 0.0 {
+                            pair.last_price = Some(oracle_price);
                         }
                     }
                 }
@@ -1367,7 +1322,7 @@ async fn get_candles(
         if let Some(data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
             if let Some(mut candle) = decode_candle(&data) {
                 // The slot field stores the unix timestamp directly (written by
-                // oracle/bridge writers).  Values >= 1 billion are unix seconds;
+                // oracle/bridge writers).  Ten-digit values are unix seconds;
                 // values below that are legacy slot numbers where we estimate.
                 if candle.slot >= 1_000_000_000 {
                     candle.timestamp = candle.slot;
@@ -1443,55 +1398,14 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
     let last_price_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &last_price_key);
     let mut last_price = last_price_raw as f64 / PRICE_SCALE as f64;
 
-    // Oracle price fallback: if no analytics price, try oracle for the pair's base asset
-    if last_price_raw == 0 {
-        let pair_key = format!("dex_pair_{}", pair_id);
-        if let Some(pair_data) = read_bytes(&state, DEX_CORE_PROGRAM, &pair_key) {
-            if let Some(pair_info) = decode_pair(&pair_data) {
-                let symbol_map = build_token_symbol_map(&state);
-                let base_sym = symbol_map.get(&pair_info.base_token);
-                let quote_sym = symbol_map.get(&pair_info.quote_token);
-                let oracle_asset = base_sym.and_then(|s| match s.as_str() {
-                    "wSOL" | "SOL" => Some("wSOL"),
-                    "wETH" | "ETH" => Some("wETH"),
-                    "wBNB" | "BNB" => Some("wBNB"),
-                    "MOLT" => Some("MOLT"),
-                    _ => None,
-                });
-                if let Some(asset_name) = oracle_asset {
-                    let oracle_key = format!("price_{}", asset_name);
-                    if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &oracle_key) {
-                        if feed.len() >= 8 {
-                            let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-                            if raw > 0 {
-                                let oracle_usd = raw as f64 / 100_000_000.0;
-                                last_price = match quote_sym.map(|s| s.as_str()) {
-                                    Some("MOLT") => {
-                                        let molt_raw =
-                                            read_bytes(&state, ORACLE_PROGRAM, "price_MOLT")
-                                                .and_then(|f| {
-                                                    if f.len() >= 8 {
-                                                        Some(u64::from_le_bytes(
-                                                            f[0..8].try_into().unwrap_or([0; 8]),
-                                                        ))
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .unwrap_or(10_000_000);
-                                        let molt_usd = molt_raw as f64 / 100_000_000.0;
-                                        if molt_usd > 0.0 {
-                                            oracle_usd / molt_usd
-                                        } else {
-                                            0.0
-                                        }
-                                    }
-                                    _ => oracle_usd,
-                                };
-                            }
-                        }
-                    }
-                }
+    // If no real trades have occurred, the analytics price is the genesis seed.
+    // Prefer the live consensus oracle price so REST and WS sources agree.
+    let trade_ts_key = format!("ana_last_trade_ts_{}", pair_id);
+    let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
+    if !has_real_trades {
+        if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair_id) {
+            if oracle_price > 0.0 {
+                last_price = oracle_price;
             }
         }
     }
@@ -1597,7 +1511,18 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
             &format!("dex_best_ask_{}", pair_id),
         );
 
-        let last_price = last_price_raw as f64 / PRICE_SCALE as f64;
+        let mut last_price = last_price_raw as f64 / PRICE_SCALE as f64;
+
+        // If no real trades, prefer consensus oracle price over genesis seed
+        let trade_ts_key = format!("ana_last_trade_ts_{}", pair_id);
+        let has_real_trades = read_u64(&state, DEX_ANALYTICS_PROGRAM, &trade_ts_key) > 0;
+        if !has_real_trades {
+            if let Some(oracle_price) = oracle_price_for_pair(&state.state, pair_id) {
+                if oracle_price > 0.0 {
+                    last_price = oracle_price;
+                }
+            }
+        }
 
         // Read 24h stats
         let stats_key = format!("ana_24h_{}", pair_id);
@@ -2606,30 +2531,26 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let mut feeds = Vec::new();
 
     for asset in &assets {
-        let key = format!("price_{}", asset);
-        if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &key) {
-            if feed.len() >= 17 {
-                let price_raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-                let timestamp = u64::from_le_bytes(feed[8..16].try_into().unwrap_or([0; 8]));
-                let decimals = feed[16];
-                let price_f64 = price_raw as f64 / 10f64.powi(decimals as i32);
-                let stale = {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    now.saturating_sub(timestamp) > 3600
-                };
+        if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
+            let stale = slot.saturating_sub(price.slot) > moltchain_core::ORACLE_STALENESS_SLOTS;
+            let timestamp = state
+                .state
+                .get_block_by_slot(price.slot)
+                .ok()
+                .flatten()
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
 
-                feeds.push(serde_json::json!({
-                    "asset": asset,
-                    "price": price_f64,
-                    "priceRaw": price_raw,
-                    "decimals": decimals,
-                    "timestamp": timestamp,
-                    "stale": stale
-                }));
-            }
+            feeds.push(serde_json::json!({
+                "asset": asset,
+                "price": price.price as f64 / 10f64.powi(price.decimals as i32),
+                "priceRaw": price.price,
+                "decimals": price.decimals,
+                "slot": price.slot,
+                "timestamp": timestamp,
+                "stale": stale,
+                "source": "native_consensus"
+            }));
         }
     }
 
@@ -2641,6 +2562,46 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
         slot,
     )
     .into_response()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Oracle price helper — maps pair IDs to consensus oracle prices
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Get the live consensus oracle price for a DEX pair.
+/// Returns the USD-denominated price (or MOLT-denominated for cross pairs)
+/// from the validator-attested oracle, or None if unavailable/stale.
+fn oracle_price_for_pair(state: &moltchain_core::StateStore, pair_id: u64) -> Option<f64> {
+    use moltchain_core::consensus::{consensus_oracle_price_from_state, molt_price_from_state};
+    let molt_usd = molt_price_from_state(state);
+    match pair_id {
+        1 => Some(molt_usd),
+        2 => consensus_oracle_price_from_state(state, "wSOL"),
+        3 => consensus_oracle_price_from_state(state, "wETH"),
+        4 => consensus_oracle_price_from_state(state, "wSOL").map(|wsol| {
+            if molt_usd > 0.0 {
+                wsol / molt_usd
+            } else {
+                0.0
+            }
+        }),
+        5 => consensus_oracle_price_from_state(state, "wETH").map(|weth| {
+            if molt_usd > 0.0 {
+                weth / molt_usd
+            } else {
+                0.0
+            }
+        }),
+        6 => consensus_oracle_price_from_state(state, "wBNB"),
+        7 => consensus_oracle_price_from_state(state, "wBNB").map(|wbnb| {
+            if molt_usd > 0.0 {
+                wbnb / molt_usd
+            } else {
+                0.0
+            }
+        }),
+        _ => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3472,7 +3433,6 @@ mod tests {
         assert!(!DEX_ROUTER_PROGRAM.is_empty());
         assert!(!DEX_REWARDS_PROGRAM.is_empty());
         assert!(!DEX_GOVERNANCE_PROGRAM.is_empty());
-        assert!(!ORACLE_PROGRAM.is_empty());
     }
 
     // ── api_err / api_not_found helpers ─────────────────────────────────

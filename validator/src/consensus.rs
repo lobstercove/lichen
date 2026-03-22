@@ -669,6 +669,7 @@ impl ConsensusEngine {
                 );
                 self.transition_to(RoundStep::Commit);
                 let mut committed = block;
+                committed.commit_round = round;
                 committed.commit_signatures = self.collect_commit_signatures(round, &bh);
                 return ConsensusAction::CommitBlock {
                     height: self.height,
@@ -1036,6 +1037,7 @@ impl ConsensusEngine {
                 );
                 self.transition_to(RoundStep::Commit);
                 let mut committed = block;
+                committed.commit_round = round;
                 committed.commit_signatures = self.collect_commit_signatures(round, &bh);
                 return ConsensusAction::Multiple(vec![
                     broadcast,
@@ -1086,14 +1088,14 @@ impl ConsensusEngine {
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake);
-                s >= MIN_VALIDATOR_STAKE
+                    .unwrap_or(0);
+                s >= self.min_validator_stake
             })
             .map(|v| {
                 stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake) as u128
+                    .unwrap_or(0) as u128
             })
             .sum();
 
@@ -1159,14 +1161,14 @@ impl ConsensusEngine {
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake);
-                s >= MIN_VALIDATOR_STAKE
+                    .unwrap_or(0);
+                s >= self.min_validator_stake
             })
             .map(|v| {
                 stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake) as u128
+                    .unwrap_or(0) as u128
             })
             .sum();
 
@@ -1199,14 +1201,14 @@ impl ConsensusEngine {
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake);
-                s >= MIN_VALIDATOR_STAKE
+                    .unwrap_or(0);
+                s >= self.min_validator_stake
             })
             .map(|v| {
                 stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake) as u128
+                    .unwrap_or(0) as u128
             })
             .sum();
 
@@ -1255,14 +1257,14 @@ impl ConsensusEngine {
                 let s = stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake);
-                s >= MIN_VALIDATOR_STAKE
+                    .unwrap_or(0);
+                s >= self.min_validator_stake
             })
             .map(|v| {
                 stake_pool
                     .get_stake(&v.pubkey)
                     .map(|s| s.total_stake())
-                    .unwrap_or(v.stake) as u128
+                    .unwrap_or(0) as u128
             })
             .sum();
 
@@ -1394,7 +1396,7 @@ impl ConsensusEngine {
                         let s = stake_pool
                             .get_stake(&v.pubkey)
                             .map(|s| s.total_stake())
-                            .unwrap_or(v.stake);
+                            .unwrap_or(0);
                         s >= self.min_validator_stake
                     })
                     .count()
@@ -1436,7 +1438,9 @@ impl ConsensusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_core::{Hash, Keypair, Pubkey, StakePool, ValidatorInfo, ValidatorSet};
+    use moltchain_core::{
+        Hash, Keypair, Pubkey, StakeInfo, StakePool, ValidatorInfo, ValidatorSet,
+    };
 
     fn make_validator(seed: u8) -> (Keypair, Pubkey) {
         let mut s = [0u8; 32];
@@ -1455,6 +1459,21 @@ mod tests {
             info.stake = MIN_VALIDATOR_STAKE;
             vs.add_validator(info);
             sp.stake(*pk, MIN_VALIDATOR_STAKE, 0).ok();
+        }
+        (validators, vs, sp)
+    }
+
+    fn make_custom_test_env(stakes: &[u64]) -> (Vec<(Keypair, Pubkey)>, ValidatorSet, StakePool) {
+        let validators: Vec<(Keypair, Pubkey)> =
+            (1..=stakes.len() as u8).map(make_validator).collect();
+        let mut vs = ValidatorSet::new();
+        let mut sp = StakePool::new();
+        for ((_, pk), stake) in validators.iter().zip(stakes.iter().copied()) {
+            let mut info = ValidatorInfo::new(*pk, 0);
+            info.stake = stake;
+            vs.add_validator(info);
+            let entry = StakeInfo::new(*pk, stake, 0);
+            sp.upsert_stake_full(entry);
         }
         (validators, vs, sp)
     }
@@ -1533,6 +1552,49 @@ mod tests {
         // 1 out of 3 should NOT be supermajority
         let one_voter = vec![validators[0].1];
         assert!(!engine.has_supermajority_voters(&one_voter, &vs, &sp));
+    }
+
+    #[test]
+    fn test_supermajority_uses_runtime_min_stake() {
+        let (validators, vs, sp) = make_custom_test_env(&[60, 60, 60]);
+        let (kp, pk) = make_validator(1);
+        let engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+
+        let voters = vec![validators[0].1, validators[1].1];
+        assert!(engine.has_supermajority_voters(&voters, &vs, &sp));
+    }
+
+    #[test]
+    fn test_supermajority_ignores_cached_validator_stake_without_pool_entry() {
+        let (validators, vs, _) = make_custom_test_env(&[
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+            MIN_VALIDATOR_STAKE,
+        ]);
+        let (kp, pk) = make_validator(1);
+        let engine = ConsensusEngine::new_with_min_stake(kp, pk, MIN_VALIDATOR_STAKE);
+        let empty_pool = StakePool::new();
+
+        let voters = vec![validators[0].1, validators[1].1];
+        assert!(!engine.has_supermajority_voters(&voters, &vs, &empty_pool));
+    }
+
+    #[test]
+    fn test_round_skip_uses_runtime_min_stake() {
+        let (validators, vs, sp) = make_custom_test_env(&[60, 60, 60]);
+        let (kp, pk) = make_validator(1);
+        let mut engine = ConsensusEngine::new_with_min_stake(kp, pk, 50);
+        engine.start_height(1);
+
+        engine.seen_prevotes.insert((2, validators[1].1), None);
+        engine.seen_prevotes.insert((2, validators[2].1), None);
+
+        let action = engine.check_round_skip(2, &vs, &sp);
+        assert_eq!(engine.round, 2);
+        assert!(matches!(
+            action,
+            ConsensusAction::ScheduleTimeout(RoundStep::Propose, _)
+        ));
     }
 
     #[test]
@@ -1683,6 +1745,7 @@ mod tests {
                     !block.commit_signatures.is_empty(),
                     "CommitBlock should include commit signatures"
                 );
+                assert_eq!(block.commit_round, 0);
                 // Should have 3 signatures (kp1 + kp2 + kp3)
                 assert_eq!(block.commit_signatures.len(), 3);
             }

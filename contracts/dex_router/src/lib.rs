@@ -3,7 +3,6 @@
 // Routes trades optimally across:
 //   - CLOB order book (dex_core)
 //   - AMM pools (dex_amm)
-//   - Legacy MoltSwap pools
 //   - Multi-hop paths (A→B→C)
 //   - Split routes (partial CLOB + partial AMM)
 //
@@ -12,7 +11,7 @@
 //   - Deadline enforcement on all swaps
 //   - Slippage protection
 //   - Admin-configured route registry
-//   - Real cross-contract calls to dex_core, dex_amm, MoltSwap
+//   - Real cross-contract calls to dex_core and dex_amm
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -40,7 +39,6 @@ const ROUTE_DIRECT_CLOB: u8 = 0;
 const ROUTE_DIRECT_AMM: u8 = 1;
 const ROUTE_SPLIT: u8 = 2;
 const ROUTE_MULTI_HOP: u8 = 3;
-const ROUTE_LEGACY_SWAP: u8 = 4;
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"rtr_admin";
@@ -51,7 +49,6 @@ const SWAP_COUNT_KEY: &[u8] = b"rtr_swap_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"rtr_total_volume";
 const CORE_ADDRESS_KEY: &[u8] = b"rtr_core_addr";
 const AMM_ADDRESS_KEY: &[u8] = b"rtr_amm_addr";
-const LEGACY_SWAP_KEY: &[u8] = b"rtr_legacy_addr";
 
 // ============================================================================
 // HELPERS
@@ -300,21 +297,14 @@ pub fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Configure contract addresses (admin only)
-pub fn set_addresses(
-    caller: *const u8,
-    core_addr: *const u8,
-    amm_addr: *const u8,
-    legacy_addr: *const u8,
-) -> u32 {
+pub fn set_addresses(caller: *const u8, core_addr: *const u8, amm_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut ca = [0u8; 32];
     let mut aa = [0u8; 32];
-    let mut la = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(core_addr, ca.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(amm_addr, aa.as_mut_ptr(), 32);
-        core::ptr::copy_nonoverlapping(legacy_addr, la.as_mut_ptr(), 32);
     }
 
     // AUDIT-FIX: verify caller matches transaction signer
@@ -328,7 +318,6 @@ pub fn set_addresses(
     }
     storage_set(CORE_ADDRESS_KEY, &ca);
     storage_set(AMM_ADDRESS_KEY, &aa);
-    storage_set(LEGACY_SWAP_KEY, &la);
     0
 }
 
@@ -372,7 +361,7 @@ pub fn register_route(
         reentrancy_exit();
         return 2;
     }
-    if route_type > ROUTE_LEGACY_SWAP {
+    if route_type > ROUTE_MULTI_HOP {
         reentrancy_exit();
         return 3;
     }
@@ -501,12 +490,14 @@ pub fn swap(
 
     // Execute based on route type
     let amount_out = match rtype {
-        ROUTE_DIRECT_CLOB => execute_clob_swap(amount_in, pool_id),
+        ROUTE_DIRECT_CLOB => {
+            execute_clob_swap(&t, &ti, amount_in, min_amount_out, deadline, pool_id)
+        }
         ROUTE_DIRECT_AMM => execute_amm_swap(&t, amount_in, pool_id, min_amount_out, deadline),
         ROUTE_SPLIT => {
             let leg1_amount = amount_in * split_pct as u64 / 100;
             let leg2_amount = amount_in - leg1_amount;
-            let out1 = execute_clob_swap(leg1_amount, pool_id);
+            let out1 = execute_clob_swap(&t, &ti, leg1_amount, 0, deadline, pool_id);
             let out2 = execute_amm_swap(&t, leg2_amount, secondary, 0, deadline);
             out1 + out2
         }
@@ -516,7 +507,6 @@ pub fn swap(
             // Second hop (final leg — apply min_amount_out)
             execute_amm_swap(&t, mid_amount, secondary, min_amount_out, deadline)
         }
-        ROUTE_LEGACY_SWAP => execute_legacy_swap(amount_in, pool_id),
         _ => 0,
     };
 
@@ -662,13 +652,24 @@ pub fn get_best_route(token_in: *const u8, token_out: *const u8, _amount: u64) -
 // ============================================================================
 
 /// Execute swap via CLOB (dex_core) — cross-contract call
-fn execute_clob_swap(amount_in: u64, pair_id: u64) -> u64 {
+fn execute_clob_swap(
+    trader: &[u8; 32],
+    token_in: &[u8; 32],
+    amount_in: u64,
+    min_out: u64,
+    deadline: u64,
+    pair_id: u64,
+) -> u64 {
     let core_addr = load_addr(CORE_ADDRESS_KEY);
     if !is_zero(&core_addr) {
-        let mut args = Vec::with_capacity(16);
+        let mut args = Vec::with_capacity(96);
+        args.extend_from_slice(trader);
         args.extend_from_slice(&u64_to_bytes(pair_id));
+        args.extend_from_slice(token_in);
         args.extend_from_slice(&u64_to_bytes(amount_in));
-        let call = CrossCall::new(Address(core_addr), "place_order_market", args).with_value(0);
+        args.extend_from_slice(&u64_to_bytes(min_out));
+        args.extend_from_slice(&u64_to_bytes(deadline));
+        let call = CrossCall::new(Address(core_addr), "swap_exact_in", args).with_value(0);
         if let Ok(result) = call_contract(call) {
             if result.len() >= 8 {
                 return bytes_to_u64(&result);
@@ -683,8 +684,27 @@ fn execute_clob_swap(amount_in: u64, pair_id: u64) -> u64 {
 }
 
 /// Execute swap via AMM (dex_amm) — cross-contract call
-/// AUDIT-FIX DEX-02: Pass all required fields to AMM swap dispatch:
-///   trader(32) + pool_id(8) + is_token_a_in(1) + amount_in(8) + min_out(8) + deadline(8)
+/// Uses the shared SDK layout encoder so callers do not hand-maintain ABI blobs.
+fn build_amm_swap_exact_in_args(
+    trader: &[u8; 32],
+    pool_id: u64,
+    is_token_a_in: bool,
+    amount_in: u64,
+    min_out: u64,
+    deadline: u64,
+) -> Option<Vec<u8>> {
+    let mut data = Vec::with_capacity(1 + 32 + 8 + 1 + 8 + 8 + 8);
+    // DEX-02: AMM uses opcode dispatch — action byte 6 = swap_exact_in
+    data.push(6u8);
+    data.extend_from_slice(trader);
+    data.extend_from_slice(&u64_to_bytes(pool_id));
+    data.push(u8::from(is_token_a_in));
+    data.extend_from_slice(&u64_to_bytes(amount_in));
+    data.extend_from_slice(&u64_to_bytes(min_out));
+    data.extend_from_slice(&u64_to_bytes(deadline));
+    Some(data)
+}
+
 fn execute_amm_swap(
     trader: &[u8; 32],
     amount_in: u64,
@@ -694,47 +714,23 @@ fn execute_amm_swap(
 ) -> u64 {
     let amm_addr = load_addr(AMM_ADDRESS_KEY);
     if !is_zero(&amm_addr) {
-        // Build args for AMM dispatch action 6 (swap_exact_in):
-        // [action_byte(1)] + [trader(32)] + [pool_id(8)] + [is_token_a_in(1)] + [amount_in(8)] + [min_out(8)] + [deadline(8)] = 66 bytes
-        let mut args = Vec::with_capacity(66);
-        args.push(6u8); // action byte for swap_exact_in
-        args.extend_from_slice(trader);
-        args.extend_from_slice(&u64_to_bytes(pool_id));
-        args.push(1u8); // is_token_a_in = true (direction resolved by route config)
-        args.extend_from_slice(&u64_to_bytes(amount_in));
-        args.extend_from_slice(&u64_to_bytes(min_out));
-        args.extend_from_slice(&u64_to_bytes(deadline));
-        let call = CrossCall::new(Address(amm_addr), "call", args).with_value(0);
-        if let Ok(result) = call_contract(call) {
-            if result.len() >= 8 {
-                return bytes_to_u64(&result);
+        if let Some(args) =
+            build_amm_swap_exact_in_args(trader, pool_id, true, amount_in, min_out, deadline)
+        {
+            let call = CrossCall::new(Address(amm_addr), "swap_exact_in", args).with_value(0);
+            if let Ok(result) = call_contract(call) {
+                if result.len() >= 8 {
+                    return bytes_to_u64(&result);
+                }
             }
+        } else {
+            log_info("AUDIT-FIX C-3: failed to encode AMM swap args");
+            return 0;
         }
     }
     // AUDIT-FIX P2: Removed dangerous simulation fallback
     log_info(
         "AUDIT-FIX P2: Cross-contract call failed — AMM swap rejected (no simulation fallback)",
-    );
-    0
-}
-
-/// Execute swap via legacy MoltSwap — cross-contract call
-fn execute_legacy_swap(amount_in: u64, pool_id: u64) -> u64 {
-    let legacy_addr = load_addr(LEGACY_SWAP_KEY);
-    if !is_zero(&legacy_addr) {
-        let mut args = Vec::with_capacity(16);
-        args.extend_from_slice(&u64_to_bytes(pool_id));
-        args.extend_from_slice(&u64_to_bytes(amount_in));
-        let call = CrossCall::new(Address(legacy_addr), "swap", args).with_value(0);
-        if let Ok(result) = call_contract(call) {
-            if result.len() >= 8 {
-                return bytes_to_u64(&result);
-            }
-        }
-    }
-    // AUDIT-FIX P2: Removed dangerous simulation fallback
-    log_info(
-        "AUDIT-FIX P2: Cross-contract call failed — legacy swap rejected (no simulation fallback)",
     );
     0
 }
@@ -820,14 +816,13 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        // 1: set_addresses(caller[32], core[32], amm[32], legacy[32])
+        // 1: set_addresses(caller[32], core[32], amm[32])
         1 => {
-            if args.len() >= 129 {
+            if args.len() >= 97 {
                 let r = set_addresses(
                     args[1..33].as_ptr(),
                     args[33..65].as_ptr(),
                     args[65..97].as_ptr(),
-                    args[97..129].as_ptr(),
                 );
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
@@ -1015,9 +1010,8 @@ mod tests {
         let admin = setup();
         let core = [50u8; 32];
         let amm = [51u8; 32];
-        let legacy = [52u8; 32];
         assert_eq!(
-            set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr(), legacy.as_ptr()),
+            set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr()),
             0
         );
         assert_eq!(load_addr(CORE_ADDRESS_KEY), core);
@@ -1031,7 +1025,7 @@ mod tests {
         let core = [50u8; 32];
         test_mock::set_caller(rando);
         assert_eq!(
-            set_addresses(rando.as_ptr(), core.as_ptr(), core.as_ptr(), core.as_ptr()),
+            set_addresses(rando.as_ptr(), core.as_ptr(), core.as_ptr()),
             1
         );
     }
@@ -1527,8 +1521,7 @@ mod tests {
         let trader = [2u8; 32];
         let core = [50u8; 32];
         let amm = [51u8; 32];
-        let legacy = [52u8; 32];
-        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr(), legacy.as_ptr());
+        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr());
         test_mock::set_slot(100);
 
         register_route(
@@ -1551,37 +1544,8 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_legacy() {
-        let admin = setup();
-        let ta = token_a();
-        let tb = token_b();
-        let trader = [2u8; 32];
-        test_mock::set_slot(100);
-        register_route(
-            admin.as_ptr(),
-            ta.as_ptr(),
-            tb.as_ptr(),
-            ROUTE_LEGACY_SWAP,
-            1,
-            0,
-            0,
-        );
-        test_mock::set_caller(trader);
-        assert_eq!(
-            swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0),
-            0
-        );
-        let ret = test_mock::get_return_data();
-        let out = bytes_to_u64(&ret);
-        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
-        assert_eq!(out, 0);
-    }
-
-    #[test]
     fn test_multi_hop_swap_path() {
-        let admin = setup();
-        let ta = token_a();
-        let tb = token_b();
+        setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
 
@@ -1600,6 +1564,22 @@ mod tests {
         assert_eq!(result, 4);
     }
 
+    #[test]
+    fn test_build_amm_swap_exact_in_args_layout() {
+        let trader = [7u8; 32];
+        let args = build_amm_swap_exact_in_args(&trader, 42, true, 500, 450, 1234)
+            .expect("layout args should encode");
+
+        assert_eq!(args[0], moltchain_sdk::crosscall::ABI_LAYOUT_MARKER);
+        assert_eq!(&args[1..7], &[32, 8, 1, 8, 8, 8]);
+        assert_eq!(&args[7..39], &trader);
+        assert_eq!(bytes_to_u64(&args[39..47]), 42);
+        assert_eq!(args[47], 1);
+        assert_eq!(bytes_to_u64(&args[48..56]), 500);
+        assert_eq!(bytes_to_u64(&args[56..64]), 450);
+        assert_eq!(bytes_to_u64(&args[64..72]), 1234);
+    }
+
     // AUDIT-FIX P2: Security regression test
     #[test]
     fn test_swap_no_simulation_fallback() {
@@ -1614,8 +1594,7 @@ mod tests {
         // Configure addresses so cross-contract calls are attempted (but fail in test mock)
         let core = [50u8; 32];
         let amm = [51u8; 32];
-        let legacy = [52u8; 32];
-        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr(), legacy.as_ptr());
+        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr());
 
         // Register a CLOB route
         register_route(

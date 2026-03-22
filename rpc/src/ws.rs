@@ -12,7 +12,9 @@ use axum::{
     routing::get,
     Router,
 };
-use moltchain_core::{Block, Hash, MarketActivity, Pubkey, StateStore, Transaction};
+use moltchain_core::{
+    Block, FinalityTracker, Hash, MarketActivity, Pubkey, StateStore, Transaction,
+};
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,6 +370,7 @@ impl SubscriptionManager {
 pub struct WsState {
     #[allow(dead_code)]
     state: StateStore,
+    finality: Option<FinalityTracker>,
     event_tx: broadcast::Sender<Event>,
     /// DEX real-time event broadcaster
     dex_broadcaster: Arc<DexEventBroadcaster>,
@@ -380,6 +383,7 @@ pub struct WsState {
 impl WsState {
     pub fn new(
         state: StateStore,
+        finality: Option<FinalityTracker>,
     ) -> (
         Self,
         broadcast::Sender<Event>,
@@ -391,6 +395,7 @@ impl WsState {
         let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
         let ws_state = Self {
             state,
+            finality,
             event_tx: event_tx.clone(),
             dex_broadcaster: dex_broadcaster.clone(),
             prediction_broadcaster: prediction_broadcaster.clone(),
@@ -404,6 +409,7 @@ impl WsState {
 pub async fn start_ws_server(
     state: StateStore,
     port: u16,
+    finality: Option<FinalityTracker>,
 ) -> Result<
     (
         broadcast::Sender<Event>,
@@ -413,7 +419,8 @@ pub async fn start_ws_server(
     ),
     Box<dyn std::error::Error>,
 > {
-    let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) = WsState::new(state);
+    let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) =
+        WsState::new(state, finality);
 
     let app = Router::new()
         .route("/", get(ws_handler))
@@ -475,6 +482,22 @@ async fn ws_handler(
     // memory exhaustion from oversized messages.
     ws.max_message_size(1_048_576)
         .on_upgrade(move |socket| handle_socket(socket, state, ip))
+}
+
+fn signature_commitment_status(
+    finality: Option<&FinalityTracker>,
+    last_processed_slot: u64,
+    tx_slot: u64,
+) -> &'static str {
+    if let Some(finality) = finality {
+        return finality.commitment_for_slot(tx_slot);
+    }
+
+    if last_processed_slot > tx_slot {
+        "confirmed"
+    } else {
+        "processed"
+    }
 }
 
 /// Handle WebSocket connection
@@ -705,6 +728,7 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     let tx_sig = tx.clone();
     let sig_subscription_manager = subscription_manager.clone();
     let sig_state = state.state.clone();
+    let sig_finality = state.finality.clone();
     let signature_event_task = tokio::spawn(async move {
         let mut sent_once: HashSet<u64> = HashSet::new();
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
@@ -759,11 +783,8 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
 
                 let Some((status, slot)) = (match (slot_opt, tx_exists) {
                     (Some(slot), _) => {
-                        let status = if last_slot >= slot.saturating_add(32) {
-                            "finalized"
-                        } else {
-                            "confirmed"
-                        };
+                        let status =
+                            signature_commitment_status(sig_finality.as_ref(), last_slot, slot);
                         Some((status, slot))
                     }
                     (None, true) => Some(("processed", last_slot)),
@@ -2274,8 +2295,29 @@ mod tests {
     fn ws_state_new_creates_broadcasters() {
         let tmp = tempfile::tempdir().unwrap();
         let state = moltchain_core::StateStore::open(tmp.path()).unwrap();
-        let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state);
+        let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state, None);
         assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn signature_commitment_status_uses_finality_tracker() {
+        let tracker = FinalityTracker::new(0, 0);
+        tracker.mark_confirmed(55);
+
+        assert_eq!(
+            signature_commitment_status(Some(&tracker), 55, 55),
+            "finalized"
+        );
+        assert_eq!(
+            signature_commitment_status(Some(&tracker), 55, 56),
+            "processed"
+        );
+    }
+
+    #[test]
+    fn signature_commitment_status_without_finality_tracker_falls_back() {
+        assert_eq!(signature_commitment_status(None, 80, 79), "confirmed");
+        assert_eq!(signature_commitment_status(None, 80, 80), "processed");
     }
 
     // ── Event matching logic (regression) ──

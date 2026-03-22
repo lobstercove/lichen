@@ -16,7 +16,7 @@ pub mod token;
 // Re-export modules
 pub use crosscall::{
     call_contract, call_nft_owner, call_nft_transfer, call_token_balance, call_token_transfer,
-    CrossCall,
+    encode_layout_args, CrossCall,
 };
 pub use dex::Pool;
 pub use nft::NFT;
@@ -45,6 +45,8 @@ pub mod test_mock {
         pub static VALUE: RefCell<u64> = RefCell::new(0);
         pub static SLOT: RefCell<u64> = RefCell::new(1);
         pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = RefCell::new(None);
+        pub static CROSS_CALL_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
+        pub static LAST_CROSS_CALL: RefCell<Option<([u8; 32], String, Vec<u8>, u64)>> = RefCell::new(None);
     }
 
     pub fn reset() {
@@ -59,6 +61,8 @@ pub mod test_mock {
         VALUE.with(|v| *v.borrow_mut() = 0);
         SLOT.with(|s| *s.borrow_mut() = 1);
         CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = None);
+        CROSS_CALL_SHOULD_FAIL.with(|c| *c.borrow_mut() = false);
+        LAST_CROSS_CALL.with(|c| *c.borrow_mut() = None);
     }
 
     pub fn set_caller(addr: [u8; 32]) {
@@ -87,6 +91,14 @@ pub mod test_mock {
 
     pub fn set_cross_call_response(data: Option<Vec<u8>>) {
         CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = data);
+    }
+
+    pub fn set_cross_call_should_fail(should_fail: bool) {
+        CROSS_CALL_SHOULD_FAIL.with(|c| *c.borrow_mut() = should_fail);
+    }
+
+    pub fn get_last_cross_call() -> Option<([u8; 32], String, Vec<u8>, u64)> {
+        LAST_CROSS_CALL.with(|c| c.borrow().clone())
     }
 
     pub fn get_return_data() -> Vec<u8> {

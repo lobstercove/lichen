@@ -468,7 +468,19 @@ pub extern "C" fn finalize_auction(nft_contract_ptr: *const u8, token_id: u64) -
                             royalty_bps
                         ));
                     }
-                    _ => log_info(" Royalty payment failed (non-critical)"),
+                    _ => {
+                        log_info("Auction royalty transfer failed; paying fallback to seller");
+                        let payment_token =
+                            Address(payment_token.try_into().expect("fallback payment_token"));
+                        let marketplace_addr = get_marketplace_addr();
+                        let seller = Address(seller.try_into().expect("fallback seller"));
+                        let _ = call_token_transfer(
+                            payment_token,
+                            marketplace_addr,
+                            seller,
+                            royalty_amount,
+                        );
+                    }
                 }
             }
         }

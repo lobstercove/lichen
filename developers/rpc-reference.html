@@ -73,6 +73,7 @@
                 <h3 class="sidebar-heading">Account</h3>
                 <a href="#getBalance" class="sidebar-link">getBalance</a>
                 <a href="#getAccount" class="sidebar-link">getAccount</a>
+                <a href="#getAccountProof" class="sidebar-link">getAccountProof</a>
                 <a href="#getAccountAtSlot" class="sidebar-link">getAccountAtSlot</a>
                 <a href="#getAccountInfo" class="sidebar-link">getAccountInfo</a>
                 <a href="#getAccountTxCount" class="sidebar-link">getAccountTxCount</a>
@@ -80,6 +81,7 @@
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Block</h3>
                 <a href="#getBlock" class="sidebar-link">getBlock</a>
+                <a href="#getBlockCommit" class="sidebar-link">getBlockCommit</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Transaction</h3>
@@ -175,7 +177,8 @@
             <section id="endpoint">
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
-                    <p><strong>Default endpoint:</strong> <code>http://localhost:8899</code></p>
+                    <p><strong>Production endpoint:</strong> <code>https://rpc.moltchain.network</code></p>
+                    <p><strong>Local development:</strong> <code>http://localhost:8899</code></p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
                 <div class="code-block">
@@ -314,7 +317,9 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ tps, totalTransactions, totalBlocks, averageBlockTime }</code></p>
+                    <p>Object —
+                        <code>{ tps, peak_tps, total_transactions, daily_transactions, total_blocks, average_block_time, avg_block_time_ms, avg_txs_per_block, total_accounts, active_accounts, total_supply, projected_supply, circulating_supply, total_burned, total_minted, total_staked, treasury_balance, total_contracts, validator_count, slot_duration_ms, fee_burn_percent, current_epoch, slots_into_epoch, inflation_rate_bps }</code>
+                    </p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -325,7 +330,30 @@
 
 # Response
 {"jsonrpc":"2.0","id":1,"result":{
-  "tps":120,"totalTransactions":500000,"totalBlocks":42000,"averageBlockTime":400
+    "tps":120.0,
+    "peak_tps":180.0,
+    "total_transactions":500000,
+    "daily_transactions":12000,
+    "total_blocks":42000,
+    "average_block_time":0.8,
+    "avg_block_time_ms":800.0,
+    "avg_txs_per_block":11.9,
+    "total_accounts":18420,
+    "active_accounts":6912,
+    "total_supply":500000000000000000,
+    "projected_supply":500000012500000000,
+    "circulating_supply":421500000000000000,
+    "total_burned":2200000000,
+    "total_minted":12500000000,
+    "total_staked":185000000000000,
+    "treasury_balance":32000000000000,
+    "total_contracts":29,
+    "validator_count":5,
+    "slot_duration_ms":800,
+    "fee_burn_percent":40,
+    "current_epoch":12,
+    "slots_into_epoch":3456,
+    "inflation_rate_bps":395
 }}</code></pre>
                 </div>
             </div>
@@ -342,7 +370,7 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object —
-                        <code>{ currentSlot, validatorCount, totalStake, tps, totalTransactions, totalBlocks, averageBlockTime, isHealthy }</code>
+                        <code>{ slot, _slot, epoch, _epoch, block_height, _block_height, current_slot, latest_block, validator_count, validators, _validators, total_stake, total_staked, tps, peak_tps, total_transactions, total_blocks, average_block_time, block_time_ms, total_supply, projected_supply, total_burned, total_minted, peer_count, chain_id, network, is_healthy, inflation_rate_bps }</code>
                     </p>
                 </div>
                 <div class="code-block">
@@ -350,7 +378,39 @@
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'</code></pre>
+    -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":[]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{
+    "slot":12345,
+    "_slot":12345,
+    "epoch":12,
+    "_epoch":12,
+    "block_height":12345,
+    "_block_height":12345,
+    "current_slot":12345,
+    "latest_block":12345,
+    "validator_count":5,
+    "validators":5,
+    "_validators":5,
+    "total_stake":185000000000000,
+    "total_staked":185000000000000,
+    "tps":120.0,
+    "peak_tps":180.0,
+    "total_transactions":500000,
+    "total_blocks":42000,
+    "average_block_time":0.8,
+    "block_time_ms":800.0,
+    "total_supply":500000000000000000,
+    "projected_supply":500000012500000000,
+    "total_burned":2200000000,
+    "total_minted":12500000000,
+    "peer_count":8,
+    "chain_id":"moltchain-mainnet",
+    "network":"mainnet",
+    "is_healthy":true,
+    "inflation_rate_bps":395
+}}</code></pre>
                 </div>
             </div>
 
@@ -437,6 +497,71 @@
                     <pre><code>curl -X POST http://localhost:8899 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getAccount","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'</code></pre>
+                </div>
+            </div>
+
+            <!-- getAccountProof -->
+            <div class="method-card" id="getAccountProof">
+                <h3 class="method-name">getAccountProof</h3>
+                <p class="method-desc">Returns an anchored inclusion proof for an existing account and binds it to the
+                    requested block commitment context. This is an inclusion-proof surface for existing accounts, not a
+                    full authenticated-state or non-existence-proof protocol.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>pubkey</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>Yes</td>
+                                <td>Base58-encoded public key for an existing account</td>
+                            </tr>
+                            <tr>
+                                <td>commitment</td>
+                                <td><span class="param-type">string</span></td>
+                                <td>No</td>
+                                <td>Anchor context to use: <code>processed</code>, <code>confirmed</code>, or
+                                    <code>finalized</code>. Defaults to <code>finalized</code>.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Returns</h4>
+                    <p>Object — <code>{ pubkey, accountData, inclusionProof, anchor }</code></p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notes</h4>
+                    <ul>
+                        <li>Returns an error if the account does not exist or if the proof cannot be anchored to the
+                            requested block context.</li>
+                        <li>Proofs are inclusion proofs over the current cached account leaf set; they do not provide
+                            non-existence proofs.</li>
+                    </ul>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
+                                class="fas fa-copy"></i></button></div>
+                    <pre><code>curl -X POST http://localhost:8899 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountProof","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", {"commitment":"finalized"}]}'
+
+# Response
+{"jsonrpc":"2.0","id":1,"result":{
+  "pubkey":"7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+  "account_data":"deadbeef...",
+  "inclusion_proof":{"leaf_hash":"...","siblings":["..."],"path":[true,false]},
+  "anchor":{"slot":1,"commitment":"finalized","state_root":"...","commit_round":0}
+}}</code></pre>
                 </div>
             </div>
 
@@ -656,7 +781,8 @@
                     <ul>
                         <li><code>signature</code> — Canonical transaction ID:
                             <code>SHA-256(bincode(message) || sig_0 || sig_1 || ...)</code>. Includes signatures for
-                            unique deduplication (matches Cosmos/CometBFT and Bitcoin wtxid convention).</li>
+                            unique deduplication (matches Cosmos/CometBFT and Bitcoin wtxid convention).
+                        </li>
                         <li><code>message_hash</code> — Message-only hash: <code>SHA-256(bincode(message))</code>.
                             Signature-independent — useful for multi-sig coordination and client-side txid prediction
                             before all parties have signed.</li>
@@ -954,7 +1080,7 @@
             <!-- getStakingRewards -->
             <div class="method-card" id="getStakingRewards">
                 <h3 class="method-name">getStakingRewards</h3>
-                <p class="method-desc">Returns accumulated staking rewards for the given account.</p>
+                <p class="method-desc">Returns settled and projected staking reward details for the given account.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -978,7 +1104,12 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — Reward details.</p>
+                    <p>Object — Reward details including <code>pending_rewards</code> (settled but unclaimed),
+                        <code>projected_pending</code> and <code>projected_epoch_reward</code> (current-epoch
+                        estimates), <code>claimed_rewards</code> / <code>liquid_claimed_rewards</code> (historical
+                        liquid rewards only), and <code>claimed_total_rewards</code> (liquid rewards plus bootstrap debt
+                        repayment already credited through claims).
+                    </p>
                 </div>
             </div>
 
@@ -1822,6 +1953,8 @@
                     <li><code>getTokenAccounts</code></li>
                     <li><code>getTreasuryInfo</code></li>
                     <li><code>getGenesisAccounts</code></li>
+                    <li><code>getBlockCommit</code> — BFT commit certificate for a block (signatures, voter set)</li>
+                    <li><code>getGovernedProposal</code> — query a governed transfer proposal by ID</li>
                 </ul>
 
                 <h3>Fee / Network / Validator</h3>
@@ -1831,11 +1964,14 @@
                     <li><code>getClusterInfo</code></li>
                 </ul>
 
-                <h3>Staking (ReefStake)</h3>
+                <h3>Liquid Staking</h3>
                 <ul>
-                    <li><code>stakeToReefStake</code></li>
-                    <li><code>unstakeFromReefStake</code></li>
-                    <li><code>claimUnstakedTokens</code></li>
+                    <li><code>stakeToReefStake</code> — deprecated, use <code>sendTransaction</code> with system
+                        instruction type <code>13</code></li>
+                    <li><code>unstakeFromReefStake</code> — deprecated, use <code>sendTransaction</code> with system
+                        instruction type <code>14</code></li>
+                    <li><code>claimUnstakedTokens</code> — deprecated, use <code>sendTransaction</code> with system
+                        instruction type <code>15</code></li>
                     <li><code>getStakingPosition</code></li>
                     <li><code>getReefStakePoolInfo</code></li>
                     <li><code>getUnstakingQueue</code></li>
@@ -1964,7 +2100,7 @@
                     GitHub</a>
                 <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
                 <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
             <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
         </div>

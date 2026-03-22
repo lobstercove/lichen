@@ -618,6 +618,320 @@ fn encode_trade(
     data
 }
 
+fn decode_trade_pair_id(data: &[u8]) -> u64 {
+    if data.len() >= 16 {
+        bytes_to_u64(&data[8..16])
+    } else {
+        0
+    }
+}
+
+fn decode_trade_price(data: &[u8]) -> u64 {
+    if data.len() >= 24 {
+        bytes_to_u64(&data[16..24])
+    } else {
+        0
+    }
+}
+
+fn decode_trade_quantity(data: &[u8]) -> u64 {
+    if data.len() >= 32 {
+        bytes_to_u64(&data[24..32])
+    } else {
+        0
+    }
+}
+
+fn decode_trade_taker(data: &[u8]) -> [u8; 32] {
+    let mut taker = [0u8; 32];
+    if data.len() >= 64 {
+        taker.copy_from_slice(&data[32..64]);
+    }
+    taker
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactInputQuote {
+    amount_out: u64,
+    taker_quantity: u64,
+    price_bound: u64,
+}
+
+fn quote_exact_input(
+    pair_id: u64,
+    side: u8,
+    amount_in: u64,
+    trader: &[u8; 32],
+    pair_data: &[u8],
+    current_slot: u64,
+) -> ExactInputQuote {
+    let lot_size = decode_pair_lot_size(pair_data);
+
+    if side == SIDE_SELL {
+        let mut remaining = amount_in;
+        let mut amount_out = 0u64;
+        let mut price_bound = 0u64;
+        let mut best_bid = load_u64(&best_bid_key(pair_id));
+
+        while remaining > 0 && best_bid != 0 {
+            let level_count = load_u64(&bid_count_key(pair_id, best_bid));
+            for idx in 1..=level_count {
+                if remaining == 0 {
+                    break;
+                }
+
+                let level_key = bid_level_key(pair_id, best_bid, idx);
+                let maker_order_id = load_u64(&level_key);
+                if maker_order_id == 0 {
+                    continue;
+                }
+
+                let maker_data = match storage_get(&order_key(maker_order_id)) {
+                    Some(data) if data.len() >= ORDER_SIZE => data,
+                    _ => continue,
+                };
+
+                let maker_status = decode_order_status(&maker_data);
+                if maker_status == STATUS_FILLED || maker_status == STATUS_CANCELLED {
+                    continue;
+                }
+
+                let expiry = decode_order_expiry_slot(&maker_data);
+                if expiry != 0 && expiry <= current_slot {
+                    continue;
+                }
+
+                if decode_order_trader(&maker_data) == *trader {
+                    continue;
+                }
+
+                let available = decode_order_quantity(&maker_data)
+                    .saturating_sub(decode_order_filled(&maker_data));
+                if available == 0 {
+                    continue;
+                }
+
+                let fill_qty = remaining.min(available);
+                amount_out = amount_out.saturating_add(
+                    (best_bid as u128 * fill_qty as u128 / 1_000_000_000u128) as u64,
+                );
+                remaining = remaining.saturating_sub(fill_qty);
+                price_bound = best_bid;
+            }
+
+            if remaining == 0 {
+                break;
+            }
+
+            let mut next = best_bid.saturating_sub(1);
+            let mut found = false;
+            for _ in 0..1000 {
+                if next == 0 {
+                    break;
+                }
+                if load_u64(&bid_count_key(pair_id, next)) > 0 {
+                    best_bid = next;
+                    found = true;
+                    break;
+                }
+                next = next.saturating_sub(1);
+            }
+            if !found {
+                break;
+            }
+        }
+
+        return ExactInputQuote {
+            amount_out,
+            taker_quantity: amount_in,
+            price_bound,
+        };
+    }
+
+    let mut quote_budget = amount_in;
+    let mut amount_out = 0u64;
+    let mut price_bound = 0u64;
+    let mut best_ask = load_u64(&best_ask_key(pair_id));
+
+    while quote_budget > 0 && best_ask != u64::MAX {
+        let level_count = load_u64(&ask_count_key(pair_id, best_ask));
+        for idx in 1..=level_count {
+            if quote_budget == 0 {
+                break;
+            }
+
+            let level_key = ask_level_key(pair_id, best_ask, idx);
+            let maker_order_id = load_u64(&level_key);
+            if maker_order_id == 0 {
+                continue;
+            }
+
+            let maker_data = match storage_get(&order_key(maker_order_id)) {
+                Some(data) if data.len() >= ORDER_SIZE => data,
+                _ => continue,
+            };
+
+            let maker_status = decode_order_status(&maker_data);
+            if maker_status == STATUS_FILLED || maker_status == STATUS_CANCELLED {
+                continue;
+            }
+
+            let expiry = decode_order_expiry_slot(&maker_data);
+            if expiry != 0 && expiry <= current_slot {
+                continue;
+            }
+
+            if decode_order_trader(&maker_data) == *trader {
+                continue;
+            }
+
+            let available =
+                decode_order_quantity(&maker_data).saturating_sub(decode_order_filled(&maker_data));
+            if available == 0 {
+                continue;
+            }
+
+            let mut affordable =
+                ((quote_budget as u128 * 1_000_000_000u128) / best_ask as u128) as u64;
+            if lot_size > 0 {
+                affordable = affordable / lot_size * lot_size;
+            }
+            if affordable == 0 {
+                return ExactInputQuote {
+                    amount_out,
+                    taker_quantity: amount_out,
+                    price_bound,
+                };
+            }
+
+            let fill_qty = available.min(affordable);
+            let spent_quote = (best_ask as u128 * fill_qty as u128 / 1_000_000_000u128) as u64;
+            if spent_quote == 0 {
+                continue;
+            }
+
+            amount_out = amount_out.saturating_add(fill_qty);
+            quote_budget = quote_budget.saturating_sub(spent_quote);
+            price_bound = best_ask;
+        }
+
+        if quote_budget == 0 {
+            break;
+        }
+
+        let mut next = best_ask.saturating_add(1);
+        let mut found = false;
+        for _ in 0..1000 {
+            if load_u64(&ask_count_key(pair_id, next)) > 0 {
+                best_ask = next;
+                found = true;
+                break;
+            }
+            next = next.saturating_add(1);
+        }
+        if !found {
+            break;
+        }
+    }
+
+    ExactInputQuote {
+        amount_out,
+        taker_quantity: amount_out,
+        price_bound,
+    }
+}
+
+fn execute_market_order(
+    trader: &[u8; 32],
+    pair_id: u64,
+    side: u8,
+    price: u64,
+    quantity: u64,
+    current_slot: u64,
+    pair_data: &[u8],
+) {
+    let order_count = load_u64(ORDER_COUNT_KEY);
+    let new_order_id = order_count + 1;
+    let order_data = encode_order(
+        trader,
+        pair_id,
+        side,
+        ORDER_MARKET,
+        price,
+        quantity,
+        0,
+        STATUS_OPEN,
+        current_slot,
+        0,
+        new_order_id,
+        0,
+    );
+    storage_set(&order_key(new_order_id), &order_data);
+    save_u64(ORDER_COUNT_KEY, new_order_id);
+
+    let user_count = load_u64(&user_order_count_key(trader));
+    let new_user_count = user_count + 1;
+    save_u64(&user_order_count_key(trader), new_user_count);
+    save_u64(&user_order_key(trader, new_user_count), new_order_id);
+
+    let remaining = match_order(
+        new_order_id,
+        pair_id,
+        side,
+        price,
+        quantity,
+        trader,
+        pair_data,
+    );
+    if remaining > 0 {
+        let mut order_data = match storage_get(&order_key(new_order_id)) {
+            Some(data) => data,
+            None => return,
+        };
+        let filled = quantity.saturating_sub(remaining);
+        update_order_filled(&mut order_data, filled);
+        update_order_status(
+            &mut order_data,
+            if filled > 0 {
+                STATUS_PARTIAL
+            } else {
+                STATUS_CANCELLED
+            },
+        );
+        storage_set(&order_key(new_order_id), &order_data);
+    }
+}
+
+fn sum_taker_output(
+    start_trade_id: u64,
+    end_trade_id: u64,
+    pair_id: u64,
+    taker: &[u8; 32],
+    side: u8,
+) -> u64 {
+    let mut amount_out = 0u64;
+    for trade_id in start_trade_id + 1..=end_trade_id {
+        let trade_data = match storage_get(&trade_key(trade_id)) {
+            Some(data) if data.len() >= TRADE_SIZE => data,
+            _ => continue,
+        };
+        if decode_trade_pair_id(&trade_data) != pair_id || decode_trade_taker(&trade_data) != *taker
+        {
+            continue;
+        }
+        if side == SIDE_SELL {
+            amount_out = amount_out.saturating_add(
+                (decode_trade_price(&trade_data) as u128
+                    * decode_trade_quantity(&trade_data) as u128
+                    / 1_000_000_000u128) as u64,
+            );
+        } else {
+            amount_out = amount_out.saturating_add(decode_trade_quantity(&trade_data));
+        }
+    }
+    amount_out
+}
+
 // ============================================================================
 // FEE CALCULATION
 // ============================================================================
@@ -1137,8 +1451,7 @@ pub fn place_order(
             addr
         };
         if !is_zero(&token_addr) {
-            let mut bal_args = Vec::with_capacity(33);
-            bal_args.push(5u8); // opcode: balance_of
+            let mut bal_args = Vec::with_capacity(32);
             bal_args.extend_from_slice(&t);
             let call = CrossCall::new(Address(token_addr), "balance_of", bal_args).with_value(0);
             let bal_result = call_contract(call);
@@ -1271,8 +1584,7 @@ pub fn place_order(
             return 12;
         }
         // Cross-call dex_margin opcode 26: query_user_open_position(trader[32], pair_id[8])
-        let mut qargs = Vec::with_capacity(41);
-        qargs.push(26u8); // opcode
+        let mut qargs = Vec::with_capacity(40);
         qargs.extend_from_slice(&t);
         qargs.extend_from_slice(&u64_to_bytes(pair_id));
         let call =
@@ -1376,6 +1688,110 @@ pub fn place_order(
         }
     }
 
+    reentrancy_exit();
+    0
+}
+
+/// Execute an exact-input swap against the CLOB.
+/// Returns: 0=success, 1=paused, 2=pair not found, 3=deadline expired,
+///          4=insufficient output or invalid route token, 5=reentrancy, 6=zero amount
+pub fn swap_exact_in(
+    trader: *const u8,
+    pair_id: u64,
+    token_in: *const u8,
+    amount_in: u64,
+    min_out: u64,
+    deadline: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 5;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
+    if amount_in == 0 {
+        reentrancy_exit();
+        return 6;
+    }
+
+    let mut trader_addr = [0u8; 32];
+    let mut token_in_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, trader_addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(token_in, token_in_addr.as_mut_ptr(), 32);
+    }
+
+    let real_caller = get_caller();
+    if real_caller.0 != trader_addr {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let current_slot = get_slot();
+    if deadline != 0 && current_slot > deadline {
+        reentrancy_exit();
+        return 3;
+    }
+
+    let pair_data = match storage_get(&pair_key(pair_id)) {
+        Some(data) if data.len() >= PAIR_SIZE => data,
+        _ => {
+            reentrancy_exit();
+            return 2;
+        }
+    };
+    if decode_pair_status(&pair_data) != PAIR_ACTIVE {
+        reentrancy_exit();
+        return 2;
+    }
+
+    let base_token = decode_pair_base_token(&pair_data);
+    let quote_token = decode_pair_quote_token(&pair_data);
+    let side = if token_in_addr == base_token {
+        if amount_in % decode_pair_lot_size(&pair_data) != 0 {
+            reentrancy_exit();
+            return 4;
+        }
+        SIDE_SELL
+    } else if token_in_addr == quote_token {
+        SIDE_BUY
+    } else {
+        reentrancy_exit();
+        return 4;
+    };
+
+    let quote = quote_exact_input(
+        pair_id,
+        side,
+        amount_in,
+        &trader_addr,
+        &pair_data,
+        current_slot,
+    );
+
+    if quote.amount_out < min_out {
+        reentrancy_exit();
+        return 4;
+    }
+
+    let trade_start = load_u64(TRADE_COUNT_KEY);
+    if quote.taker_quantity > 0 {
+        execute_market_order(
+            &trader_addr,
+            pair_id,
+            side,
+            quote.price_bound,
+            quote.taker_quantity,
+            current_slot,
+            &pair_data,
+        );
+    }
+    let trade_end = load_u64(TRADE_COUNT_KEY);
+    let actual_out = sum_taker_output(trade_start, trade_end, pair_id, &trader_addr, side);
+
+    moltchain_sdk::set_return_data(&u64_to_bytes(actual_out));
+    log_info("DEX Core exact-input swap executed");
     reentrancy_exit();
     0
 }
@@ -1593,13 +2009,12 @@ fn fill_at_price_level(
                             continue;
                         }
                         // Transfer fee from taker to DEX treasury via token contract
-                        let mut fee_args = Vec::with_capacity(73);
-                        fee_args.push(3u8); // opcode: transfer
+                        let mut fee_args = Vec::with_capacity(72);
                         fee_args.extend_from_slice(taker); // from
                         fee_args.extend_from_slice(&recipient); // to: configured treasury
                         fee_args.extend_from_slice(&u64_to_bytes(taker_fee));
-                        let call = CrossCall::new(Address(quote_addr), "transfer_fee", fee_args)
-                            .with_value(0);
+                        let call =
+                            CrossCall::new(Address(quote_addr), "transfer", fee_args).with_value(0);
                         // AUDIT-FIX CON-12: Log fee transfer failures instead of silently ignoring
                         match call_contract(call) {
                             Ok(_) => {}
@@ -1667,8 +2082,7 @@ fn fill_at_price_level(
         {
             let analytics_addr = load_addr(ANALYTICS_ADDRESS_KEY.as_bytes());
             if !is_zero(&analytics_addr) {
-                let mut ana_args = Vec::with_capacity(57);
-                ana_args.push(1u8); // opcode: record_trade
+                let mut ana_args = Vec::with_capacity(56);
                 ana_args.extend_from_slice(&u64_to_bytes(pair_id));
                 ana_args.extend_from_slice(&u64_to_bytes(price));
                 ana_args.extend_from_slice(&u64_to_bytes(notional));
@@ -2442,6 +2856,20 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
+        31 => {
+            // swap_exact_in(trader[32], pair_id[8], token_in[32], amount_in[8], min_out[8], deadline[8])
+            if args.len() >= 1 + 32 + 8 + 32 + 8 + 8 + 8 {
+                let result = swap_exact_in(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41..73].as_ptr(),
+                    bytes_to_u64(&args[73..81]),
+                    bytes_to_u64(&args[81..89]),
+                    bytes_to_u64(&args[89..97]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
         _ => {
             moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
@@ -2679,6 +3107,36 @@ mod tests {
             0
         );
         assert_eq!(load_u64(ORDER_COUNT_KEY), 1);
+    }
+
+    #[test]
+    fn test_place_limit_sell_balance_check_passes_named_export_account_bytes() {
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                2_000_000_000,
+                1000,
+                0,
+                0
+            ),
+            0
+        );
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("balance check cross-call recorded");
+        assert_eq!(target, [10u8; 32]);
+        assert_eq!(function, "balance_of");
+        assert_eq!(args.len(), 32);
+        assert_eq!(args, trader.to_vec());
+        assert_eq!(value, 0);
     }
 
     #[test]
@@ -3436,6 +3894,70 @@ mod tests {
 
         let treasury = get_fee_treasury();
         assert!(treasury > 0, "Protocol fees should accumulate");
+    }
+
+    #[test]
+    fn test_swap_exact_in_sell_direction() {
+        let (_admin, pair_id) = setup_with_pair();
+        let base = [10u8; 32];
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(taker);
+        assert_eq!(
+            swap_exact_in(taker.as_ptr(), pair_id, base.as_ptr(), 1_000, 1_000, 0),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000);
+        assert_eq!(get_trade_count(), 1);
+    }
+
+    #[test]
+    fn test_swap_exact_in_buy_direction() {
+        let (_admin, pair_id) = setup_with_pair();
+        let quote = [20u8; 32];
+        let maker = [3u8; 32];
+        let taker = [4u8; 32];
+        test_mock::set_slot(100);
+
+        test_mock::set_caller(maker);
+        assert_eq!(
+            place_order(
+                maker.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1_000,
+                0,
+                0,
+            ),
+            0
+        );
+
+        test_mock::set_caller(taker);
+        assert_eq!(
+            swap_exact_in(taker.as_ptr(), pair_id, quote.as_ptr(), 1_000, 1_000, 0),
+            0
+        );
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 1_000);
+        assert_eq!(get_trade_count(), 1);
     }
 
     // --- Max pairs limit ---

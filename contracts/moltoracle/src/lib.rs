@@ -227,6 +227,36 @@ pub extern "C" fn get_price(asset_ptr: *const u8, asset_len: u32, result_ptr: *m
     }
 }
 
+/// Cross-contract-safe price lookup.
+/// Returns the current price bytes via return_data on success.
+#[no_mangle]
+pub extern "C" fn get_price_value(asset_ptr: *const u8, asset_len: u32) -> u32 {
+    let mut asset = alloc::vec![0u8; asset_len as usize];
+    unsafe {
+        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
+    }
+
+    let key = alloc::format!("price_{}", core::str::from_utf8(&asset).unwrap_or("?"));
+
+    match storage_get(key.as_bytes()) {
+        Some(feed) if feed.len() >= PRICE_FEED_SIZE => {
+            let timestamp = bytes_to_u64(&feed[8..16]);
+            let now = get_timestamp();
+            if now.saturating_sub(timestamp) > 9_000 {
+                log_info(" Price data stale");
+                return 2;
+            }
+
+            moltchain_sdk::set_return_data(&feed[0..8]);
+            0
+        }
+        _ => {
+            log_info("Price not found");
+            1
+        }
+    }
+}
+
 // ============================================================================
 // VERIFIABLE RANDOM FUNCTION (VRF) - Commit-Reveal Scheme
 // ============================================================================
@@ -1207,6 +1237,28 @@ mod tests {
             get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()),
             0
         );
+    }
+
+    #[test]
+    fn test_get_price_value_for_cross_contract_calls() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        test_mock::set_caller(feeder);
+        submit_price(
+            feeder.as_ptr(),
+            asset.as_ptr(),
+            asset.len() as u32,
+            42_000_000,
+            6,
+        );
+
+        assert_eq!(get_price_value(asset.as_ptr(), asset.len() as u32), 0);
+        assert_eq!(bytes_to_u64(&test_mock::get_return_data()), 42_000_000);
     }
 
     #[test]

@@ -103,6 +103,10 @@ fi
 
 print_header
 echo ""
+print_error "This script is legacy and unvalidated for the current production deployment model."
+print_info "Use deploy/setup.sh and docs/deployment/PRODUCTION_DEPLOYMENT.md for production node setup."
+exit 1
+
 print_info "Network: ${NETWORK}"
 print_info "Domain: ${DOMAIN:-not set}"
 print_info "Public IP: ${PUBLIC_IP}"

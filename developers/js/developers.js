@@ -5,6 +5,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     ensureDeveloperNavLinks();
+    rewriteProgramsLinks();
     initSidebar();
     initScrollSpy();
     initCodeCopy();
@@ -36,6 +37,22 @@ function ensureDeveloperNavLinks() {
             li.appendChild(anchor);
             menu.appendChild(li);
         });
+    });
+}
+
+function rewriteProgramsLinks() {
+    if (typeof MOLT_CONFIG === 'undefined' || !MOLT_CONFIG.programs) return;
+
+    document.querySelectorAll('a[href^="../programs/"]').forEach((anchor) => {
+        const href = anchor.getAttribute('href') || '';
+        const path = href.replace(/^\.\.\/programs/, '');
+        anchor.href = MOLT_CONFIG.programs + path;
+    });
+
+    document.querySelectorAll('iframe[src^="../programs/"]').forEach((frame) => {
+        const src = frame.getAttribute('src') || '';
+        const path = src.replace(/^\.\.\/programs/, '');
+        frame.src = MOLT_CONFIG.programs + path;
     });
 }
 

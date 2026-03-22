@@ -1,4 +1,4 @@
-// Reef Explorer — Smart Contracts (on-chain data ONLY)
+// Molt Explorer — Smart Contracts (on-chain data ONLY)
 // Shows contracts actually deployed on MoltChain.
 // Uses shared NETWORKS, RPC_URL, rpc from explorer.js
 
@@ -59,8 +59,8 @@ async function loadContracts() {
     try {
         // Fetch all deployed programs + symbol registry in parallel
         var results = await Promise.all([
-            rpc.call('getAllContracts', []).catch(function() { return null; }),
-            rpc.call('getAllSymbolRegistry', []).catch(function() { return null; }),
+            rpc.call('getAllContracts', []).catch(function () { return null; }),
+            rpc.call('getAllSymbolRegistry', []).catch(function () { return null; }),
         ]);
 
         var programs = (results[0] && results[0].contracts) ? results[0].contracts : [];
@@ -74,7 +74,7 @@ async function loadContracts() {
         }
 
         // Enrich each program with contract info + registry
-        var enrichPromises = programs.map(async function(prog) {
+        var enrichPromises = programs.map(async function (prog) {
             var pid = prog.program_id;
             var reg = regByProgram[pid] || null;
             var info = null;
@@ -82,12 +82,12 @@ async function loadContracts() {
 
             try {
                 var fetched = await Promise.all([
-                    rpc.call('getContractInfo', [pid]).catch(function() { return null; }),
-                    rpc.call('getContractAbi', [pid]).catch(function() { return null; }),
+                    rpc.call('getContractInfo', [pid]).catch(function () { return null; }),
+                    rpc.call('getContractAbi', [pid]).catch(function () { return null; }),
                 ]);
                 info = fetched[0];
                 abi = fetched[1];
-            } catch (e) {}
+            } catch (e) { }
 
             var template = (reg && reg.template) || prog.template || (prog.metadata && prog.metadata.template) || '';
             var category = TEMPLATE_CATEGORIES[template] || 'infra';
@@ -116,7 +116,7 @@ async function loadContracts() {
         allContracts = await Promise.all(enrichPromises);
 
         // Sort by name
-        allContracts.sort(function(a, b) {
+        allContracts.sort(function (a, b) {
             return a.display.localeCompare(b.display);
         });
 
@@ -135,7 +135,7 @@ function renderContracts() {
     var tbody = document.getElementById('contractsTableBody');
     var filtered = currentFilter === 'all'
         ? allContracts
-        : allContracts.filter(function(c) { return c.category === currentFilter; });
+        : allContracts.filter(function (c) { return c.category === currentFilter; });
 
     var totalPages = Math.max(1, Math.ceil(filtered.length / CONTRACTS_PER_PAGE));
     if (currentPage > totalPages) currentPage = totalPages;
@@ -145,58 +145,58 @@ function renderContracts() {
     if (filtered.length === 0) {
         var msg = allContracts.length === 0
             ? '<div class="empty-state-box">' +
-              '<i class="fas fa-file-code empty-state-icon"></i>' +
-              '<h3>No Contracts Deployed</h3>' +
-              '<p>Smart contracts will appear here once they are deployed on-chain.<br>' +
-              'Deploy contracts using the MoltChain SDK or run <code>first-boot-deploy.sh</code> to deploy the DEX and token infrastructure.</p>' +
-              '</div>'
+            '<i class="fas fa-file-code empty-state-icon"></i>' +
+            '<h3>No Contracts Deployed</h3>' +
+            '<p>Smart contracts will appear here once they are deployed on-chain.<br>' +
+            'Deploy contracts using the MoltChain SDK or run <code>first-boot-deploy.sh</code> to deploy the DEX and token infrastructure.</p>' +
+            '</div>'
             : '<div class="empty-state-box">' +
-              '<i class="fas fa-filter empty-state-icon"></i>' +
-              '<h3>No Contracts in This Category</h3>' +
-              '<p>No deployed contracts match the selected filter.</p>' +
-              '</div>';
+            '<i class="fas fa-filter empty-state-icon"></i>' +
+            '<h3>No Contracts in This Category</h3>' +
+            '<p>No deployed contracts match the selected filter.</p>' +
+            '</div>';
         tbody.innerHTML = '<tr><td colspan="7">' + msg + '</td></tr>';
         updatePagination(0);
         return;
     }
 
-    var renderRows = async function() {
-        var ownerAddresses = paged.map(function(c) { return c.owner; }).filter(Boolean);
+    var renderRows = async function () {
+        var ownerAddresses = paged.map(function (c) { return c.owner; }).filter(Boolean);
         var nameMap = (typeof batchResolveMoltNames === 'function')
             ? await batchResolveMoltNames(ownerAddresses)
             : {};
 
-        tbody.innerHTML = paged.map(function(c) {
-        var link = 'contract.html?address=' + c.address;
-        var addr = '<a href="' + link + '" class="hash-link hash-short" title="' + c.address + '">' + formatHash(c.address) + '</a>';
-        var codeSize = c.codeSize > 0 ? formatBytes(c.codeSize) : '<span class="text-muted">\u2014</span>';
-        var abiFuncs = c.abiFuncs > 0 ? c.abiFuncs : '<span class="text-muted">\u2014</span>';
-        var ownerName = c.owner ? nameMap[c.owner] : null;
-        var ownerLabel = ownerName ? (ownerName + '.molt') : formatHash(c.owner);
-        var owner = c.owner
-            ? '<a href="address.html?address=' + c.owner + '" class="hash-link" title="' + c.owner + '">' + ownerLabel + '</a>'
-            : '<span class="text-muted">\u2014</span>';
-        var catLabel = CATEGORY_LABELS[c.category] || c.category;
+        tbody.innerHTML = paged.map(function (c) {
+            var link = 'contract.html?address=' + c.address;
+            var addr = '<a href="' + link + '" class="hash-link hash-short" title="' + c.address + '">' + formatHash(c.address) + '</a>';
+            var codeSize = c.codeSize > 0 ? formatBytes(c.codeSize) : '<span class="text-muted">\u2014</span>';
+            var abiFuncs = c.abiFuncs > 0 ? c.abiFuncs : '<span class="text-muted">\u2014</span>';
+            var ownerName = c.owner ? nameMap[c.owner] : null;
+            var ownerLabel = ownerName ? (ownerName + '.molt') : formatHash(c.owner);
+            var owner = c.owner
+                ? '<a href="address.html?address=' + c.owner + '" class="hash-link" title="' + c.owner + '">' + ownerLabel + '</a>'
+                : '<span class="text-muted">\u2014</span>';
+            var catLabel = CATEGORY_LABELS[c.category] || c.category;
 
-        return '<tr onclick="window.location=\'' + link + '\'" style="cursor:pointer;">' +
-            '<td><div class="contract-name-cell">' +
+            return '<tr onclick="window.location=\'' + link + '\'" style="cursor:pointer;">' +
+                '<td><div class="contract-name-cell">' +
                 '<span class="contract-icon-fa"><i class="fas ' + c.iconClass + '"></i></span>' +
                 '<div><div class="contract-display">' + c.display + '</div>' +
                 (c.symbol ? '<div class="contract-symbol">$' + c.symbol + '</div>' : '') +
-            '</div></div></td>' +
-            '<td><span class="badge-cat badge-' + c.category + '">' + catLabel + '</span></td>' +
-            '<td>' + addr + '</td>' +
-            '<td>' + codeSize + '</td>' +
-            '<td>' + abiFuncs + '</td>' +
-            '<td>' + owner + '</td>' +
-            '<td><span class="status-success"><i class="fas fa-check-circle"></i> Live</span></td>' +
-        '</tr>';
-    }).join('');
+                '</div></div></td>' +
+                '<td><span class="badge-cat badge-' + c.category + '">' + catLabel + '</span></td>' +
+                '<td>' + addr + '</td>' +
+                '<td>' + codeSize + '</td>' +
+                '<td>' + abiFuncs + '</td>' +
+                '<td>' + owner + '</td>' +
+                '<td><span class="status-success"><i class="fas fa-check-circle"></i> Live</span></td>' +
+                '</tr>';
+        }).join('');
 
-    updatePagination(filtered.length);
+        updatePagination(filtered.length);
     };
 
-    renderRows().catch(function() {
+    renderRows().catch(function () {
         tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: #FF6B6B;">Failed to resolve owner names</td></tr>';
         updatePagination(filtered.length);
     });
@@ -216,7 +216,7 @@ function updatePagination(totalItems) {
 function nextPage() {
     var filteredCount = currentFilter === 'all'
         ? allContracts.length
-        : allContracts.filter(function(c) { return c.category === currentFilter; }).length;
+        : allContracts.filter(function (c) { return c.category === currentFilter; }).length;
     var totalPages = Math.max(1, Math.ceil(filteredCount / CONTRACTS_PER_PAGE));
     if (currentPage >= totalPages) return;
     currentPage += 1;
@@ -234,7 +234,7 @@ function previousPage() {
 function filterContracts(cat) {
     currentFilter = cat;
     currentPage = 1;
-    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
     var btn = document.getElementById('tab-' + cat);
     if (btn) btn.classList.add('active');
     renderContracts();
@@ -242,11 +242,11 @@ function filterContracts(cat) {
 
 function updateStats() {
     var total = allContracts.length;
-    var tokens = allContracts.filter(function(c) { return c.category === 'token' || c.category === 'wrapped'; }).length;
-    var dex = allContracts.filter(function(c) { return c.category === 'dex'; }).length;
-    var nft = allContracts.filter(function(c) { return c.category === 'nft'; }).length;
-    var defi = allContracts.filter(function(c) { return c.category === 'defi'; }).length;
-    var infra = allContracts.filter(function(c) { return c.category === 'infra' || c.category === 'governance'; }).length;
+    var tokens = allContracts.filter(function (c) { return c.category === 'token' || c.category === 'wrapped'; }).length;
+    var dex = allContracts.filter(function (c) { return c.category === 'dex'; }).length;
+    var nft = allContracts.filter(function (c) { return c.category === 'nft'; }).length;
+    var defi = allContracts.filter(function (c) { return c.category === 'defi'; }).length;
+    var infra = allContracts.filter(function (c) { return c.category === 'infra' || c.category === 'governance'; }).length;
 
     document.getElementById('statTotal').textContent = total;
     document.getElementById('statTokens').textContent = tokens;
@@ -260,7 +260,7 @@ function updateStats() {
 function initSearch() {
     var input = document.getElementById('searchInput');
     if (!input) return;
-    input.addEventListener('keydown', async function(e) {
+    input.addEventListener('keydown', async function (e) {
         if (e.key === 'Enter') {
             var q = input.value.trim();
             if (!q) return;
@@ -273,7 +273,7 @@ function initSearch() {
     });
 }
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     if (typeof initExplorerNetworkSelector === 'function') initExplorerNetworkSelector();
     initSearch();
     var navToggle = document.getElementById('navToggle');
@@ -281,7 +281,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var navActions = document.querySelector('.nav-actions');
     var navContainer = document.querySelector('.nav-container');
     if (navToggle && navMenu) {
-        navToggle.addEventListener('click', function() {
+        navToggle.addEventListener('click', function () {
             var isOpen = !navMenu.classList.contains('active');
             navMenu.classList.toggle('active', isOpen);
             navMenu.classList.toggle('open', isOpen);

@@ -186,8 +186,14 @@ async fn main() {
         trusted_proxies: parse_csv_env("TRUSTED_PROXY"),
     };
 
+    // Validate RPC URL format
+    if !config.rpc_url.starts_with("http://") && !config.rpc_url.starts_with("https://") {
+        eprintln!("ERROR: RPC_URL must start with http:// or https://");
+        std::process::exit(1);
+    }
+
     if config.network == "mainnet" {
-        panic!("faucet cannot run on mainnet");
+        panic!("❌ Faucet cannot run on mainnet!");
     }
 
     let state = FaucetState {

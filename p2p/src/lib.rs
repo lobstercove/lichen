@@ -21,6 +21,6 @@ pub use network::{
     ErasureShardResponseMsg, GetBlockTxsMsg, NodeRole, P2PConfig, P2PNetwork, SnapshotRequestMsg,
     SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg, ValidatorAnnouncement,
 };
-pub use peer::{PeerInfo, PeerManager};
+pub use peer::{PeerInfo, PeerManager, NON_CONSENSUS_FANOUT};
 pub use peer_ban::PeerBanList;
 pub use peer_store::PeerStore;

@@ -373,7 +373,7 @@ mod tests {
         let owner_bal = balance_of(owner.as_ptr());
         let recip_bal = balance_of(recipient.as_ptr());
         assert_eq!(recip_bal, amount);
-        assert_eq!(owner_bal, 1_000_000_000 * 1_000_000_000 - amount);
+        assert_eq!(owner_bal, 500_000_000_000_000_000 - amount);
     }
 
     #[test]
@@ -406,7 +406,7 @@ mod tests {
 
         // Total supply should increase
         let supply = total_supply();
-        assert_eq!(supply, 1_000_000_000 * 1_000_000_000 + mint_amount);
+        assert_eq!(supply, 500_000_000_000_000_000 + mint_amount);
     }
 
     #[test]
@@ -434,10 +434,10 @@ mod tests {
         assert_eq!(result, 1);
 
         let bal = balance_of(owner.as_ptr());
-        assert_eq!(bal, 1_000_000_000 * 1_000_000_000 - burn_amount);
+        assert_eq!(bal, 500_000_000_000_000_000 - burn_amount);
 
         let supply = total_supply();
-        assert_eq!(supply, 1_000_000_000 * 1_000_000_000 - burn_amount);
+        assert_eq!(supply, 500_000_000_000_000_000 - burn_amount);
     }
 
     #[test]

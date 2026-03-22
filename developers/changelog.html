@@ -93,7 +93,8 @@
                     <ul>
                         <li><strong>All 39 Blockchain Alignment Findings Resolved</strong> &mdash; Phases 1&ndash;4
                             complete: supply model overhaul (inflationary + burn), block commit certificates, Merkle
-                            state proofs, BFT timeout backoff, state growth management, durable nonces, EVM transaction
+                            account inclusion proofs, BFT timeout backoff, state growth management, durable nonces, EVM
+                            transaction
                             envelope, governance parameter changes, oracle attestation, compute metering, deterministic
                             BFT timestamps, contract upgrade timelocks, EVM precompiles + eth_getLogs, archive mode,
                             wire envelope format, TOFU rotation, eclipse defense, IBC exploration, and more.</li>
@@ -106,7 +107,8 @@
                             OracleAttestation (30).</li>
                         <li><strong>New RPC Methods</strong> &mdash; <code>getBlockCommit</code>,
                             <code>getAccountProof</code>, <code>estimateTransactionFee</code>,
-                            <code>getAccountAtSlot</code>, <code>getOraclePrices</code>.</li>
+                            <code>getAccountAtSlot</code>, <code>getOraclePrices</code>.
+                        </li>
                         <li><strong>Explorer Updates</strong> &mdash; Supply metrics reordered (Total Supply first),
                             reward rate label fix, block reward epoch display, compute units in transaction details.
                         </li>
@@ -199,7 +201,8 @@
                         </li>
                         <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; comprehensive research document at
                             <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing MoltChain
-                            primitives (commit certificates, state proofs, BFT finality), gap analysis, and phased
+                            building blocks (commit certificates, anchored account inclusion proofs, BFT finality), gap
+                            analysis, and phased
                             implementation roadmap. Full IBC deferred; MoltBridge adequate for current phase (Task 4.4,
                             H-14)
                         </li>

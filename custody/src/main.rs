@@ -192,6 +192,9 @@ struct CustodyConfig {
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     /// Load from CUSTODY_MASTER_SEED env var. Required for production.
     master_seed: String,
+    /// Dedicated seed root for deposit address derivation and deposit sweeps.
+    /// Falls back to master_seed when no separate deposit root is configured.
+    deposit_master_seed: String,
     /// C9 fix: Auth token for threshold signer requests (global fallback)
     signer_auth_token: Option<String>,
     /// AUDIT-FIX 1.22: Per-signer auth tokens (one per signer_endpoint, same order).
@@ -223,8 +226,14 @@ struct DepositRequest {
     asset: String,
     address: String,
     derivation_path: String,
+    #[serde(default = "default_deposit_seed_source")]
+    deposit_seed_source: String,
     created_at: i64,
     status: String,
+}
+
+fn default_deposit_seed_source() -> String {
+    "treasury_root".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,6 +271,8 @@ struct SweepJob {
     tx_hash: String,
     #[serde(default)]
     amount: Option<String>,
+    #[serde(default)]
+    credited_amount: Option<String>,
     #[serde(default)]
     signatures: Vec<SignerSignature>,
     #[serde(default)]
@@ -361,6 +372,10 @@ struct WithdrawalJob {
     burn_tx_signature: Option<String>,
     /// Outbound chain tx hash (SOL/ETH/USDT sent to user's dest_address)
     outbound_tx_hash: Option<String>,
+    /// Pinned Gnosis Safe nonce for threshold EVM withdrawals.
+    /// This binds collected signatures to one exact Safe transaction intent.
+    #[serde(default)]
+    safe_nonce: Option<u64>,
     #[serde(default)]
     signatures: Vec<SignerSignature>,
     status: String, // "pending_burn" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
@@ -418,6 +433,9 @@ const SOLANA_SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 const SOLANA_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOLANA_ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 const SOLANA_RENT_SYSVAR: &str = "SysvarRent111111111111111111111111111111111";
+const SOLANA_SWEEP_FEE_LAMPORTS: u64 = 5_000;
+const DEPOSIT_SEED_SOURCE_TREASURY_ROOT: &str = "treasury_root";
+const DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT: &str = "deposit_root";
 
 /// Auto-discover wrapped token contract addresses from MoltChain's symbol registry.
 /// This eliminates the need to hardcode contract addresses — they are read from
@@ -701,25 +719,14 @@ async fn main() {
         );
     }
     if config.signer_endpoints.len() > 1 {
-        // AUDIT-FIX R-C3: Multi-signer FROST protocol is implemented but the 2-round
-        // commit/sign flow (collect_frost_signatures) is not yet wired into the sweep
-        // and withdrawal pipelines. The generic collect_signatures uses single-round
-        // /sign which will NOT produce valid FROST shares. Multi-signer mode currently
-        // only works correctly in single-signer mode. DO NOT deploy with >1 signer
-        // until the FROST integration is completed and tested end-to-end.
-        tracing::error!(
-            "🚨 MULTI-SIGNER MODE DETECTED ({}-of-{}). WARNING: FROST 2-round signing \
-             is NOT yet wired into sweep/withdrawal pipelines. Only single-signer mode \
-             is production-ready. Multi-signer deployments will produce invalid signatures.",
+        tracing::warn!(
+            "MULTI-SIGNER MODE DETECTED ({}-of-{}). Native Solana withdrawals can use \
+             the wired FROST path, but deposit sweeps remain locally signed from derived \
+             deposit keys and EVM threshold withdrawals are still rejected until a \
+             production-safe executor path is implemented.",
             config.signer_threshold,
             config.signer_endpoints.len()
         );
-        if std::env::var("CUSTODY_ALLOW_UNSAFE_MULTISIGNER").unwrap_or_default() != "1" {
-            panic!(
-                "CRITICAL: Multi-signer mode is not production-ready. \
-                 Set CUSTODY_ALLOW_UNSAFE_MULTISIGNER=1 only for non-production testing."
-            );
-        }
         info!(
             "Multi-signer mode: {}-of-{} threshold (FROST Ed25519 for Solana, packed ECDSA for EVM)",
             config.signer_threshold,
@@ -967,6 +974,8 @@ async fn create_deposit(
         )));
     }
 
+    ensure_deposit_creation_allowed(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+
     // AUDIT-FIX W-H4: Rate limit deposit creation (60/min global, 10s per-user cooldown)
     {
         let mut dr = state.deposit_rate.lock().await;
@@ -1006,11 +1015,13 @@ async fn create_deposit(
 
     let derivation_path = bip44_derivation_path(&chain, &payload.user_id, index as u64)
         .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+    let deposit_seed_source = active_deposit_seed_source(&state.config).to_string();
+    let deposit_seed = deposit_seed_for_source(&state.config, &deposit_seed_source);
     let address = if chain == "solana" || chain == "sol" {
         if is_solana_stablecoin(&asset) {
             let mint = solana_mint_for_asset(&state.config, &asset)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
-            let owner = derive_solana_owner_pubkey(&derivation_path, &state.config.master_seed)
+            let owner = derive_solana_owner_pubkey(&derivation_path, deposit_seed)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
             let ata = derive_associated_token_address(&owner, &mint)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
@@ -1019,11 +1030,11 @@ async fn create_deposit(
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
             ata
         } else {
-            derive_deposit_address(&chain, &asset, &derivation_path, &state.config.master_seed)
+            derive_deposit_address(&chain, &asset, &derivation_path, deposit_seed)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?
         }
     } else {
-        derive_deposit_address(&chain, &asset, &derivation_path, &state.config.master_seed)
+        derive_deposit_address(&chain, &asset, &derivation_path, deposit_seed)
             .map_err(|e| Json(ErrorResponse::invalid(&e)))?
     };
 
@@ -1034,6 +1045,7 @@ async fn create_deposit(
         asset,
         address: address.clone(),
         derivation_path,
+        deposit_seed_source,
         created_at: chrono::Utc::now().timestamp(),
         status: "issued".to_string(),
     };
@@ -1552,6 +1564,115 @@ fn derive_solana_owner_pubkey(path: &str, master_seed: &str) -> Result<String, S
     derive_solana_address(path, master_seed)
 }
 
+fn active_deposit_seed_source(config: &CustodyConfig) -> &'static str {
+    if config.deposit_master_seed == config.master_seed {
+        DEPOSIT_SEED_SOURCE_TREASURY_ROOT
+    } else {
+        DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT
+    }
+}
+
+fn deposit_seed_for_source<'a>(config: &'a CustodyConfig, source: &str) -> &'a str {
+    if source == DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT {
+        &config.deposit_master_seed
+    } else {
+        &config.master_seed
+    }
+}
+
+fn deposit_seed_for_record<'a>(config: &'a CustodyConfig, deposit: &DepositRequest) -> &'a str {
+    deposit_seed_for_source(config, &deposit.deposit_seed_source)
+}
+
+fn load_required_seed_secret(
+    file_var: &str,
+    env_var: &str,
+    allow_insecure_default: bool,
+) -> String {
+    let seed = if let Ok(seed_path) = std::env::var(file_var) {
+        let seed_path = seed_path.trim().to_string();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&seed_path) {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    tracing::warn!(
+                        "⚠️  {} '{}' has permissions {:o} — should be 0600 or stricter. Tightening now.",
+                        file_var,
+                        seed_path,
+                        mode
+                    );
+                    let _ = std::fs::set_permissions(
+                        &seed_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+            }
+        }
+        match std::fs::read_to_string(&seed_path) {
+            Ok(contents) => {
+                let secret = contents.trim().to_string();
+                if secret.is_empty() {
+                    panic!("FATAL: {} '{}' is empty.", file_var, seed_path);
+                }
+                tracing::info!("Secret loaded from file ({})", file_var);
+                Some(secret)
+            }
+            Err(err) => panic!("FATAL: Cannot read {} '{}': {}", file_var, seed_path, err),
+        }
+    } else {
+        None
+    };
+
+    let seed = seed.or_else(|| match std::env::var(env_var) {
+        Ok(secret) if !secret.is_empty() => {
+            tracing::warn!(
+                "⚠️  Secret loaded from env var {}. Prefer {} for production.",
+                env_var,
+                file_var
+            );
+            std::env::remove_var(env_var);
+            Some(secret)
+        }
+        _ => None,
+    });
+
+    match seed {
+        Some(secret) => {
+            if secret.len() < 32 && !secret.starts_with("INSECURE_DEFAULT") {
+                panic!(
+                    "FATAL: Secret from {} is too short ({} chars, minimum 32). Use a high-entropy seed.",
+                    env_var,
+                    secret.len()
+                );
+            }
+            secret
+        }
+        None => {
+            if allow_insecure_default
+                && std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1"
+            {
+                tracing::warn!("⚠️  No seed configured — using insecure default (dev mode)!");
+                "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
+            } else {
+                panic!(
+                    "FATAL: No seed configured. Set {} (preferred) or {}, or set CUSTODY_ALLOW_INSECURE_SEED=1 for dev.",
+                    file_var,
+                    env_var
+                );
+            }
+        }
+    }
+}
+
+fn load_optional_seed_secret(file_var: &str, env_var: &str) -> Option<String> {
+    if std::env::var_os(file_var).is_none() && std::env::var_os(env_var).is_none() {
+        return None;
+    }
+    Some(load_required_seed_secret(file_var, env_var, false))
+}
+
 fn is_solana_stablecoin(asset: &str) -> bool {
     matches!(asset, "usdc" | "usdt")
 }
@@ -1746,6 +1867,13 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(86400); // 24 hours default
+    let master_seed =
+        load_required_seed_secret("CUSTODY_MASTER_SEED_FILE", "CUSTODY_MASTER_SEED", true);
+    let deposit_master_seed = load_optional_seed_secret(
+        "CUSTODY_DEPOSIT_MASTER_SEED_FILE",
+        "CUSTODY_DEPOSIT_MASTER_SEED",
+    )
+    .unwrap_or_else(|| master_seed.clone());
     let signer_endpoints = std::env::var("CUSTODY_SIGNER_ENDPOINTS")
         .ok()
         .map(|value| {
@@ -1804,94 +1932,8 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
-        // AUDIT-FIX 1.17 + M2: Master seed from file preferred, env var fallback.
-        // Priority: CUSTODY_MASTER_SEED_FILE > CUSTODY_MASTER_SEED > panic (or insecure dev default).
-        master_seed: {
-            let seed = if let Ok(seed_path) = std::env::var("CUSTODY_MASTER_SEED_FILE") {
-                let seed_path = seed_path.trim().to_string();
-                // AUDIT-FIX C-10: Verify seed file has restricted permissions
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = std::fs::metadata(&seed_path) {
-                        let mode = meta.permissions().mode() & 0o777;
-                        if mode & 0o077 != 0 {
-                            tracing::warn!(
-                                "⚠️  CUSTODY_MASTER_SEED_FILE '{}' has permissions {:o} — \
-                                 should be 0600 or stricter. Tightening now.",
-                                seed_path,
-                                mode
-                            );
-                            let _ = std::fs::set_permissions(
-                                &seed_path,
-                                std::fs::Permissions::from_mode(0o600),
-                            );
-                        }
-                    }
-                }
-                match std::fs::read_to_string(&seed_path) {
-                    Ok(contents) => {
-                        let s = contents.trim().to_string();
-                        if s.is_empty() {
-                            panic!("FATAL: CUSTODY_MASTER_SEED_FILE '{}' is empty.", seed_path);
-                        }
-                        tracing::info!("Master seed loaded from file (CUSTODY_MASTER_SEED_FILE)");
-                        Some(s)
-                    }
-                    Err(e) => {
-                        panic!(
-                            "FATAL: Cannot read CUSTODY_MASTER_SEED_FILE '{}': {}",
-                            seed_path, e
-                        );
-                    }
-                }
-            } else {
-                None
-            };
-
-            let seed = seed.or_else(|| {
-                match std::env::var("CUSTODY_MASTER_SEED") {
-                    Ok(s) if !s.is_empty() => {
-                        tracing::warn!(
-                            "⚠️  Master seed loaded from env var CUSTODY_MASTER_SEED. \
-                             Prefer CUSTODY_MASTER_SEED_FILE for production."
-                        );
-                        // AUDIT-FIX M2: Clear env var after reading to reduce exposure
-                        std::env::remove_var("CUSTODY_MASTER_SEED");
-                        Some(s)
-                    }
-                    _ => None,
-                }
-            });
-
-            match seed {
-                Some(s) => {
-                    // AUDIT-FIX C-10: Reject seeds shorter than 32 chars
-                    if s.len() < 32 && !s.starts_with("INSECURE_DEFAULT") {
-                        panic!(
-                            "FATAL: Master seed is too short ({} chars, minimum 32). \
-                             Use a high-entropy seed (e.g., 64-char hex string).",
-                            s.len()
-                        );
-                    }
-                    s
-                }
-                None => {
-                    if std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1" {
-                        tracing::warn!(
-                            "⚠️  No master seed configured — using insecure default (dev mode)!"
-                        );
-                        "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
-                    } else {
-                        panic!(
-                            "FATAL: No master seed configured. \
-                             Set CUSTODY_MASTER_SEED_FILE (preferred) or CUSTODY_MASTER_SEED, \
-                             or set CUSTODY_ALLOW_INSECURE_SEED=1 for dev."
-                        );
-                    }
-                }
-            }
-        },
+        master_seed,
+        deposit_master_seed,
         // AUDIT-FIX P10-CUST-01: Signer auth token MUST NOT be predictable.
         // Previously could be None when env var was absent, leaving signer requests
         // completely unauthenticated. Now generates a cryptographically random token
@@ -1995,6 +2037,28 @@ fn default_signer_threshold(endpoint_count: usize) -> usize {
     }
 }
 
+fn multi_signer_local_sweep_mode(config: &CustodyConfig) -> bool {
+    config.signer_threshold > 1 && config.signer_endpoints.len() > 1
+}
+
+fn ensure_deposit_creation_allowed(config: &CustodyConfig) -> Result<(), String> {
+    if let Some(err) = local_sweep_policy_error(config) {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn local_sweep_policy_error(config: &CustodyConfig) -> Option<String> {
+    if multi_signer_local_sweep_mode(config) {
+        return Some(
+            "multi-signer deposit creation is disabled because deposit sweeps still broadcast with locally derived deposit keys; this path remains hard-disabled until deposit sweeps have a real threshold architecture".to_string(),
+        );
+    }
+
+    None
+}
+
 async fn solana_watcher_loop(state: CustodyState, url: String) {
     loop {
         if let Err(err) = process_solana_deposits(&state, &url).await {
@@ -2095,6 +2159,7 @@ async fn process_evm_deposits_for_chains(
                     to_treasury: treasury,
                     tx_hash: format!("balance:{}:block:{}", balance, block_number),
                     amount: Some(balance.to_string()),
+                    credited_amount: None,
                     signatures: Vec::new(),
                     sweep_tx_hash: None,
                     attempts: 0,
@@ -2170,6 +2235,11 @@ async fn process_solana_deposits(state: &CustodyState, url: &str) -> Result<(), 
 
             if let Some(treasury) = state.config.treasury_solana_address.clone() {
                 let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
+                let credited_amount = if balance > SOLANA_SWEEP_FEE_LAMPORTS {
+                    Some((balance - SOLANA_SWEEP_FEE_LAMPORTS).to_string())
+                } else {
+                    None
+                };
                 enqueue_sweep_job(
                     &state.db,
                     &SweepJob {
@@ -2181,6 +2251,7 @@ async fn process_solana_deposits(state: &CustodyState, url: &str) -> Result<(), 
                         to_treasury: treasury,
                         tx_hash: sig.clone(),
                         amount: Some(balance.to_string()),
+                        credited_amount,
                         signatures: Vec::new(),
                         sweep_tx_hash: None,
                         attempts: 0,
@@ -2275,6 +2346,7 @@ async fn process_solana_token_deposit(
                 to_treasury: treasury_ata,
                 tx_hash: synthetic_tx_hash,
                 amount: Some(balance.to_string()),
+                credited_amount: None,
                 signatures: Vec::new(),
                 sweep_tx_hash: None,
                 attempts: 0,
@@ -2354,6 +2426,7 @@ async fn process_evm_deposits(state: &CustodyState, url: &str) -> Result<(), Str
                     to_treasury: treasury,
                     tx_hash: format!("balance:{}:block:{}", balance, block_number),
                     amount: Some(balance.to_string()),
+                    credited_amount: None,
                     signatures: Vec::new(),
                     sweep_tx_hash: None,
                     attempts: 0,
@@ -2449,6 +2522,7 @@ async fn process_evm_erc20_deposits(
                                 to_treasury: treasury,
                                 tx_hash,
                                 amount: Some(amount.to_string()),
+                                credited_amount: None,
                                 signatures: Vec::new(),
                                 sweep_tx_hash: None,
                                 attempts: 0,
@@ -2957,8 +3031,25 @@ async fn sweep_worker_loop(state: CustodyState) {
 }
 
 async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
+    let local_sweep_error = local_sweep_policy_error(&state.config);
     let queued_jobs = list_sweep_jobs_by_status(&state.db, "queued")?;
     for mut job in queued_jobs {
+        if let Some(err) = local_sweep_error.as_ref() {
+            job.status = "permanently_failed".to_string();
+            job.last_error = Some(err.clone());
+            job.next_attempt_at = None;
+            store_sweep_job(&state.db, &job)?;
+            emit_custody_event(
+                state,
+                "sweep.failed",
+                &job.job_id,
+                Some(&job.deposit_id),
+                None,
+                Some(&json!({ "last_error": err, "mode": "blocked-local-sweep" })),
+            );
+            continue;
+        }
+
         job.status = "signing".to_string();
         store_sweep_job(&state.db, &job)?;
         emit_custody_event(
@@ -2971,31 +3062,35 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
         );
     }
 
-    if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
-        // Self-custody mode: no external signers configured.
-        // Promote all "signing" jobs directly to "signed" so they proceed
-        // to broadcast using the master-seed-derived keys.
-        let mut signing_jobs = list_sweep_jobs_by_status(&state.db, "signing")?;
-        for job in signing_jobs.iter_mut() {
-            job.status = "signed".to_string();
-            store_sweep_job(&state.db, job)?;
-            emit_custody_event(
-                state,
-                "sweep.signed",
-                &job.job_id,
-                Some(&job.deposit_id),
-                None,
-                None,
-            );
-        }
-    } else {
-        let mut signing_jobs = list_sweep_jobs_by_status(&state.db, "signing")?;
-        for job in signing_jobs.iter_mut() {
-            let signatures = collect_signatures(state, job).await?;
-            if signatures >= state.config.signer_threshold {
-                job.status = "signed".to_string();
+    if local_sweep_error.is_none()
+        && !state.config.signer_endpoints.is_empty()
+        && state.config.signer_threshold > 0
+    {
+        warn!(
+            "external signer endpoints are configured, but deposit sweeps still broadcast with locally derived deposit keys; skipping placeholder sweep signature collection"
+        );
+        promote_locally_signed_sweep_jobs(state, "locally-derived-deposit-key")?;
+    } else if local_sweep_error.is_none() {
+        promote_locally_signed_sweep_jobs(state, "self-custody")?;
+    }
+
+    if let Some(err) = local_sweep_error.as_ref() {
+        for status in ["signing", "signed"] {
+            let jobs = list_sweep_jobs_by_status(&state.db, status)?;
+            for mut job in jobs {
+                job.status = "permanently_failed".to_string();
+                job.last_error = Some(err.clone());
+                job.next_attempt_at = None;
+                store_sweep_job(&state.db, &job)?;
+                emit_custody_event(
+                    state,
+                    "sweep.failed",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    None,
+                    Some(&json!({ "last_error": err, "mode": "blocked-local-sweep" })),
+                );
             }
-            store_sweep_job(&state.db, job)?;
         }
     }
 
@@ -3029,7 +3124,16 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
             }
             Ok(None) => {
                 let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
-                mark_sweep_failed(job, "broadcast returned empty".to_string());
+                if job.chain == "solana" && !is_solana_stablecoin(&job.asset) {
+                    job.status = "signed".to_string();
+                    job.last_error = Some(
+                        "insufficient native SOL to sweep after fees; awaiting additional funds"
+                            .to_string(),
+                    );
+                    job.next_attempt_at = Some(chrono::Utc::now().timestamp() + 60);
+                } else {
+                    mark_sweep_failed(job, "broadcast returned empty".to_string());
+                }
                 store_sweep_job(&state.db, job)?;
                 emit_custody_event(
                     state,
@@ -3137,6 +3241,23 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                         );
                     }
                 }
+            } else {
+                job.status = "failed".to_string();
+                mark_sweep_failed(
+                    job,
+                    "sweep transaction reverted or failed on-chain".to_string(),
+                );
+                store_sweep_job(&state.db, job)?;
+                emit_custody_event(
+                    state,
+                    "sweep.failed",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.sweep_tx_hash.as_deref(),
+                    Some(
+                        &json!({ "last_error": job.last_error, "chain": job.chain, "asset": job.asset }),
+                    ),
+                );
             }
         }
     }
@@ -3239,7 +3360,13 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
 }
 
 fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<CreditJob>, String> {
-    let raw_amount = match sweep.amount.as_ref() {
+    let amount_source =
+        if sweep.chain.eq_ignore_ascii_case("solana") && sweep.asset.eq_ignore_ascii_case("sol") {
+            sweep.credited_amount.as_ref().or(sweep.amount.as_ref())
+        } else {
+            sweep.amount.as_ref()
+        };
+    let raw_amount = match amount_source {
         Some(value) => value
             .parse::<u128>()
             .map_err(|_| "invalid amount".to_string())?,
@@ -3333,6 +3460,24 @@ struct SignerResponse {
     _message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WithdrawalSigningMode {
+    ExternalSingleSigner,
+    SolanaThresholdFrost,
+    EvmThresholdSafe,
+}
+
+#[derive(Debug, Clone)]
+struct EvmSafeTransactionPlan {
+    safe_address: String,
+    nonce: u64,
+    inner_to: String,
+    inner_value: u128,
+    inner_data: Vec<u8>,
+    safe_tx_hash: [u8; 32],
+    exec_calldata: Vec<u8>,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  FROST Ed25519 Two-Round Signing Protocol
 //
@@ -3387,17 +3532,17 @@ struct FrostSignResponse {
 /// Coordinates between multiple signer services to produce a single group Ed25519 signature.
 ///
 /// Returns the number of valid signature shares collected and stored on the job.
-#[allow(dead_code)]
-async fn collect_frost_signatures(
+async fn collect_frost_signature_entries(
     state: &CustodyState,
-    job: &mut SweepJob,
+    job_id: &str,
+    signatures: &mut Vec<SignerSignature>,
     message: &[u8],
 ) -> Result<usize, String> {
     let message_hex = hex::encode(message);
 
     // ── Round 1: Collect nonce commitments from all signers ──
     let commit_req = FrostCommitRequest {
-        job_id: job.job_id.clone(),
+        job_id: job_id.to_string(),
         message_hex: message_hex.clone(),
     };
 
@@ -3450,7 +3595,7 @@ async fn collect_frost_signatures(
 
     // ── Round 2: Send all commitments to each signer, collect signature shares ──
     let sign_req = FrostSignRequest {
-        job_id: job.job_id.clone(),
+        job_id: job_id.to_string(),
         message_hex: message_hex.clone(),
         commitments: commitments
             .iter()
@@ -3462,7 +3607,7 @@ async fn collect_frost_signatures(
     };
 
     // Clear old signatures and store FROST-specific data
-    job.signatures.clear();
+    signatures.clear();
 
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
         let url = format!("{}/frost/sign", endpoint.trim_end_matches('/'));
@@ -3500,7 +3645,7 @@ async fn collect_frost_signatures(
                         buf.extend_from_slice(cmt_bytes);
                         hex::encode(buf)
                     };
-                    job.signatures.push(SignerSignature {
+                    signatures.push(SignerSignature {
                         signer_pubkey: resp.signer_id_hex,
                         signature: resp.share_hex,
                         message_hash: frost_payload,
@@ -3522,12 +3667,44 @@ async fn collect_frost_signatures(
             }
         }
 
-        if job.signatures.len() >= state.config.signer_threshold {
+        if signatures.len() >= state.config.signer_threshold {
             break;
         }
     }
 
-    Ok(job.signatures.len())
+    Ok(signatures.len())
+}
+
+fn promote_locally_signed_sweep_jobs(state: &CustodyState, sweep_mode: &str) -> Result<(), String> {
+    let mut signing_jobs = list_sweep_jobs_by_status(&state.db, "signing")?;
+    for job in signing_jobs.iter_mut() {
+        if !job.signatures.is_empty() {
+            job.signatures.clear();
+        }
+        job.status = "signed".to_string();
+        store_sweep_job(&state.db, job)?;
+        emit_custody_event(
+            state,
+            "sweep.signed",
+            &job.job_id,
+            Some(&job.deposit_id),
+            None,
+            Some(&json!({
+                "mode": sweep_mode,
+                "threshold_signing": false,
+            })),
+        );
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn collect_frost_signatures(
+    state: &CustodyState,
+    job: &mut SweepJob,
+    message: &[u8],
+) -> Result<usize, String> {
+    collect_frost_signature_entries(state, &job.job_id, &mut job.signatures, message).await
 }
 
 /// Collect individual ECDSA signatures from EVM signers.
@@ -3593,6 +3770,7 @@ async fn collect_evm_multisig_signatures(
     Ok(job.signatures.len())
 }
 
+#[allow(dead_code)]
 async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<usize, String> {
     let request = SignerRequest {
         job_id: job.job_id.clone(),
@@ -3606,7 +3784,6 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
 
     for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
         let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-        // AUDIT-FIX 1.22: Use per-signer auth token if available, fall back to global token
         let mut req = state.http.post(url).json(&request);
         let token = state
             .config
@@ -3659,7 +3836,583 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
     Ok(job.signatures.len())
 }
 
+fn withdrawal_treasury_address(config: &CustodyConfig, dest_chain: &str) -> String {
+    match dest_chain {
+        "solana" | "sol" => config.treasury_solana_address.clone().unwrap_or_default(),
+        "ethereum" | "eth" | "bsc" | "bnb" => {
+            config.treasury_evm_address.clone().unwrap_or_default()
+        }
+        _ => String::new(),
+    }
+}
+
+fn evm_executor_derivation_path(dest_chain: &str) -> &'static str {
+    match dest_chain {
+        "bsc" | "bnb" => "custody/treasury/bnb",
+        _ => "custody/treasury/ethereum",
+    }
+}
+
+fn determine_withdrawal_signing_mode(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<Option<WithdrawalSigningMode>, String> {
+    if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
+        return Ok(None);
+    }
+
+    if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
+        return Ok(Some(WithdrawalSigningMode::ExternalSingleSigner));
+    }
+
+    match job.dest_chain.as_str() {
+        "solana" | "sol" => {
+            if outbound_asset != "sol" && !is_solana_stablecoin(outbound_asset) {
+                return Err(format!(
+                    "threshold Solana withdrawals currently support native SOL and SPL stablecoins, not {}",
+                    outbound_asset
+                ));
+            }
+            if state.config.frost_pubkey_package_hex.is_none() {
+                return Err(
+                    "FROST public key package not configured (set CUSTODY_FROST_PUBKEY_PACKAGE)"
+                        .to_string(),
+                );
+            }
+            Ok(Some(WithdrawalSigningMode::SolanaThresholdFrost))
+        }
+        "ethereum" | "eth" | "bsc" | "bnb" => Err(if state.config.evm_multisig_address.is_none() {
+            "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)".to_string()
+        } else {
+            return Ok(Some(WithdrawalSigningMode::EvmThresholdSafe));
+        }),
+        other => Err(format!("unsupported destination chain: {}", other)),
+    }
+}
+
+fn abi_encode_address_word(address: &str) -> Result<[u8; 32], String> {
+    let addr = parse_evm_address(address)?;
+    let mut word = [0u8; 32];
+    word[12..].copy_from_slice(&addr);
+    Ok(word)
+}
+
+fn abi_encode_u64_word(value: u64) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[24..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn abi_encode_u128_word(value: u128) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn abi_encode_bytes_tail(bytes: &[u8]) -> Vec<u8> {
+    let mut tail = Vec::new();
+    tail.extend_from_slice(&abi_encode_u64_word(bytes.len() as u64));
+    tail.extend_from_slice(bytes);
+    let padding = (32 - (bytes.len() % 32)) % 32;
+    tail.extend_from_slice(&vec![0u8; padding]);
+    tail
+}
+
+fn evm_function_selector(signature: &str) -> [u8; 4] {
+    use sha3::{Digest, Keccak256};
+
+    let digest = Keccak256::digest(signature.as_bytes());
+    [digest[0], digest[1], digest[2], digest[3]]
+}
+
+async fn evm_call(
+    client: &reqwest::Client,
+    url: &str,
+    to: &str,
+    data: &[u8],
+) -> Result<Value, String> {
+    evm_rpc_call(
+        client,
+        url,
+        "eth_call",
+        json!([{
+            "to": to,
+            "data": format!("0x{}", hex::encode(data)),
+        }, "latest"]),
+    )
+    .await
+}
+
+async fn evm_safe_get_nonce(
+    client: &reqwest::Client,
+    url: &str,
+    safe_address: &str,
+) -> Result<u64, String> {
+    let selector = evm_function_selector("nonce()");
+    let result = evm_call(client, url, safe_address, &selector).await?;
+    let value = result.as_str().unwrap_or("0x0");
+    parse_hex_u64(value)
+}
+
+fn build_evm_safe_get_transaction_hash_calldata(
+    inner_to: &str,
+    inner_value: u128,
+    inner_data: &[u8],
+    nonce: u64,
+) -> Result<Vec<u8>, String> {
+    let mut calldata = Vec::new();
+    calldata.extend_from_slice(&evm_function_selector(
+        "getTransactionHash(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,uint256)",
+    ));
+    calldata.extend_from_slice(&abi_encode_address_word(inner_to)?);
+    calldata.extend_from_slice(&abi_encode_u128_word(inner_value));
+    calldata.extend_from_slice(&abi_encode_u64_word(10 * 32));
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&abi_encode_u64_word(nonce));
+    calldata.extend_from_slice(&abi_encode_bytes_tail(inner_data));
+    Ok(calldata)
+}
+
+fn build_evm_safe_exec_transaction_calldata(
+    inner_to: &str,
+    inner_value: u128,
+    inner_data: &[u8],
+    signatures: &[u8],
+) -> Result<Vec<u8>, String> {
+    let data_offset = 10 * 32;
+    let data_tail = abi_encode_bytes_tail(inner_data);
+    let sigs_offset = data_offset + data_tail.len();
+    let sigs_tail = abi_encode_bytes_tail(signatures);
+
+    let mut calldata = Vec::new();
+    calldata.extend_from_slice(&evm_function_selector(
+        "execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)",
+    ));
+    calldata.extend_from_slice(&abi_encode_address_word(inner_to)?);
+    calldata.extend_from_slice(&abi_encode_u128_word(inner_value));
+    calldata.extend_from_slice(&abi_encode_u64_word(data_offset as u64));
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&[0u8; 32]);
+    calldata.extend_from_slice(&abi_encode_u64_word(sigs_offset as u64));
+    calldata.extend_from_slice(&data_tail);
+    calldata.extend_from_slice(&sigs_tail);
+    Ok(calldata)
+}
+
+fn normalize_evm_signature(signature: &[u8]) -> Result<Vec<u8>, String> {
+    if signature.len() != 65 {
+        return Err(format!(
+            "invalid EVM signature length: expected 65, got {}",
+            signature.len()
+        ));
+    }
+    let mut normalized = signature.to_vec();
+    if normalized[64] < 27 {
+        normalized[64] = normalized[64].saturating_add(27);
+    }
+    if normalized[64] != 27 && normalized[64] != 28 {
+        return Err(format!(
+            "invalid EVM recovery id: expected 27/28, got {}",
+            normalized[64]
+        ));
+    }
+    Ok(normalized)
+}
+
+fn build_evm_threshold_withdrawal_intent(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    asset: &str,
+    nonce: u64,
+) -> Result<(String, u128, Vec<u8>), String> {
+    let is_erc20 = matches!(asset, "usdt" | "usdc");
+    if is_erc20 {
+        let contract_addr = evm_contract_for_asset(&state.config, asset)
+            .map_err(|e| format!("resolve ERC-20 contract for withdrawal: {}", e))?;
+        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let transfer_data = evm_encode_erc20_transfer(&job.dest_address, chain_amount)
+            .map_err(|e| format!("encode ERC-20 transfer: {}", e))?;
+        let _ = nonce;
+        Ok((contract_addr, 0u128, transfer_data))
+    } else {
+        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let _ = nonce;
+        Ok((job.dest_address.clone(), chain_amount, Vec::new()))
+    }
+}
+
+async fn build_evm_safe_transaction_plan(
+    state: &CustodyState,
+    url: &str,
+    job: &WithdrawalJob,
+    asset: &str,
+) -> Result<EvmSafeTransactionPlan, String> {
+    let safe_address = state.config.evm_multisig_address.clone().ok_or_else(|| {
+        "EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)".to_string()
+    })?;
+    let nonce = match job.safe_nonce {
+        Some(nonce) => nonce,
+        None => evm_safe_get_nonce(&state.http, url, &safe_address).await?,
+    };
+    let (inner_to, inner_value, inner_data) =
+        build_evm_threshold_withdrawal_intent(state, job, asset, nonce)?;
+    let hash_calldata =
+        build_evm_safe_get_transaction_hash_calldata(&inner_to, inner_value, &inner_data, nonce)?;
+    let hash_result = evm_call(&state.http, url, &safe_address, &hash_calldata).await?;
+    let hash_hex = hash_result
+        .as_str()
+        .ok_or_else(|| "Safe getTransactionHash returned non-string result".to_string())?;
+    let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x"))
+        .map_err(|e| format!("decode Safe tx hash: {}", e))?;
+    if hash_bytes.len() != 32 {
+        return Err(format!(
+            "invalid Safe tx hash length: expected 32, got {}",
+            hash_bytes.len()
+        ));
+    }
+    let mut safe_tx_hash = [0u8; 32];
+    safe_tx_hash.copy_from_slice(&hash_bytes);
+
+    Ok(EvmSafeTransactionPlan {
+        safe_address,
+        nonce,
+        inner_to,
+        inner_value,
+        inner_data,
+        safe_tx_hash,
+        exec_calldata: Vec::new(),
+    })
+}
+
+fn finalize_evm_safe_exec_plan(
+    mut plan: EvmSafeTransactionPlan,
+    signatures: &[u8],
+) -> Result<EvmSafeTransactionPlan, String> {
+    plan.exec_calldata = build_evm_safe_exec_transaction_calldata(
+        &plan.inner_to,
+        plan.inner_value,
+        &plan.inner_data,
+        signatures,
+    )?;
+    Ok(plan)
+}
+
+fn solana_treasury_owner_address(config: &CustodyConfig) -> Result<String, String> {
+    config
+        .solana_treasury_owner
+        .clone()
+        .or_else(|| config.treasury_solana_address.clone())
+        .ok_or_else(|| {
+            "missing Solana treasury owner (set CUSTODY_SOLANA_TREASURY_OWNER or CUSTODY_TREASURY_SOLANA_ADDRESS)"
+                .to_string()
+        })
+}
+
+fn resolve_solana_token_withdrawal_accounts(
+    config: &CustodyConfig,
+    asset: &str,
+    dest_owner: &str,
+) -> Result<(String, String, String, String), String> {
+    let treasury_owner = solana_treasury_owner_address(config)?;
+    let mint = solana_mint_for_asset(config, asset)?;
+    let from_token_account = derive_associated_token_address_from_str(&treasury_owner, &mint)?;
+    let to_token_account = derive_associated_token_address_from_str(dest_owner, &mint)?;
+    Ok((treasury_owner, mint, from_token_account, to_token_account))
+}
+
+fn build_solana_token_transfer_message(
+    authority_pubkey: &[u8; 32],
+    from_token_account: &[u8; 32],
+    to_token_account: &[u8; 32],
+    raw_amount: u64,
+    recent_blockhash: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    let token_program = decode_solana_pubkey(SOLANA_TOKEN_PROGRAM)?;
+    let account_keys = vec![
+        *authority_pubkey,
+        *from_token_account,
+        *to_token_account,
+        token_program,
+    ];
+
+    let header = SolanaMessageHeader {
+        num_required_signatures: 1,
+        num_readonly_signed: 0,
+        num_readonly_unsigned: 1,
+    };
+
+    let mut data = Vec::with_capacity(9);
+    data.push(3u8);
+    data.extend_from_slice(&raw_amount.to_le_bytes());
+
+    let instruction = SolanaInstruction {
+        program_id_index: 3,
+        account_indices: vec![1, 2, 0],
+        data,
+    };
+
+    Ok(build_solana_message_with_instructions(
+        header,
+        &account_keys,
+        recent_blockhash,
+        &[instruction],
+    ))
+}
+
+fn build_threshold_solana_withdrawal_message(
+    state: &CustodyState,
+    job: &WithdrawalJob,
+    outbound_asset: &str,
+    recent_blockhash: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    if outbound_asset == "sol" {
+        let solana_tx_fee: u64 = 5_000;
+        if job.amount <= solana_tx_fee {
+            return Err("withdrawal amount too small to cover fees".to_string());
+        }
+
+        let treasury_address = state
+            .config
+            .treasury_solana_address
+            .as_ref()
+            .ok_or_else(|| "missing CUSTODY_TREASURY_SOLANA_ADDRESS".to_string())?;
+        let from_pubkey = decode_solana_pubkey(treasury_address)?;
+        let to_pubkey = decode_solana_pubkey(&job.dest_address)?;
+        let transfer_amount = job.amount - solana_tx_fee;
+
+        return Ok(build_solana_transfer_message(
+            &from_pubkey,
+            &to_pubkey,
+            transfer_amount,
+            recent_blockhash,
+        ));
+    }
+
+    if !is_solana_stablecoin(outbound_asset) {
+        return Err(format!(
+            "unsupported threshold Solana withdrawal asset: {}",
+            outbound_asset
+        ));
+    }
+
+    let (treasury_owner, _, from_token_account, to_token_account) =
+        resolve_solana_token_withdrawal_accounts(&state.config, outbound_asset, &job.dest_address)?;
+    let authority_pubkey = decode_solana_pubkey(&treasury_owner)?;
+    let from_token_pubkey = decode_solana_pubkey(&from_token_account)?;
+    let to_token_pubkey = decode_solana_pubkey(&to_token_account)?;
+    let raw_amount = u64::try_from(shells_to_chain_amount(
+        job.amount,
+        &job.dest_chain,
+        outbound_asset,
+    ))
+    .map_err(|_| "solana token withdrawal amount overflow".to_string())?;
+
+    build_solana_token_transfer_message(
+        &authority_pubkey,
+        &from_token_pubkey,
+        &to_token_pubkey,
+        raw_amount,
+        recent_blockhash,
+    )
+}
+
+async fn collect_threshold_solana_withdrawal_signatures(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<usize, String> {
+    if is_solana_stablecoin(outbound_asset) {
+        let (treasury_owner, mint, from_token_account, to_token_account) =
+            resolve_solana_token_withdrawal_accounts(
+                &state.config,
+                outbound_asset,
+                &job.dest_address,
+            )?;
+        ensure_associated_token_account_for_str(state, &treasury_owner, &mint, &from_token_account)
+            .await?;
+        ensure_associated_token_account_for_str(state, &job.dest_address, &mint, &to_token_account)
+            .await?;
+    }
+
+    let url = state
+        .config
+        .solana_rpc_url
+        .as_ref()
+        .ok_or_else(|| "missing solana RPC".to_string())?;
+    let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
+    let message =
+        build_threshold_solana_withdrawal_message(state, job, outbound_asset, &recent_blockhash)?;
+    collect_frost_signature_entries(state, &job.job_id, &mut job.signatures, &message).await
+}
+
+async fn collect_single_signer_withdrawal_signatures(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<usize, String> {
+    let signer_request = SignerRequest {
+        job_id: job.job_id.clone(),
+        chain: job.dest_chain.clone(),
+        asset: outbound_asset.to_string(),
+        from_address: withdrawal_treasury_address(&state.config, &job.dest_chain),
+        to_address: job.dest_address.clone(),
+        amount: Some(job.amount.to_string()),
+        tx_hash: None,
+    };
+
+    let mut sig_count = job.signatures.len();
+    for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
+        let url = format!("{}/sign", endpoint.trim_end_matches('/'));
+        let mut req = state.http.post(&url).json(&signer_request);
+        let token = state
+            .config
+            .signer_auth_tokens
+            .get(idx)
+            .and_then(|t| t.as_ref())
+            .or(state.config.signer_auth_token.as_ref());
+        if let Some(token) = token {
+            req = req.bearer_auth(token);
+        }
+
+        match req.send().await {
+            Ok(response) => {
+                if let Ok(payload) = response.json::<SignerResponse>().await {
+                    if payload.status == "signed" {
+                        let already_signed = job
+                            .signatures
+                            .iter()
+                            .any(|s| s.signer_pubkey == payload.signer_pubkey);
+                        if !already_signed {
+                            job.signatures.push(SignerSignature {
+                                signer_pubkey: payload.signer_pubkey,
+                                signature: payload.signature,
+                                message_hash: payload.message_hash,
+                                received_at: chrono::Utc::now().timestamp(),
+                            });
+                            sig_count = job.signatures.len();
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "signer request failed for withdrawal {}: {}",
+                    job.job_id,
+                    err
+                );
+            }
+        }
+
+        if sig_count >= state.config.signer_threshold {
+            break;
+        }
+    }
+
+    Ok(sig_count)
+}
+
+async fn collect_threshold_evm_withdrawal_signatures(
+    state: &CustodyState,
+    job: &mut WithdrawalJob,
+    outbound_asset: &str,
+) -> Result<usize, String> {
+    let url = rpc_url_for_chain(&state.config, &job.dest_chain)
+        .ok_or_else(|| format!("missing RPC URL for chain {}", job.dest_chain))?;
+    let plan = build_evm_safe_transaction_plan(state, &url, job, outbound_asset).await?;
+    let safe_tx_hash_hex = hex::encode(plan.safe_tx_hash);
+    job.safe_nonce = Some(plan.nonce);
+
+    if job
+        .signatures
+        .iter()
+        .any(|sig| sig.message_hash != safe_tx_hash_hex)
+    {
+        job.signatures.clear();
+    }
+
+    let request = SignerRequest {
+        job_id: job.job_id.clone(),
+        chain: job.dest_chain.clone(),
+        asset: outbound_asset.to_string(),
+        from_address: plan.safe_address,
+        to_address: job.dest_address.clone(),
+        amount: Some(job.amount.to_string()),
+        tx_hash: Some(safe_tx_hash_hex.clone()),
+    };
+
+    for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
+        let url = format!("{}/sign", endpoint.trim_end_matches('/'));
+        let mut req = state.http.post(&url).json(&request);
+        let token = state
+            .config
+            .signer_auth_tokens
+            .get(idx)
+            .and_then(|t| t.as_ref())
+            .or(state.config.signer_auth_token.as_ref());
+        if let Some(token) = token {
+            req = req.bearer_auth(token);
+        }
+
+        match req.send().await {
+            Ok(response) => match response.json::<SignerResponse>().await {
+                Ok(payload) if payload.status == "signed" => {
+                    let signer_addr = payload
+                        .signer_pubkey
+                        .trim_start_matches("0x")
+                        .to_lowercase();
+                    let already_signed = job.signatures.iter().any(|s| {
+                        s.signer_pubkey
+                            .trim_start_matches("0x")
+                            .eq_ignore_ascii_case(&signer_addr)
+                    });
+                    if !already_signed {
+                        job.signatures.push(SignerSignature {
+                            signer_pubkey: signer_addr,
+                            signature: payload.signature,
+                            message_hash: safe_tx_hash_hex.clone(),
+                            received_at: chrono::Utc::now().timestamp(),
+                        });
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    warn!(
+                        "EVM signer response decode failed for {}: {}",
+                        job.job_id, err
+                    );
+                }
+            },
+            Err(err) => {
+                warn!("EVM signer request failed for {}: {}", job.job_id, err);
+            }
+        }
+
+        if job.signatures.len() >= state.config.signer_threshold {
+            break;
+        }
+    }
+
+    Ok(job.signatures.len())
+}
+
 async fn broadcast_sweep(state: &CustodyState, job: &SweepJob) -> Result<Option<String>, String> {
+    if let Some(err) = local_sweep_policy_error(&state.config) {
+        return Err(format!(
+            "{}; refusing to broadcast sweep {} on {}",
+            err, job.job_id, job.chain
+        ));
+    }
+
     if job.chain == "sol" || job.chain == "solana" {
         let url = state
             .config
@@ -3701,20 +4454,19 @@ async fn broadcast_solana_sweep(
     let Some(deposit) = deposit else {
         return Ok(None);
     };
+    let deposit_seed = deposit_seed_for_record(&state.config, &deposit);
 
     // AUDIT-FIX C1: Deduct the Solana transaction fee from the sweep amount.
     // The deposit address is the fee payer, so it needs: transfer_amount + fee.
     // Without this, the tx would fail because the account lacks fee funds.
-    let solana_tx_fee: u64 = 5_000; // 5000 lamports per signature (base fee)
-    if amount <= solana_tx_fee {
+    if amount <= SOLANA_SWEEP_FEE_LAMPORTS {
         // Dust amount — not worth sweeping (would go entirely to fees)
         return Ok(None);
     }
-    let transfer_amount = amount - solana_tx_fee;
+    let transfer_amount = amount - SOLANA_SWEEP_FEE_LAMPORTS;
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let (signing_key, from_pubkey) =
-        derive_solana_signer(&deposit.derivation_path, &state.config.master_seed)?;
+    let (signing_key, from_pubkey) = derive_solana_signer(&deposit.derivation_path, deposit_seed)?;
     let to_pubkey = decode_solana_pubkey(&job.to_treasury)?;
 
     let message =
@@ -3753,7 +4505,10 @@ async fn broadcast_solana_token_sweep(
         derive_solana_keypair("custody/fee-payer/solana", &state.config.master_seed)?
     };
 
-    let owner_keypair = derive_solana_keypair(&deposit.derivation_path, &state.config.master_seed)?;
+    let owner_keypair = derive_solana_keypair(
+        &deposit.derivation_path,
+        deposit_seed_for_record(&state.config, &deposit),
+    )?;
 
     let from_account = decode_solana_pubkey(&job.from_address)?;
     let to_account = decode_solana_pubkey(&job.to_treasury)?;
@@ -3819,7 +4574,7 @@ async fn broadcast_evm_sweep(
         return Ok(None);
     };
 
-    let from_address = deposit.address;
+    let from_address = deposit.address.clone();
     let to_address = job.to_treasury.clone();
 
     let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
@@ -3842,7 +4597,10 @@ async fn broadcast_evm_sweep(
     let value = amount - fee;
 
     let chain_id = evm_get_chain_id(&state.http, url).await?;
-    let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
+    let signing_key = derive_evm_signing_key(
+        &deposit.derivation_path,
+        deposit_seed_for_record(&state.config, &deposit),
+    )?;
     let raw_tx = build_evm_signed_transaction(
         &signing_key,
         nonce,
@@ -3959,7 +4717,10 @@ async fn broadcast_evm_token_sweep(
 
     let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let chain_id = evm_get_chain_id(&state.http, url).await?;
-    let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
+    let signing_key = derive_evm_signing_key(
+        &deposit.derivation_path,
+        deposit_seed_for_record(&state.config, &deposit),
+    )?;
     // Re-use pre-computed transfer data from gas estimation
     let raw_tx = build_evm_signed_transaction_with_data(
         &signing_key,
@@ -4073,6 +4834,23 @@ fn mark_credit_failed(job: &mut CreditJob, err: String) {
         job.next_attempt_at = None;
         tracing::error!(
             "AUDIT-FIX H2: credit job {} exceeded {} attempts — moved to permanently_failed. \
+             Manual intervention required.",
+            job.job_id,
+            MAX_JOB_ATTEMPTS
+        );
+    } else {
+        job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+    }
+}
+
+fn mark_withdrawal_failed(job: &mut WithdrawalJob, err: String) {
+    job.attempts = job.attempts.saturating_add(1);
+    job.last_error = Some(err);
+    if job.attempts >= MAX_JOB_ATTEMPTS {
+        job.status = "permanently_failed".to_string();
+        job.next_attempt_at = None;
+        tracing::error!(
+            "AUDIT-FIX H2: withdrawal job {} exceeded {} attempts — moved to permanently_failed. \
              Manual intervention required.",
             job.job_id,
             MAX_JOB_ATTEMPTS
@@ -5398,6 +6176,7 @@ async fn create_withdrawal(
         preferred_stablecoin: preferred.clone(),
         burn_tx_signature: None,
         outbound_tx_hash: None,
+        safe_nonce: None,
         signatures: Vec::new(),
         status: "pending_burn".to_string(),
         attempts: 0,
@@ -5480,6 +6259,83 @@ fn fetch_withdrawal_job(db: &DB, job_id: &str) -> Result<Option<WithdrawalJob>, 
     }
 }
 
+fn burn_signature_index_key(burn_tx_signature: &str) -> String {
+    format!("burn_sig:{}", burn_tx_signature)
+}
+
+fn reserve_burn_signature(db: &DB, burn_tx_signature: &str, job_id: &str) -> Result<(), String> {
+    let idx_cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
+    let key = burn_signature_index_key(burn_tx_signature);
+
+    if let Some(existing) = db
+        .get_cf(idx_cf, key.as_bytes())
+        .map_err(|e| format!("db get: {}", e))?
+    {
+        let existing_job_id = String::from_utf8_lossy(&existing);
+        if existing_job_id != job_id {
+            return Err(format!(
+                "burn_tx_signature already used by withdrawal {}",
+                existing_job_id
+            ));
+        }
+    }
+
+    db.put_cf(idx_cf, key.as_bytes(), job_id.as_bytes())
+        .map_err(|e| format!("db put: {}", e))
+}
+
+fn release_burn_signature_reservation(
+    db: &DB,
+    burn_tx_signature: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    let idx_cf = db
+        .cf_handle(CF_INDEXES)
+        .ok_or_else(|| "missing indexes cf".to_string())?;
+    let key = burn_signature_index_key(burn_tx_signature);
+
+    if let Some(existing) = db
+        .get_cf(idx_cf, key.as_bytes())
+        .map_err(|e| format!("db get: {}", e))?
+    {
+        if existing.as_slice() == job_id.as_bytes() {
+            db.delete_cf(idx_cf, key.as_bytes())
+                .map_err(|e| format!("db delete: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn reset_pending_burn_submission(
+    db: &DB,
+    job: &mut WithdrawalJob,
+    err: String,
+) -> Result<(), String> {
+    if let Some(existing) = job.burn_tx_signature.take() {
+        let _ = release_burn_signature_reservation(db, &existing, &job.job_id);
+    }
+
+    job.attempts = job.attempts.saturating_add(1);
+    job.last_error = Some(err);
+    if job.attempts >= MAX_JOB_ATTEMPTS {
+        job.status = "permanently_failed".to_string();
+        job.next_attempt_at = None;
+        tracing::error!(
+            "withdrawal job {} exceeded {} invalid burn submissions — moved to permanently_failed",
+            job.job_id,
+            MAX_JOB_ATTEMPTS
+        );
+    } else {
+        job.status = "pending_burn".to_string();
+        job.next_attempt_at = None;
+    }
+
+    store_withdrawal_job(db, job)
+}
+
 /// AUDIT-FIX C4: Endpoint for clients to submit the MoltChain burn tx signature.
 ///
 /// PUT /withdrawals/:job_id/burn
@@ -5494,9 +6350,12 @@ struct BurnSignaturePayload {
 
 async fn submit_burn_signature(
     State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(job_id): axum::extract::Path<String>,
     Json(payload): Json<BurnSignaturePayload>,
 ) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
     if payload.burn_tx_signature.is_empty() {
         return Err(Json(ErrorResponse::invalid("burn_tx_signature required")));
     }
@@ -5534,32 +6393,27 @@ async fn submit_burn_signature(
         ))));
     }
 
-    if job.burn_tx_signature.is_some() {
-        return Err(Json(ErrorResponse::invalid(
-            "burn_tx_signature already set",
-        )));
+    if job.burn_tx_signature.as_deref() == Some(payload.burn_tx_signature.as_str()) {
+        return Ok(Json(json!({
+            "job_id": job.job_id,
+            "status": job.status,
+            "burn_tx_signature": payload.burn_tx_signature,
+            "message": "burn_tx_signature already recorded"
+        })));
     }
 
-    // AUDIT-FIX H6: Check that this burn_tx_signature hasn't been used by another job.
-    // Prevents burn transaction replay across multiple withdrawal jobs.
+    reserve_burn_signature(&state.db, &payload.burn_tx_signature, &job_id)
+        .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
+
+    if let Some(existing) = job
+        .burn_tx_signature
+        .replace(payload.burn_tx_signature.clone())
     {
-        let burn_sig_key = format!("burn_sig:{}", payload.burn_tx_signature);
-        if let Some(idx_cf) = state.db.cf_handle(CF_INDEXES) {
-            if let Ok(Some(existing)) = state.db.get_cf(idx_cf, burn_sig_key.as_bytes()) {
-                let existing_job_id = String::from_utf8_lossy(&existing);
-                return Err(Json(ErrorResponse::invalid(&format!(
-                    "burn_tx_signature already used by withdrawal {}",
-                    existing_job_id
-                ))));
-            }
-            // Reserve the signature atomically
-            let _ = state
-                .db
-                .put_cf(idx_cf, burn_sig_key.as_bytes(), job_id.as_bytes());
-        }
+        let _ = release_burn_signature_reservation(&state.db, &existing, &job_id);
     }
 
-    job.burn_tx_signature = Some(payload.burn_tx_signature.clone());
+    job.last_error = None;
+    job.next_attempt_at = None;
     store_withdrawal_job(&state.db, &job).map_err(|e| Json(ErrorResponse::db(&e)))?;
 
     record_audit_event(
@@ -6881,12 +7735,14 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                         expected,
                                         tx_contract
                                     );
-                                    job.status = "permanently_failed".to_string();
-                                    job.last_error = Some(format!(
-                                        "Burn contract mismatch: expected {} got {:?}",
-                                        expected, tx_contract
-                                    ));
-                                    let _ = store_withdrawal_job(&state.db, &job);
+                                    let _ = reset_pending_burn_submission(
+                                        &state.db,
+                                        &mut job,
+                                        format!(
+                                            "Burn contract mismatch: expected {} got {:?}",
+                                            expected, tx_contract
+                                        ),
+                                    );
                                     continue;
                                 }
                             } else {
@@ -6913,48 +7769,56 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     job.job_id,
                                     tx_method
                                 );
-                                job.status = "permanently_failed".to_string();
-                                job.last_error = Some(format!(
-                                    "Burn method mismatch: expected 'burn' got {:?}",
-                                    tx_method
-                                ));
-                                let _ = store_withdrawal_job(&state.db, &job);
+                                let _ = reset_pending_burn_submission(
+                                    &state.db,
+                                    &mut job,
+                                    format!(
+                                        "Burn method mismatch: expected 'burn' got {:?}",
+                                        tx_method
+                                    ),
+                                );
                                 continue;
                             }
 
                             // Validate amount matches
                             if tx_amount != job.amount {
+                                let expected_amount = job.amount;
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: expected amount {} \
                                      but tx burned {}. Amount mismatch!",
                                     job.job_id,
-                                    job.amount,
+                                    expected_amount,
                                     tx_amount
                                 );
-                                job.status = "permanently_failed".to_string();
-                                job.last_error = Some(format!(
-                                    "Burn amount mismatch: expected {} got {}",
-                                    job.amount, tx_amount
-                                ));
-                                let _ = store_withdrawal_job(&state.db, &job);
+                                let _ = reset_pending_burn_submission(
+                                    &state.db,
+                                    &mut job,
+                                    format!(
+                                        "Burn amount mismatch: expected {} got {}",
+                                        expected_amount, tx_amount
+                                    ),
+                                );
                                 continue;
                             }
 
                             // Validate caller is the user_id
                             if tx_caller != Some(job.user_id.as_str()) {
+                                let expected_user_id = job.user_id.clone();
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: expected caller {} \
                                      but tx caller was {:?}. Possible attack!",
                                     job.job_id,
-                                    job.user_id,
+                                    expected_user_id,
                                     tx_caller
                                 );
-                                job.status = "permanently_failed".to_string();
-                                job.last_error = Some(format!(
-                                    "Burn caller mismatch: expected {} got {:?}",
-                                    job.user_id, tx_caller
-                                ));
-                                let _ = store_withdrawal_job(&state.db, &job);
+                                let _ = reset_pending_burn_submission(
+                                    &state.db,
+                                    &mut job,
+                                    format!(
+                                        "Burn caller mismatch: expected {} got {:?}",
+                                        expected_user_id, tx_caller
+                                    ),
+                                );
                                 continue;
                             }
 
@@ -6992,15 +7856,38 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
 
         // Determine the outbound transaction details
         let outbound_asset = match job.asset.to_lowercase().as_str() {
-            "musd" => job.preferred_stablecoin.as_str(),
-            "wsol" => "sol",
-            "weth" => "eth",
-            "wbnb" => "bnb",
+            "musd" => job.preferred_stablecoin.clone(),
+            "wsol" => "sol".to_string(),
+            "weth" => "eth".to_string(),
+            "wbnb" => "bnb".to_string(),
             _ => continue,
         };
 
-        // Self-custody mode: no external signers, skip signature collection
-        if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
+        let signing_mode = match determine_withdrawal_signing_mode(state, &job, &outbound_asset) {
+            Ok(mode) => mode,
+            Err(err) => {
+                job.status = "permanently_failed".to_string();
+                job.last_error = Some(err.clone());
+                job.next_attempt_at = None;
+                store_withdrawal_job(&state.db, &job)?;
+                emit_custody_event(
+                    state,
+                    "withdrawal.permanently_failed",
+                    &job.job_id,
+                    None,
+                    None,
+                    Some(&serde_json::json!({
+                        "asset": job.asset,
+                        "amount": job.amount,
+                        "dest_chain": job.dest_chain,
+                        "last_error": err
+                    })),
+                );
+                continue;
+            }
+        };
+
+        if signing_mode.is_none() {
             job.status = "signing".to_string();
             store_withdrawal_job(&state.db, &job)?;
             emit_custody_event(
@@ -7022,72 +7909,32 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             continue;
         }
 
-        // Request threshold signatures from signers
-        let signer_request = SignerRequest {
-            job_id: job.job_id.clone(),
-            chain: job.dest_chain.clone(),
-            asset: outbound_asset.to_string(),
-            from_address: match job.dest_chain.as_str() {
-                "solana" => state
-                    .config
-                    .treasury_solana_address
-                    .clone()
-                    .unwrap_or_default(),
-                "ethereum" | "eth" | "bsc" | "bnb" => state
-                    .config
-                    .treasury_evm_address
-                    .clone()
-                    .unwrap_or_default(),
-                _ => String::new(),
-            },
-            to_address: job.dest_address.clone(),
-            amount: Some(job.amount.to_string()),
-            tx_hash: None,
+        let sig_count = match signing_mode.unwrap() {
+            WithdrawalSigningMode::ExternalSingleSigner => {
+                collect_single_signer_withdrawal_signatures(state, &mut job, &outbound_asset).await
+            }
+            WithdrawalSigningMode::SolanaThresholdFrost => {
+                collect_threshold_solana_withdrawal_signatures(state, &mut job, &outbound_asset)
+                    .await
+            }
+            WithdrawalSigningMode::EvmThresholdSafe => {
+                collect_threshold_evm_withdrawal_signatures(state, &mut job, &outbound_asset).await
+            }
         };
 
-        let mut sig_count = job.signatures.len();
-        for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
-            let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-            // AUDIT-FIX 1.22: Per-signer auth tokens
-            let mut req = state.http.post(&url).json(&signer_request);
-            let token = state
-                .config
-                .signer_auth_tokens
-                .get(idx)
-                .and_then(|t| t.as_ref())
-                .or(state.config.signer_auth_token.as_ref());
-            if let Some(token) = token {
-                req = req.bearer_auth(token);
+        let sig_count = match sig_count {
+            Ok(count) => count,
+            Err(err) => {
+                mark_withdrawal_failed(&mut job, err);
+                store_withdrawal_job(&state.db, &job)?;
+                continue;
             }
-            match req.send().await {
-                Ok(response) => {
-                    if let Ok(payload) = response.json::<SignerResponse>().await {
-                        if payload.status == "signed" {
-                            // Check for duplicate signers
-                            let already_signed = job
-                                .signatures
-                                .iter()
-                                .any(|s| s.signer_pubkey == payload.signer_pubkey);
-                            if !already_signed {
-                                job.signatures.push(SignerSignature {
-                                    signer_pubkey: payload.signer_pubkey,
-                                    signature: payload.signature,
-                                    message_hash: payload.message_hash,
-                                    received_at: chrono::Utc::now().timestamp(),
-                                });
-                                sig_count = job.signatures.len();
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("signer request failed for withdrawal {}: {}", job.job_id, e);
-                }
-            }
-        }
+        };
 
         if sig_count >= state.config.signer_threshold && state.config.signer_threshold > 0 {
             job.status = "signing".to_string();
+            job.last_error = None;
+            job.next_attempt_at = None;
             store_withdrawal_job(&state.db, &job)?;
             emit_custody_event(
                 state,
@@ -7318,7 +8165,7 @@ async fn broadcast_outbound_withdrawal(
                     .await;
             }
 
-            let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset)?;
+            let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset).await?;
             let tx_hex = format!("0x{}", hex::encode(&signed_tx));
             let result =
                 evm_rpc_call(&state.http, &url, "eth_sendRawTransaction", json!([tx_hex])).await?;
@@ -7336,22 +8183,63 @@ async fn broadcast_self_custody_solana_withdrawal(
     state: &CustodyState,
     url: &str,
     job: &WithdrawalJob,
-    _outbound_asset: &str,
+    outbound_asset: &str,
 ) -> Result<String, String> {
     let treasury_path = "custody/treasury/solana";
     let (signing_key, from_pubkey) =
         derive_solana_signer(treasury_path, &state.config.master_seed)?;
-    let to_pubkey = decode_solana_pubkey(&job.dest_address)?;
 
-    let solana_tx_fee: u64 = 5_000;
-    if job.amount <= solana_tx_fee {
-        return Err("withdrawal amount too small to cover fees".to_string());
+    if outbound_asset == "sol" {
+        let to_pubkey = decode_solana_pubkey(&job.dest_address)?;
+
+        let solana_tx_fee: u64 = 5_000;
+        if job.amount <= solana_tx_fee {
+            return Err("withdrawal amount too small to cover fees".to_string());
+        }
+        let transfer_amount = job.amount - solana_tx_fee;
+
+        let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
+        let message = build_solana_transfer_message(
+            &from_pubkey,
+            &to_pubkey,
+            transfer_amount,
+            &recent_blockhash,
+        );
+        let signature = signing_key.sign(&message).to_bytes();
+        let tx = build_solana_transaction(&[signature], &message);
+        return solana_send_transaction(&state.http, url, &tx).await;
     }
-    let transfer_amount = job.amount - solana_tx_fee;
+
+    if !is_solana_stablecoin(outbound_asset) {
+        return Err(format!(
+            "unsupported self-custody Solana withdrawal asset: {}",
+            outbound_asset
+        ));
+    }
+
+    let treasury_owner = encode_solana_pubkey(&from_pubkey);
+    let mint = solana_mint_for_asset(&state.config, outbound_asset)?;
+    let from_token_account = derive_associated_token_address_from_str(&treasury_owner, &mint)?;
+    let to_token_account = derive_associated_token_address_from_str(&job.dest_address, &mint)?;
+    ensure_associated_token_account_for_str(state, &treasury_owner, &mint, &from_token_account)
+        .await?;
+    ensure_associated_token_account_for_str(state, &job.dest_address, &mint, &to_token_account)
+        .await?;
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let message =
-        build_solana_transfer_message(&from_pubkey, &to_pubkey, transfer_amount, &recent_blockhash);
+    let raw_amount = u64::try_from(shells_to_chain_amount(
+        job.amount,
+        &job.dest_chain,
+        outbound_asset,
+    ))
+    .map_err(|_| "solana token withdrawal amount overflow".to_string())?;
+    let message = build_solana_token_transfer_message(
+        &from_pubkey,
+        &decode_solana_pubkey(&from_token_account)?,
+        &decode_solana_pubkey(&to_token_account)?,
+        raw_amount,
+        &recent_blockhash,
+    )?;
     let signature = signing_key.sign(&message).to_bytes();
     let tx = build_solana_transaction(&[signature], &message);
     solana_send_transaction(&state.http, url, &tx).await
@@ -7604,7 +8492,7 @@ fn assemble_signed_solana_tx(
 ///   - Signatures sorted by signer address (ascending)
 ///   - Each signature is 65 bytes: r(32) + s(32) + v(1)
 ///   - Packed contiguously for execTransaction(to, value, data, ..., signatures)
-fn assemble_signed_evm_tx(
+async fn assemble_signed_evm_tx(
     state: &CustodyState,
     job: &WithdrawalJob,
     asset: &str,
@@ -7619,29 +8507,24 @@ fn assemble_signed_evm_tx(
         return hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e));
     }
 
-    // ── Multi-signer EVM: pack ECDSA signatures for Gnosis Safe ──
-    let multisig_addr = state
-        .config
-        .evm_multisig_address
-        .as_ref()
-        .ok_or("EVM multisig address not configured (set CUSTODY_EVM_MULTISIG_ADDRESS)")?;
-
     // Collect and sort ECDSA signatures by signer address
     let mut signer_signatures: Vec<(String, Vec<u8>)> = Vec::new(); // (address, signature_65bytes)
+    let mut seen_signer_addrs = std::collections::HashSet::new();
 
     for sig_entry in &job.signatures {
-        let sig_bytes = hex::decode(&sig_entry.signature)
-            .map_err(|e| format!("decode EVM signature: {}", e))?;
-
-        if sig_bytes.len() != 65 {
-            return Err(format!(
-                "invalid EVM signature length: expected 65, got {}",
-                sig_bytes.len()
-            ));
-        }
+        let sig_bytes = normalize_evm_signature(
+            &hex::decode(&sig_entry.signature)
+                .map_err(|e| format!("decode EVM signature: {}", e))?,
+        )?;
 
         // signer_pubkey contains the EVM address (hex, no 0x prefix)
-        let signer_addr = sig_entry.signer_pubkey.to_lowercase();
+        let signer_addr = sig_entry
+            .signer_pubkey
+            .trim_start_matches("0x")
+            .to_lowercase();
+        if !seen_signer_addrs.insert(signer_addr.clone()) {
+            return Err("duplicate EVM signer address in signature set".to_string());
+        }
         signer_signatures.push((signer_addr, sig_bytes));
     }
 
@@ -7663,108 +8546,47 @@ fn assemble_signed_evm_tx(
         .flat_map(|(_, sig)| sig.clone())
         .collect();
 
-    // Build Gnosis Safe execTransaction calldata:
-    // execTransaction(address to, uint256 value, bytes data, uint8 operation,
-    //   uint256 safeTxGas, uint256 baseGas, uint256 gasPrice,
-    //   address gasToken, address refundReceiver, bytes signatures)
-    //
-    // AUDIT-FIX R-C2: For ERC-20 tokens (usdt/usdc), `to` = token contract,
-    // `value` = 0, and `data` = ERC-20 transfer(dest, amount).
-    // For native ETH, `to` = dest_address, `value` = amount, `data` = empty.
-    //
-    // Function selector: 0x6a761202
-    let is_erc20 = matches!(asset, "usdt" | "usdc");
-
-    let (inner_to, inner_value, inner_data) = if is_erc20 {
-        let contract_addr = evm_contract_for_asset(&state.config, asset)
-            .map_err(|e| format!("resolve ERC-20 contract for withdrawal: {}", e))?;
-        let transfer_data = evm_encode_erc20_transfer(&job.dest_address, job.amount as u128)
-            .map_err(|e| format!("encode ERC-20 transfer: {}", e))?;
-        (contract_addr, 0u64, transfer_data)
-    } else {
-        (job.dest_address.clone(), job.amount, Vec::<u8>::new())
-    };
-
-    let mut calldata = Vec::new();
-    calldata.extend_from_slice(&hex::decode("6a761202").unwrap()); // execTransaction selector
-
-    // Encode destination address (to) — padded to 32 bytes
-    let dest_addr = hex::decode(inner_to.strip_prefix("0x").unwrap_or(&inner_to))
-        .map_err(|e| format!("decode dest address: {}", e))?;
-    calldata.extend_from_slice(&[0u8; 12]); // left-pad to 32 bytes
-    calldata.extend_from_slice(&dest_addr);
-
-    // value (0 for ERC-20, job.amount for native ETH)
-    let mut value_bytes = [0u8; 32];
-    let amount_bytes = inner_value.to_be_bytes();
-    value_bytes[24..32].copy_from_slice(&amount_bytes);
-    calldata.extend_from_slice(&value_bytes);
-
-    // data offset (points to end of fixed params)
-    let data_offset = 10u64 * 32; // 10 fixed params * 32 bytes
-    let mut offset_bytes = [0u8; 32];
-    offset_bytes[24..32].copy_from_slice(&data_offset.to_be_bytes());
-    calldata.extend_from_slice(&offset_bytes);
-
-    // operation = 0 (CALL)
-    calldata.extend_from_slice(&[0u8; 32]);
-    // safeTxGas = 0
-    calldata.extend_from_slice(&[0u8; 32]);
-    // baseGas = 0
-    calldata.extend_from_slice(&[0u8; 32]);
-    // gasPrice = 0
-    calldata.extend_from_slice(&[0u8; 32]);
-    // gasToken = address(0)
-    calldata.extend_from_slice(&[0u8; 32]);
-    // refundReceiver = address(0)
-    calldata.extend_from_slice(&[0u8; 32]);
-
-    // signatures offset
-    // inner_data is the ERC-20 transfer calldata (or empty for native ETH)
-    let inner_data_padded_len = if inner_data.is_empty() {
-        0usize
-    } else {
-        // data length (32 bytes) + data + padding to 32-byte boundary
-        32 + inner_data.len() + ((32 - (inner_data.len() % 32)) % 32)
-    };
-    let sigs_offset = data_offset as usize + inner_data_padded_len;
-    let mut sigs_offset_bytes = [0u8; 32];
-    sigs_offset_bytes[24..32].copy_from_slice(&(sigs_offset as u64).to_be_bytes());
-    calldata.extend_from_slice(&sigs_offset_bytes);
-
-    // AUDIT-FIX R-C2: Encode inner data (ERC-20 transfer calldata or empty)
-    if inner_data.is_empty() {
-        calldata.extend_from_slice(&[0u8; 32]); // data length = 0
-    } else {
-        let mut data_len_bytes = [0u8; 32];
-        data_len_bytes[24..32].copy_from_slice(&(inner_data.len() as u64).to_be_bytes());
-        calldata.extend_from_slice(&data_len_bytes);
-        calldata.extend_from_slice(&inner_data);
-        let data_padding = (32 - (inner_data.len() % 32)) % 32;
-        calldata.extend_from_slice(&vec![0u8; data_padding]);
+    let url = rpc_url_for_chain(&state.config, &job.dest_chain)
+        .ok_or_else(|| format!("missing RPC URL for chain {}", job.dest_chain))?;
+    let plan = build_evm_safe_transaction_plan(state, &url, job, asset).await?;
+    let expected_hash = hex::encode(plan.safe_tx_hash);
+    if job
+        .signatures
+        .iter()
+        .any(|sig| !sig.message_hash.is_empty() && sig.message_hash != expected_hash)
+    {
+        return Err(
+            "EVM signature set does not match the pinned Safe transaction hash".to_string(),
+        );
     }
 
-    // packed signatures length
-    let mut sig_len_bytes = [0u8; 32];
-    sig_len_bytes[24..32].copy_from_slice(&(packed_sigs.len() as u64).to_be_bytes());
-    calldata.extend_from_slice(&sig_len_bytes);
-
-    // packed signatures data
-    calldata.extend_from_slice(&packed_sigs);
-
-    // Pad to 32-byte boundary
-    let padding = (32 - (packed_sigs.len() % 32)) % 32;
-    calldata.extend_from_slice(&vec![0u8; padding]);
-
-    // The final transaction is: target = multisig_addr, data = calldata
-    // Return as: [multisig_addr_20][calldata]
-    let mut result = Vec::new();
-    let addr_bytes = hex::decode(multisig_addr.strip_prefix("0x").unwrap_or(multisig_addr))
-        .map_err(|e| format!("decode multisig address: {}", e))?;
-    result.extend_from_slice(&addr_bytes);
-    result.extend_from_slice(&calldata);
-
-    Ok(result)
+    let exec_plan = finalize_evm_safe_exec_plan(plan, &packed_sigs)?;
+    let executor_path = evm_executor_derivation_path(&job.dest_chain);
+    let executor_address = derive_evm_address(executor_path, &state.config.master_seed)?;
+    let executor_key = derive_evm_signing_key(executor_path, &state.config.master_seed)?;
+    let nonce = evm_get_transaction_count(&state.http, &url, &executor_address).await?;
+    let gas_price = evm_get_gas_price(&state.http, &url).await?;
+    let chain_id = evm_get_chain_id(&state.http, &url).await?;
+    let gas_limit = evm_estimate_gas(
+        &state.http,
+        &url,
+        &executor_address,
+        &exec_plan.safe_address,
+        0,
+        Some(&exec_plan.exec_calldata),
+        350_000,
+    )
+    .await;
+    build_evm_signed_transaction_with_data(
+        &executor_key,
+        nonce,
+        gas_price,
+        gas_limit,
+        &exec_plan.safe_address,
+        0,
+        &exec_plan.exec_calldata,
+        chain_id,
+    )
 }
 
 /// Check if a Solana transaction is confirmed with enough confirmations
@@ -8572,6 +9394,7 @@ mod tests {
             uniswap_router: None,
             deposit_ttl_secs: 86400,
             master_seed: "test_master_seed_for_unit_tests".to_string(),
+            deposit_master_seed: "test_master_seed_for_unit_tests".to_string(),
             signer_auth_token: Some("test_token".to_string()),
             signer_auth_tokens: vec![],
             api_auth_token: Some("test_api_token".to_string()),
@@ -8599,6 +9422,604 @@ mod tests {
         assert_eq!(default_signer_threshold(4), 2);
         assert_eq!(default_signer_threshold(5), 3);
         assert_eq!(default_signer_threshold(10), 3);
+    }
+
+    fn test_withdrawal_job() -> WithdrawalJob {
+        WithdrawalJob {
+            job_id: "test-withdrawal".to_string(),
+            user_id: "user-1".to_string(),
+            asset: "wSOL".to_string(),
+            amount: 10_000,
+            dest_chain: "solana".to_string(),
+            dest_address: "11111111111111111111111111111111".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: None,
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "burned".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 0,
+        }
+    }
+
+    fn test_db_path() -> String {
+        static NEXT_TEST_DB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let db_id = NEXT_TEST_DB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir()
+            .join(format!(
+                "moltchain-custody-test-{}-{}",
+                std::process::id(),
+                db_id
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn test_state() -> CustodyState {
+        let db_path = test_db_path();
+        let _ = DB::destroy(&Options::default(), &db_path);
+        let db = open_db(&db_path).unwrap();
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
+        CustodyState {
+            db: std::sync::Arc::new(db),
+            next_index_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            config: test_config(),
+            http: reqwest::Client::new(),
+            withdrawal_rate: std::sync::Arc::new(tokio::sync::Mutex::new(
+                WithdrawalRateState::new(),
+            )),
+            deposit_rate: std::sync::Arc::new(tokio::sync::Mutex::new(DepositRateState::new())),
+            event_tx,
+            webhook_delivery_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+        }
+    }
+
+    #[test]
+    fn test_determine_withdrawal_signing_mode_self_custody() {
+        let state = test_state();
+        let job = test_withdrawal_job();
+
+        let mode = determine_withdrawal_signing_mode(&state, &job, "sol").unwrap();
+
+        assert_eq!(mode, None);
+    }
+
+    #[test]
+    fn test_determine_withdrawal_signing_mode_routes_native_solana_to_frost() {
+        let mut state = test_state();
+        state.config.signer_endpoints = vec![
+            "http://signer-1".to_string(),
+            "http://signer-2".to_string(),
+            "http://signer-3".to_string(),
+        ];
+        state.config.signer_threshold = 2;
+        state.config.frost_pubkey_package_hex = Some("deadbeef".to_string());
+        let job = test_withdrawal_job();
+
+        let mode = determine_withdrawal_signing_mode(&state, &job, "sol").unwrap();
+
+        assert_eq!(mode, Some(WithdrawalSigningMode::SolanaThresholdFrost));
+    }
+
+    #[test]
+    fn test_determine_withdrawal_signing_mode_routes_solana_stablecoin_to_frost() {
+        let mut state = test_state();
+        state.config.signer_endpoints = vec![
+            "http://signer-1".to_string(),
+            "http://signer-2".to_string(),
+            "http://signer-3".to_string(),
+        ];
+        state.config.signer_threshold = 2;
+        state.config.frost_pubkey_package_hex = Some("deadbeef".to_string());
+        let mut job = test_withdrawal_job();
+        job.asset = "mUSD".to_string();
+        job.amount = 1_000_000_000;
+
+        let mode = determine_withdrawal_signing_mode(&state, &job, "usdt").unwrap();
+
+        assert_eq!(mode, Some(WithdrawalSigningMode::SolanaThresholdFrost));
+    }
+
+    #[test]
+    fn test_determine_withdrawal_signing_mode_routes_threshold_evm_to_safe() {
+        let mut state = test_state();
+        state.config.signer_endpoints = vec![
+            "http://signer-1".to_string(),
+            "http://signer-2".to_string(),
+            "http://signer-3".to_string(),
+        ];
+        state.config.signer_threshold = 2;
+        state.config.evm_multisig_address =
+            Some("0x2222222222222222222222222222222222222222".to_string());
+        let mut job = test_withdrawal_job();
+        job.dest_chain = "ethereum".to_string();
+        job.asset = "wETH".to_string();
+        job.dest_address = "0x1111111111111111111111111111111111111111".to_string();
+
+        let mode = determine_withdrawal_signing_mode(&state, &job, "eth").unwrap();
+
+        assert_eq!(mode, Some(WithdrawalSigningMode::EvmThresholdSafe));
+    }
+
+    #[test]
+    fn test_normalize_evm_signature_promotes_recovery_id() {
+        let mut signature = vec![0u8; 65];
+        signature[64] = 1;
+
+        let normalized = normalize_evm_signature(&signature).unwrap();
+
+        assert_eq!(normalized[64], 28);
+    }
+
+    #[test]
+    fn test_build_evm_safe_exec_transaction_calldata_uses_exec_selector() {
+        let calldata = build_evm_safe_exec_transaction_calldata(
+            "0x1111111111111111111111111111111111111111",
+            123,
+            &[0xaa, 0xbb, 0xcc],
+            &[0x11; 130],
+        )
+        .unwrap();
+
+        assert_eq!(
+            &calldata[..4],
+            &evm_function_selector(
+                "execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)",
+            )
+        );
+        assert!(calldata.len() > 4 + 10 * 32);
+    }
+
+    #[derive(Clone)]
+    struct MockRpcState {
+        safe_nonce_hex: String,
+        safe_tx_hash_hex: String,
+        send_raw_tx_hash_hex: Option<String>,
+        transaction_receipt: Option<Value>,
+        requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
+    }
+
+    #[derive(Clone)]
+    struct MockSignerState {
+        signer_pubkey: String,
+        signature_hex: String,
+        requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
+    }
+
+    #[derive(Clone)]
+    struct MockMoltRpcState {
+        transaction_result: Value,
+        requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
+    }
+
+    async fn mock_rpc_handler(
+        axum::extract::State(state): axum::extract::State<MockRpcState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        state.requests.lock().await.push(payload.clone());
+        let method = payload
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let result = match method {
+            "eth_call" => {
+                let data = payload
+                    .get("params")
+                    .and_then(|value| value.as_array())
+                    .and_then(|params| params.first())
+                    .and_then(|call| call.get("data"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if data == format!("0x{}", hex::encode(evm_function_selector("nonce()"))) {
+                    Value::String(state.safe_nonce_hex.clone())
+                } else {
+                    Value::String(state.safe_tx_hash_hex.clone())
+                }
+            }
+            "eth_getTransactionCount" => Value::String("0x3".to_string()),
+            "eth_gasPrice" => Value::String("0x4a817c800".to_string()),
+            "eth_chainId" => Value::String("0x1".to_string()),
+            "eth_estimateGas" => Value::String("0x55f0".to_string()),
+            "eth_getTransactionReceipt" => state.transaction_receipt.clone().unwrap_or(Value::Null),
+            "eth_sendRawTransaction" => state
+                .send_raw_tx_hash_hex
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": payload.get("id").cloned().unwrap_or(json!(1)),
+            "result": result,
+        }))
+    }
+
+    async fn mock_signer_handler(
+        axum::extract::State(state): axum::extract::State<MockSignerState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        state.requests.lock().await.push(payload.clone());
+        Json(json!({
+            "status": "signed",
+            "signer_pubkey": state.signer_pubkey,
+            "signature": state.signature_hex,
+            "message_hash": payload.get("tx_hash").cloned().unwrap_or(Value::String(String::new())),
+            "_message": payload.get("tx_hash").cloned().unwrap_or(Value::String(String::new())),
+        }))
+    }
+
+    async fn mock_molt_rpc_handler(
+        axum::extract::State(state): axum::extract::State<MockMoltRpcState>,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        state.requests.lock().await.push(payload.clone());
+        let method = payload
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let result = match method {
+            "getTransaction" => state.transaction_result.clone(),
+            _ => Value::Null,
+        };
+
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": payload.get("id").cloned().unwrap_or(json!(1)),
+            "result": result,
+        }))
+    }
+
+    async fn spawn_mock_server(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve mock app");
+        });
+        format!("http://{}", addr)
+    }
+
+    fn decode_test_rlp_item(bytes: &[u8]) -> Result<(Vec<u8>, usize), String> {
+        if bytes.is_empty() {
+            return Err("empty RLP item".to_string());
+        }
+
+        let prefix = bytes[0];
+        match prefix {
+            0x00..=0x7f => Ok((vec![prefix], 1)),
+            0x80..=0xb7 => {
+                let len = (prefix - 0x80) as usize;
+                let end = 1 + len;
+                if bytes.len() < end {
+                    return Err("short RLP string".to_string());
+                }
+                Ok((bytes[1..end].to_vec(), end))
+            }
+            0xb8..=0xbf => {
+                let len_of_len = (prefix - 0xb7) as usize;
+                let header_end = 1 + len_of_len;
+                if bytes.len() < header_end {
+                    return Err("short RLP long-string header".to_string());
+                }
+                let len = bytes[1..header_end]
+                    .iter()
+                    .fold(0usize, |acc, byte| (acc << 8) | (*byte as usize));
+                let end = header_end + len;
+                if bytes.len() < end {
+                    return Err("short RLP long-string body".to_string());
+                }
+                Ok((bytes[header_end..end].to_vec(), end))
+            }
+            _ => Err("RLP item is not a string".to_string()),
+        }
+    }
+
+    fn decode_test_rlp_list(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        if bytes.is_empty() {
+            return Err("empty RLP payload".to_string());
+        }
+
+        let prefix = bytes[0];
+        let (payload_offset, payload_len) = match prefix {
+            0xc0..=0xf7 => (1usize, (prefix - 0xc0) as usize),
+            0xf8..=0xff => {
+                let len_of_len = (prefix - 0xf7) as usize;
+                let header_end = 1 + len_of_len;
+                if bytes.len() < header_end {
+                    return Err("short RLP long-list header".to_string());
+                }
+                let len = bytes[1..header_end]
+                    .iter()
+                    .fold(0usize, |acc, byte| (acc << 8) | (*byte as usize));
+                (header_end, len)
+            }
+            _ => return Err("RLP payload is not a list".to_string()),
+        };
+
+        let payload_end = payload_offset + payload_len;
+        if bytes.len() < payload_end {
+            return Err("short RLP list body".to_string());
+        }
+
+        let mut items = Vec::new();
+        let mut cursor = payload_offset;
+        while cursor < payload_end {
+            let (item, consumed) = decode_test_rlp_item(&bytes[cursor..payload_end])?;
+            items.push(item);
+            cursor += consumed;
+        }
+
+        if cursor != payload_end {
+            return Err("RLP list decode ended mid-payload".to_string());
+        }
+
+        Ok(items)
+    }
+
+    #[tokio::test]
+    async fn test_collect_and_assemble_threshold_evm_safe_flow() {
+        let mut state = test_state();
+        let safe_tx_hash_hex =
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x7".to_string(),
+                    safe_tx_hash_hex: safe_tx_hash_hex.clone(),
+                    send_raw_tx_hash_hex: None,
+                    transaction_receipt: None,
+                    requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        let signer_one_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let signer_two_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let signer_one_app: Router = Router::new()
+            .route("/sign", post(mock_signer_handler))
+            .with_state(MockSignerState {
+                signer_pubkey: "0x1111111111111111111111111111111111111111".to_string(),
+                signature_hex: format!("{}1b", "11".repeat(64)),
+                requests: signer_one_requests.clone(),
+            });
+        let signer_one = spawn_mock_server(signer_one_app).await;
+        let signer_two_app: Router = Router::new()
+            .route("/sign", post(mock_signer_handler))
+            .with_state(MockSignerState {
+                signer_pubkey: "0x2222222222222222222222222222222222222222".to_string(),
+                signature_hex: format!("{}00", "22".repeat(64)),
+                requests: signer_two_requests.clone(),
+            });
+        let signer_two = spawn_mock_server(signer_two_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.signer_endpoints = vec![signer_one, signer_two];
+        state.config.signer_threshold = 2;
+        state.config.evm_multisig_address =
+            Some("0x9999999999999999999999999999999999999999".to_string());
+
+        let mut job = test_withdrawal_job();
+        job.dest_chain = "ethereum".to_string();
+        job.asset = "wETH".to_string();
+        job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+        job.amount = 2_000_000_000;
+
+        let sig_count = collect_threshold_evm_withdrawal_signatures(&state, &mut job, "eth")
+            .await
+            .expect("collect threshold evm signatures");
+
+        assert_eq!(sig_count, 2);
+        assert_eq!(job.safe_nonce, Some(7));
+        assert_eq!(job.signatures.len(), 2);
+        assert!(job
+            .signatures
+            .iter()
+            .all(|sig| sig.message_hash == safe_tx_hash_hex.trim_start_matches("0x")));
+
+        let signer_one_payloads = signer_one_requests.lock().await;
+        let signer_two_payloads = signer_two_requests.lock().await;
+        assert_eq!(signer_one_payloads.len(), 1);
+        assert_eq!(signer_two_payloads.len(), 1);
+        assert_eq!(
+            signer_one_payloads[0]
+                .get("tx_hash")
+                .and_then(|value| value.as_str()),
+            Some(safe_tx_hash_hex.trim_start_matches("0x"))
+        );
+        assert_eq!(
+            signer_one_payloads[0]
+                .get("from_address")
+                .and_then(|value| value.as_str()),
+            Some("0x9999999999999999999999999999999999999999")
+        );
+
+        let relay_tx = assemble_signed_evm_tx(&state, &job, "eth")
+            .await
+            .expect("assemble threshold evm relay tx");
+        assert!(!relay_tx.is_empty());
+
+        let relay_fields = decode_test_rlp_list(&relay_tx).expect("decode relay tx rlp");
+        assert_eq!(relay_fields.len(), 9);
+        assert_eq!(
+            hex::encode(&relay_fields[3]),
+            "9999999999999999999999999999999999999999"
+        );
+        assert_eq!(relay_fields[4], Vec::<u8>::new());
+        assert_eq!(
+            &relay_fields[5][..4],
+            &evm_function_selector(
+                "execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)",
+            )
+        );
+        assert_eq!(
+            &relay_fields[5][16..36],
+            &hex::decode("3333333333333333333333333333333333333333").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assemble_signed_evm_tx_rejects_mismatched_safe_hash() {
+        let mut state = test_state();
+        let safe_tx_hash_hex =
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x7".to_string(),
+                    safe_tx_hash_hex: safe_tx_hash_hex.clone(),
+                    send_raw_tx_hash_hex: None,
+                    transaction_receipt: None,
+                    requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.signer_threshold = 2;
+        state.config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.evm_multisig_address =
+            Some("0x9999999999999999999999999999999999999999".to_string());
+
+        let mut job = test_withdrawal_job();
+        job.dest_chain = "ethereum".to_string();
+        job.asset = "wETH".to_string();
+        job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+        job.amount = 2_000_000_000;
+        job.safe_nonce = Some(7);
+        job.signatures = vec![
+            SignerSignature {
+                signer_pubkey: "1111111111111111111111111111111111111111".to_string(),
+                signature: format!("{}1b", "11".repeat(64)),
+                message_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+                received_at: 0,
+            },
+            SignerSignature {
+                signer_pubkey: "2222222222222222222222222222222222222222".to_string(),
+                signature: format!("{}1c", "22".repeat(64)),
+                message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
+                received_at: 0,
+            },
+        ];
+
+        let err = assemble_signed_evm_tx(&state, &job, "eth")
+            .await
+            .expect_err("mismatched Safe hash should be rejected");
+
+        assert!(err.contains("does not match the pinned Safe transaction hash"));
+    }
+
+    #[tokio::test]
+    async fn test_assemble_signed_evm_tx_rejects_duplicate_signers() {
+        let mut state = test_state();
+        let safe_tx_hash_hex =
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x7".to_string(),
+                    safe_tx_hash_hex: safe_tx_hash_hex.clone(),
+                    send_raw_tx_hash_hex: None,
+                    transaction_receipt: None,
+                    requests: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.signer_threshold = 2;
+        state.config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.evm_multisig_address =
+            Some("0x9999999999999999999999999999999999999999".to_string());
+
+        let mut job = test_withdrawal_job();
+        job.dest_chain = "ethereum".to_string();
+        job.asset = "wETH".to_string();
+        job.dest_address = "0x3333333333333333333333333333333333333333".to_string();
+        job.amount = 2_000_000_000;
+        job.safe_nonce = Some(7);
+        job.signatures = vec![
+            SignerSignature {
+                signer_pubkey: "1111111111111111111111111111111111111111".to_string(),
+                signature: format!("{}1b", "11".repeat(64)),
+                message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
+                received_at: 0,
+            },
+            SignerSignature {
+                signer_pubkey: "0x1111111111111111111111111111111111111111".to_string(),
+                signature: format!("{}1c", "22".repeat(64)),
+                message_hash: safe_tx_hash_hex.trim_start_matches("0x").to_string(),
+                received_at: 1,
+            },
+        ];
+
+        let err = assemble_signed_evm_tx(&state, &job, "eth")
+            .await
+            .expect_err("duplicate signers should be rejected");
+
+        assert!(err.contains("duplicate EVM signer address"));
+    }
+
+    #[test]
+    fn test_build_threshold_solana_withdrawal_message_rejects_dust() {
+        let state = test_state();
+        let mut job = test_withdrawal_job();
+        job.amount = 5_000;
+        let recent_blockhash = [0u8; 32];
+
+        let err = build_threshold_solana_withdrawal_message(&state, &job, "sol", &recent_blockhash)
+            .unwrap_err();
+
+        assert!(err.contains("too small to cover fees"));
+    }
+
+    #[test]
+    fn test_build_threshold_solana_withdrawal_message_supports_stablecoins() {
+        let mut state = test_state();
+        let treasury_owner =
+            derive_solana_address("custody/treasury/solana", &state.config.master_seed).unwrap();
+        state.config.treasury_solana_address = Some(treasury_owner.clone());
+        state.config.solana_treasury_owner = Some(treasury_owner.clone());
+
+        let mut job = test_withdrawal_job();
+        job.asset = "mUSD".to_string();
+        job.amount = 1_250_000_000;
+        job.dest_address =
+            derive_solana_address("user/dest/solana", &state.config.master_seed).unwrap();
+
+        let recent_blockhash = [7u8; 32];
+        let message =
+            build_threshold_solana_withdrawal_message(&state, &job, "usdt", &recent_blockhash)
+                .unwrap();
+
+        let mint = solana_mint_for_asset(&state.config, "usdt").unwrap();
+        let from_token_account =
+            derive_associated_token_address_from_str(&treasury_owner, &mint).unwrap();
+        let to_token_account =
+            derive_associated_token_address_from_str(&job.dest_address, &mint).unwrap();
+        let expected = build_solana_token_transfer_message(
+            &decode_solana_pubkey(&treasury_owner).unwrap(),
+            &decode_solana_pubkey(&from_token_account).unwrap(),
+            &decode_solana_pubkey(&to_token_account).unwrap(),
+            u64::try_from(shells_to_chain_amount(job.amount, "solana", "usdt")).unwrap(),
+            &recent_blockhash,
+        )
+        .unwrap();
+
+        assert_eq!(message, expected);
     }
 
     #[test]
@@ -8672,6 +10093,166 @@ mod tests {
             evm_old, evm_new,
             "evm derived address must rotate with seed"
         );
+    }
+
+    #[test]
+    fn test_legacy_deposit_records_default_to_treasury_seed_source() {
+        let deposit: DepositRequest = serde_json::from_value(json!({
+            "deposit_id": "dep-legacy-1",
+            "user_id": "11111111111111111111111111111111",
+            "chain": "solana",
+            "asset": "sol",
+            "address": "legacy-address",
+            "derivation_path": "m/44'/501'/0'/0/0",
+            "created_at": 1,
+            "status": "issued"
+        }))
+        .expect("deserialize legacy deposit record");
+
+        assert_eq!(
+            deposit.deposit_seed_source,
+            DEPOSIT_SEED_SOURCE_TREASURY_ROOT
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_deposit_uses_dedicated_deposit_seed_and_persists_source() {
+        let mut state = test_state();
+        state.config.deposit_master_seed =
+            "dedicated_deposit_seed_for_tests_0123456789".to_string();
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
+
+        let response = create_deposit(
+            State(state.clone()),
+            headers,
+            Json(CreateDepositRequest {
+                user_id: "11111111111111111111111111111111".to_string(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+            }),
+        )
+        .await
+        .expect("create deposit with dedicated deposit seed");
+
+        let stored = fetch_deposit(&state.db, &response.0.deposit_id)
+            .expect("fetch created deposit")
+            .expect("deposit should exist");
+        assert_eq!(stored.deposit_seed_source, DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT);
+
+        let expected = derive_deposit_address(
+            "ethereum",
+            "eth",
+            &stored.derivation_path,
+            &state.config.deposit_master_seed,
+        )
+        .expect("derive address from dedicated deposit seed");
+        assert_eq!(stored.address, expected);
+    }
+
+    #[test]
+    fn test_build_credit_job_uses_native_solana_credited_amount() {
+        let mut state = test_state();
+        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+        state.config.wsol_contract_addr = Some("11111111111111111111111111111111".to_string());
+
+        let deposit = DepositRequest {
+            deposit_id: "dep-sol-credit-1".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            address: "from".to_string(),
+            derivation_path: "m/44'/501'/0'/0/3".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1000,
+            status: "swept".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store deposit for credit test");
+
+        let sweep = SweepJob {
+            job_id: "sweep-sol-credit-1".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            from_address: deposit.address.clone(),
+            to_treasury: "treasury".to_string(),
+            tx_hash: "tx".to_string(),
+            amount: Some("15000".to_string()),
+            credited_amount: Some("10000".to_string()),
+            signatures: Vec::new(),
+            sweep_tx_hash: Some("sweep-hash".to_string()),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "sweep_confirmed".to_string(),
+            created_at: 1000,
+        };
+
+        let credit = build_credit_job(&state, &sweep)
+            .expect("build native SOL credit job")
+            .expect("credit job should be created");
+        assert_eq!(credit.amount_shells, 10_000);
+    }
+
+    #[tokio::test]
+    async fn test_process_sweep_jobs_native_solana_dust_retries_instead_of_failing() {
+        let state = test_state();
+
+        let deposit = DepositRequest {
+            deposit_id: "dep-sol-dust-1".to_string(),
+            user_id: "user-1".to_string(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            address: "11111111111111111111111111111111".to_string(),
+            derivation_path: "m/44'/501'/0'/0/4".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1000,
+            status: "sweep_queued".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store native SOL deposit");
+
+        let job = SweepJob {
+            job_id: "sweep-sol-dust-1".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            from_address: deposit.address.clone(),
+            to_treasury: "11111111111111111111111111111111".to_string(),
+            tx_hash: "tx".to_string(),
+            amount: Some(SOLANA_SWEEP_FEE_LAMPORTS.to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).expect("store native SOL dust sweep job");
+
+        process_sweep_jobs(&state)
+            .await
+            .expect("process native SOL dust sweep job");
+
+        let signed_jobs = list_sweep_jobs_by_status(&state.db, "signed")
+            .expect("list retriable native SOL dust sweep jobs");
+        assert_eq!(signed_jobs.len(), 1);
+        assert_eq!(signed_jobs[0].job_id, job.job_id);
+        assert!(signed_jobs[0]
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("insufficient native SOL to sweep after fees"));
+        assert!(signed_jobs[0].next_attempt_at.is_some());
+        assert!(list_sweep_jobs_by_status(&state.db, "failed")
+            .expect("list failed sweep jobs")
+            .is_empty());
+        assert!(list_sweep_jobs_by_status(&state.db, "permanently_failed")
+            .expect("list permanently failed sweep jobs")
+            .is_empty());
     }
 
     /// F2-01: BIP-44 coin type mapping test
@@ -9089,6 +10670,54 @@ mod tests {
         assert!(verify_api_auth(&config, &headers).is_err());
     }
 
+    #[tokio::test]
+    async fn test_create_deposit_rejects_multi_signer_local_sweep_mode_by_default() {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        state.config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.signer_threshold = 2;
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
+
+        let err = create_deposit(
+            State(state.clone()),
+            headers,
+            Json(CreateDepositRequest {
+                user_id: "11111111111111111111111111111111".to_string(),
+                chain: "ethereum".to_string(),
+                asset: "eth".to_string(),
+            }),
+        )
+        .await
+        .expect_err("multi-signer local sweep mode should fail closed by default");
+
+        assert_eq!(err.0.code, "invalid_request");
+        assert!(err
+            .0
+            .message
+            .contains("multi-signer deposit creation is disabled"));
+
+        let deposit_count = state
+            .db
+            .iterator_cf(
+                state
+                    .db
+                    .cf_handle(CF_DEPOSITS)
+                    .expect("deposits column family"),
+                rocksdb::IteratorMode::Start,
+            )
+            .count();
+        assert_eq!(deposit_count, 0);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
     // ── F8.8: Destination address validation ──
 
     #[test]
@@ -9140,6 +10769,7 @@ mod tests {
             to_treasury: "to".to_string(),
             tx_hash: "hash".to_string(),
             amount: Some("1000".to_string()),
+            credited_amount: None,
             signatures: Vec::new(),
             sweep_tx_hash: None,
             attempts: 0,
@@ -9155,6 +10785,910 @@ mod tests {
         assert_eq!(*counts.by_status.get("queued").unwrap_or(&0), 1);
 
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_sweep");
+    }
+
+    #[test]
+    fn test_promote_locally_signed_sweep_jobs_clears_placeholder_signatures() {
+        let state = test_state();
+        let job = SweepJob {
+            job_id: "test-sweep-local-sign".to_string(),
+            deposit_id: "dep-local-1".to_string(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            from_address: "from".to_string(),
+            to_treasury: "to".to_string(),
+            tx_hash: "hash".to_string(),
+            amount: Some("1000".to_string()),
+            credited_amount: None,
+            signatures: vec![SignerSignature {
+                signer_pubkey: "placeholder-signer".to_string(),
+                signature: "deadbeef".to_string(),
+                message_hash: "cafebabe".to_string(),
+                received_at: 123,
+            }],
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "signing".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).unwrap();
+
+        promote_locally_signed_sweep_jobs(&state, "locally-derived-deposit-key").unwrap();
+
+        let signing_jobs = list_sweep_jobs_by_status(&state.db, "signing").unwrap();
+        let signed_jobs = list_sweep_jobs_by_status(&state.db, "signed").unwrap();
+        assert!(signing_jobs.is_empty());
+        assert_eq!(signed_jobs.len(), 1);
+        assert!(signed_jobs[0].signatures.is_empty());
+        assert_eq!(signed_jobs[0].status, "signed");
+    }
+
+    #[tokio::test]
+    async fn test_promote_locally_signed_sweep_jobs_emits_local_signing_metadata() {
+        let state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let job = SweepJob {
+            job_id: "test-sweep-local-event".to_string(),
+            deposit_id: "dep-local-2".to_string(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            from_address: "from".to_string(),
+            to_treasury: "to".to_string(),
+            tx_hash: "hash".to_string(),
+            amount: Some("1000".to_string()),
+            credited_amount: None,
+            signatures: vec![],
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "signing".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).unwrap();
+
+        promote_locally_signed_sweep_jobs(&state, "locally-derived-deposit-key").unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("timed out waiting for sweep.signed event")
+            .expect("receive sweep.signed event");
+
+        assert_eq!(event.event_type, "sweep.signed");
+        assert_eq!(event.entity_id, "test-sweep-local-event");
+        assert_eq!(event.deposit_id.as_deref(), Some("dep-local-2"));
+        let data = event.data.expect("sweep.signed should carry metadata");
+        assert_eq!(
+            data.get("mode").and_then(|value| value.as_str()),
+            Some("locally-derived-deposit-key")
+        );
+        assert_eq!(
+            data.get("threshold_signing")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_sweep_jobs_multi_signer_without_override_blocks_local_sweep_execution() {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x0".to_string(),
+                    safe_tx_hash_hex: "0x0".to_string(),
+                    send_raw_tx_hash_hex: Some(
+                        "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
+                            .to_string(),
+                    ),
+                    transaction_receipt: None,
+                    requests: rpc_requests.clone(),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.treasury_evm_address =
+            Some("0x4444444444444444444444444444444444444444".to_string());
+        state.config.signer_endpoints =
+            vec!["http://signer-1".to_string(), "http://signer-2".to_string()];
+        state.config.signer_threshold = 2;
+
+        let deposit = DepositRequest {
+            deposit_id: "dep-sweep-block-1".to_string(),
+            user_id: "user-1".to_string(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            address: "0x5555555555555555555555555555555555555555".to_string(),
+            derivation_path: "m/44'/60'/0'/0/9".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1000,
+            status: "confirmed".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store deposit");
+
+        let job = SweepJob {
+            job_id: "test-sweep-worker-blocked".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "eth".to_string(),
+            from_address: deposit.address.clone(),
+            to_treasury: state.config.treasury_evm_address.clone().unwrap(),
+            tx_hash: "deposit-observed-hash".to_string(),
+            amount: Some("1000000000000000000".to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).expect("store sweep job");
+
+        process_sweep_jobs(&state)
+            .await
+            .expect("process blocked sweep jobs");
+
+        let blocked_jobs = list_sweep_jobs_by_status(&state.db, "permanently_failed")
+            .expect("list blocked sweep jobs");
+        assert_eq!(blocked_jobs.len(), 1);
+        assert_eq!(blocked_jobs[0].job_id, "test-sweep-worker-blocked");
+        assert!(blocked_jobs[0]
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("multi-signer deposit creation is disabled"));
+        assert!(list_sweep_jobs_by_status(&state.db, "sweep_submitted")
+            .expect("list submitted sweep jobs")
+            .is_empty());
+
+        let requests = rpc_requests.lock().await;
+        assert!(!requests.iter().any(|payload| {
+            payload.get("method").and_then(|value| value.as_str()) == Some("eth_sendRawTransaction")
+        }));
+        drop(requests);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("timed out waiting for blocked sweep event")
+            .expect("receive blocked sweep event");
+        assert_eq!(event.event_type, "sweep.failed");
+        assert_eq!(event.entity_id, "test-sweep-worker-blocked");
+        let data = event.data.expect("blocked sweep event metadata");
+        assert_eq!(
+            data.get("mode").and_then(|value| value.as_str()),
+            Some("blocked-local-sweep")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_sweep_jobs_confirmed_enqueues_credit_and_updates_status() {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x0".to_string(),
+                    safe_tx_hash_hex: "0x0".to_string(),
+                    send_raw_tx_hash_hex: None,
+                    transaction_receipt: Some(json!({ "status": "0x1" })),
+                    requests: rpc_requests.clone(),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+        state.config.musd_contract_addr = Some("11111111111111111111111111111111".to_string());
+
+        let deposit = DepositRequest {
+            deposit_id: "dep-sweep-confirm-1".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            chain: "ethereum".to_string(),
+            asset: "usdt".to_string(),
+            address: "0x5555555555555555555555555555555555555555".to_string(),
+            derivation_path: "m/44'/60'/0'/0/8".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1000,
+            status: "sweep_queued".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store deposit");
+        let _ = update_status_index(
+            &state.db,
+            "deposits",
+            "issued",
+            "sweep_queued",
+            &deposit.deposit_id,
+        );
+
+        let job = SweepJob {
+            job_id: "test-sweep-confirm-worker".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "usdt".to_string(),
+            from_address: deposit.address.clone(),
+            to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+            tx_hash: "deposit-observed-hash".to_string(),
+            amount: Some("2500000".to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: Some(
+                "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string(),
+            ),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "sweep_submitted".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).expect("store submitted sweep job");
+
+        process_sweep_jobs(&state)
+            .await
+            .expect("process confirmed sweep job");
+
+        let confirmed_jobs = list_sweep_jobs_by_status(&state.db, "sweep_confirmed")
+            .expect("list confirmed sweep jobs");
+        assert_eq!(confirmed_jobs.len(), 1);
+        assert_eq!(confirmed_jobs[0].job_id, "test-sweep-confirm-worker");
+
+        let deposit_after = fetch_deposit(&state.db, &deposit.deposit_id)
+            .expect("fetch updated deposit")
+            .expect("deposit exists after confirmation");
+        assert_eq!(deposit_after.status, "swept");
+
+        let queued_credit_jobs =
+            list_credit_jobs_by_status(&state.db, "queued").expect("list queued credit jobs");
+        assert_eq!(queued_credit_jobs.len(), 1);
+        assert_eq!(queued_credit_jobs[0].deposit_id, deposit.deposit_id);
+        assert_eq!(
+            queued_credit_jobs[0].to_address,
+            "11111111111111111111111111111111"
+        );
+        assert_eq!(queued_credit_jobs[0].source_asset, "usdt");
+        assert_eq!(queued_credit_jobs[0].source_chain, "ethereum");
+        assert_eq!(queued_credit_jobs[0].amount_shells, 2_500_000_000);
+
+        let reserve = get_reserve_balance(&state.db, "ethereum", "usdt")
+            .expect("read reserve balance after confirmed sweep");
+        assert_eq!(reserve, 2_500_000);
+
+        let mut event_types = Vec::new();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("timed out waiting for confirmation events")
+                .expect("receive confirmation event");
+            event_types.push(event.event_type.clone());
+        }
+        assert_eq!(
+            event_types,
+            vec!["sweep.confirmed".to_string(), "credit.queued".to_string()]
+        );
+
+        let requests = rpc_requests.lock().await;
+        assert!(requests.iter().any(|payload| {
+            payload.get("method").and_then(|value| value.as_str())
+                == Some("eth_getTransactionReceipt")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_process_sweep_jobs_reverted_receipt_marks_failed_without_credit() {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let rpc_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let rpc_app: Router =
+            Router::new()
+                .route("/", post(mock_rpc_handler))
+                .with_state(MockRpcState {
+                    safe_nonce_hex: "0x0".to_string(),
+                    safe_tx_hash_hex: "0x0".to_string(),
+                    send_raw_tx_hash_hex: None,
+                    transaction_receipt: Some(json!({ "status": "0x0" })),
+                    requests: rpc_requests.clone(),
+                });
+        let rpc_url = spawn_mock_server(rpc_app).await;
+
+        state.config.evm_rpc_url = Some(rpc_url.clone());
+        state.config.eth_rpc_url = Some(rpc_url);
+        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
+        state.config.musd_contract_addr = Some("11111111111111111111111111111111".to_string());
+
+        let deposit = DepositRequest {
+            deposit_id: "dep-sweep-reverted-1".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            chain: "ethereum".to_string(),
+            asset: "usdt".to_string(),
+            address: "0x5555555555555555555555555555555555555555".to_string(),
+            derivation_path: "m/44'/60'/0'/0/10".to_string(),
+            deposit_seed_source: DEPOSIT_SEED_SOURCE_TREASURY_ROOT.to_string(),
+            created_at: 1000,
+            status: "sweep_queued".to_string(),
+        };
+        store_deposit(&state.db, &deposit).expect("store deposit");
+
+        let job = SweepJob {
+            job_id: "test-sweep-reverted-worker".to_string(),
+            deposit_id: deposit.deposit_id.clone(),
+            chain: "ethereum".to_string(),
+            asset: "usdt".to_string(),
+            from_address: deposit.address.clone(),
+            to_treasury: "0x4444444444444444444444444444444444444444".to_string(),
+            tx_hash: "deposit-observed-hash".to_string(),
+            amount: Some("2500000".to_string()),
+            credited_amount: None,
+            signatures: Vec::new(),
+            sweep_tx_hash: Some(
+                "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string(),
+            ),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "sweep_submitted".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&state.db, &job).expect("store submitted sweep job");
+
+        process_sweep_jobs(&state)
+            .await
+            .expect("process reverted sweep job");
+
+        let failed_jobs =
+            list_sweep_jobs_by_status(&state.db, "failed").expect("list failed sweep jobs");
+        assert_eq!(failed_jobs.len(), 1);
+        assert_eq!(failed_jobs[0].job_id, "test-sweep-reverted-worker");
+        assert!(failed_jobs[0]
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("reverted or failed on-chain"));
+
+        let deposit_after = fetch_deposit(&state.db, &deposit.deposit_id)
+            .expect("fetch updated deposit")
+            .expect("deposit exists after revert");
+        assert_eq!(deposit_after.status, "sweep_queued");
+
+        assert!(list_credit_jobs_by_status(&state.db, "queued")
+            .expect("list queued credit jobs")
+            .is_empty());
+        let reserve = get_reserve_balance(&state.db, "ethereum", "usdt")
+            .expect("read reserve balance after reverted sweep");
+        assert_eq!(reserve, 0);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("timed out waiting for reverted sweep event")
+            .expect("receive reverted sweep event");
+        assert_eq!(event.event_type, "sweep.failed");
+        assert_eq!(event.entity_id, "test-sweep-reverted-worker");
+
+        let requests = rpc_requests.lock().await;
+        assert!(requests.iter().any(|payload| {
+            payload.get("method").and_then(|value| value.as_str())
+                == Some("eth_getTransactionReceipt")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_submit_burn_signature_requires_api_auth() {
+        let state = test_state();
+        let response = submit_burn_signature(
+            State(state),
+            axum::http::HeaderMap::new(),
+            axum::extract::Path("missing-job".to_string()),
+            Json(BurnSignaturePayload {
+                burn_tx_signature: "burn-tx-auth".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(response.is_err());
+        let err = response.expect_err("missing auth should fail");
+        assert_eq!(err.0.code, "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn test_submit_burn_signature_replaces_existing_unverified_signature() {
+        let state = test_state();
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-replace".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-old".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: Some("old failure".to_string()),
+            next_attempt_at: Some(1234),
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        let idx_cf = state.db.cf_handle(CF_INDEXES).expect("indexes cf");
+        state
+            .db
+            .put_cf(
+                idx_cf,
+                burn_signature_index_key("burn-old").as_bytes(),
+                job.job_id.as_bytes(),
+            )
+            .expect("reserve old burn signature");
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
+
+        let response = submit_burn_signature(
+            State(state.clone()),
+            headers,
+            axum::extract::Path(job.job_id.clone()),
+            Json(BurnSignaturePayload {
+                burn_tx_signature: "burn-new".to_string(),
+            }),
+        )
+        .await
+        .expect("replace burn signature")
+        .0;
+
+        assert_eq!(
+            response.get("burn_tx_signature").and_then(|v| v.as_str()),
+            Some("burn-new")
+        );
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.burn_tx_signature.as_deref(), Some("burn-new"));
+        assert!(job_after.last_error.is_none());
+        assert!(job_after.next_attempt_at.is_none());
+
+        assert!(state
+            .db
+            .get_cf(idx_cf, burn_signature_index_key("burn-old").as_bytes())
+            .expect("read old reservation")
+            .is_none());
+        assert_eq!(
+            state
+                .db
+                .get_cf(idx_cf, burn_signature_index_key("burn-new").as_bytes())
+                .expect("read new reservation")
+                .as_deref(),
+            Some(job.job_id.as_bytes())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_burn_caller_mismatch_resets_pending_burn_without_broadcast(
+    ) {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let molt_app: Router = Router::new()
+            .route("/", post(mock_molt_rpc_handler))
+            .with_state(MockMoltRpcState {
+                transaction_result: json!({
+                    "success": true,
+                    "contract_address": "wrapped-weth-contract",
+                    "caller": "22222222222222222222222222222222",
+                    "method": "burn",
+                    "amount": 2500,
+                }),
+                requests: molt_requests.clone(),
+            });
+        let molt_rpc_url = spawn_mock_server(molt_app).await;
+
+        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-mismatch".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-tx-1".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.status, "pending_burn");
+        assert!(job_after.burn_tx_signature.is_none());
+        assert_eq!(job_after.attempts, 1);
+        assert!(job_after.outbound_tx_hash.is_none());
+        assert!(job_after
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Burn caller mismatch"));
+
+        assert!(list_withdrawal_jobs_by_status(&state.db, "burned")
+            .expect("list burned withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "signing")
+            .expect("list signing withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "broadcasting")
+            .expect("list broadcasting withdrawal jobs")
+            .is_empty());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let requests = molt_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("method").and_then(|value| value.as_str()),
+            Some("getTransaction")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_burn_contract_mismatch_resets_pending_burn_without_broadcast(
+    ) {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let molt_app: Router = Router::new()
+            .route("/", post(mock_molt_rpc_handler))
+            .with_state(MockMoltRpcState {
+                transaction_result: json!({
+                    "success": true,
+                    "contract_address": "wrong-weth-contract",
+                    "caller": "11111111111111111111111111111111",
+                    "method": "burn",
+                    "amount": 2500,
+                }),
+                requests: molt_requests.clone(),
+            });
+        let molt_rpc_url = spawn_mock_server(molt_app).await;
+
+        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-contract-mismatch".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-tx-2".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.status, "pending_burn");
+        assert!(job_after.burn_tx_signature.is_none());
+        assert_eq!(job_after.attempts, 1);
+        assert!(job_after.outbound_tx_hash.is_none());
+        assert!(job_after
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Burn contract mismatch"));
+
+        assert!(list_withdrawal_jobs_by_status(&state.db, "burned")
+            .expect("list burned withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "signing")
+            .expect("list signing withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "broadcasting")
+            .expect("list broadcasting withdrawal jobs")
+            .is_empty());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let requests = molt_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("method").and_then(|value| value.as_str()),
+            Some("getTransaction")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_burn_amount_mismatch_resets_pending_burn_without_broadcast(
+    ) {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let molt_app: Router = Router::new()
+            .route("/", post(mock_molt_rpc_handler))
+            .with_state(MockMoltRpcState {
+                transaction_result: json!({
+                    "success": true,
+                    "contract_address": "wrapped-weth-contract",
+                    "caller": "11111111111111111111111111111111",
+                    "method": "burn",
+                    "amount": 1234,
+                }),
+                requests: molt_requests.clone(),
+            });
+        let molt_rpc_url = spawn_mock_server(molt_app).await;
+
+        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-amount-mismatch".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-tx-3".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.status, "pending_burn");
+        assert!(job_after.burn_tx_signature.is_none());
+        assert_eq!(job_after.attempts, 1);
+        assert!(job_after.outbound_tx_hash.is_none());
+        assert!(job_after
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Burn amount mismatch"));
+
+        assert!(list_withdrawal_jobs_by_status(&state.db, "burned")
+            .expect("list burned withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "signing")
+            .expect("list signing withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "broadcasting")
+            .expect("list broadcasting withdrawal jobs")
+            .is_empty());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let requests = molt_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("method").and_then(|value| value.as_str()),
+            Some("getTransaction")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_burn_method_mismatch_resets_pending_burn_without_broadcast(
+    ) {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let molt_app: Router = Router::new()
+            .route("/", post(mock_molt_rpc_handler))
+            .with_state(MockMoltRpcState {
+                transaction_result: json!({
+                    "success": true,
+                    "contract_address": "wrapped-weth-contract",
+                    "caller": "11111111111111111111111111111111",
+                    "method": "transfer",
+                    "amount": 2500,
+                }),
+                requests: molt_requests.clone(),
+            });
+        let molt_rpc_url = spawn_mock_server(molt_app).await;
+
+        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-method-mismatch".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-tx-4".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.status, "pending_burn");
+        assert!(job_after.burn_tx_signature.is_none());
+        assert_eq!(job_after.attempts, 1);
+        assert!(job_after.outbound_tx_hash.is_none());
+        assert!(job_after
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Burn method mismatch"));
+
+        assert!(list_withdrawal_jobs_by_status(&state.db, "burned")
+            .expect("list burned withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "signing")
+            .expect("list signing withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "broadcasting")
+            .expect("list broadcasting withdrawal jobs")
+            .is_empty());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let requests = molt_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("method").and_then(|value| value.as_str()),
+            Some("getTransaction")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_withdrawal_jobs_burn_missing_contract_config_permanently_fails_without_broadcast(
+    ) {
+        let mut state = test_state();
+        let mut event_rx = state.event_tx.subscribe();
+        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let molt_app: Router = Router::new()
+            .route("/", post(mock_molt_rpc_handler))
+            .with_state(MockMoltRpcState {
+                transaction_result: json!({
+                    "success": true,
+                    "contract_address": "wrapped-weth-contract",
+                    "caller": "11111111111111111111111111111111",
+                    "method": "burn",
+                    "amount": 2500,
+                }),
+                requests: molt_requests.clone(),
+            });
+        let molt_rpc_url = spawn_mock_server(molt_app).await;
+
+        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.weth_contract_addr = None;
+
+        let job = WithdrawalJob {
+            job_id: "withdrawal-burn-missing-contract-config".to_string(),
+            user_id: "11111111111111111111111111111111".to_string(),
+            asset: "wETH".to_string(),
+            amount: 2500,
+            dest_chain: "ethereum".to_string(),
+            dest_address: "0x3333333333333333333333333333333333333333".to_string(),
+            preferred_stablecoin: "usdt".to_string(),
+            burn_tx_signature: Some("burn-tx-5".to_string()),
+            outbound_tx_hash: None,
+            safe_nonce: None,
+            signatures: Vec::new(),
+            status: "pending_burn".to_string(),
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_withdrawal_job(&state.db, &job).expect("store withdrawal job");
+
+        process_withdrawal_jobs(&state)
+            .await
+            .expect("process withdrawal jobs");
+
+        let job_after = fetch_withdrawal_job(&state.db, &job.job_id)
+            .expect("fetch withdrawal job")
+            .expect("withdrawal job exists");
+        assert_eq!(job_after.status, "permanently_failed");
+        assert!(job_after.outbound_tx_hash.is_none());
+        assert_eq!(
+            job_after.last_error.as_deref(),
+            Some("No contract address configured for asset 'wETH'")
+        );
+
+        assert!(list_withdrawal_jobs_by_status(&state.db, "burned")
+            .expect("list burned withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "signing")
+            .expect("list signing withdrawal jobs")
+            .is_empty());
+        assert!(list_withdrawal_jobs_by_status(&state.db, "broadcasting")
+            .expect("list broadcasting withdrawal jobs")
+            .is_empty());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let requests = molt_requests.lock().await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("method").and_then(|value| value.as_str()),
+            Some("getTransaction")
+        );
     }
 
     #[test]

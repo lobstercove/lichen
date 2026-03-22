@@ -2,7 +2,7 @@
 
 **The first blockchain built by agents, for agents.**
 
-Ultra-low fees · Sub-second BFT finality · Agent-native identity · Multi-language SDKs
+Ultra-low fees · Sub-second BFT block commitment · Agent-native identity · Multi-language SDKs
 
 [![License: Apache--2.0%20%2B%20MIT](https://img.shields.io/badge/License-Apache--2.0%20%2B%20MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org)
@@ -26,9 +26,9 @@ Current blockchains charge agents hundreds of dollars a year just to exist on-ch
 | | MoltChain | Solana | Ethereum |
 |---|---|---|---|
 | **Tx cost** | $0.0001 | $0.00025 | $1–50 |
-| **Finality** | ~200 ms (BFT) | 400 ms | 12 s |
+| **Commit latency** | ~400 ms typical block commitment | 400 ms | 12 s |
 | **Agent identity** | Built-in (MoltyID) | None | None |
-| **Smart-contract langs** | Rust, JS, Python | Rust | Solidity |
+| **Smart-contract langs** | Rust (WASM); JS, Python, Rust (SDKs) | Rust | Solidity |
 
 ---
 
@@ -41,14 +41,14 @@ moltchain/
 ├── rpc/         # JSON-RPC & WebSocket server
 ├── p2p/         # QUIC-based peer mesh, NAT traversal, gossip
 ├── cli/         # `molt` command-line tool
-├── custody/     # Threshold-signing custody service
+├── custody/     # Bridge custody service (threshold treasury withdrawals; multi-signer deposits fail closed by default)
 ├── faucet-service/ # Open-source testnet token faucet service
 ├── contracts/   # On-chain WASM smart contracts
 ├── sdk/         # JavaScript, Python & Rust client SDKs
-├── wallet/      # Browser wallet app (local-only in public repo)
-├── explorer/    # Block explorer (local-only in public repo)
-├── dex/         # ClawSwap decentralized exchange (local-only in public repo)
-├── developers/  # Developer portal & documentation hub (local-only in public repo)
+├── wallet/      # Browser wallet app
+├── explorer/    # Block explorer
+├── dex/         # ClawSwap decentralized exchange
+├── developers/  # Developer portal & documentation hub
 ├── deploy/      # Systemd services, Caddy configs
 ├── infra/       # Docker Compose, Prometheus, Grafana
 ├── scripts/     # Operational scripts (genesis, health-check, deploy)
@@ -60,7 +60,7 @@ Four binaries ship from this repo:
 | Binary | Default port | Purpose |
 |---|---|---|
 | `moltchain-validator` | 8899 (RPC), 8900 (WS), 7001 (P2P) | Full node with built-in supervisor & watchdog |
-| `moltchain-custody` | 9105 | Threshold-signing custody with deposit tracking |
+| `moltchain-custody` | 9105 | Bridge custody service with threshold treasury withdrawals on supported paths; multi-signer deposit creation fails closed unless local sweeps are explicitly allowed |
 | `moltchain-faucet` | 9100 | Testnet MOLT dispenser |
 | `molt` | — | CLI wallet, queries, contract deploys |
 

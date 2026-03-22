@@ -12,13 +12,18 @@
 //   e.g. test_native_getAccount, test_solana_getBlockHeight, test_evm_eth_call
 
 use axum::body::{to_bytes, Body};
+use axum::extract::ConnectInfo;
+use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
 use moltchain_core::{
-    contract::ContractAccount, Account, Pubkey, StateStore, SymbolRegistryEntry,
-    CONTRACT_PROGRAM_ID,
+    contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
+    Instruction, Keypair, Message, Precommit, Pubkey, StakeInfo, StakePool, StateStore,
+    SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
 };
-use moltchain_rpc::build_rpc_router;
+use moltchain_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower::util::ServiceExt;
 
 type RpcResult = Result<serde_json::Value, String>;
@@ -51,6 +56,39 @@ async fn rpc_p(
     serde_json::from_slice(&body).map_err(|e| format!("json error: {e}"))
 }
 
+async fn rpc_p_with_auth_and_connect_info(
+    app: &axum::Router,
+    path: &str,
+    method: &str,
+    params: serde_json::Value,
+    auth_header: Option<&str>,
+    connect_info: Option<std::net::SocketAddr>,
+) -> RpcResult {
+    let payload = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let mut request = Request::post(path)
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .map_err(|e| format!("request error: {e}"))?;
+    if let Some(value) = auth_header {
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            value.parse().map_err(|e| format!("header error: {e}"))?,
+        );
+    }
+    if let Some(addr) = connect_info {
+        request.extensions_mut().insert(ConnectInfo(addr));
+    }
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .map_err(|e| format!("response error: {e}"))?;
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map_err(|e| format!("body error: {e}"))?;
+    serde_json::from_slice(&body).map_err(|e| format!("json error: {e}"))
+}
+
 async fn rest_get(app: &axum::Router, path: &str) -> RpcResult {
     let request = Request::get(path)
         .body(Body::empty())
@@ -70,6 +108,120 @@ fn fresh_app() -> axum::Router {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn fresh_app_with_min_validator_stake(min_validator_stake: u64) -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+    let stake_pool = StakePool::new();
+    build_rpc_router_with_min_validator_stake(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(stake_pool))),
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        min_validator_stake,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn fresh_app_with_runtime_settings(
+    min_validator_stake: u64,
+    fee_config: FeeConfig,
+) -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    state
+        .set_fee_config_full(&fee_config)
+        .expect("set fee config");
+    let _ = Box::leak(Box::new(dir));
+    let stake_pool = StakePool::new();
+    build_rpc_router_with_min_validator_stake(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(stake_pool))),
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        min_validator_stake,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn public_network_app_with_admin_token() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-testnet".to_string(),
+        "molt-testnet".to_string(),
+        Some("test-admin-token".to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn dev_network_app_with_admin_token() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+    build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-local".to_string(),
+        "molt-dev".to_string(),
+        Some("test-admin-token".to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+fn app_with_consensus_oracle_prices() -> axum::Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    state.set_last_slot(100).expect("set slot");
+    state
+        .put_oracle_consensus_price("MOLT", 12_500_000, 8, 95, 3)
+        .expect("put MOLT oracle price");
+    state
+        .put_oracle_consensus_price("wSOL", 14_875_000_000, 8, 96, 3)
+        .expect("put wSOL oracle price");
+
     build_rpc_router(
         state,
         None,
@@ -143,6 +295,70 @@ fn app_with_state() -> (axum::Router, String) {
     (app, funded_hex)
 }
 
+fn app_with_anchored_account_proof() -> (axum::Router, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let funded = Pubkey([0x42u8; 32]);
+    let funded_b58 = funded.to_base58();
+    let acct = Account::new(5, Pubkey([0u8; 32]));
+    state.put_account(&funded, &acct).expect("put funded");
+
+    let validator = Keypair::from_seed(&[7u8; 32]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let genesis = Block::genesis(Hash::default(), now.saturating_sub(1), vec![]);
+    state.put_block(&genesis).expect("put genesis");
+
+    let mut block = Block::new_with_timestamp(
+        1,
+        genesis.hash(),
+        state.compute_state_root(),
+        validator.pubkey().0,
+        vec![],
+        now,
+    );
+    block.header.validators_hash = Hash::hash(b"validator-set-1");
+    block.sign(&validator);
+
+    let commit_timestamp = now;
+    let precommit = Precommit::signable_bytes(1, 0, &Some(block.hash()), commit_timestamp);
+    block.commit_signatures = vec![CommitSignature {
+        validator: validator.pubkey().0,
+        signature: validator.sign(&precommit),
+        timestamp: commit_timestamp,
+    }];
+
+    state.put_block(&block).expect("put anchored block");
+    state.set_last_slot(1).expect("set last slot");
+    state
+        .set_last_confirmed_slot(1)
+        .expect("set confirmed slot");
+    state
+        .set_last_finalized_slot(1)
+        .expect("set finalized slot");
+
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        Some(FinalityTracker::new(1, 1)),
+        None,
+        None,
+        None,
+    );
+
+    (app, funded_b58)
+}
+
 /// Helper: assert result or error (valid JSON-RPC response)
 fn assert_valid_rpc(resp: &serde_json::Value) {
     assert_eq!(resp["jsonrpc"], "2.0", "must be jsonrpc 2.0");
@@ -186,6 +402,59 @@ async fn test_native_get_account_existing() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn test_native_get_account_proof_returns_anchored_finalized_context() {
+    let (app, addr) = app_with_anchored_account_proof();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountProof",
+        json!([addr, {"commitment": "finalized"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["pubkey"], addr);
+    assert!(result.get("state_root").is_none());
+    assert!(result.get("account").is_none());
+    assert!(result.get("proof").is_none());
+    assert!(result["account_data"].as_str().is_some());
+    assert!(result["inclusion_proof"]["leaf_hash"].as_str().is_some());
+    assert_eq!(result["anchor"]["commitment"], "finalized");
+    assert_eq!(result["anchor"]["slot"], 1);
+    assert_eq!(result["anchor"]["commit_round"], 0);
+    assert!(result["anchor"]["state_root"].as_str().is_some());
+    assert_eq!(
+        result["anchor"]["validators_hash"],
+        Hash::hash(b"validator-set-1").to_hex()
+    );
+    assert_eq!(result["anchor"]["commit_validator_count"], 1);
+    assert_eq!(
+        result["anchor"]["commit_signatures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!result["anchor"]["block_signature"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_native_get_account_proof_rejects_unanchored_state_root() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getAccountProof", json!([addr]))
+        .await
+        .unwrap();
+
+    assert_eq!(resp["error"]["code"], -32001);
+    assert!(!resp["error"]["message"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -453,6 +722,23 @@ async fn test_native_get_staking_rewards() {
 }
 
 #[tokio::test]
+async fn test_native_get_staking_rewards_reports_liquid_claims_separately() {
+    let (app, addr) = app_with_bootstrap_staking_rewards();
+    let resp = rpc_p(&app, "/", "getStakingRewards", json!([addr]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["pending_rewards"], json!(200_000_000));
+    assert_eq!(result["claimed_rewards"], json!(600_000_000));
+    assert_eq!(result["liquid_claimed_rewards"], json!(600_000_000));
+    assert_eq!(result["claimed_total_rewards"], json!(1_000_000_000));
+    assert_eq!(result["total_debt_repaid"], json!(400_000_000));
+    assert_eq!(result["total_rewards"], json!(1_200_000_000));
+}
+
+#[tokio::test]
 async fn test_native_get_reefstake_pool_info() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getReefStakePoolInfo").await.unwrap();
@@ -492,6 +778,39 @@ async fn test_native_get_reward_adjustment_info() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
     assert_valid_rpc(&resp);
+}
+
+#[tokio::test]
+async fn test_native_get_reward_adjustment_info_uses_runtime_min_validator_stake() {
+    let app = fresh_app_with_min_validator_stake(75_000_000_000);
+    let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(
+        resp["result"]["minValidatorStake"],
+        json!(75_000_000_000u64)
+    );
+}
+
+#[tokio::test]
+async fn test_native_get_reward_adjustment_info_uses_live_fee_split() {
+    let fee_config = FeeConfig {
+        fee_burn_percent: 35,
+        fee_producer_percent: 25,
+        fee_voters_percent: 15,
+        fee_treasury_percent: 15,
+        fee_community_percent: 10,
+        ..FeeConfig::default_from_constants()
+    };
+    let app = fresh_app_with_runtime_settings(75_000_000_000, fee_config);
+    let resp = rpc(&app, "/", "getRewardAdjustmentInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+
+    let fee_split = &resp["result"]["feeSplit"];
+    assert_eq!(fee_split["burn_pct"], json!(35u64));
+    assert_eq!(fee_split["producer_pct"], json!(25u64));
+    assert_eq!(fee_split["voters_pct"], json!(15u64));
+    assert_eq!(fee_split["treasury_pct"], json!(15u64));
+    assert_eq!(fee_split["community_pct"], json!(10u64));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -582,6 +901,73 @@ async fn test_native_set_contract_abi_no_token() {
     assert!(
         resp.get("error").is_some(),
         "setContractAbi without token should error"
+    );
+}
+
+#[tokio::test]
+async fn test_native_legacy_admin_rpcs_disabled_on_public_networks() {
+    let app = public_network_app_with_admin_token();
+
+    for (method, params) in [
+        ("setFeeConfig", json!([{"base_fee_shells": 100}])),
+        ("setRentParams", json!([{"rent_free_kb": 100}])),
+        (
+            "setContractAbi",
+            json!(["11111111111111111111111111111111", []]),
+        ),
+        ("deployContract", json!([])),
+        ("upgradeContract", json!([])),
+    ] {
+        let resp = rpc_p(&app, "/", method, params).await.unwrap();
+        assert_valid_rpc(&resp);
+        let message = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("disabled outside local/dev environments"),
+            "{} should be disabled on public networks, got: {}",
+            method,
+            message
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_native_legacy_admin_rpcs_accept_bearer_header_on_dev_networks() {
+    let app = dev_network_app_with_admin_token();
+
+    let resp = rpc_p_with_auth_and_connect_info(
+        &app,
+        "/",
+        "setFeeConfig",
+        json!({"base_fee_shells": 1000}),
+        Some("Bearer test-admin-token"),
+        Some("127.0.0.1:9000".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn test_native_legacy_admin_rpcs_require_loopback_on_dev_networks() {
+    let app = dev_network_app_with_admin_token();
+
+    let resp = rpc_p_with_auth_and_connect_info(
+        &app,
+        "/",
+        "setFeeConfig",
+        json!({"base_fee_shells": 1000, "admin_token": "test-admin-token"}),
+        None,
+        Some("203.0.113.10:9000".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let message = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("restricted to loopback clients"),
+        "expected loopback restriction error, got: {}",
+        message
     );
 }
 
@@ -1705,9 +2091,31 @@ async fn test_rest_dex_margin_enabled_pairs() {
 
 #[tokio::test]
 async fn test_rest_dex_oracle_prices() {
-    let app = fresh_app();
+    let app = app_with_consensus_oracle_prices();
     let resp = rest_get(&app, "/api/v1/oracle/prices").await;
-    assert!(resp.is_ok() || resp.is_err());
+    let body = resp.expect("oracle prices response");
+    let feeds = body["data"]["feeds"].as_array().expect("feeds array");
+    let molt = feeds
+        .iter()
+        .find(|entry| entry["asset"] == "MOLT")
+        .expect("MOLT feed");
+    assert_eq!(molt["source"], "native_consensus");
+    assert_eq!(molt["priceRaw"], 12_500_000u64);
+    assert_eq!(molt["decimals"], 8u64);
+    assert_eq!(molt["slot"], 95u64);
+    assert_eq!(molt["stale"], false);
+}
+
+#[tokio::test]
+async fn test_native_get_oracle_prices_uses_consensus_oracle() {
+    let app = app_with_consensus_oracle_prices();
+    let resp = rpc(&app, "/", "getOraclePrices")
+        .await
+        .expect("rpc response");
+    let result = resp["result"].as_object().expect("result object");
+    assert_eq!(result["source"], json!("native_consensus"));
+    assert_eq!(result["MOLT"], json!(0.125));
+    assert_eq!(result["wSOL"], json!(148.75));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1904,7 +2312,6 @@ async fn test_all_solana_methods_no_panic() {
 // contains correct, meaningful values.
 
 use moltchain_core::consensus::ValidatorInfo;
-use moltchain_core::{Block, Hash, Instruction, Message, Transaction};
 
 /// Helper: build an app backed by a StateStore pre-populated with a funded
 /// account, a stored block at slot 1, a validator, and a transaction.
@@ -2018,6 +2425,41 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
     )
 }
 
+fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    let validator = Pubkey([8u8; 32]);
+    let validator_b58 = validator.to_base58();
+    state.set_last_slot(123_456).expect("set slot");
+
+    let mut stake_pool = StakePool::new();
+    let mut stake_info = StakeInfo::with_bootstrap_index(validator, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
+    stake_info.rewards_earned = 200_000_000;
+    stake_info.total_claimed = 1_000_000_000;
+    stake_info.total_debt_repaid = 400_000_000;
+    stake_info.earned_amount = 400_000_000;
+    stake_info.blocks_produced = 12;
+    stake_pool.upsert_stake_full(stake_info);
+
+    let app = build_rpc_router(
+        state,
+        None,
+        Some(Arc::new(RwLock::new(stake_pool))),
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    (app, validator_b58)
+}
+
 // ── getBalance positive path (native "/") ────────────────────────────────────
 
 #[tokio::test]
@@ -2114,6 +2556,21 @@ async fn test_native_get_block_with_stored_block() {
         result["validator"].is_string(),
         "validator should be a string"
     );
+}
+
+#[tokio::test]
+async fn test_native_get_block_commit_exposes_commit_round() {
+    let (app, _) = app_with_anchored_account_proof();
+    let resp = rpc_p(&app, "/", "getBlockCommit", json!([1]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+
+    let result = &resp["result"];
+    assert_eq!(result["slot"], 1);
+    assert_eq!(result["commit_round"], 0);
+    assert_eq!(result["commit_validator_count"], 1);
+    assert_eq!(result["commit_signatures"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

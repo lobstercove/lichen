@@ -70,6 +70,24 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
     // recent_blockhash: Hash([u8; 32]) — newtype, bincode writes inner array flat
     out.extend_from_slice(&tx.message.recent_blockhash.0);
 
+    // compute_budget: Option<u64> — bincode encodes as 0x00 (None) or 0x01 + 8-byte LE (Some)
+    match tx.message.compute_budget {
+        None => out.push(0x00),
+        Some(v) => {
+            out.push(0x01);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
+    // compute_unit_price: Option<u64> — same encoding as above
+    match tx.message.compute_unit_price {
+        None => out.push(0x00),
+        Some(v) => {
+            out.push(0x01);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
     // tx_type: enum variant index as u32 LE (bincode default)
     // Native = 0, Evm = 1, SolanaCompat = 2
     let variant = match tx.tx_type {
@@ -294,6 +312,10 @@ fn test_simulated_js_sdk_bytes_deserialize() {
     js_bytes.extend_from_slice(&data);
     // recent_blockhash
     js_bytes.extend_from_slice(&blockhash.0);
+    // compute_budget: Option<u64> = None (0x00)
+    js_bytes.push(0x00);
+    // compute_unit_price: Option<u64> = None (0x00)
+    js_bytes.push(0x00);
     // tx_type: Native = variant 0 (u32 LE)
     js_bytes.extend_from_slice(&0u32.to_le_bytes());
 

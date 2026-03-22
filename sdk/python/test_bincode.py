@@ -14,9 +14,9 @@ def test_encode_transaction_signature_format():
 
     result = encode_transaction([sig_hex], message_bytes)
 
-    # Expected layout: u64(1) + 64 raw sig bytes + 40 message bytes
-    # Total: 8 + 64 + 40 = 112 bytes
-    assert len(result) == 112, f"Expected 112 bytes, got {len(result)}"
+    # Expected layout: u64(1) + 64 raw sig bytes + 40 message bytes + u32(tx_type)
+    # Total: 8 + 64 + 40 + 4 = 116 bytes
+    assert len(result) == 116, f"Expected 116 bytes, got {len(result)}"
 
     # First 8 bytes: vector length = 1 (little-endian u64)
     vec_len = struct.unpack("<Q", result[:8])[0]
@@ -25,8 +25,11 @@ def test_encode_transaction_signature_format():
     # Next 64 bytes: raw signature (no length prefix)
     assert result[8:72] == sig_bytes, "Signature bytes mismatch"
 
-    # Remaining: message bytes
-    assert result[72:] == message_bytes, "Message bytes mismatch"
+    # Next: message bytes
+    assert result[72:112] == message_bytes, "Message bytes mismatch"
+
+    # Last 4 bytes: tx_type = 0 (Native) as u32 LE
+    assert result[112:] == b"\x00\x00\x00\x00", "tx_type mismatch"
 
 
 def test_encode_transaction_rejects_wrong_signature_length():
@@ -47,8 +50,8 @@ def test_encode_transaction_multiple_signatures():
 
     result = encode_transaction([sig1, sig2], message)
 
-    # Layout: u64(2) + 64 + 64 + 10 = 146 bytes
-    assert len(result) == 146
+    # Layout: u64(2) + 64 + 64 + 10 + u32(tx_type) = 150 bytes
+    assert len(result) == 150
     vec_len = struct.unpack("<Q", result[:8])[0]
     assert vec_len == 2
 

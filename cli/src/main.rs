@@ -103,7 +103,7 @@ enum Commands {
     /// Initialize a new validator keypair (alias for 'identity new')
     Init {
         /// Output file path
-        #[arg(short, long)]
+        #[arg(short, long, id = "init_output_path")]
         output: Option<PathBuf>,
     },
 
@@ -489,7 +489,7 @@ enum IdentityCommands {
     /// Create a new identity
     New {
         /// Output file path (default: ~/.moltchain/keypairs/id.json)
-        #[arg(short, long)]
+        #[arg(short, long, id = "identity_output_path")]
         output: Option<PathBuf>,
     },
 
@@ -2959,16 +2959,29 @@ async fn main() -> Result<()> {
         // ====================================================================
         Commands::Epoch => match client.get_chain_status().await {
             Ok(status) => {
-                let epoch = status.current_slot / 1000;
-                let slot_in_epoch = status.current_slot % 1000;
+                let slots_per_epoch = client
+                    .get_reward_adjustment_info()
+                    .await
+                    .map(|info| info.slots_per_epoch)
+                    .ok()
+                    .filter(|slots| *slots > 0)
+                    .unwrap_or(moltchain_core::consensus::SLOTS_PER_EPOCH);
+                let epoch = status._epoch;
+                let epoch_start_slot = epoch.saturating_mul(slots_per_epoch);
+                let slot_in_epoch = status.current_slot.saturating_sub(epoch_start_slot);
+                let epoch_progress_pct = if slots_per_epoch > 0 {
+                    (slot_in_epoch as f64 / slots_per_epoch as f64) * 100.0
+                } else {
+                    0.0
+                };
 
                 if json_output {
                     print_json(&serde_json::json!({
                         "current_epoch": epoch,
                         "current_slot": status.current_slot,
                         "slot_in_epoch": slot_in_epoch,
-                        "slots_per_epoch": 1000,
-                        "epoch_progress_pct": (slot_in_epoch as f64 / 1000.0) * 100.0,
+                        "slots_per_epoch": slots_per_epoch,
+                        "epoch_progress_pct": epoch_progress_pct,
                         "validators": status.validator_count,
                         "total_staked_molt": to_molt(status.total_staked),
                     }));
@@ -2978,13 +2991,10 @@ async fn main() -> Result<()> {
                     println!();
                     println!("Current Epoch: {}", epoch);
                     println!(
-                        "Current Slot:  {} ({}/1000 in epoch)",
-                        status.current_slot, slot_in_epoch
+                        "Current Slot:  {} ({}/{} in epoch)",
+                        status.current_slot, slot_in_epoch, slots_per_epoch
                     );
-                    println!(
-                        "Progress:      {:.1}%",
-                        (slot_in_epoch as f64 / 1000.0) * 100.0
-                    );
+                    println!("Progress:      {:.1}%", epoch_progress_pct);
                     println!("Validators:    {}", status.validator_count);
                     println!("Total Staked:  {:.4} MOLT", to_molt(status.total_staked));
                 }

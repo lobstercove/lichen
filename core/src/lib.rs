@@ -37,8 +37,9 @@ pub use block::{
     MAX_BLOCK_SIZE, MAX_CONTRACT_CODE, MAX_TX_PER_BLOCK,
 };
 pub use consensus::{
-    compute_block_reward, compute_epoch_mint, epoch_start_slot, inflation_rate_bps,
-    is_epoch_boundary, molt_price_from_state, read_molt_price_feed_from_state, slot_to_epoch,
+    compute_block_reward, compute_epoch_mint, consensus_oracle_price_from_state, epoch_start_slot,
+    inflation_rate_bps, is_epoch_boundary, molt_price_from_state,
+    read_consensus_oracle_price_from_state, read_molt_price_feed_from_state, slot_to_epoch,
     BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, PendingValidatorChange, Precommit,
     Prevote, PriceOracle, Proposal, RewardAdjustmentInfo, RewardConfig, RoundStep,
     SlashingEvidence, SlashingOffense, SlashingTracker, StakeInfo, StakePool, StakingStats,
@@ -54,7 +55,7 @@ pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,
     AbiFunction, AbiParam, AbiReturn, AbiType, ContractAbi, ContractAccount, ContractContext,
     ContractResult, ContractRuntime, PendingUpgrade, ProgramCallActivity,
-    DEFAULT_WASM_MEMORY_PAGES, MAX_WASM_MEMORY_PAGES,
+    DEFAULT_WASM_MEMORY_PAGES, MAX_WASM_MEMORY_PAGES, WASM_CU_DIVISOR,
 };
 pub use contract_instruction::ContractInstruction;
 pub use evm::{
@@ -101,5 +102,6 @@ pub use state::StateBatch;
 pub use state::StateStore;
 pub use state::SymbolRegistryEntry;
 pub use transaction::{
-    Instruction, Message, Transaction, TransactionType, TX_WIRE_MAGIC, TX_WIRE_VERSION,
+    Instruction, Message, Transaction, TransactionType, DEFAULT_COMPUTE_BUDGET, MAX_COMPUTE_BUDGET,
+    TX_WIRE_MAGIC, TX_WIRE_VERSION,
 };

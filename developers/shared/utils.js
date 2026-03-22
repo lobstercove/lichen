@@ -81,7 +81,7 @@ const ACHIEVEMENT_DEFS = [
     // Staking (41-48)
     { id: 41, name: 'First Stake', icon: 'fa-layer-group', desc: 'Staked MOLT for the first time' },
     { id: 42, name: 'Unstaked', icon: 'fa-unlock', desc: 'Unstaked MOLT' },
-    { id: 43, name: 'ReefStake Pioneer', icon: 'fa-fish', desc: 'Used ReefStake liquid staking' },
+    { id: 43, name: 'Liquid Staking Pioneer', icon: 'fa-fish', desc: 'Used liquid staking' },
     { id: 44, name: 'Locked Staker', icon: 'fa-lock', desc: 'Locked stake for a fixed period' },
     { id: 45, name: 'Diamond Hands', icon: 'fa-gem', desc: 'Locked stake for 365 days' },
     { id: 46, name: 'Whale Staker', icon: 'fa-whale', desc: 'Staked a large amount' },
@@ -116,8 +116,8 @@ const ACHIEVEMENT_DEFS = [
     { id: 81, name: 'Oracle Reporter', icon: 'fa-satellite-dish', desc: 'Submitted a price feed report' },
     { id: 82, name: 'Oracle User', icon: 'fa-broadcast-tower', desc: 'Consumed oracle price data' },
     // Storage (86-88)
-    { id: 86, name: 'File Uploader', icon: 'fa-cloud-upload-alt', desc: 'Uploaded a file to Reef Storage' },
-    { id: 87, name: 'Data Retriever', icon: 'fa-cloud-download-alt', desc: 'Retrieved data from Reef Storage' },
+    { id: 86, name: 'File Uploader', icon: 'fa-cloud-upload-alt', desc: 'Uploaded a file to decentralized storage' },
+    { id: 87, name: 'Data Retriever', icon: 'fa-cloud-download-alt', desc: 'Retrieved data from decentralized storage' },
     { id: 88, name: 'Storage User', icon: 'fa-database', desc: 'Used decentralized storage' },
     // Marketplace/Auction (91-93)
     { id: 91, name: 'Auctioneer', icon: 'fa-bullhorn', desc: 'Created an auction' },
@@ -394,6 +394,10 @@ function serializeMessageBincode(message) {
     var hashBytes = new Uint8Array(32);
     for (var h = 0; h < 32; h++) hashBytes[h] = parseInt(hashHex.substr(h * 2, 2), 16);
     writeBytes(hashBytes);
+    // compute_budget: Option<u64> = None (0x00)
+    parts.push(new Uint8Array([0x00]));
+    // compute_unit_price: Option<u64> = None (0x00)
+    parts.push(new Uint8Array([0x00]));
 
     var totalLen = parts.reduce(function (s, p) { return s + p.length; }, 0);
     var result = new Uint8Array(totalLen);

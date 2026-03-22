@@ -133,10 +133,15 @@ esac
 DB_PATH="./data/state-${NETWORK}"
 LOG_DIR="/tmp/moltchain-${NETWORK}"
 TREASURY_KEYPAIR="${DB_PATH}/genesis-keys/treasury-${CHAIN_ID}.json"
+GENESIS_ARTIFACT_DIR="./artifacts/${NETWORK}"
+GENESIS_WALLET_FILE="${GENESIS_ARTIFACT_DIR}/genesis-wallet.json"
 BIN_PATH="./target/release/moltchain-validator"
+CLI_BIN="./target/release/molt"
 SUPERVISOR_PATH="${REPO_ROOT}/scripts/validator-supervisor.sh"
 VALIDATOR_HOME="${DB_PATH}/home"
 REAL_HOME="$HOME"
+VALIDATOR_KEYPAIR_FILE="${DB_PATH}/validator-keypair.json"
+SHARED_VALIDATOR_KEYPAIR_FILE="${REAL_HOME}/.moltchain/validators/validator-${NETWORK}.json"
 
 mkdir -p "$LOG_DIR"
 
@@ -205,12 +210,12 @@ fi
 
 # ── Build binary ──
 GENESIS_BIN="./target/release/moltchain-genesis"
-if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ]; then
+if $FORCE_BUILD || [ ! -x "$BIN_PATH" ] || [ ! -x "$GENESIS_BIN" ] || [ ! -x "$CLI_BIN" ]; then
     echo -e "${CYAN}[1/4]${NC} Building moltchain binaries..."
-    cargo build --release --bin moltchain-validator --bin moltchain-genesis --bin moltchain-faucet 2>&1 | tail -5
+    cargo build --release --bin moltchain-validator --bin moltchain-genesis --bin moltchain-faucet --bin molt 2>&1 | tail -5
     echo -e "  ${GREEN}✅ Build complete${NC}"
 else
-    echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN"
+    echo -e "${CYAN}[1/4]${NC} Binaries found: $BIN_PATH, $GENESIS_BIN, $CLI_BIN"
 fi
 echo ""
 
@@ -246,9 +251,9 @@ if $IS_GENESIS; then
 
     # Fetch real-time prices from Binance for genesis pool pricing
     echo -e "  📈 Fetching real-time prices for genesis pools..."
-    PRICE_JSON=$(curl -sf --max-time 10 \
+    PRICE_JSON=$(curl -gsf --max-time 10 \
         'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
-        || curl -sf --max-time 10 \
+        || curl -gsf --max-time 10 \
         'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
         || echo '[]')
     if [ "$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
@@ -269,8 +274,43 @@ except: pass
     fi
 
     # Run standalone genesis tool BEFORE starting the validator
+    mkdir -p "$GENESIS_ARTIFACT_DIR"
+    mkdir -p "$(dirname "$SHARED_VALIDATOR_KEYPAIR_FILE")"
+
+    if [ ! -f "$VALIDATOR_KEYPAIR_FILE" ]; then
+        if [ -f "$SHARED_VALIDATOR_KEYPAIR_FILE" ]; then
+            echo -e "  📋 Restoring validator identity from shared keypair..."
+            cp "$SHARED_VALIDATOR_KEYPAIR_FILE" "$VALIDATOR_KEYPAIR_FILE"
+        else
+            echo -e "  🔑 Generating validator identity..."
+            "$CLI_BIN" init --output "$VALIDATOR_KEYPAIR_FILE"
+        fi
+    fi
+
+    if [ ! -f "$SHARED_VALIDATOR_KEYPAIR_FILE" ]; then
+        cp "$VALIDATOR_KEYPAIR_FILE" "$SHARED_VALIDATOR_KEYPAIR_FILE"
+    fi
+
+    VALIDATOR_PUBKEY=$(grep -m1 '"publicKeyBase58"' "$VALIDATOR_KEYPAIR_FILE" | sed -E 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    if [ -z "$VALIDATOR_PUBKEY" ]; then
+        echo -e "  ${RED}❌ Failed to determine validator pubkey from ${VALIDATOR_KEYPAIR_FILE}${NC}"
+        exit 1
+    fi
+    echo -e "  👤 Primary validator: ${VALIDATOR_PUBKEY}"
+
+    if [ ! -f "$GENESIS_WALLET_FILE" ]; then
+        echo -e "  👜 Preparing genesis wallet artifacts..."
+        "$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$GENESIS_ARTIFACT_DIR"
+        PREPARE_EXIT=$?
+        if [ $PREPARE_EXIT -ne 0 ]; then
+            echo -e "  ${RED}❌ Genesis wallet preparation failed (exit code: $PREPARE_EXIT)${NC}"
+            exit 1
+        fi
+        echo -e "  ${GREEN}✅ Genesis wallet prepared: ${GENESIS_WALLET_FILE}${NC}"
+    fi
+
     echo -e "  🔨 Running moltchain-genesis..."
-    "$GENESIS_BIN" --network "$NETWORK" --db-path "$DB_PATH"
+    "$GENESIS_BIN" --network "$NETWORK" --wallet-file "$GENESIS_WALLET_FILE" --initial-validator "$VALIDATOR_PUBKEY" --db-path "$DB_PATH"
     GENESIS_EXIT=$?
     if [ $GENESIS_EXIT -ne 0 ]; then
         echo -e "  ${RED}❌ Genesis creation failed (exit code: $GENESIS_EXIT)${NC}"
@@ -324,7 +364,7 @@ if $IS_GENESIS && ! $NO_DEPLOY; then
     DEPLOY_PID=$!
     echo -e "  ${GREEN}✅ First-boot deployer started (PID: $DEPLOY_PID)${NC}"
     echo -e "     Log: ${LOG_DIR}/first-boot-deploy.log"
-    echo -e "     Deploys: 26 contracts, DEX pairs, AMM pools, insurance fund"
+    echo -e "     Deploys: 29 contracts, DEX pairs, AMM pools, insurance fund"
 else
     DEPLOY_PID=""
     if $NO_DEPLOY; then

@@ -7,14 +7,14 @@
 #   network: testnet | mainnet (default: testnet)
 #
 # Port Assignments (testnet):
-#   V1: p2p=8000  rpc=8899  ws=8900
-#   V2: p2p=8001  rpc=8901  ws=8902
-#   V3: p2p=8002  rpc=8903  ws=8904
+#   V1: p2p=7001  rpc=8899  ws=8900
+#   V2: p2p=7002  rpc=8901  ws=8902
+#   V3: p2p=7003  rpc=8903  ws=8904
 #
 # Port Assignments (mainnet):
-#   V1: p2p=9000  rpc=9899  ws=9900
-#   V2: p2p=9001  rpc=9901  ws=9902
-#   V3: p2p=9002  rpc=9903  ws=9904
+#   V1: p2p=8001  rpc=9899  ws=9900
+#   V2: p2p=8002  rpc=9901  ws=9902
+#   V3: p2p=8003  rpc=9903  ws=9904
 #
 # DB paths are always absolute: $REPO_ROOT/data/state-{p2p_port}
 # ============================================================================
@@ -68,6 +68,14 @@ DB_PATH="${REPO_ROOT}/data/state-${P2P_PORT}"
 VALIDATOR_HOME="${DB_PATH}/home"
 mkdir -p "$VALIDATOR_HOME"
 
+LOCAL_LISTEN_ADDR="${MOLTCHAIN_LOCAL_LISTEN_ADDR:-127.0.0.1}"
+VALIDATOR_KEYPAIR_FILE="${DB_PATH}/validator-keypair.json"
+GENESIS_WALLET_FILE="${DB_PATH}/genesis-wallet.json"
+LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
+CLI_BIN="${REPO_ROOT}/target/release/molt"
+GENESIS_BIN="${REPO_ROOT}/target/release/moltchain-genesis"
+VALIDATOR_BIN="${REPO_ROOT}/target/release/moltchain-validator"
+
 # Save real user home BEFORE overriding — needed for shared ZK verification keys
 REAL_USER_HOME="${HOME}"
 
@@ -90,6 +98,86 @@ if [[ "${MOLTCHAIN_SUPERVISED:-0}" != "1" && "${MOLTCHAIN_DISABLE_SUPERVISOR:-0}
 	exec "$SUPERVISOR_SCRIPT" "$SUPERVISOR_INSTANCE" -- env MOLTCHAIN_SUPERVISED=1 "$REPO_ROOT/run-validator.sh" "${ORIG_ARGS[@]}"
 fi
 
+write_local_seeds_file() {
+	cat > "$LOCAL_SEEDS_FILE" <<EOF
+{
+  "$NETWORK": {
+    "network_id": "moltchain-${NETWORK}-local",
+    "chain_id": "moltchain-${NETWORK}-1",
+    "seeds": [],
+    "bootstrap_peers": [
+      "127.0.0.1:${BASE_P2P}"
+    ],
+    "rpc_endpoints": [
+      "http://127.0.0.1:${BASE_RPC}"
+    ],
+    "explorers": [],
+    "faucets": []
+  }
+}
+EOF
+}
+
+ensure_local_genesis() {
+	if [[ "$VALIDATOR_NUM" != "1" ]]; then
+		return
+	fi
+
+	if [[ -f "$DB_PATH/CURRENT" || -f "$GENESIS_WALLET_FILE" ]]; then
+		return
+	fi
+
+	echo "Preparing local genesis state for $NAME"
+
+	# Fetch real-time prices from Binance for genesis pool pricing
+	PRICE_JSON=$(curl -gsf --max-time 10 \
+		'https://api.binance.us/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+		|| curl -gsf --max-time 10 \
+		'https://api.binance.com/api/v3/ticker/price?symbols=["SOLUSDT","ETHUSDT","BNBUSDT"]' 2>/dev/null \
+		|| echo '[]')
+	if [ "$PRICE_JSON" != "[]" ] && command -v python3 &>/dev/null; then
+		eval "$(python3 -c "
+import json, sys
+try:
+    data = json.loads('''$PRICE_JSON''')
+    m = {d['symbol']: float(d['price']) for d in data}
+    print(f'export GENESIS_SOL_USD={m.get(\"SOLUSDT\", 145.0):.2f}')
+    print(f'export GENESIS_ETH_USD={m.get(\"ETHUSDT\", 2600.0):.2f}')
+    print(f'export GENESIS_BNB_USD={m.get(\"BNBUSDT\", 620.0):.2f}')
+except: pass
+" 2>/dev/null)"
+		export GENESIS_MOLT_USD="${GENESIS_MOLT_USD:-0.10}"
+		echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} MOLT=\$${GENESIS_MOLT_USD}"
+	else
+		echo "  Could not fetch live prices, using defaults"
+	fi
+
+	if [[ ! -x "$CLI_BIN" || ! -x "$GENESIS_BIN" || ! -x "$VALIDATOR_BIN" ]]; then
+		echo "Building required release binaries..."
+		cargo build --release --bin molt --bin moltchain-genesis --bin moltchain-validator || exit 1
+	fi
+
+	if [[ ! -f "$VALIDATOR_KEYPAIR_FILE" ]]; then
+		"$CLI_BIN" init --output "$VALIDATOR_KEYPAIR_FILE" >/dev/null || exit 1
+	fi
+
+	if [[ ! -f "$GENESIS_WALLET_FILE" ]]; then
+		"$GENESIS_BIN" --prepare-wallet --network "$NETWORK" --output-dir "$DB_PATH" || exit 1
+	fi
+
+	VALIDATOR_PUBKEY="$(sed -n 's/.*"publicKeyBase58"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$VALIDATOR_KEYPAIR_FILE" | head -n 1)"
+	if [[ -z "$VALIDATOR_PUBKEY" ]]; then
+		echo "Failed to derive validator pubkey from $VALIDATOR_KEYPAIR_FILE"
+		exit 1
+	fi
+
+	"$GENESIS_BIN" \
+		--network "$NETWORK" \
+		--db-path "$DB_PATH" \
+		--wallet-file "$GENESIS_WALLET_FILE" \
+		--initial-validator "$VALIDATOR_PUBKEY" || exit 1
+}
+
 BOOTSTRAP=""
 case $VALIDATOR_NUM in
 	1)
@@ -106,7 +194,7 @@ echo "=================================="
 echo "Network: $NETWORK"
 echo "RPC:     http://localhost:$RPC_PORT"
 echo "WS:      ws://localhost:$WS_PORT"
-echo "P2P:     0.0.0.0:$P2P_PORT"
+echo "P2P:     ${LOCAL_LISTEN_ADDR}:$P2P_PORT"
 echo "Signer:  http://localhost:$SIGNER_PORT"
 echo "DB:      $DB_PATH"
 echo "HOME:    $HOME"
@@ -121,7 +209,7 @@ fi
 echo ""
 echo "Block Production (Tendermint BFT):"
 echo "   No TXs: Heartbeat ~800ms (0.01 MOLT)"
-echo "   With TXs: ~200ms blocks (0.02 MOLT)"
+echo "   With TXs: ~400ms blocks (0.02 MOLT)"
 echo ""
 
 if [ -z "${MOLTCHAIN_SIGNER_BIND:-}" ]; then
@@ -153,29 +241,33 @@ for i in $(seq 1 $#); do
 		fi
 done
 
+write_local_seeds_file
+ensure_local_genesis
+
 if [[ "${MOLTCHAIN_SUPERVISED:-0}" == "1" ]]; then
 	# External supervisor is active; run validator in direct worker mode to
 	# avoid nested watchdogs and orphaned child processes.
 	EXTRA_FLAGS="$EXTRA_FLAGS --supervised --no-watchdog"
 fi
 
-BIN_PATH="${REPO_ROOT}/target/release/moltchain-validator"
-if [ -x "$BIN_PATH" ]; then
-	exec "$BIN_PATH" \
+if [ -x "$VALIDATOR_BIN" ]; then
+	exec "$VALIDATOR_BIN" \
 		--network "$NETWORK" \
 		--rpc-port "$RPC_PORT" \
 		--ws-port "$WS_PORT" \
 		--p2p-port "$P2P_PORT" \
+		--listen-addr "$LOCAL_LISTEN_ADDR" \
 		--db-path "$DB_PATH" \
 		$BOOTSTRAP $EXTRA_FLAGS
 else
-	echo "Release binary not found at $BIN_PATH"
+	echo "Release binary not found at $VALIDATOR_BIN"
 	echo "Building with cargo..."
 	exec cargo run --release --bin moltchain-validator -- \
 		--network "$NETWORK" \
 		--rpc-port "$RPC_PORT" \
 		--ws-port "$WS_PORT" \
 		--p2p-port "$P2P_PORT" \
+		--listen-addr "$LOCAL_LISTEN_ADDR" \
 		--db-path "$DB_PATH" \
 		$BOOTSTRAP $EXTRA_FLAGS
 fi

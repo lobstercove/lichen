@@ -1,6 +1,6 @@
 //! Test transaction creation capabilities
 
-use moltchain_sdk::{Client, Keypair, TransactionBuilder};
+use moltchain_client_sdk::{Client, Keypair, TransactionBuilder};
 use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
 
 #[tokio::main]

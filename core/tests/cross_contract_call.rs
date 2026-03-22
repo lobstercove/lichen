@@ -414,12 +414,12 @@ fn test_processor_applies_cross_call_changes() {
         "Target's storage should have ping_key → pong after CCC"
     );
 
-    // Also verify the target's ContractAccount embedded storage was updated
+    // Embedded contract JSON is metadata-only and should not mirror live writes.
     let target_account = state.get_account(&target_addr).unwrap().unwrap();
     let target_contract: ContractAccount = serde_json::from_slice(&target_account.data).unwrap();
     assert_eq!(
         target_contract.get_storage(b"ping_key"),
-        Some(b"pong".to_vec()),
-        "Target's embedded storage should also have ping_key → pong"
+        None,
+        "Target's embedded storage must not mirror canonical CF_CONTRACT_STORAGE writes"
     );
 }

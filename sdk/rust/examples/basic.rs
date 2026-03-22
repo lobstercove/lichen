@@ -1,6 +1,6 @@
 //! Basic usage example
 
-use moltchain_sdk::{Client, Keypair, Balance};
+use moltchain_client_sdk::{Client, Keypair};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(balance) => {
             println!("\n💰 Balance: {} MOLT", balance.molt());
         }
-        Err(e) => {
+        Err(_e) => {
             println!("\n💰 Balance: 0 MOLT (account not found)");
         }
     }

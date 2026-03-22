@@ -107,6 +107,12 @@ pub struct Metrics {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewardAdjustmentInfo {
+    pub slots_per_epoch: u64,
+}
+
+#[derive(Deserialize)]
 pub struct PeerInfo {
     pub peer_id: String,
     pub address: String,
@@ -355,6 +361,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         // Sign transaction
@@ -412,6 +420,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = deployer.sign(&message.serialize());
@@ -460,6 +470,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = owner.sign(&message.serialize());
@@ -523,6 +535,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = owner.sign(&message.serialize());
@@ -577,6 +591,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = caller.sign(&message.serialize());
@@ -655,6 +671,17 @@ impl RpcClient {
         Ok(metrics)
     }
 
+    /// Get reward and inflation settings used for epoch calculations
+    pub async fn get_reward_adjustment_info(&self) -> Result<RewardAdjustmentInfo> {
+        let params = json!([]);
+        let result = self.call("getRewardAdjustmentInfo", params).await?;
+
+        let info: RewardAdjustmentInfo =
+            serde_json::from_value(result).context("Failed to parse reward adjustment info")?;
+
+        Ok(info)
+    }
+
     /// Get connected peers
     pub async fn get_peers(&self) -> Result<Vec<PeerInfo>> {
         let params = json!([]);
@@ -723,6 +750,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = keypair.sign(&message.serialize());
@@ -764,6 +793,8 @@ impl RpcClient {
         let message = Message {
             instructions: vec![instruction],
             recent_blockhash,
+            compute_budget: None,
+            compute_unit_price: None,
         };
 
         let signature = keypair.sign(&message.serialize());

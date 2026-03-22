@@ -25,16 +25,22 @@ use moltchain_sdk::{
 
 // Oracle configuration key (stores moltoracle contract address)
 const ORACLE_ADDR_KEY: &[u8] = b"ll_oracle_addr";
+const ORACLE_ASSET_KEY: &[u8] = b"ll_oracle_asset";
 
-/// Query oracle price for an asset (returns price in shells, or 1:1 if unavailable).
-/// Asset identifier is the token contract address hex.
-fn get_oracle_price(asset: &[u8]) -> u64 {
+/// Query the configured oracle price feed (returns 1:1 if unavailable).
+fn get_oracle_price() -> u64 {
     if let Some(oracle_bytes) = storage_get(ORACLE_ADDR_KEY) {
         if oracle_bytes.len() == 32 {
+            let asset = match storage_get(ORACLE_ASSET_KEY) {
+                Some(asset) if !asset.is_empty() => asset,
+                _ => return 1,
+            };
             let mut oracle_addr = [0u8; 32];
             oracle_addr.copy_from_slice(&oracle_bytes);
-            // Query oracle: get_price(asset) → u64 price in shells
-            let call = CrossCall::new(Address(oracle_addr), "get_price", asset.to_vec());
+            let mut args = Vec::with_capacity(asset.len() + 8);
+            args.extend_from_slice(&asset);
+            args.extend_from_slice(&(asset.len() as u64).to_le_bytes());
+            let call = CrossCall::new(Address(oracle_addr), "get_price_value", args);
             if let Ok(result) = call_contract(call) {
                 if result.len() >= 8 {
                     return bytes_to_u64(&result[..8]);
@@ -179,6 +185,45 @@ fn load_molt_addr() -> [u8; 32] {
 }
 fn is_zero_addr(a: &[u8; 32]) -> bool {
     a.iter().all(|&b| b == 0)
+}
+
+fn current_rate_per_slot(total_deposits: u64, total_borrows: u64) -> u64 {
+    let utilization = if total_deposits > 0 {
+        (total_borrows * 100) / total_deposits
+    } else {
+        0
+    };
+
+    let rate_per_slot = if utilization <= UTILIZATION_KINK_PERCENT {
+        BASE_RATE_SCALED + (utilization * BASE_RATE_SCALED * 2 / 100)
+    } else {
+        let base_at_kink =
+            BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
+        let excess = utilization - UTILIZATION_KINK_PERCENT;
+        base_at_kink + (excess * BASE_RATE_SCALED * 10 / 100)
+    };
+
+    if rate_per_slot > MAX_RATE_PER_SLOT {
+        MAX_RATE_PER_SLOT
+    } else {
+        rate_per_slot
+    }
+}
+
+fn quote_accrued_interest(principal: u64, elapsed_slots: u64) -> u64 {
+    if principal == 0 || elapsed_slots == 0 {
+        return 0;
+    }
+
+    let total_deposits = load_u64(b"ll_total_deposits");
+    let total_borrows = load_u64(b"ll_total_borrows");
+    if total_deposits == 0 || total_borrows == 0 {
+        return 0;
+    }
+
+    let rate_per_slot = current_rate_per_slot(total_deposits, total_borrows);
+    ((principal as u128) * (rate_per_slot as u128) * (elapsed_slots as u128) / (RATE_SCALE as u128))
+        as u64
 }
 
 /// Transfer tokens OUT from the contract's own balance to a recipient.
@@ -478,8 +523,8 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let current_borrow = settle_user_borrow(&hex);
     let borrow_key = make_key(b"bor:", &hex);
 
-    // AUDIT-FIX CON-10: Use oracle price for collateral valuation
-    let collateral_price = get_oracle_price(&borrower);
+    // AUDIT-FIX CON-10/C-3: Use the configured oracle feed, not borrower bytes.
+    let collateral_price = get_oracle_price();
     let deposit_value_usd = deposit_val.saturating_mul(collateral_price);
     let max_borrow = deposit_value_usd * COLLATERAL_FACTOR_PERCENT / 100;
     let new_borrow = match current_borrow.checked_add(amount) {
@@ -665,8 +710,8 @@ pub extern "C" fn liquidate(
     }
 
     // Check if position is liquidatable
-    // AUDIT-FIX CON-10: Use oracle price for liquidation threshold
-    let collateral_price = get_oracle_price(&borrower);
+    // AUDIT-FIX CON-10/C-3: Use the configured oracle feed, not borrower bytes.
+    let collateral_price = get_oracle_price();
     let deposit_value_usd = deposit.saturating_mul(collateral_price);
     let liquidation_limit = deposit_value_usd * LIQUIDATION_THRESHOLD_PERCENT / 100;
     if current_borrow <= liquidation_limit {
@@ -760,27 +805,7 @@ fn accrue_interest() {
         return;
     }
 
-    // Calculate utilization rate (0-100)
-    let utilization = (total_borrows * 100) / total_deposits;
-
-    // Interest rate based on utilization (kinked model)
-    let rate_per_slot = if utilization <= UTILIZATION_KINK_PERCENT {
-        // Linear increase up to kink
-        BASE_RATE_SCALED + (utilization * BASE_RATE_SCALED * 2 / 100)
-    } else {
-        // Sharp increase after kink
-        let base_at_kink =
-            BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
-        let excess = utilization - UTILIZATION_KINK_PERCENT;
-        base_at_kink + (excess * BASE_RATE_SCALED * 10 / 100)
-    };
-
-    // v2: Cap rate to prevent manipulation
-    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT {
-        MAX_RATE_PER_SLOT
-    } else {
-        rate_per_slot
-    };
+    let rate_per_slot = current_rate_per_slot(total_deposits, total_borrows);
 
     // Interest accrued = total_borrows * rate * elapsed_slots / SCALE
     // Use u128 intermediate to prevent overflow on large values
@@ -1166,6 +1191,54 @@ pub extern "C" fn set_moltcoin_address(caller_ptr: *const u8, addr_ptr: *const u
     0
 }
 
+/// Admin configures the oracle contract address and asset feed key.
+#[no_mangle]
+pub extern "C" fn set_oracle_feed(
+    caller_ptr: *const u8,
+    oracle_addr_ptr: *const u8,
+    asset_ptr: *const u8,
+    asset_len: u32,
+) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
+    }
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
+    if !is_admin(&caller) {
+        log_info("Not admin");
+        return 1;
+    }
+
+    let mut oracle_addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(oracle_addr_ptr, oracle_addr.as_mut_ptr(), 32);
+    }
+    if is_zero_addr(&oracle_addr) {
+        log_info("Cannot set zero oracle address");
+        return 2;
+    }
+    if asset_len == 0 {
+        log_info("Cannot set empty oracle asset key");
+        return 3;
+    }
+
+    let mut asset = Vec::with_capacity(asset_len as usize);
+    unsafe {
+        asset.set_len(asset_len as usize);
+        core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize);
+    }
+
+    storage_set(ORACLE_ADDR_KEY, &oracle_addr);
+    storage_set(ORACLE_ASSET_KEY, &asset);
+    log_info("Oracle feed configured");
+    0
+}
+
 // ============================================================================
 // v2: INTEREST RATE VIEW
 // ============================================================================
@@ -1182,19 +1255,7 @@ pub extern "C" fn get_interest_rate() -> u32 {
         0
     };
 
-    let rate_per_slot = if utilization <= UTILIZATION_KINK_PERCENT {
-        BASE_RATE_SCALED + (utilization * BASE_RATE_SCALED * 2 / 100)
-    } else {
-        let base_at_kink =
-            BASE_RATE_SCALED + (UTILIZATION_KINK_PERCENT * BASE_RATE_SCALED * 2 / 100);
-        let excess = utilization - UTILIZATION_KINK_PERCENT;
-        base_at_kink + (excess * BASE_RATE_SCALED * 10 / 100)
-    };
-    let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT {
-        MAX_RATE_PER_SLOT
-    } else {
-        rate_per_slot
-    };
+    let rate_per_slot = current_rate_per_slot(total_deposits, total_borrows);
 
     let available = total_deposits.saturating_sub(total_borrows);
 
@@ -1203,6 +1264,16 @@ pub extern "C" fn get_interest_rate() -> u32 {
     result.extend_from_slice(&u64_to_bytes(utilization));
     result.extend_from_slice(&u64_to_bytes(available));
     set_return_data(&result);
+    0
+}
+
+/// Quote accrued lending yield for an external vault over a slot interval.
+#[no_mangle]
+pub extern "C" fn get_accrued_interest(principal: u64, elapsed_slots: u64) -> u32 {
+    set_return_data(&u64_to_bytes(quote_accrued_interest(
+        principal,
+        elapsed_slots,
+    )));
     0
 }
 
@@ -1384,6 +1455,39 @@ mod tests {
         test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 750_001), 2); // > 75%
+    }
+
+    #[test]
+    fn test_get_oracle_price_uses_configured_feed_surface() {
+        setup();
+        let admin = [1u8; 32];
+        let oracle = [7u8; 32];
+        let asset = b"MOLT/USD";
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        assert_eq!(
+            set_oracle_feed(
+                admin.as_ptr(),
+                oracle.as_ptr(),
+                asset.as_ptr(),
+                asset.len() as u32,
+            ),
+            0
+        );
+        test_mock::set_cross_call_response(Some(u64_to_bytes(2).to_vec()));
+
+        assert_eq!(get_oracle_price(), 2);
+
+        let (target, function, args, value) =
+            test_mock::get_last_cross_call().expect("oracle cross-call should be captured");
+        assert_eq!(target, oracle);
+        assert_eq!(function, "get_price_value");
+        assert_eq!(value, 0);
+        assert_eq!(&args[..asset.len()], asset);
+        assert_eq!(
+            bytes_to_u64(&args[asset.len()..asset.len() + 8]),
+            asset.len() as u64
+        );
     }
 
     #[test]
@@ -1925,6 +2029,19 @@ mod tests {
             liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000),
             0
         );
+    }
+
+    #[test]
+    fn test_get_accrued_interest_returns_current_quote() {
+        setup();
+        store_u64(b"ll_total_deposits", 1_000_000);
+        store_u64(b"ll_total_borrows", 800_000);
+
+        assert_eq!(get_accrued_interest(500_000, 1_000), 0);
+
+        let quoted = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(quoted, quote_accrued_interest(500_000, 1_000));
+        assert!(quoted > 0);
     }
 
     // ========================================================================

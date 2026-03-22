@@ -2,26 +2,403 @@
   "contract": "dex_margin",
   "version": "1.0",
   "functions": [
-    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
-    {"name": "set_mark_price", "opcode": 1, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "price", "type": "u64"}]},
-    {"name": "open_position", "opcode": 2, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "side", "type": "u8"}, {"name": "size", "type": "u64"}, {"name": "leverage", "type": "u64"}, {"name": "margin", "type": "u64"}]},
-    {"name": "close_position", "opcode": 3, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}]},
-    {"name": "add_margin", "opcode": 4, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}, {"name": "amount", "type": "u64"}]},
-    {"name": "remove_margin", "opcode": 5, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}, {"name": "amount", "type": "u64"}]},
-    {"name": "liquidate", "opcode": 6, "params": [{"name": "liquidator", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}]},
-    {"name": "set_max_leverage", "opcode": 7, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "max_leverage", "type": "u64"}]},
-    {"name": "set_maintenance_margin", "opcode": 8, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "margin_bps", "type": "u64"}]},
-    {"name": "withdraw_insurance", "opcode": 9, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "amount", "type": "u64"}, {"name": "recipient", "type": "Pubkey"}]},
-    {"name": "get_position_info", "opcode": 10, "params": [{"name": "position_id", "type": "u64"}]},
-    {"name": "get_margin_ratio", "opcode": 11, "params": [{"name": "position_id", "type": "u64"}]},
-    {"name": "get_tier_info", "opcode": 12, "params": [{"name": "leverage", "type": "u64"}]},
-    {"name": "emergency_pause", "opcode": 13, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "emergency_unpause", "opcode": 14, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "set_moltcoin_address", "opcode": 15, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
-    {"name": "get_total_volume", "opcode": 16, "params": []},
-    {"name": "get_user_positions", "opcode": 17, "params": [{"name": "user_address", "type": "Pubkey"}]},
-    {"name": "get_total_pnl", "opcode": 18, "params": []},
-    {"name": "get_liquidation_count", "opcode": 19, "params": []},
-    {"name": "get_margin_stats", "opcode": 20, "params": []}
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        {
+          "name": "admin",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_mark_price",
+      "opcode": 1,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_position",
+      "opcode": 2,
+      "params": [
+        {
+          "name": "trader",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "leverage",
+          "type": "u64"
+        },
+        {
+          "name": "margin",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "close_position",
+      "opcode": 3,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "add_margin",
+      "opcode": 4,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "remove_margin",
+      "opcode": 5,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "liquidate",
+      "opcode": 6,
+      "params": [
+        {
+          "name": "liquidator",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_max_leverage",
+      "opcode": 7,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        },
+        {
+          "name": "max_leverage",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_maintenance_margin",
+      "opcode": 8,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "margin_bps",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_insurance",
+      "opcode": 9,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_position_info",
+      "opcode": 10,
+      "params": [
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "get_margin_ratio",
+      "opcode": 11,
+      "params": [
+        {
+          "name": "position_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "get_tier_info",
+      "opcode": 12,
+      "params": [
+        {
+          "name": "leverage",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "emergency_pause",
+      "opcode": 13,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "emergency_unpause",
+      "opcode": 14,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_moltcoin_address",
+      "opcode": 15,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "address",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_total_volume",
+      "opcode": 16,
+      "params": []
+    },
+    {
+      "name": "get_user_positions",
+      "opcode": 17,
+      "params": [
+        {
+          "name": "user_address",
+          "type": "Pubkey"
+        }
+      ]
+    },
+    {
+      "name": "get_total_pnl",
+      "opcode": 18,
+      "params": []
+    },
+    {
+      "name": "get_liquidation_count",
+      "opcode": 19,
+      "params": []
+    },
+    {
+      "name": "get_margin_stats",
+      "opcode": 20,
+      "params": []
+    },
+    {
+      "name": "enable_margin_pair",
+      "opcode": 21,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "disable_margin_pair",
+      "opcode": 22,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "is_margin_enabled",
+      "opcode": 23,
+      "params": [
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_position_sl_tp",
+      "opcode": 24,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "sl_price",
+          "type": "u64"
+        },
+        {
+          "name": "tp_price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "partial_close",
+      "opcode": 25,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "close_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "query_user_open_position",
+      "opcode": 26,
+      "params": [
+        {
+          "name": "trader",
+          "type": "Pubkey"
+        },
+        {
+          "name": "pair_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "close_position_limit",
+      "opcode": 27,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "limit_price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "partial_close_limit",
+      "opcode": 28,
+      "params": [
+        {
+          "name": "caller",
+          "type": "Pubkey"
+        },
+        {
+          "name": "position_id",
+          "type": "u64"
+        },
+        {
+          "name": "close_amount",
+          "type": "u64"
+        },
+        {
+          "name": "limit_price",
+          "type": "u64"
+        }
+      ]
+    }
   ]
 }

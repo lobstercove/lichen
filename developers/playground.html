@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,9 +10,12 @@
     <link rel="stylesheet" href="css/developers.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
 </head>
+
 <body>
     <nav class="nav">
         <div class="nav-container">
@@ -80,22 +84,21 @@
             </div>
 
             <h1 id="live-playground">Programs Playground</h1>
-            <p>Use the live embedded IDE below to write, compile, deploy, and interact with contracts directly from this page.</p>
+            <p>Use the live embedded IDE below to write, compile, deploy, and interact with contracts directly from this
+                page.</p>
 
             <div class="callout callout-info" style="margin-top: 1rem;">
                 <div class="callout-title"><i class="fas fa-rocket"></i> Open Fullscreen</div>
-                Launch the standalone IDE at <a id="fullscreenPlaygroundLink" href="../programs/playground.html" target="_blank" rel="noopener noreferrer" style="color: var(--primary); font-weight: 600;">Programs Playground</a>.
+                Launch the standalone IDE at <a id="fullscreenPlaygroundLink" href="#" data-molt-app="programs"
+                    data-molt-path="/playground.html" target="_blank" rel="noopener noreferrer"
+                    style="color: var(--primary); font-weight: 600;">Programs Playground</a>.
             </div>
 
-            <div style="margin-top: 1rem; border: 1px solid var(--glass-border); border-radius: 14px; overflow: hidden; background: var(--bg-secondary);">
-                <iframe
-                    id="programsPlaygroundFrame"
-                    src="../programs/playground.html"
-                    title="MoltChain Programs Playground"
-                    style="width: 100%; height: 78vh; min-height: 680px; border: 0;"
-                    loading="lazy"
-                    referrerpolicy="strict-origin-when-cross-origin"
-                ></iframe>
+            <div
+                style="margin-top: 1rem; border: 1px solid var(--glass-border); border-radius: 14px; overflow: hidden; background: var(--bg-secondary);">
+                <iframe id="programsPlaygroundFrame" src="about:blank" title="MoltChain Programs Playground"
+                    style="width: 100%; height: 78vh; min-height: 680px; border: 0;" loading="lazy"
+                    referrerpolicy="strict-origin-when-cross-origin"></iframe>
             </div>
 
             <h2 id="quick-actions">Quick Actions</h2>
@@ -108,7 +111,8 @@
             <h2 id="notes">Notes</h2>
             <div class="callout callout-warning">
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Same-Origin Requirement</div>
-                The embedded playground runs from <code>../programs/playground.html</code>; if your deploy stack serves docs and programs from different origins, use the fullscreen link above.
+                The embedded playground is loaded from the standalone Programs app origin; if your deploy stack blocks
+                embedding across origins, use the fullscreen link above.
             </div>
         </main>
 
@@ -120,27 +124,26 @@
     <script src="shared-config.js"></script>
     <script src="js/developers.js"></script>
     <script>
-    (function() {
-        // Use MOLT_CONFIG for environment-aware URL resolution
-        const programsUrl = MOLT_CONFIG.isDev
-            ? MOLT_CONFIG.marketplace + '/playground.html'
-            : '../programs/playground.html';
+        (function () {
+            // Use MOLT_CONFIG for environment-aware URL resolution
+            const programsUrl = MOLT_CONFIG.programs + '/playground.html';
 
-        const frame = document.getElementById('programsPlaygroundFrame');
-        if (frame) frame.src = programsUrl;
+            const frame = document.getElementById('programsPlaygroundFrame');
+            if (frame) frame.src = programsUrl;
 
-        const fullscreenLink = document.getElementById('fullscreenPlaygroundLink');
-        if (fullscreenLink) fullscreenLink.href = programsUrl;
+            const fullscreenLink = document.getElementById('fullscreenPlaygroundLink');
+            if (fullscreenLink) fullscreenLink.href = programsUrl;
 
-        // Wire up nav search input to open ⌘K overlay
-        const navInput = document.getElementById('searchInput');
-        if (navInput) {
-            navInput.addEventListener('focus', () => {
-                if (typeof window.openDevSearch === 'function') window.openDevSearch();
-                navInput.blur();
-            });
-        }
-    })();
+            // Wire up nav search input to open ⌘K overlay
+            const navInput = document.getElementById('searchInput');
+            if (navInput) {
+                navInput.addEventListener('focus', () => {
+                    if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                    navInput.blur();
+                });
+            }
+        })();
     </script>
 </body>
+
 </html>

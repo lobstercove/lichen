@@ -313,20 +313,20 @@ impl Account {
 
     /// Add to spendable balance (for rewards, transfers)
     pub fn add_spendable(&mut self, amount: u64) -> Result<(), String> {
-        self.shells = self.shells.checked_add(amount).ok_or_else(|| {
+        let new_shells = self.shells.checked_add(amount).ok_or_else(|| {
             format!(
                 "Overflow adding {} to shells balance {}",
                 amount, self.shells
             )
         })?;
-        self.spendable = self.spendable.checked_add(amount).ok_or_else(|| {
-            // Roll back shells on spendable overflow
-            self.shells -= amount;
+        let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
             format!(
                 "Overflow adding {} to spendable balance {}",
                 amount, self.spendable
             )
         })?;
+        self.shells = new_shells;
+        self.spendable = new_spendable;
         Ok(())
     }
 
@@ -347,6 +347,26 @@ impl Account {
         })?;
         self.spendable = new_spendable;
         self.shells = new_shells;
+        Ok(())
+    }
+
+    /// Deduct from locked balance (burns/removes locked collateral)
+    pub fn deduct_locked(&mut self, amount: u64) -> Result<(), String> {
+        let new_locked = self
+            .locked
+            .checked_sub(amount)
+            .ok_or_else(|| format!("Insufficient locked balance: {} < {}", self.locked, amount))?;
+        let new_shells = self.shells.checked_sub(amount).ok_or_else(|| {
+            format!(
+                "Underflow subtracting {} from shells balance {}",
+                amount, self.shells
+            )
+        })?;
+        self.locked = new_locked;
+        self.shells = new_shells;
+        if self.shells != self.spendable + self.staked + self.locked {
+            return Err("Account invariant violated after locked deduction".to_string());
+        }
         Ok(())
     }
 

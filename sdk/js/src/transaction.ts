@@ -19,6 +19,8 @@ export interface Instruction {
 export interface Message {
   instructions: Instruction[];
   recentBlockhash: string;
+  computeBudget?: number;
+  computeUnitPrice?: number;
 }
 
 /**

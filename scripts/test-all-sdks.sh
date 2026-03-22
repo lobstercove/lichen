@@ -42,7 +42,7 @@ echo "------------------------------------------------------------------------"
 
 cd sdk/rust
 
-if cargo test --quiet 2>&1 | grep -q "test result: ok"; then
+if cargo test 2>&1 | grep -q "test result: ok"; then
     echo -e "${GREEN}✅ Rust unit tests passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -51,7 +51,7 @@ else
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-if cargo run --example comprehensive_test --quiet 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
+if cargo run --example comprehensive_test 2>&1 | grep -q "COMPREHENSIVE TEST COMPLETE"; then
     echo -e "${GREEN}✅ Rust comprehensive test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else
@@ -60,7 +60,7 @@ else
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-if cargo run --example test_transactions --quiet 2>&1 | grep -q "Transaction creation capability verified"; then
+if cargo run --example test_transactions 2>&1 | grep -q "Transaction creation capability verified"; then
     echo -e "${GREEN}✅ Rust transaction test passed${NC}"
     PASSED_TESTS=$((PASSED_TESTS + 1))
 else

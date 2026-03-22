@@ -13,7 +13,7 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use moltchain_sdk::{Client, Keypair};
+//! use moltchain_client_sdk::{Client, Keypair};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,23 +32,20 @@
 //! ```
 
 pub mod client;
+pub mod error;
 pub mod keypair;
 pub mod transaction;
 pub mod types;
-pub mod error;
 
 // Re-exports for convenience
 pub use client::{Client, ClientBuilder};
+pub use error::{Error, Result};
 pub use keypair::{Keypair, Pubkey};
 pub use transaction::TransactionBuilder;
-pub use types::{Balance, Block, Transaction, NetworkInfo};
-pub use error::{Error, Result};
+pub use types::{Balance, Block, NetworkInfo, Transaction};
 
 // Re-export core types
-pub use moltchain_core::{
-    Account, Hash, Message, Instruction,
-    SYSTEM_PROGRAM_ID, BASE_FEE,
-};
+pub use moltchain_core::{Account, Hash, Instruction, Message, BASE_FEE, SYSTEM_PROGRAM_ID};
 
 /// SDK version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

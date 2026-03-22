@@ -1,0 +1,399 @@
+Script started on Fri Mar  6 10:54:46 2026
+/Users/johnrobin/.openclaw/completions/openclaw.zsh:3571: command not found: compdef
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c 'cd /Users/johnrobin/.openclaw/workspace/moltchain && git show e24c10a:genesi [K[Kss/src/lib.rs > /tmp/genesis_lib_at_extraction.txt 2>&1; echo "EXIT: $?"'[A[70D [32mb[32ma[32ms[32mh[39m[4C[33m'[33mc[33md[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m [33m&[33m&[33m [33mg[33mi[33mt[33m [33ms[33mh[33mo[33mw[33m [33me[33m2[33m4[33mc[33m1[33m0[33ma[33m:[33mg[33me[33mn[33me[33ms[33mi[33ms[33m/[33ms[33mr[33mc[33m/[33ml[33mi[33mb[33m.[33mr[33ms[33m [33m>[33m [33m/[33mt[33mm[33mp[33m/[33mg[33me[33mn[33me[33ms[33mi[33ms[33m_[33ml[33mi[33mb[33m_[33ma[33mt[33m_[33me[33mx[33mt[33mr[33ma[33mc[33mt[33mi[33mo[33mn[33m.[33mt[33mx[33mt[33m [33m2[33m>[33m&[33m1[33m;[33m [33me[33mc[33mh[33mo[33m [33m"[33mE[33mX[33mI[33mT[33m:[33m [33m$[33m?[33m"[33m'[39m[?2004l
+EXIT: 128
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c 'cd /Users/johnrobin/.openclaw/workspace/moltchain && git show 05ae630:genesi [K[Kss/src/lib.rs > /tmp/genesis_lib_original.txt 2>&1; echo "EXIT: $?"; wc -l /tmp/genesis_l [K[Kiib_original.txt'[A[A[14D [32mb[32ma[32ms[32mh[39m[4C[33m'[33mc[33md[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m [33m&[33m&[33m [33mg[33mi[33mt[33m [33ms[33mh[33mo[33mw[33m [33m0[33m5[33ma[33me[33m6[33m3[33m0[33m:[33mg[33me[33mn[33me[33ms[33mi[33ms[33m/[33ms[33mr[33mc[33m/[33ml[33mi[33mb[33m.[33mr[33ms[33m [33m>[33m [33m/[33mt[33mm[33mp[33m/[33mg[33me[33mn[33me[33ms[33mi[33ms[33m_[33ml[33mi[33mb[33m_[33mo[33mr[33mi[33mg[33mi[33mn[33ma[33ml[33m.[33mt[33mx[33mt[33m [33m2[33m>[33m&[33m1[33m;[33m [33me[33mc[33mh[33mo[33m [33m"[33mE[33mX[33mI[33mT[33m:[33m [33m$[33m?[33m"[33m;[33m [33mw[33mc[33m [33m-[33ml[33m [33m/[33mt[33mm[33mp[33m/[33mg[33me[33mn[33me[33ms[33mi[33ms[33m_[33ml[33mi[33mb[33m_[33mo[33mr[33mi[33mg[33mi[33mn[33ma[33ml[33m.[33mt[33mx[33mt[33m'[39m[?2004l
+EXIT: 0
+    2070 /tmp/genesis_lib_original.txt
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c 'cd /Users/johnrobin/.openclaw/workspace/moltchain && git show 05ae630^:valid [K[Kaator/src/main.rs > /tmp/validator_before_genesis.txt 2>&1; echo "EXIT: $?"; wc -l /tmp/v [K[Kaalidator_before_genesis.txt'[A[A[26D [32mb[32ma[32ms[32mh[39m[4C[33m'[33mc[33md[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m [33m&[33m&[33m [33mg[33mi[33mt[33m [33ms[33mh[33mo[33mw[33m [33m0[33m5[33ma[33me[33m6[33m3[33m0[33m^[33m:[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m/[33ms[33mr[33mc[33m/[33mm[33ma[33mi[33mn[33m.[33mr[33ms[33m [33m>[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m [33m2[33m>[33m&[33m1[33m;[33m [33me[33mc[33mh[33mo[33m [33m"[33mE[33mX[33mI[33mT[33m:[33m [33m$[33m?[33m"[33m;[33m [33mw[33mc[33m [33m-[33ml[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m'[39m[?2004l
+EXIT: 0
+   12554 /tmp/validator_before_genesis.txt
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "deploy\|program_count\|is_executable\|put_program\|store_p [K[Krrogram\|deploy_contract\|auto_deploy\|GENESIS_CONTRACT" /tmp/validator_before_genesis.tx [K[Ktt | head -60'[A[A[11D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33md[33me[33mp[33ml[33mo[33my[33m\[33m|[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mi[33ms[33m_[33me[33mx[33me[33mc[33mu[33mt[33ma[33mb[33ml[33me[33m\[33m|[33mp[33mu[33mt[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33ms[33mt[33mo[33mr[33me[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33md[33me[33mp[33ml[33mo[33my[33m_[33mc[33mo[33mn[33mt[33mr[33ma[33mc[33mt[33m\[33m|[33ma[33mu[33mt[33mo[33m_[33md[33me[33mp[33ml[33mo[33my[33m\[33m|[33mG[33mE[33mN[33mE[33mS[33mI[33mS[33m_[33mC[33mO[33mN[33mT[33mR[33mA[33mC[33mT[33m"[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m6[33m0[33m'[39m[?2004l
+1448:        _ => return, // no analytics contract deployed
+1787:                                    kind: "deploy".to_string(),
+3278:// is fully operational from the first block — no external deploy scripts
+3280:// SHA-256(deployer_pubkey + wasm_bytes).
+3284:const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
+3323:fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+3325:    info!("  {} Auto-deploying genesis contracts", label);
+3330:        warn!("contracts/ directory not found — skipping auto-deploy");
+3334:    let mut deployed: usize = 0;
+3337:    for &(dir_name, symbol, display_name, template) in GENESIS_CONTRACT_CATALOG {
+3360:        // Derive deterministic program address: SHA-256(deployer + name + wasm)
+3364:        hasher.update(deployer_pubkey.0);
+3372:        // Check if already deployed (idempotent)
+3375:                "  SKIP {}: already deployed at {}",
+3383:        let contract = ContractAccount::new(wasm_bytes, *deployer_pubkey);
+3411:            "genesis_deploy": true,
+3477:            owner: *deployer_pubkey,
+3492:        deployed += 1;
+3497:        "  Genesis deploy complete: {} deployed, {} failed",
+3498:        deployed, failed
+3508:/// Derive a contract's deterministic address from deployer + dir_name + wasm.
+3509:/// Must match the derivation in genesis_auto_deploy().
+3510:fn derive_contract_address(deployer_pubkey: &Pubkey, dir_name: &str) -> Option<Pubkey> {
+3517:    hasher.update(deployer_pubkey.0);
+3535:    deployer_pubkey: &Pubkey,
+3557:        *deployer_pubkey,
+3622:                caller: *deployer_pubkey,
+3647:fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+3652:    let admin = deployer_pubkey.0;
+3658:    for &(dir_name, _symbol, _display, _template) in GENESIS_CONTRACT_CATALOG {
+3659:        if let Some(addr) = derive_contract_address(deployer_pubkey, dir_name) {
+3714:        .unwrap_or(admin); // Fallback to deployer if community_treasury not set yet
+3726:    // MoltMarket: owner(32B) + fee_addr(32B) = deployer for both initially
+3729:    moltmarket_args.extend_from_slice(&admin); // fee recipient = deployer initially
+3911:            deployer_pubkey,
+3931:            deployer_pubkey,
+3939:                deployer_pubkey,
+3983:            if genesis_exec_contract(state, predict_pk, deployer_pubkey, "call", &args, label) {
+4002:            deployer_pubkey,
+4033:            deployer_pubkey,
+4083:            deployer_pubkey,
+4135:                deployer_pubkey,
+4158:                deployer_pubkey,
+4181:            deployer_pubkey,
+4202:            deployer_pubkey,
+4222:            deployer_pubkey,
+4242:            deployer_pubkey,
+4262:            deployer_pubkey,
+4272:        // Add deployer as first bridge validator
+4276:        val_args.extend_from_slice(&admin); // deployer is first bridge validator
+4280:            deployer_pubkey,
+4292:    // The admin (deployer) needs reputation >= 1000 to create prediction markets,
+4324:            owner_key: &'static str, // address_map key or "admin" for deployer
+4525:                deployer_pubkey,
+4534:                        "deployer"
+4732:fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
+4737:    let admin = deployer_pubkey.0;
+4740:    let dex_core_pk = match derive_contract_address(deployer_pubkey, "dex_core") {
+4747:    let dex_amm_pk = match derive_contract_address(deployer_pubkey, "dex_amm") {
+4756:    let molt_addr = derive_contract_address(deployer_pubkey, "moltcoin")
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "index_program\|put_program\|get_program_count\|CF_PROGRAMS [K[K"" /tmp/validator_before_genesis.txt'[A[34D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mi[33mn[33md[33me[33mx[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33mp[33mu[33mt[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33mg[33me[33mt[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mC[33mF[33m_[33mP[33mR[33mO[33mG[33mR[33mA[33mM[33mS[33m"[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m'[39m[?2004l
+3404:        // Index in CF_PROGRAMS (makes it visible to getAllContracts)
+3405:        if let Err(e) = state.index_program(&program_pubkey) {
+3406:            warn!("  WARN {}: index_program error: {}", symbol, e);
+10010:                            "programs" => store.get_program_count(),
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "index_program\|put_program\|get_program_count\|CF_PROGRAMS [K[K"" /Users/johnrobin/.openclaw/workspace/moltchain/genesis/src/lib.rs'[A[66D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mi[33mn[33md[33me[33mx[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33mp[33mu[33mt[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m\[33m|[33mg[33me[33mt[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mC[33mF[33m_[33mP[33mR[33mO[33mG[33mR[33mA[33mM[33mS[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mg[33me[33mn[33me[33ms[33mi[33ms[33m/[33ms[33mr[33mc[33m/[33ml[33mi[33mb[33m.[33mr[33ms[33m'[39m[?2004l
+142:        // Index in CF_PROGRAMS (makes it visible to getAllContracts)
+143:        if let Err(e) = state.index_program(&program_pubkey) {
+144:            warn!("  WARN {}: index_program error: {}", symbol, e);
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "program_count" /Users/johnrobin/.openclaw/workspace/moltch [K[Kaain/core/src/state.rs | head -30'[A[31D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m_[33mc[33mo[33mu[33mn[33mt[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m3[33m0[33m'[39m[?2004l
+152:    program_count: Mutex<u64>,
+177:            program_count: Mutex::new(0),
+401:        if let Ok(Some(data)) = db.get_cf(&cf, b"program_count") {
+404:                *self.program_count.lock().unwrap_or_else(|e| e.into_inner()) = count;
+502:        *self.program_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+506:    pub fn get_program_count(&self) -> u64 {
+507:        *self.program_count.lock().unwrap_or_else(|e| e.into_inner())
+571:        let pc = *self.program_count.lock().unwrap_or_else(|e| e.into_inner());
+572:        db.put_cf(&cf, b"program_count", pc.to_le_bytes())
+1848:    pub fn get_program_count(&self) -> u64 {
+1849:        self.metrics.get_program_count()
+6447:            Some(self.get_program_count()),
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn index_program" /Users/johnrobin/.openclaw/workspace/mol [K[Kttchain/core/src/state.rs'[A[23D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33mi[33mn[33md[33me[33mx[33m_[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+2740:    pub fn index_program(&self, program: &Pubkey) -> Result<(), String> {
+3910:    pub fn index_program(&mut self, program: &Pubkey) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "save_counters\|save_metrics\|flush\|persist\|sync_wal" /Us [K[Keers/johnrobin/.openclaw/workspace/moltchain/genesis/src/main.rs'[A[62D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33ms[33m\[33m|[33ms[33ma[33mv[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mf[33ml[33mu[33ms[33mh[33m\[33m|[33mp[33me[33mr[33ms[33mi[33ms[33mt[33m\[33m|[33ms[33my[33mn[33mc[33m_[33mw[33ma[33ml[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mg[33me[33mn[33me[33ms[33mi[33ms[33m/[33ms[33mr[33mc[33m/[33mm[33ma[33mi[33mn[33m.[33mr[33ms[33m'[39m[?2004l
+258:        info!("  ✓ Fee config persisted: base={} shells, burn={}%, producer={}%, voters={}%, treasury={}%, community={}%",
+273:        info!("  ✓ slot_duration_ms persisted: {}ms", slot_ms);
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "save_counters\|save_metrics" /tmp/validator_before_genesis [K[K..txt | head -20'[A[14D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33ms[33m\[33m|[33ms[33ma[33mv[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m"[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "save_counter\|metrics\.save\|persist_counter\|flush_counte [K[Krr" /tmp/validator_before_genesis.txt | head -20'[A[46D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m.[33ms[33ma[33mv[33me[33m\[33m|[33mp[33me[33mr[33ms[33mi[33ms[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mf[33ml[33mu[33ms[33mh[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m"[33m [33m/[33mt[33mm[33mp[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m_[33mb[33me[33mf[33mo[33mr[33me[33m_[33mg[33me[33mn[33me[33ms[33mi[33ms[33m.[33mt[33mx[33mt[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn save_counters\|fn save_metrics\|save_counter\|metrics.* [K[Kssave\|fn persist" /Users/johnrobin/.openclaw/workspace/moltchain/core/src/state.rs | hea [K[Kdd -20'[A[A [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33ms[33m\[33m|[33mf[33mn[33m [33ms[33ma[33mv[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m.[33m*[33ms[33ma[33mv[33me[33m\[33m|[33mf[33mn[33m [33mp[33me[33mr[33ms[33mi[33ms[33mt[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+1120:            self.metrics.save(&self.db)?;
+1895:        self.metrics.save(&self.db)?;
+3285:        self.metrics.save(&self.db)?;
+3301:        self.metrics.save(&self.db)
+6225:        self.metrics.save(&self.db)?;
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn save\b" /Users/johnrobin/.openclaw/workspace/moltchain/ [K[Kccore/src/state.rs'[A[16D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33ms[33ma[33mv[33me[33m\[33mb[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+536:    pub fn save(&self, db: &Arc<DB>) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  wc -l /Users/johnrobin/.openclaw/workspace/moltchain/genesis/src/main.rs[73D [32mw[32mc[39m[4C[4m/[4mU[4ms[4me[4mr[4ms[4m/[4mj[4mo[4mh[4mn[4mr[4mo[4mb[4mi[4mn[4m/[4m.[4mo[4mp[4me[4mn[4mc[4ml[4ma[4mw[4m/[4mw[4mo[4mr[4mk[4ms[4mp[4ma[4mc[4me[4m/[4mm[4mo[4ml[4mt[4mc[4mh[4ma[4mi[4mn[4m/[4mg[4me[4mn[4me[4ms[4mi[4ms[4m/[4ms[4mr[4mc[4m/[4mm[4ma[4mi[4mn[4m.[4mr[4ms[24m[?2004l
+     632 /Users/johnrobin/.openclaw/workspace/moltchain/genesis/src/main.rs
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "increment_accounts\|increment_total\|increment_active\|tot [K[Kaal_accounts\|active_accounts" /Users/johnrobin/.openclaw/workspace/moltchain/core/src/st [K[Kaate.rs | head -30'[A[A[16D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mi[33mn[33mc[33mr[33me[33mm[33me[33mn[33mt[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mi[33mn[33mc[33mr[33me[33mm[33me[33mn[33mt[33m_[33mt[33mo[33mt[33ma[33ml[33m\[33m|[33mi[33mn[33mc[33mr[33me[33mm[33me[33mn[33mt[33m_[33ma[33mc[33mt[33mi[33mv[33me[33m\[33m|[33mt[33mo[33mt[33ma[33ml[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33ma[33mc[33mt[33mi[33mv[33me[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m3[33m0[33m'[39m[?2004l
+126:    pub total_accounts: u64,
+127:    pub active_accounts: u64, // Accounts with non-zero balance
+140:    total_accounts: Mutex<u64>,  // Account counter - no iteration!
+141:    active_accounts: Mutex<u64>, // Accounts with non-zero balance - no iteration!
+170:            total_accounts: Mutex::new(0),
+171:            active_accounts: Mutex::new(0),
+285:        total_accounts: u64,
+286:        active_accounts: u64,
+338:            total_accounts,  // Use provided actual count from DB
+339:            active_accounts, // Use provided active count from DB
+377:        if let Ok(Some(data)) = db.get_cf(&cf, b"total_accounts") {
+381:                    .total_accounts
+389:        if let Ok(Some(data)) = db.get_cf(&cf, b"active_accounts") {
+393:                    .active_accounts
+448:    pub fn increment_accounts(&self) {
+450:            .total_accounts
+460:            .total_accounts
+467:    pub fn increment_active_accounts(&self) {
+469:            .active_accounts
+476:    pub fn decrement_active_accounts(&self) {
+478:            .active_accounts
+485:    pub fn get_total_accounts(&self) -> u64 {
+487:            .total_accounts
+493:    pub fn get_active_accounts(&self) -> u64 {
+495:            .active_accounts
+555:        let total_accounts = *self
+556:            .total_accounts
+559:        db.put_cf(&cf, b"total_accounts", total_accounts.to_le_bytes())
+563:        let active_accounts = *self
+564:            .active_accounts
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "get_metrics\|getMetrics\|total_accounts\|active_accounts"  [K[K//Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.rs | head -30'[A[71D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mg[33me[33mt[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mg[33me[33mt[33mM[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mt[33mo[33mt[33ma[33ml[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33ma[33mc[33mt[33mi[33mv[33me[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mr[33mp[33mc[33m/[33ms[33mr[33mc[33m/[33ml[33mi[33mb[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m3[33m0[33m'[39m[?2004l
+1950:        "getMetrics" => handle_get_metrics(&state).await,
+5143:/// Handle getMetrics — with per-slot response caching to avoid
+5147:async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+5170:    let metrics = state.state.get_metrics();
+5276:        "total_accounts": metrics.total_accounts,
+5277:        "active_accounts": metrics.active_accounts,
+5682:    let metrics = state.state.get_metrics();
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "pub fn get_metrics" /Users/johnrobin/.openclaw/workspace/m [K[Kooltchain/core/src/state.rs'[A[25D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mp[33mu[33mb[33m [33mf[33mn[33m [33mg[33me[33mt[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+281:    pub fn get_metrics(
+1804:    pub fn get_metrics(&self) -> Metrics {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn put_account" /Users/johnrobin/.openclaw/workspace/moltc [K[Khhain/core/src/state.rs'[A[21D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33mp[33mu[33mt[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+1285:    pub fn put_account(&self, pubkey: &Pubkey, account: &Account) -> Result<(), String> {
+1298:    pub fn put_account_with_hint(
+3475:    pub fn put_account(&mut self, pubkey: &Pubkey, account: &Account) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "reconcil\|recount\|recalc\|rebuild.*count\|count_accounts\ [K[K||scan.*accounts\|reset_counts\|initialize_counter\|bootstrap_metrics\|restore_metrics" / [K[KUUsers/johnrobin/.openclaw/workspace/moltchain/core/src/state.rs | head -20'[A[A[73D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33m\[33m|[33mr[33me[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mr[33me[33mc[33ma[33ml[33mc[33m\[33m|[33mr[33me[33mb[33mu[33mi[33ml[33md[33m.[33m*[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mc[33mo[33mu[33mn[33mt[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33ms[33mc[33ma[33mn[33m.[33m*[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mr[33me[33ms[33me[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mi[33mn[33mi[33mt[33mi[33ma[33ml[33mi[33mz[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mb[33mo[33mo[33mt[33ms[33mt[33mr[33ma[33mp[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mr[33me[33ms[33mt[33mo[33mr[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+1369:    /// Instead of scanning ALL accounts O(N), this:
+1824:    pub fn count_accounts(&self) -> Result<u64, String> {
+1841:    /// Falls back to O(N) scan only during reconciliation
+1858:    /// Full O(N) scan of active accounts — ONLY for reconciliation/verification
+1887:    pub fn reconcile_account_count(&self) -> Result<(), String> {
+1888:        let actual_count = self.count_accounts()?;
+6217:    pub fn reconcile_active_account_count(&self) -> Result<(), String> {
+6286:        let total_accounts = self.count_accounts().unwrap_or(0);
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "reconcile_account_count\|reconcile_active" /Users/johnrobi [K[Knn/.openclaw/workspace/moltchain/validator/src/main.rs'[A[52D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33me[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33me[33m_[33ma[33mc[33mt[33mi[33mv[33me[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m/[33ms[33mr[33mc[33m/[33mm[33ma[33mi[33mn[33m.[33mr[33ms[33m'[39m[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;31m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -rn "reconcile_account_count\|reconcile_active" /Users/johnrob [K[Kiin/.openclaw/workspace/moltchain/core/src/ /Users/johnrobin/.openclaw/workspace/moltchai [K[Knn/rpc/src/ /Users/johnrobin/.openclaw/workspace/moltchain/validator/src/ 2>/dev/null'[A[A[83D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mr[33mn[33m [33m"[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33me[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33me[33m_[33ma[33mc[33mt[33mi[33mv[33me[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mr[33mp[33mc[33m/[33ms[33mr[33mc[33m/[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m/[33ms[33mr[33mc[33m/[33m [33m2[33m>[33m/[33md[33me[33mv[33m/[33mn[33mu[33ml[33ml[33m'[39m[?2004l
+/Users/johnrobin/.openclaw/workspace/moltchain/core/src/state.rs:1887:    pub fn reconcile_account_count(&self) -> Result<(), String> {
+/Users/johnrobin/.openclaw/workspace/moltchain/core/src/state.rs:6217:    pub fn reconcile_active_account_count(&self) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn open\|load_counters\|load_metrics\|initialize_metrics\| [K[KMMetricsStore::new\|with_counters\|bootstrap\|start_count" /Users/johnrobin/.openclaw/wor [K[Kkkspace/moltchain/core/src/state.rs | head -20'[A[A[44D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33mo[33mp[33me[33mn[33m\[33m|[33ml[33mo[33ma[33md[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33ms[33m\[33m|[33ml[33mo[33ma[33md[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mi[33mn[33mi[33mt[33mi[33ma[33ml[33mi[33mz[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m\[33m|[33mM[33me[33mt[33mr[33mi[33mc[33ms[33mS[33mt[33mo[33mr[33me[33m:[33m:[33mn[33me[33mw[33m\[33m|[33mw[33mi[33mt[33mh[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33ms[33m\[33m|[33mb[33mo[33mo[33mt[33ms[33mt[33mr[33ma[33mp[33m\[33m|[33ms[33mt[33ma[33mr[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+671:    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+836:        let metrics = Arc::new(MetricsStore::new());
+6314:    pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn load\|fn new" /Users/johnrobin/.openclaw/workspace/molt [K[Kcchain/core/src/state.rs | head -20'[A[33D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33ml[33mo[33ma[33md[33m\[33m|[33mf[33mn[33m [33mn[33me[33mw[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+164:    pub fn new() -> Self {
+350:    pub fn load(&self, db: &Arc<DB>) -> Result<(), String> {
+4147:    pub fn load_validator_set(&self) -> Result<crate::consensus::ValidatorSet, String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "count_accounts\|program_count\|total_accounts\|active_acco [K[Kuunts\|reconcil\|flush_metric\|metrics.*save\|save.*metric" /Users/johnrobin/.openclaw/wo [K[Krrkspace/moltchain/validator/src/main.rs | head -30'[A[A[49D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mc[33mo[33mu[33mn[33mt[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mp[33mr[33mo[33mg[33mr[33ma[33mm[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mt[33mo[33mt[33ma[33ml[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33ma[33mc[33mt[33mi[33mv[33me[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33m\[33m|[33mf[33ml[33mu[33ms[33mh[33m_[33mm[33me[33mt[33mr[33mi[33mc[33m\[33m|[33mm[33me[33mt[33mr[33mi[33mc[33ms[33m.[33m*[33ms[33ma[33mv[33me[33m\[33m|[33ms[33ma[33mv[33me[33m.[33m*[33mm[33me[33mt[33mr[33mi[33mc[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mv[33ma[33ml[33mi[33md[33ma[33mt[33mo[33mr[33m/[33ms[33mr[33mc[33m/[33mm[33ma[33mi[33mn[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m3[33m0[33m'[39m[?2004l
+3257:                meta.total_accounts,
+4543:        // Account reconciliation disabled on startup (too slow for large databases)
+4544:        // Use CLI command `molt admin reconcile-accounts` if needed
+4546:        info!("  Total accounts (counter): {}", metrics.total_accounts);
+4664:                        error!("  ✗ Failed to reconcile contract deploy fee: {}", e);
+4667:                            "  ✓ Contract deploy fee reconciled to {} shells (25 MOLT)",
+4673:                Err(e) => warn!("⚠️  Unable to read fee config for reconciliation: {}", e),
+4682:        // Also reconciles oracle price feeds if missing.
+7353:                    let (slot, state_root, total_accounts) =
+7355:                            Some((meta, _)) => (meta.slot, meta.state_root, meta.total_accounts),
+7362:                            total_accounts,
+7394:                                    total_accounts: state_for_snapshot_serve
+7395:                                        .count_accounts()
+7413:                            "accounts" => meta.total_accounts,
+7417:                            "programs" => store.get_program_count(),
+7557:                        let (slot, state_root, total_accounts) =
+7560:                                    (meta.slot, meta.state_root, meta.total_accounts)
+7568:                                total_accounts,
+7600:                if let Some((slot, _state_root, total_accounts)) = response.checkpoint_meta {
+7601:                    if slot > 0 && total_accounts > 0 {
+7604:                            response.requester, slot, total_accounts
+7719:                                meta.slot, meta.total_accounts
+8349:    // Periodic validator set + stake pool reconciliation from state
+8350:    let validator_set_for_reconcile = validator_set.clone();
+8351:    let stake_pool_for_reconcile = stake_pool.clone();
+8352:    let state_for_reconcile = state.clone();
+8357:            if let Ok(loaded_set) = state_for_reconcile.load_validator_set() {
+8358:                let mut vs = validator_set_for_reconcile.write().await;
+8361:                    info!("🔄 Validator set reconciled from state");
+8365:            if let Ok(loaded_pool) = state_for_reconcile.get_stake_pool() {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "count_accounts\|count_all\|scan.*account\|startup_repair\| [K[Ksstartup_reconcil\|warm_cache\|bootstrap_count\|init_count\|restore_count" /Users/johnrob [K[Kiin/.openclaw/workspace/moltchain/core/src/state.rs | head -20'[A[A[60D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mc[33mo[33mu[33mn[33mt[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m\[33m|[33mc[33mo[33mu[33mn[33mt[33m_[33ma[33ml[33ml[33m\[33m|[33ms[33mc[33ma[33mn[33m.[33m*[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33ms[33mt[33ma[33mr[33mt[33mu[33mp[33m_[33mr[33me[33mp[33ma[33mi[33mr[33m\[33m|[33ms[33mt[33ma[33mr[33mt[33mu[33mp[33m_[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33m\[33m|[33mw[33ma[33mr[33mm[33m_[33mc[33ma[33mc[33mh[33me[33m\[33m|[33mb[33mo[33mo[33mt[33ms[33mt[33mr[33ma[33mp[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mi[33mn[33mi[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33m\[33m|[33mr[33me[33ms[33mt[33mo[33mr[33me[33m_[33mc[33mo[33mu[33mn[33mt[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+668:    /// - Prefix-scan CFs (account_txs, nft_*, program_calls): prefix bloom + prefix extractor
+1369:    /// Instead of scanning ALL accounts O(N), this:
+1824:    pub fn count_accounts(&self) -> Result<u64, String> {
+1858:    /// Full O(N) scan of active accounts — ONLY for reconciliation/verification
+1888:        let actual_count = self.count_accounts()?;
+3811:    /// Enables fast-path reads via prefix scan without deserializing the whole account.
+6286:        let total_accounts = self.count_accounts().unwrap_or(0);
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "if.*total_accounts.*=.*0\|counter.*0\|zero.*counter\|empty [K[K..*counter\|need.*reconcil\|counter.*stale\|account_count.*==" /Users/johnrobin/.openclaw [K[K//workspace/moltchain/core/src/state.rs | head -20'[A[A[48D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mi[33mf[33m.[33m*[33mt[33mo[33mt[33ma[33ml[33m_[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33ms[33m.[33m*[33m=[33m.[33m*[33m0[33m\[33m|[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m.[33m*[33m0[33m\[33m|[33mz[33me[33mr[33mo[33m.[33m*[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33me[33mm[33mp[33mt[33my[33m.[33m*[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mn[33me[33me[33md[33m.[33m*[33mr[33me[33mc[33mo[33mn[33mc[33mi[33ml[33m\[33m|[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m.[33m*[33ms[33mt[33ma[33ml[33me[33m\[33m|[33ma[33mc[33mc[33mo[33mu[33mn[33mt[33m_[33mc[33mo[33mu[33mn[33mt[33m.[33m*[33m=[33m=[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m [33m|[33m [33mh[33me[33ma[33md[33m [33m-[33m2[33m0[33m'[39m[?2004l
+2221:                    counter_key.extend_from_slice(&account.0);
+2303:        counter_key.extend_from_slice(&pubkey.0);
+3001:            counter_key.extend_from_slice(&activity.program.0);
+3083:        counter_key.extend_from_slice(&program.0);
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "fn put_block\b" /Users/johnrobin/.openclaw/workspace/moltc [K[Khhain/core/src/state.rs'[A[21D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mf[33mn[33m [33mp[33mu[33mt[33m_[33mb[33ml[33mo[33mc[33mk[33m\[33mb[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+1029:    pub fn put_block(&self, block: &Block) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  bash -c '/usr/bin/grep -n "pub fn.*flush_metric\|pub fn.*save_metric\|pub fn.*persist [K[K__metric\|pub fn.*save_counter\|pub fn.*flush_counter" /Users/johnrobin/.openclaw/workspa [K[Kcce/moltchain/core/src/state.rs'[A[A[29D [32mb[32ma[32ms[32mh[39m[4C[33m'[33m/[33mu[33ms[33mr[33m/[33mb[33mi[33mn[33m/[33mg[33mr[33me[33mp[33m [33m-[33mn[33m [33m"[33mp[33mu[33mb[33m [33mf[33mn[33m.[33m*[33mf[33ml[33mu[33ms[33mh[33m_[33mm[33me[33mt[33mr[33mi[33mc[33m\[33m|[33mp[33mu[33mb[33m [33mf[33mn[33m.[33m*[33ms[33ma[33mv[33me[33m_[33mm[33me[33mt[33mr[33mi[33mc[33m\[33m|[33mp[33mu[33mb[33m [33mf[33mn[33m.[33m*[33mp[33me[33mr[33ms[33mi[33ms[33mt[33m_[33mm[33me[33mt[33mr[33mi[33mc[33m\[33m|[33mp[33mu[33mb[33m [33mf[33mn[33m.[33m*[33ms[33ma[33mv[33me[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m\[33m|[33mp[33mu[33mb[33m [33mf[33mn[33m.[33m*[33mf[33ml[33mu[33ms[33mh[33m_[33mc[33mo[33mu[33mn[33mt[33me[33mr[33m"[33m [33m/[33mU[33ms[33me[33mr[33ms[33m/[33mj[33mo[33mh[33mn[33mr[33mo[33mb[33mi[33mn[33m/[33m.[33mo[33mp[33me[33mn[33mc[33ml[33ma[33mw[33m/[33mw[33mo[33mr[33mk[33ms[33mp[33ma[33mc[33me[33m/[33mm[33mo[33ml[33mt[33mc[33mh[33ma[33mi[33mn[33m/[33mc[33mo[33mr[33me[33m/[33ms[33mr[33mc[33m/[33ms[33mt[33ma[33mt[33me[33m.[33mr[33ms[33m'[39m[?2004l
+3300:    pub fn flush_metrics(&self) -> Result<(), String> {
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  cargo build --release --bin moltchain-genesis --bin moltchain-validator 2>&1 | tail - [K[K220[A [32mc[32ma[32mr[32mg[32mo[39m[67C[33m2[33m>[33m&[39m[4C[32mt[32ma[32mi[32ml[39m[1B[84D[?2004l
+^C
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0mtook [1;33m5s[0m 
+[1;31m❯[0m [K[?2004h  cargo build --release --bin moltchain-genesis --bin moltchain-validator 2>&1[77D [32mc[32ma[32mr[32mg[32mo[39m[67C[33m2[33m>[33m&[39m[1C[?2004l
+[1m[92m   Compiling[0m moltchain-genesis v0.1.0 (/Users/johnrobin/.openclaw/workspace/moltchain/genesis)
+[1m[92m   Compiling[0m moltchain-validator v0.1.0 (/Users/johnrobin/.openclaw/workspace/moltchain/validator)
+[1m[96m    Building[0m [=======================> ] 653/655: moltchain-genesis(bin), moltchain-v…^C
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0mtook [1;33m8s[0m 
+[1;31m❯[0m [K[?2004h  echo "waiting for build..."[28D [32me[32mc[32mh[32mo[39m [33m"[33mw[33ma[33mi[33mt[33mi[33mn[33mg[33m [33mf[33mo[33mr[33m [33mb[33mu[33mi[33ml[33md[33m.[33m.[33m.[33m"[39m[?2004l
+waiting for build...
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h  cargo build --release --bin moltchain-genesis --bin moltchain-validator 2>&1; echo "E [K[KXXIT: $?"[A [32mc[32ma[32mr[32mg[32mo[39m[67C[33m2[33m>[33m&[39m[3C[32me[32mc[32mh[32mo[39m [33m"[33mE[33mX[33mI[33mT[33m:[33m [36m$[36m?[39m[33m"[39m[?2004l
+[1m[92m   Compiling[0m moltchain-genesis v0.1.0 (/Users/johnrobin/.openclaw/workspace/moltchain/genesis)
+[1m[92m   Compiling[0m moltchain-validator v0.1.0 (/Users/johnrobin/.openclaw/workspace/moltchain/validator)
+[1m[96m    Building[0m [=======================> ] 653/655: moltchain-genesis(bin), moltchain-v…^C
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0mtook [1;33m5s[0m 
+[1;31m❯[0m [K[?2004h  echo "build status check"[26D [32me[32mc[32mh[32mo[39m [33m"[33mb[33mu[33mi[33ml[33md[33m [33ms[33mt[33ma[33mt[33mu[33ms[33m [33mc[33mh[33me[33mc[33mk[33m"[39m[?2004l
+build status check
+[1m[7m%[27m[1m[0m                                                                                        [0m[27m[24m[J
+[1;36mmoltchain[0m on [1;35m main[0m [1;31m[!?][0m via [1;32m v25.6.1 [0mvia [1;31m🦀 v1.93.1 [0m
+[1;32m❯[0m [K[?2004h

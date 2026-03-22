@@ -43,7 +43,8 @@ pub struct ConsensusParams {
     /// Minimum stake to be a validator (in shells)
     pub min_validator_stake: u64,
 
-    /// Block reward for validator (in shells)
+    /// Reference per-slot inflation rate used to derive epoch minting (in shells).
+    /// The field name is preserved for genesis compatibility.
     pub validator_reward_per_block: u64,
 
     /// Slashing percentage for double signing
@@ -392,7 +393,7 @@ impl GenesisConfig {
     pub fn default_testnet() -> Self {
         GenesisConfig {
             chain_id: "moltchain-testnet-1".to_string(),
-            genesis_time: chrono::Utc::now().to_rfc3339(),
+            genesis_time: "2026-03-19T00:00:00Z".to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
@@ -441,7 +442,7 @@ impl GenesisConfig {
     pub fn default_mainnet() -> Self {
         GenesisConfig {
             chain_id: "moltchain-mainnet-1".to_string(),
-            genesis_time: chrono::Utc::now().to_rfc3339(),
+            genesis_time: "2026-03-19T00:00:00Z".to_string(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
@@ -492,6 +493,18 @@ mod tests {
     fn test_default_testnet_valid() {
         let genesis = GenesisConfig::default_testnet();
         assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn test_default_genesis_time_is_deterministic() {
+        assert_eq!(
+            GenesisConfig::default_testnet().genesis_time,
+            "2026-03-19T00:00:00Z"
+        );
+        assert_eq!(
+            GenesisConfig::default_mainnet().genesis_time,
+            "2026-03-19T00:00:00Z"
+        );
     }
 
     #[test]

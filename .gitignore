@@ -2,8 +2,9 @@
 # MoltChain — Public Open-Source Repository
 # ============================================================
 # This .gitignore is tuned for a PUBLIC repo.
-# Only core blockchain code is tracked. Everything else
-# (frontends, internal docs, infra, fuzz, etc.) stays local.
+# Public code, docs, deployment manifests, infra configs, and frontend sources
+# are tracked here. Only machine-local state, credentials, and explicitly
+# private operator material stay ignored.
 # ============================================================
 
 # ── Rust build artifacts ────────────────────────────────────
@@ -20,6 +21,7 @@
 data/
 data-*/
 state-*/
+/moltchain/
 /tmp/moltchain-*
 /tmp/validator-*
 **/*.db
@@ -139,45 +141,9 @@ Cargo.toml.integration
 DEPLOYMENT_STATUS.md
 VPS_CREDENTIALS.md
 
-# ── Frontends / proprietary UI (local only) ────────────────
-# Note: the open-source faucet backend lives in faucet-service/.
-# developers/ — tracked so devs can run the portal locally after git clone
-dex/
-faucet/
-explorer/
-marketplace/
-wallet/
-website/
-shared/
-shared-base-styles.css
-shared-config.js
-shared-theme.css
-# Re-include shared files inside developers/ (tracked for devs to run locally)
-!developers/shared/
-!developers/shared-base-styles.css
-!developers/shared-config.js
-!developers/shared-theme.css
-
-# ── Internal infrastructure / ops (local only) ─────────────
-infra/
-deploy/
-tools/
-monitoring/
-docker-compose.yml
-
-# ── Internal docs (audits, strategy, deployment, etc.) ─────
-docs/
-
-# ── Fuzz testing (internal security tooling) ───────────────
-fuzz/
-
-# ── Internal misc (local only) ────────────────────────────
-package.json
-start-validator.sh
-programs/
-moltchain/
-skills/
-typescript
+# Public frontend, infra, docs, tooling, and app sources are tracked.
+# Keep only explicitly private operator material and machine-local artifacts
+# in ignored paths.
 EU/
 browser/
 archive/
