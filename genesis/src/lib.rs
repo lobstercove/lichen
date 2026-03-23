@@ -263,9 +263,8 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                     "The Native Home of Agents. Portable identity + rep tiers \u{2022} Agents run validators & earn \u{2022} DeFi \u{2022} DAO \u{2022} DApps \u{2022} DEX \u{2022} Oracles \u{2022} Storage \u{2022} Vault \u{2022} Pools \u{2022} Bounty"
                 );
                 meta["website"] = serde_json::json!("https://lichen.network");
-                meta["logo_url"] = serde_json::json!(
-                    "https://lichen.network/assets/img/coins/128x128/licn.png"
-                );
+                meta["logo_url"] =
+                    serde_json::json!("https://lichen.network/assets/img/coins/128x128/licn.png");
                 meta["icon_class"] = serde_json::json!("fas fa-fire");
                 meta["twitter"] = serde_json::json!("https://x.com/LichenHQ");
                 meta["telegram"] = serde_json::json!("https://t.me/lichenhq");
@@ -576,7 +575,10 @@ pub fn genesis_initialize_contracts(
 
     // LichenAuction: initialize(marketplace_addr) + initialize_ma_admin(admin)
     // marketplace_addr = lichenmarket address for integration
-    let lichenmarket_addr = address_map.get("lichenmarket").map(|p| p.0).unwrap_or(admin);
+    let lichenmarket_addr = address_map
+        .get("lichenmarket")
+        .map(|p| p.0)
+        .unwrap_or(admin);
 
     let specs: Vec<InitSpec> = vec![
         // ── Layer 0: Tokens ──
@@ -802,7 +804,10 @@ pub fn genesis_initialize_contracts(
     // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_musd, 21=set_dex_gov
     // Format: [opcode][admin 32B][address 32B] = 65 bytes
     if let Some(predict_pk) = address_map.get("prediction_market") {
-        let oracle_addr = address_map.get("lichenoracle").map(|p| p.0).unwrap_or(admin);
+        let oracle_addr = address_map
+            .get("lichenoracle")
+            .map(|p| p.0)
+            .unwrap_or(admin);
         let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let dex_gov_addr = address_map
             .get("dex_governance")
@@ -1321,7 +1326,8 @@ pub fn genesis_initialize_contracts(
             rep_key.push(hex_chars[(b >> 4) as usize]);
             rep_key.push(hex_chars[(b & 0x0f) as usize]);
         }
-        if let Err(e) = state.put_contract_storage(lichenid_pk, &rep_key, &admin_rep.to_le_bytes()) {
+        if let Err(e) = state.put_contract_storage(lichenid_pk, &rep_key, &admin_rep.to_le_bytes())
+        {
             warn!("  WARN: Failed to set admin reputation in LichenID: {}", e);
         } else {
             info!(
@@ -2083,7 +2089,10 @@ pub fn genesis_seed_oracle(
             deployer_pubkey,
             "submit_price",
             &ext_price_args,
-            &format!("lichenoracle.submit_price({}={})", asset_name, display_price),
+            &format!(
+                "lichenoracle.submit_price({}={})",
+                asset_name, display_price
+            ),
         ) {
             info!(
                 "  PRICE submitted: {} = {} (launch price)",
@@ -2266,6 +2275,283 @@ pub fn genesis_seed_margin_prices(
             }
         }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// GENESIS ACHIEVEMENTS — Register identities & award achievements at genesis
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Role-to-achievement mapping: each genesis role gets specific achievements
+/// based on what that wallet actually does on the chain.
+fn genesis_role_achievements(role: &str) -> &'static [(u8, &'static str)] {
+    match role {
+        "validator_rewards" => &[(1, "First Transaction")],
+        "community_treasury" => &[(1, "First Transaction"), (2, "Governance Voter")],
+        "builder_grants" => &[(1, "First Transaction"), (3, "Program Builder")],
+        "founding_symbionts" => &[(1, "First Transaction"), (41, "First Stake")],
+        "ecosystem_partnerships" => &[(1, "First Transaction")],
+        "reserve_pool" => &[(1, "First Transaction")],
+        _ => &[(1, "First Transaction")],
+    }
+}
+
+/// Agent type for each genesis role
+fn genesis_role_agent_type(role: &str) -> u8 {
+    match role {
+        "validator_rewards" => 5,      // Infrastructure
+        "community_treasury" => 6,     // Governance
+        "builder_grants" => 2,         // Development
+        "founding_symbionts" => 9,     // General
+        "ecosystem_partnerships" => 9, // General
+        "reserve_pool" => 6,           // Governance
+        _ => 9,                        // General
+    }
+}
+
+/// Display name for each genesis role
+fn genesis_role_display_name(role: &str) -> &'static str {
+    match role {
+        "validator_rewards" => "Validator Rewards Treasury",
+        "community_treasury" => "Community Treasury",
+        "builder_grants" => "Builder Grants",
+        "founding_symbionts" => "Founding Symbionts",
+        "ecosystem_partnerships" => "Ecosystem Partnerships",
+        "reserve_pool" => "Reserve Pool",
+        _ => "Genesis Wallet",
+    }
+}
+
+/// Register LichenID identities and award achievements for all genesis
+/// distribution wallets plus the deployer address.
+///
+/// Must be called AFTER `genesis_auto_deploy` and `genesis_initialize_contracts`
+/// so the LichenID contract is deployed and initialized.
+pub fn genesis_assign_achievements(
+    state: &StateStore,
+    deployer_pubkey: &Pubkey,
+    distribution_wallets: &[(String, Pubkey)],
+    genesis_timestamp: u64,
+) {
+    info!("──────────────────────────────────────────────────────");
+    info!("  Assigning genesis identities & achievements");
+    info!("──────────────────────────────────────────────────────");
+
+    // Resolve LichenID contract address
+    let lichenid_addr = match state.get_symbol_registry("YID") {
+        Ok(Some(entry)) => entry.program,
+        _ => {
+            warn!("  ⚠️  LichenID (YID) not found in symbol registry — skipping achievements");
+            return;
+        }
+    };
+
+    let mut identity_count: u64 = 0;
+
+    // 1. Register the deployer identity + achievements
+    let deployer_name = "Genesis Deployer";
+    let deployer_agent_type: u8 = 5; // Infrastructure
+    register_genesis_identity(
+        state,
+        &lichenid_addr,
+        deployer_pubkey,
+        deployer_name,
+        deployer_agent_type,
+        genesis_timestamp,
+    );
+    // Deployer achievements: First Transaction + Program Builder + Contract Interactor
+    let deployer_achs: &[(u8, &str)] = &[
+        (1, "First Transaction"),
+        (3, "Program Builder"),
+        (109, "Identity Created"),
+        (124, "Contract Interactor"),
+    ];
+    let deployer_hex = pubkey_to_hex(deployer_pubkey);
+    let mut deployer_count = 0u64;
+    for &(ach_id, label) in deployer_achs {
+        if award_genesis_ach(
+            state,
+            &lichenid_addr,
+            &deployer_hex,
+            ach_id,
+            genesis_timestamp,
+        ) {
+            deployer_count += 1;
+            info!("    ach #{:>3}: {}", ach_id, label);
+        }
+    }
+    write_ach_count(state, &lichenid_addr, &deployer_hex, deployer_count);
+    identity_count += 1;
+    info!(
+        "  ✓ {} [deployer]: {} achievements → {}",
+        deployer_name,
+        deployer_count,
+        deployer_pubkey.to_base58()
+    );
+
+    // 2. Register each distribution wallet identity + role-based achievements
+    for (role, pubkey) in distribution_wallets {
+        let name = genesis_role_display_name(role);
+        let agent_type = genesis_role_agent_type(role);
+        let achs = genesis_role_achievements(role);
+
+        register_genesis_identity(
+            state,
+            &lichenid_addr,
+            pubkey,
+            name,
+            agent_type,
+            genesis_timestamp,
+        );
+
+        let hex = pubkey_to_hex(pubkey);
+        let mut count = 0u64;
+        // All distribution wallets also get Identity Created
+        if award_genesis_ach(state, &lichenid_addr, &hex, 109, genesis_timestamp) {
+            count += 1;
+        }
+        for &(ach_id, label) in achs {
+            if award_genesis_ach(state, &lichenid_addr, &hex, ach_id, genesis_timestamp) {
+                count += 1;
+                info!("    ach #{:>3}: {}", ach_id, label);
+            }
+        }
+        write_ach_count(state, &lichenid_addr, &hex, count);
+        identity_count += 1;
+        info!(
+            "  ✓ {} ({}): {} achievements → {}",
+            name,
+            role,
+            count,
+            pubkey.to_base58()
+        );
+    }
+
+    // Update global identity count
+    let count_key = b"mid_identity_count";
+    let prev = state
+        .get_contract_storage(&lichenid_addr, count_key)
+        .ok()
+        .flatten()
+        .and_then(|d| {
+            if d.len() >= 8 {
+                Some(u64::from_le_bytes(d[..8].try_into().unwrap_or([0; 8])))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    let new_count = prev + identity_count;
+    let _ = state.put_contract_storage(&lichenid_addr, count_key, &new_count.to_le_bytes());
+
+    info!("──────────────────────────────────────────────────────");
+    info!(
+        "  Genesis achievements complete: {} identities, all awarded",
+        identity_count
+    );
+    info!("──────────────────────────────────────────────────────");
+}
+
+/// Register a single LichenID identity directly in contract storage.
+/// Writes the same binary layout as the LichenID contract's register_identity.
+fn register_genesis_identity(
+    state: &StateStore,
+    lichenid_addr: &Pubkey,
+    owner: &Pubkey,
+    name: &str,
+    agent_type: u8,
+    timestamp: u64,
+) {
+    let hex = pubkey_to_hex(owner);
+    let id_key = format!("id:{}", hex);
+
+    // Check not already registered
+    if state
+        .get_contract_storage(lichenid_addr, id_key.as_bytes())
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+
+    // Build identity record — same layout as LichenID contract (127 bytes)
+    let name_bytes = name.as_bytes();
+    let name_len = name_bytes.len().min(64);
+    let initial_reputation: u64 = 100;
+
+    let mut record = [0u8; 127];
+    // Bytes 0..32: owner pubkey
+    record[0..32].copy_from_slice(&owner.0);
+    // Byte 32: agent_type
+    record[32] = agent_type;
+    // Bytes 33..35: name_len (u16 LE)
+    record[33] = (name_len & 0xFF) as u8;
+    record[34] = ((name_len >> 8) & 0xFF) as u8;
+    // Bytes 35..35+name_len: name
+    record[35..35 + name_len].copy_from_slice(&name_bytes[..name_len]);
+    // Bytes 99..107: reputation (u64 LE)
+    record[99..107].copy_from_slice(&initial_reputation.to_le_bytes());
+    // Bytes 107..115: created_at (u64 LE)
+    record[107..115].copy_from_slice(&timestamp.to_le_bytes());
+    // Bytes 115..123: updated_at (u64 LE)
+    record[115..123].copy_from_slice(&timestamp.to_le_bytes());
+    // Byte 123: skill_count = 0
+    record[123] = 0;
+    // Bytes 124..126: vouch_count (u16 LE) = 0
+    record[124] = 0;
+    record[125] = 0;
+    // Byte 126: is_active = 1
+    record[126] = 1;
+
+    let _ = state.put_contract_storage(lichenid_addr, id_key.as_bytes(), &record);
+
+    // Also store reputation separately (for quick lookups)
+    let rep_key = format!("rep:{}", hex);
+    let _ = state.put_contract_storage(
+        lichenid_addr,
+        rep_key.as_bytes(),
+        &initial_reputation.to_le_bytes(),
+    );
+}
+
+/// Award a single achievement. Returns true if newly awarded.
+fn award_genesis_ach(
+    state: &StateStore,
+    lichenid_addr: &Pubkey,
+    hex: &str,
+    achievement_id: u8,
+    timestamp: u64,
+) -> bool {
+    let key = format!("ach:{}:{:02}", hex, achievement_id);
+    let key_bytes = key.as_bytes();
+
+    // Skip if already awarded
+    if state
+        .get_contract_storage(lichenid_addr, key_bytes)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return false;
+    }
+
+    // Store: [achievement_id(1), timestamp(8)]
+    let mut data = Vec::with_capacity(9);
+    data.push(achievement_id);
+    data.extend_from_slice(&timestamp.to_le_bytes());
+    let _ = state.put_contract_storage(lichenid_addr, key_bytes, &data);
+    true
+}
+
+/// Write the total achievement count for an address.
+fn write_ach_count(state: &StateStore, lichenid_addr: &Pubkey, hex: &str, count: u64) {
+    let key = format!("ach_count:{}", hex);
+    let _ = state.put_contract_storage(lichenid_addr, key.as_bytes(), &count.to_le_bytes());
+}
+
+/// Convert a Pubkey to 64-char lowercase hex string.
+fn pubkey_to_hex(pubkey: &Pubkey) -> String {
+    hex::encode(pubkey.0)
 }
 
 #[cfg(test)]

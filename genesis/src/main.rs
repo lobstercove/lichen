@@ -14,8 +14,9 @@ use lichen_core::{
     NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 use lichen_genesis::{
-    genesis_auto_deploy, genesis_create_trading_pairs, genesis_initialize_contracts,
-    genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
+    genesis_assign_achievements, genesis_auto_deploy, genesis_create_trading_pairs,
+    genesis_initialize_contracts, genesis_seed_analytics_prices, genesis_seed_margin_prices,
+    genesis_seed_oracle,
 };
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -954,6 +955,20 @@ fn main() {
     genesis_seed_oracle(&state, &genesis_pubkey, "GENESIS:", genesis_timestamp);
     genesis_seed_margin_prices(&state, &genesis_pubkey, genesis_timestamp);
     genesis_seed_analytics_prices(&state, &genesis_pubkey, genesis_timestamp);
+
+    // ════════════════════════════════════════════════════════════════════
+    // GENESIS IDENTITIES & ACHIEVEMENTS
+    // ════════════════════════════════════════════════════════════════════
+    {
+        let dist_pairs: Vec<(String, Pubkey)> = wallet
+            .distribution_wallets
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|dw| (dw.role.clone(), dw.pubkey))
+            .collect();
+        genesis_assign_achievements(&state, &genesis_pubkey, &dist_pairs, genesis_timestamp);
+    }
 
     // Flush metrics counters to disk — contract deploy (index_program) and
     // any accounts created after the genesis block was stored need their

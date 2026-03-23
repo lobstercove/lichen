@@ -5192,7 +5192,7 @@ impl TxProcessor {
     /// Writes directly to LichenID's CF_CONTRACT_STORAGE. Best-effort only.
     fn detect_and_award_achievements(&self, tx: &Transaction) -> Result<(), String> {
         // Resolve LichenID contract address from symbol registry
-        let lichenid_addr = match self.state.get_symbol_registry("LICHENID") {
+        let lichenid_addr = match self.state.get_symbol_registry("YID") {
             Ok(Some(entry)) => entry.program,
             _ => return Ok(()), // No LichenID deployed — skip
         };
@@ -5209,7 +5209,7 @@ impl TxProcessor {
 
         // Check if user has a LichenID identity (required for achievements)
         let hex = Self::pubkey_to_hex(&caller);
-        let identity_key = format!("identity:{}", hex);
+        let identity_key = format!("id:{}", hex);
         if self
             .state
             .get_contract_storage(&lichenid_addr, identity_key.as_bytes())
@@ -5373,7 +5373,7 @@ impl TxProcessor {
                         let sym = contract_symbol.as_deref().unwrap_or("");
 
                         // ── LichenID achievements (handled by contract itself, but ensure coverage)
-                        if sym == "LICHENID" {
+                        if sym == "YID" {
                             match func {
                                 "register_identity" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 109, timestamp)?;
@@ -5424,13 +5424,13 @@ impl TxProcessor {
                         }
 
                         // ── DEX Router
-                        if sym == "DEX_ROUTER" {
+                        if sym == "DEXROUTER" {
                             self.award_ach(&lichenid_addr, &caller, &hex, 17, timestamp)?;
                             // Multi-hop Trader
                         }
 
                         // ── DEX Margin
-                        if sym == "DEX_MARGIN" {
+                        if sym == "DEXMARGIN" {
                             match func {
                                 "open_position" | "open_long" | "open_short" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 18, timestamp)?;
@@ -5445,7 +5445,7 @@ impl TxProcessor {
                         }
 
                         // ── DEX Governance
-                        if sym == "DEX_GOVERNANCE" || sym == "LICHENDAO" {
+                        if sym == "DEXGOV" || sym == "DAO" {
                             match func {
                                 "create_proposal" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 71, timestamp)?;
@@ -5465,7 +5465,7 @@ impl TxProcessor {
                         }
 
                         // ── DEX Rewards
-                        if sym == "DEX_REWARDS" {
+                        if sym == "DEXREWARDS" {
                             match func {
                                 "claim" | "claim_rewards" | "harvest" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 20, timestamp)?;
@@ -5476,13 +5476,13 @@ impl TxProcessor {
                         }
 
                         // ── DEX Analytics
-                        if sym == "DEX_ANALYTICS" {
+                        if sym == "ANALYTICS" {
                             self.award_ach(&lichenid_addr, &caller, &hex, 21, timestamp)?;
                             // Analytics Explorer
                         }
 
                         // ── Lending (ThallLend)
-                        if sym == "THALLLEND" {
+                        if sym == "LEND" {
                             match func {
                                 "deposit" | "supply" | "lend" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 31, timestamp)?;
@@ -5509,7 +5509,7 @@ impl TxProcessor {
                         }
 
                         // ── Bridge (LichenBridge)
-                        if sym == "LICHENBRIDGE" {
+                        if sym == "BRIDGE" {
                             match func {
                                 "deposit" | "bridge_in" | "lock" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 51, timestamp)?;
@@ -5565,13 +5565,13 @@ impl TxProcessor {
                         }
 
                         // ── Shielded Pool
-                        if sym == "SHIELDED_POOL" {
+                        if sym == "SHIELDED" {
                             self.award_ach(&lichenid_addr, &caller, &hex, 60, timestamp)?;
                             // ZK Privacy User
                         }
 
                         // ── NFT Marketplace
-                        if sym == "LICHENMARKET" {
+                        if sym == "MARKET" {
                             match func {
                                 "list" | "create_listing" | "list_nft" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 66, timestamp)?;
@@ -5594,13 +5594,13 @@ impl TxProcessor {
                         }
 
                         // ── NFT Collection (LichenPunks)
-                        if sym == "LICHENPUNKS" {
+                        if sym == "PUNKS" {
                             self.award_ach(&lichenid_addr, &caller, &hex, 70, timestamp)?;
                             // Punk Collector
                         }
 
                         // ── Auction (LichenAuction)
-                        if sym == "LICHENAUCTION" {
+                        if sym == "AUCTION" {
                             match func {
                                 "create_auction" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 91, timestamp)?;
@@ -5619,7 +5619,7 @@ impl TxProcessor {
                         }
 
                         // ── Oracle
-                        if sym == "LICHENORACLE" {
+                        if sym == "ORACLE" {
                             match func {
                                 "submit_price" | "update_price" | "report" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 81, timestamp)?;
@@ -5633,7 +5633,7 @@ impl TxProcessor {
                         }
 
                         // ── Storage (MossStorage)
-                        if sym == "MOSS_STORAGE" {
+                        if sym == "MOSS" {
                             match func {
                                 "upload" | "store" | "put" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 86, timestamp)?;
@@ -5651,7 +5651,7 @@ impl TxProcessor {
                         }
 
                         // ── Bounty Board
-                        if sym == "BOUNTYBOARD" {
+                        if sym == "BOUNTY" {
                             match func {
                                 "create_bounty" | "post_bounty" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 96, timestamp)?;
@@ -5670,7 +5670,7 @@ impl TxProcessor {
                         }
 
                         // ── Prediction Market
-                        if sym == "PREDICTION_MARKET" {
+                        if sym == "PREDICT" {
                             match func {
                                 "create_market" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 101, timestamp)?;
@@ -5693,7 +5693,7 @@ impl TxProcessor {
                         }
 
                         // ── Compute Market
-                        if sym == "COMPUTE_MARKET" {
+                        if sym == "COMPUTE" {
                             match func {
                                 "register_provider" | "offer_compute" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 113, timestamp)?;
@@ -5761,7 +5761,7 @@ impl TxProcessor {
                         }
 
                         // ── LichenCoin (native token contract)
-                        if sym == "LICHENCOIN" {
+                        if sym == "LICN" {
                             self.award_ach(&lichenid_addr, &caller, &hex, 123, timestamp)?;
                             // Token Contract User
                         }
