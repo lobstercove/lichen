@@ -84,7 +84,7 @@ cargo build --release
 - Primary: `https://testnet-rpc.lichen.network`
 
 **WebSocket Endpoints**:
-- Primary: `wss://testnet-ws.lichen.network`
+- Primary: `wss://testnet-rpc.lichen.network/ws`
 
 **Web Services**:
 - Explorer: `https://explorer.lichen.network`
@@ -106,7 +106,7 @@ cargo build --release
 - Primary: `https://rpc.lichen.network`
 
 **WebSocket Endpoints**:
-- Primary: `wss://ws.lichen.network`
+- Primary: `wss://rpc.lichen.network/ws`
 
 **Web Services**:
 - Explorer: `https://explorer.lichen.network`

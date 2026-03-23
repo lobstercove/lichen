@@ -62,9 +62,9 @@
 | Service | URL | Network |
 |---------|-----|---------|
 | RPC (Mainnet) | `https://rpc.lichen.network` | Mainnet |
-| WebSocket (Mainnet) | `wss://ws.lichen.network` | Mainnet |
+| WebSocket (Mainnet) | `wss://rpc.lichen.network/ws` | Mainnet |
 | RPC (Testnet) | `https://testnet-rpc.lichen.network` | Testnet |
-| WebSocket (Testnet) | `wss://testnet-ws.lichen.network` | Testnet |
+| WebSocket (Testnet) | `wss://testnet-rpc.lichen.network/ws` | Testnet |
 | Custody Bridge | `https://custody.lichen.network` | — |
 | Faucet | `https://faucet.lichen.network` | Testnet |
 | Explorer | `https://explorer.lichen.network` | — |
@@ -1307,7 +1307,7 @@ Note decryption: XOR cipher with viewing key, 104-byte notes.
 
 ## 13. WebSocket Subscriptions
 
-Connect to `ws://localhost:8900` (local) or `wss://ws.lichen.network` (production). Send JSON-RPC subscribe messages.
+Connect to `ws://localhost:8900` (local) or `wss://rpc.lichen.network/ws` (production). Send JSON-RPC subscribe messages.
 
 ### Core
 
@@ -1387,7 +1387,7 @@ const pub = kp.pubkey();  // PublicKey
 // Connect
 // Local:   new Connection('http://localhost:8899', 'ws://localhost:8900');
 // Production:
-const conn = new Connection('https://rpc.lichen.network', 'wss://ws.lichen.network');
+const conn = new Connection('https://rpc.lichen.network', 'wss://rpc.lichen.network/ws');
 
 // Query
 const balance = await conn.getBalance(pub.toBase58());
@@ -1808,7 +1808,7 @@ Prefer domains over raw IPs in agent prompts and operational scripts. DNS lets b
 | Service | URL |
 |---------|-----|
 | RPC | `https://rpc.lichen.network` |
-| WebSocket | `wss://ws.lichen.network` |
+| WebSocket | `wss://rpc.lichen.network/ws` |
 
 ### Testnet (for Development)
 
