@@ -127,7 +127,7 @@ max_per_request = 100
 cooldown_seconds = 3600
 
 [keypair]
-# Generate with: licn keygen --output faucet-keypair.json
+# Generate with: lichen keygen --output faucet-keypair.json
 path = "config/faucet-keypair.json"
 EOF
 fi
@@ -138,8 +138,8 @@ echo ""
 # Generate faucet keypair if needed
 if [ "$NETWORK" != "mainnet" ] && [ ! -f "config/faucet-keypair.json" ]; then
     echo "🔑 Generating faucet keypair..."
-    if command -v licn &> /dev/null; then
-        licn keygen --output config/faucet-keypair.json
+    if command -v lichen &> /dev/null; then
+        lichen keygen --output config/faucet-keypair.json
     elif [ -f "$(pwd)/target/release/lichen" ]; then
         $(pwd)/target/release/lichen keygen --output config/faucet-keypair.json
     else

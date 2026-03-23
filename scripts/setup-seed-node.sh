@@ -154,13 +154,13 @@ KEYPAIR_PATH="$SEED_HOME/seed-keypair.json"
 if [ -f "$KEYPAIR_PATH" ]; then
     print_warning "Keypair already exists: $KEYPAIR_PATH"
 else
-    "$PROJECT_ROOT/target/release/licn" init --output "$KEYPAIR_PATH"
+    "$PROJECT_ROOT/target/release/lichen" init --output "$KEYPAIR_PATH"
     chmod 600 "$KEYPAIR_PATH"
     print_success "Seed keypair generated"
 fi
 
 # Get public key
-PUBKEY=$("$PROJECT_ROOT/target/release/licn" pubkey --keypair "$KEYPAIR_PATH" | grep "📍" | awk '{print $3}')
+PUBKEY=$("$PROJECT_ROOT/target/release/lichen" pubkey --keypair "$KEYPAIR_PATH" | grep "📍" | awk '{print $3}')
 print_info "Seed node pubkey: $PUBKEY"
 
 # ============================================================================

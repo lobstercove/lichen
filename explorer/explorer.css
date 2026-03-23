@@ -3026,11 +3026,29 @@ select.filter-input option {
     border-radius: 999px;
     padding: 0.3rem 0.7rem;
     font-size: 0.82rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.identity-chip i {
+    font-size: 0.7em;
 }
 
 .identity-chip strong {
     color: var(--text-primary);
     font-weight: 600;
+}
+
+.identity-chip.achievement-earned {
+    border-color: var(--success);
+    background: rgba(6, 214, 160, 0.1);
+    color: var(--success);
+    font-weight: 600;
+}
+
+.identity-chip.achievement-locked {
+    opacity: 0.5;
 }
 
 .identity-kv-grid {

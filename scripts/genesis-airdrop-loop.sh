@@ -17,7 +17,7 @@ if [[ -z "${KEYPAIR_PATH}" ]]; then
   exit 1
 fi
 
-CLI_BIN="$REPO_ROOT/target/release/licn"
+CLI_BIN="$REPO_ROOT/target/release/lichen"
 if [[ ! -x "$CLI_BIN" ]]; then
   echo "ERROR: CLI binary not found at $CLI_BIN" >&2
   exit 1

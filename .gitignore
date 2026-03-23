@@ -1,5 +1,5 @@
 # ============================================================
-# MoltChain — Public Open-Source Repository
+# Lichen — Public Open-Source Repository
 # ============================================================
 # This .gitignore is tuned for a PUBLIC repo.
 # Public code, docs, deployment manifests, infra configs, and frontend sources
@@ -21,8 +21,7 @@
 data/
 data-*/
 state-*/
-/moltchain/
-/tmp/moltchain-*
+/tmp/lichen-*
 /tmp/validator-*
 **/*.db
 **/*.db-shm

@@ -4874,13 +4874,16 @@ async fn handle_send_transaction(
     }
 
     // ── Pre-validate fee-exempt protocol opcodes ────────────────────────
-    // Opcodes 26 (RegisterValidator), 27 (SlashValidator), 30 (OracleAttestation),
+    // Opcodes 27 (SlashValidator), 30 (OracleAttestation),
     // 31 (DeregisterValidator) are fee-exempt. Reject from non-validators
     // to prevent free block-space griefing.
+    // Opcode 26 (RegisterValidator) is EXCLUDED: new validators joining the
+    // network must be able to submit this tx. The processor enforces its own
+    // validation (bootstrap cap, fingerprint uniqueness, treasury debit).
     if let Some(first_ix) = tx.message.instructions.first() {
         if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
             if let Some(&opcode) = first_ix.data.first() {
-                if matches!(opcode, 26 | 27 | 30 | 31) {
+                if matches!(opcode, 27 | 30 | 31) {
                     let sender = tx.sender();
                     let is_active_validator = if let Some(ref pool) = state.stake_pool {
                         let pool_guard = pool.read().await;
@@ -4894,7 +4897,6 @@ async fn handle_send_transaction(
 
                     if !is_active_validator {
                         let op_name = match opcode {
-                            26 => "RegisterValidator",
                             27 => "SlashValidator",
                             30 => "OracleAttestation",
                             31 => "DeregisterValidator",

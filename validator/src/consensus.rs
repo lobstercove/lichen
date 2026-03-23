@@ -1438,9 +1438,7 @@ impl ConsensusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lichen_core::{
-        Hash, Keypair, Pubkey, StakeInfo, StakePool, ValidatorInfo, ValidatorSet,
-    };
+    use lichen_core::{Hash, Keypair, Pubkey, StakeInfo, StakePool, ValidatorInfo, ValidatorSet};
 
     fn make_validator(seed: u8) -> (Keypair, Pubkey) {
         let mut s = [0u8; 32];

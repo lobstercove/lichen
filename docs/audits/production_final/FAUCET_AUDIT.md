@@ -2,7 +2,7 @@
 **Date:** February 27, 2026
 **Auditor:** Senior Blockchain Developer (Deep Review)
 **Re-verified:** February 27, 2026 — code read against every finding
-**Scope:** `/Users/johnrobin/.openclaw/workspace/moltchain/faucet/`
+**Scope:** `/Users/johnrobin/.openclaw/workspace/lichen/faucet/`
 **Chain:** Lichen (custom Rust blockchain, 400 ms finality, WASM + EVM contracts)
 
 ---

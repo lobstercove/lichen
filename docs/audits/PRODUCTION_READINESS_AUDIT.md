@@ -1,6 +1,6 @@
 # Production-Readiness Audit — Lichen
 **Date:** February 25, 2026  
-**Scope:** Full workspace at `/Users/johnrobin/.openclaw/workspace/moltchain/`  
+**Scope:** Full workspace at `/Users/johnrobin/.openclaw/workspace/lichen/`  
 **Rule:** "No stubs, no placeholders, no TODOs, no mock data, no hardcoded — everything wired from core code or contracts"
 
 ---

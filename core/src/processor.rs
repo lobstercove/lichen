@@ -5225,6 +5225,9 @@ impl TxProcessor {
         // consensus divergence across validators processing the same transaction.
         let timestamp = current_slot;
 
+        // Increment successful_txs contribution counter for every successful transaction
+        self.increment_contribution(&lichenid_addr, &hex, 0)?;
+
         // Detect instruction type and award appropriate achievements
         if ix.program_id == SYSTEM_PROGRAM_ID {
             let op = ix.data.first().copied().unwrap_or(255);
@@ -5357,6 +5360,7 @@ impl TxProcessor {
                     if val.get("Deploy").is_some() {
                         self.award_ach(&lichenid_addr, &caller, &hex, 3, timestamp)?;
                         // Program Builder
+                        self.increment_contribution(&lichenid_addr, &hex, 2)?; // programs_deployed
                     }
                     if let Some(call) = val.get("Call") {
                         let func = call.get("function").and_then(|f| f.as_str()).unwrap_or("");
@@ -5391,6 +5395,8 @@ impl TxProcessor {
                                 "vouch" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 111, timestamp)?;
                                     // Voucher (gave a vouch)
+                                    self.increment_contribution(&lichenid_addr, &hex, 4)?;
+                                    // peer_endorsements
                                 }
                                 "create_agent" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 112, timestamp)?;
@@ -5455,6 +5461,8 @@ impl TxProcessor {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 2, timestamp)?; // Governance Voter
                                     self.award_ach(&lichenid_addr, &caller, &hex, 72, timestamp)?;
                                     // First Vote
+                                    self.increment_contribution(&lichenid_addr, &hex, 1)?;
+                                    // governance_votes
                                 }
                                 "delegate" | "delegate_votes" => {
                                     self.award_ach(&lichenid_addr, &caller, &hex, 73, timestamp)?;
@@ -5829,6 +5837,34 @@ impl TxProcessor {
             .unwrap_or(0);
         self.b_put_contract_storage(lichenid_addr, count_bytes, &(prev + 1).to_le_bytes())?;
 
+        Ok(())
+    }
+
+    /// Increment a contribution counter for a user in LichenID storage.
+    /// Types: 0=successful_txs, 1=governance_votes, 2=programs_deployed,
+    ///        3=uptime_hours, 4=peer_endorsements, 5=failed_txs, 6=slashing_events
+    fn increment_contribution(
+        &self,
+        lichenid_addr: &Pubkey,
+        hex: &str,
+        contribution_type: u8,
+    ) -> Result<(), String> {
+        let key = format!("cont:{}:{}", hex, contribution_type);
+        let key_bytes = key.as_bytes();
+        let prev = self
+            .state
+            .get_contract_storage(lichenid_addr, key_bytes)
+            .ok()
+            .flatten()
+            .and_then(|d| {
+                if d.len() >= 8 {
+                    Some(u64::from_le_bytes(d[..8].try_into().unwrap_or([0; 8])))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        self.b_put_contract_storage(lichenid_addr, key_bytes, &(prev + 1).to_le_bytes())?;
         Ok(())
     }
 

@@ -28,7 +28,7 @@ echo ""
 echo "================================"
 if [ "$total_warnings" -eq 0 ]; then
     echo "✅ ALL CONTRACTS CLEAN!"
-    echo "🦞 No warnings - Ready to licn harder! ⚡"
+    echo "🦞 No warnings - Ready to lichen harder! ⚡"
 else
     echo "⚠️  Total warnings: $total_warnings"
 fi

@@ -1,7 +1,7 @@
 # Lichen RPC API Reference
 
 **Complete API Surface**: ~172 Methods (170 unique + 2 aliases)  
-**Version**: 0.4.7  
+**Version**: 0.4.8  
 **Protocol**: JSON-RPC 2.0  
 **Default Port**: 8899 (testnet) / 9899 (mainnet)  
 **Status**: ✅ Production Ready
@@ -382,7 +382,7 @@ Get network metadata.
 **Params**: None  
 **Returns**:
 ```json
-{ "chain_id": "lichen-mainnet", "version": "0.4.7", "current_slot": 12345, "validator_count": 5, "peer_count": 3 }
+{ "chain_id": "lichen-mainnet", "version": "0.4.8", "current_slot": 12345, "validator_count": 5, "peer_count": 3 }
 ```
 
 #### `getClusterInfo`

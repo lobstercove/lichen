@@ -1542,12 +1542,12 @@ lichen gov veto <id>                           # Veto proposal
 ### Tokens
 
 ```bash
-licn token create <name> <symbol> --wasm <path>  # Deploy token WASM + register
-licn token info <token>                      # Token info
-licn token mint <token> <amount>             # Mint tokens
-licn token send <token> <to> <amount>        # Send tokens
-licn token balance <token>                   # Check balance
-licn token list                              # List tokens
+lichen token create <name> <symbol> --wasm <path>  # Deploy token WASM + register
+lichen token info <token>                      # Token info
+lichen token mint <token> <amount>             # Mint tokens
+lichen token send <token> <to> <amount>        # Send tokens
+lichen token balance <token>                   # Check balance
+lichen token list                              # List tokens
 ```
 
 ### Account & Contract Inspection

@@ -311,7 +311,7 @@ lichen call <contract_address> <function_name> [args]
 
 **Don't need custom logic?** Create a standard token without writing code:
 ```bash
-licn token create "My Token" MYTOK --supply 1000000 --decimals 9
+lichen token create "My Token" MYTOK --supply 1000000 --decimals 9
 ```
 
 ---

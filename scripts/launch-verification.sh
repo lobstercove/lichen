@@ -10,7 +10,7 @@ echo ""
 echo "Testing all systems before launch..."
 echo ""
 
-LICN="./target/release/licn"
+LICN="./target/release/lichen"
 RPC_URL="http://localhost:8899"
 VALIDATOR_ADDR="B21dUmYNBTHCBgdemEXYRu6voEsECC4fD77D94ienMcN"
 
