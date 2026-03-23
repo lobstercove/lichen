@@ -21,13 +21,13 @@ const LICHEN_CONFIG = (() => {
         mainnet: {
             label: 'Mainnet',
             rpc: 'https://rpc.lichen.network',
-            ws: 'wss://ws.lichen.network',
+            ws: 'wss://rpc.lichen.network/ws',
             local: false,
         },
         testnet: {
             label: 'Testnet',
             rpc: 'https://testnet-rpc.lichen.network',
-            ws: 'wss://testnet-ws.lichen.network',
+            ws: 'wss://testnet-rpc.lichen.network/ws',
             local: false,
         },
         'local-testnet': {

@@ -49,7 +49,9 @@ fn fetch_binance_prices() -> Option<(f64, f64, f64)> {
         "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
     ];
     for url in &urls {
-        let resp = ureq::get(url).timeout(std::time::Duration::from_secs(10)).call();
+        let resp = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(10))
+            .call();
         if let Ok(resp) = resp {
             if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
                 let mut sol = 0.0_f64;
@@ -100,7 +102,10 @@ fn get_live_prices() -> &'static Option<(f64, f64, f64)> {
         info!("🌐 Fetching live prices from Binance for DEX genesis pools...");
         match fetch_binance_prices() {
             Some((sol, eth, bnb)) => {
-                info!("✅ Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}", sol, eth, bnb);
+                info!(
+                    "✅ Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+                    sol, eth, bnb
+                );
                 Some((sol, eth, bnb))
             }
             None => {
@@ -119,7 +124,9 @@ pub fn genesis_wsol_price_8dec() -> u64 {
     }
     if let Some((sol, _, _)) = get_live_prices() {
         let v = usd_to_8dec(*sol);
-        if v > 0 { return v; }
+        if v > 0 {
+            return v;
+        }
     }
     DEFAULT_WSOL_PRICE_8DEC
 }
@@ -131,7 +138,9 @@ pub fn genesis_weth_price_8dec() -> u64 {
     }
     if let Some((_, eth, _)) = get_live_prices() {
         let v = usd_to_8dec(*eth);
-        if v > 0 { return v; }
+        if v > 0 {
+            return v;
+        }
     }
     DEFAULT_WETH_PRICE_8DEC
 }
@@ -143,7 +152,9 @@ pub fn genesis_wbnb_price_8dec() -> u64 {
     }
     if let Some((_, _, bnb)) = get_live_prices() {
         let v = usd_to_8dec(*bnb);
-        if v > 0 { return v; }
+        if v > 0 {
+            return v;
+        }
     }
     DEFAULT_WBNB_PRICE_8DEC
 }

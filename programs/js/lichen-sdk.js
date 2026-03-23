@@ -26,14 +26,14 @@ const LICHEN_SDK_CONFIG = (() => {
         networks: {
             mainnet: {
                 rpc: 'https://rpc.lichen.network',
-                ws: 'wss://ws.lichen.network',
+                ws: 'wss://rpc.lichen.network/ws',
                 explorer: 'https://explorer.lichen.network',
                 compiler: 'https://rpc.lichen.network/compile',
                 chainId: 1
             },
             testnet: {
                 rpc: 'https://testnet-rpc.lichen.network',
-                ws: 'wss://testnet-ws.lichen.network',
+                ws: 'wss://testnet-rpc.lichen.network/ws',
                 explorer: 'https://testnet-explorer.lichen.network',
                 compiler: 'https://testnet-rpc.lichen.network/compile',
                 chainId: 2

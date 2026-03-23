@@ -219,7 +219,7 @@ env HOME="$PWD/data/state-mainnet/home" \
 
 The validator starts an RPC server at `http://localhost:9899` and a WebSocket endpoint at `ws://localhost:9900`.
 
-**Mainnet RPC:** `https://rpc.lichen.network` · **WebSocket:** `wss://ws.lichen.network`
+**Mainnet RPC:** `https://rpc.lichen.network` · **WebSocket:** `wss://rpc.lichen.network/ws`
 
 ### Use the CLI
 

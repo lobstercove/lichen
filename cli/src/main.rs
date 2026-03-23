@@ -2384,7 +2384,7 @@ async fn main() -> Result<()> {
                 "wasm_host_functions": 16,
                 "rpc_endpoints": {
                     "mainnet": "https://rpc.lichen.network",
-                    "mainnet_ws": "wss://ws.lichen.network",
+                    "mainnet_ws": "wss://rpc.lichen.network/ws",
                     "testnet": "https://testnet-rpc.lichen.network"
                 }
             });
