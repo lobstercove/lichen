@@ -138,6 +138,20 @@ Cargo.toml.integration
 DEPLOYMENT_STATUS.md
 VPS_CREDENTIALS.md
 
+# ── Frontend private / dev-only content ─────────────────────
+# TradingView charting library (proprietary, 540+ files)
+dex/charting_library/
+# DEX internal tooling
+dex/sdk/
+dex/loadtest/
+dex/market-maker/
+# Wallet browser extension source
+wallet/extension/
+# Deployment scripts in frontend dirs
+programs/deploy-services.sh
+# Test files across all frontends
+**/*.test.js
+
 # Public frontend, infra, docs, tooling, and app sources are tracked.
 # Keep only explicitly private operator material and machine-local artifacts
 # in ignored paths.
