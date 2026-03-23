@@ -859,7 +859,7 @@ rsync -a faucet/ /opt/lichen/www/faucet-ui/
 The faucet frontend is also deployed to **Cloudflare Pages** (`lichen-faucet` project):
 
 ```bash
-npx wrangler pages deploy faucet/ --project-name lichen-faucet
+npx wrangler pages deploy faucet/ --project-name lichen-network-faucet --commit-dirty=true
 ```
 
 ---
@@ -944,10 +944,10 @@ npm install -g wrangler
 wrangler login
 
 # Deploy a specific portal
-wrangler pages deploy wallet/ --project-name=lichen-wallet
-wrangler pages deploy explorer/ --project-name=lichen-explorer
-wrangler pages deploy website/ --project-name=lichen-website
-# ... etc for each portal
+wrangler pages deploy wallet/ --project-name=lichen-network-wallet
+wrangler pages deploy explorer/ --project-name=lichen-network-explorer
+wrangler pages deploy website/ --project-name=lichen-network-website
+# ... etc for each portal (all use lichen-network-<portal> prefix)
 ```
 
 ### Step 4: Verify Deployments
@@ -1797,11 +1797,11 @@ Every validator instance has exactly ONE data directory, set by `--db-path` (ali
 [ ] 35. Create CF Pages project: lichen-website     (output dir: website)
 [ ] 36. Create CF Pages project: lichen-explorer     (output dir: explorer)
 [ ] 37. Create CF Pages project: lichen-wallet       (output dir: wallet)
-[ ] 38. Create CF Pages project: lichen-dex          (output dir: dex)
-[ ] 39. Create CF Pages project: lichen-marketplace  (output dir: marketplace)
-[ ] 40. Create CF Pages project: lichen-programs     (output dir: programs)
-[ ] 41. Create CF Pages project: lichen-developers   (output dir: developers)
-[ ] 42. Create CF Pages project: lichen-monitoring   (output dir: monitoring)
+[ ] 38. Create CF Pages project: lichen-network-dex          (output dir: dex)
+[ ] 39. Create CF Pages project: lichen-network-marketplace  (output dir: marketplace)
+[ ] 40. Create CF Pages project: lichen-network-programs     (output dir: programs)
+[ ] 41. Create CF Pages project: lichen-network-developers   (output dir: developers)
+[ ] 42. Create CF Pages project: lichen-network-monitoring   (output dir: monitoring)
 [ ] 43. Attach custom domains to each Pages project (auto-creates CNAME records)
 [ ] 44. Deploy all portals: wrangler pages deploy <dir> --project-name=<name>
 ```
