@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
-/// Fallback genesis prices (used only if env vars are not set).
+/// Fallback genesis prices (used only if env vars AND live Binance fetch both fail).
 const DEFAULT_LICN_PRICE_8DEC: u64 = 10_000_000;
 const DEFAULT_WSOL_PRICE_8DEC: u64 = 8_970_000_000;
 const DEFAULT_WETH_PRICE_8DEC: u64 = 215_229_000_000;
@@ -41,21 +41,111 @@ fn env_price_8dec(var_name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Fetch live prices from Binance REST API.
+/// Returns (SOL_USD, ETH_USD, BNB_USD) as f64, or None on failure.
+fn fetch_binance_prices() -> Option<(f64, f64, f64)> {
+    let urls = [
+        "https://api.binance.us/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
+        "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]",
+    ];
+    for url in &urls {
+        let resp = ureq::get(url).timeout(std::time::Duration::from_secs(10)).call();
+        if let Ok(resp) = resp {
+            if let Ok(tickers) = resp.into_json::<Vec<BinanceTicker>>() {
+                let mut sol = 0.0_f64;
+                let mut eth = 0.0_f64;
+                let mut bnb = 0.0_f64;
+                for t in &tickers {
+                    if let Ok(p) = t.price.parse::<f64>() {
+                        match t.symbol.as_str() {
+                            "SOLUSDT" => sol = p,
+                            "ETHUSDT" => eth = p,
+                            "BNBUSDT" => bnb = p,
+                            _ => {}
+                        }
+                    }
+                }
+                if sol > 0.0 && eth > 0.0 && bnb > 0.0 {
+                    return Some((sol, eth, bnb));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[derive(serde::Deserialize)]
+struct BinanceTicker {
+    symbol: String,
+    price: String,
+}
+
 /// Live genesis price for LICN (env: GENESIS_LICN_USD, default $0.10).
 pub fn genesis_licn_price_8dec() -> u64 {
     env_price_8dec("GENESIS_LICN_USD", DEFAULT_LICN_PRICE_8DEC)
 }
-/// Live genesis price for wSOL (env: GENESIS_SOL_USD, default $89.70).
+
+/// Cached live prices (fetched once at genesis).
+static LIVE_PRICES: std::sync::OnceLock<Option<(f64, f64, f64)>> = std::sync::OnceLock::new();
+
+fn get_live_prices() -> &'static Option<(f64, f64, f64)> {
+    LIVE_PRICES.get_or_init(|| {
+        // Only fetch if env vars are not already set
+        if std::env::var("GENESIS_SOL_USD").is_ok()
+            && std::env::var("GENESIS_ETH_USD").is_ok()
+            && std::env::var("GENESIS_BNB_USD").is_ok()
+        {
+            return None; // env vars are set, use those
+        }
+        info!("🌐 Fetching live prices from Binance for DEX genesis pools...");
+        match fetch_binance_prices() {
+            Some((sol, eth, bnb)) => {
+                info!("✅ Live prices: SOL=${:.2}, ETH=${:.2}, BNB=${:.2}", sol, eth, bnb);
+                Some((sol, eth, bnb))
+            }
+            None => {
+                warn!("⚠️  Failed to fetch live Binance prices — using compiled defaults");
+                None
+            }
+        }
+    })
+}
+
+/// Live genesis price for wSOL (env: GENESIS_SOL_USD → Binance live → default $89.70).
 pub fn genesis_wsol_price_8dec() -> u64 {
-    env_price_8dec("GENESIS_SOL_USD", DEFAULT_WSOL_PRICE_8DEC)
+    let from_env = env_price_8dec("GENESIS_SOL_USD", 0);
+    if from_env > 0 {
+        return from_env;
+    }
+    if let Some((sol, _, _)) = get_live_prices() {
+        let v = usd_to_8dec(*sol);
+        if v > 0 { return v; }
+    }
+    DEFAULT_WSOL_PRICE_8DEC
 }
-/// Live genesis price for wETH (env: GENESIS_ETH_USD, default $2152.29).
+/// Live genesis price for wETH (env: GENESIS_ETH_USD → Binance live → default $2152.29).
 pub fn genesis_weth_price_8dec() -> u64 {
-    env_price_8dec("GENESIS_ETH_USD", DEFAULT_WETH_PRICE_8DEC)
+    let from_env = env_price_8dec("GENESIS_ETH_USD", 0);
+    if from_env > 0 {
+        return from_env;
+    }
+    if let Some((_, eth, _)) = get_live_prices() {
+        let v = usd_to_8dec(*eth);
+        if v > 0 { return v; }
+    }
+    DEFAULT_WETH_PRICE_8DEC
 }
-/// Live genesis price for wBNB (env: GENESIS_BNB_USD, default $642.49).
+/// Live genesis price for wBNB (env: GENESIS_BNB_USD → Binance live → default $642.49).
 pub fn genesis_wbnb_price_8dec() -> u64 {
-    env_price_8dec("GENESIS_BNB_USD", DEFAULT_WBNB_PRICE_8DEC)
+    let from_env = env_price_8dec("GENESIS_BNB_USD", 0);
+    if from_env > 0 {
+        return from_env;
+    }
+    if let Some((_, _, bnb)) = get_live_prices() {
+        let v = usd_to_8dec(*bnb);
+        if v > 0 { return v; }
+    }
+    DEFAULT_WBNB_PRICE_8DEC
 }
 
 /// Backward-compat aliases — prefer the function forms above.
