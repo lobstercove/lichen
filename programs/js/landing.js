@@ -1,28 +1,28 @@
-// MoltChain Programs Landing Page - JavaScript
+// Lichen Programs Landing Page - JavaScript
 // Interactive features and animations
 
-console.log('🦞 MoltChain Programs Landing Page Loading...');
+console.log('🦞 Lichen Programs Landing Page Loading...');
 
 const NETWORK_STORAGE_KEY = 'programs_network';
 
 function resolveNetwork(name) {
-    if (typeof MOLT_CONFIG !== 'undefined') {
-        return MOLT_CONFIG.resolveNetwork(name);
+    if (typeof LICHEN_CONFIG !== 'undefined') {
+        return LICHEN_CONFIG.resolveNetwork(name);
     }
     if (name === 'local') return 'local-testnet';
     return name || 'testnet';
 }
 
 let currentNetwork = resolveNetwork(localStorage.getItem(NETWORK_STORAGE_KEY) || 'testnet');
-let RPC_URL = typeof MOLT_CONFIG !== 'undefined'
-    ? MOLT_CONFIG.rpc(currentNetwork)
-    : 'https://testnet-rpc.moltchain.network';
+let RPC_URL = typeof LICHEN_CONFIG !== 'undefined'
+    ? LICHEN_CONFIG.rpc(currentNetwork)
+    : 'https://testnet-rpc.lichen.network';
 
 function setProgramsNetwork(network, { reload = false } = {}) {
     currentNetwork = resolveNetwork(network);
     localStorage.setItem(NETWORK_STORAGE_KEY, currentNetwork);
-    RPC_URL = typeof MOLT_CONFIG !== 'undefined'
-        ? MOLT_CONFIG.rpc(currentNetwork)
+    RPC_URL = typeof LICHEN_CONFIG !== 'undefined'
+        ? LICHEN_CONFIG.rpc(currentNetwork)
         : RPC_URL;
     if (reload) {
         window.location.reload();
@@ -330,9 +330,9 @@ document.querySelectorAll('.btn').forEach(btn => {
 });
 
 // ===== Console Welcome Message =====
-console.log('%c🦞 MoltChain Programs', 'font-size: 20px; font-weight: bold; color: #FF6B35;');
+console.log('%c🦞 Lichen Programs', 'font-size: 20px; font-weight: bold; color: #00C9DB;');
 console.log('%cBuild, Deploy & Scale Smart Contracts', 'font-size: 14px; color: #B8C1EC;');
 console.log('%cInterested in building? Join us:', 'font-size: 12px; color: #6B7A99;');
-console.log('%chttps://discord.gg/gkQmsHXRXp', 'font-size: 12px; color: #FF6B35;');
+console.log('%chttps://discord.gg/gkQmsHXRXp', 'font-size: 12px; color: #00C9DB;');
 
 console.log('✅ Landing page ready!');

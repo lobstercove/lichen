@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Playground Guide - MoltChain Developer Portal</title>
+    <title>Playground Guide - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -72,7 +72,7 @@
                 <div class="sidebar-heading">More Guides</div>
                 <a href="architecture.html" class="sidebar-link">Architecture</a>
                 <a href="validator.html" class="sidebar-link">Validator Setup</a>
-                <a href="moltyid.html" class="sidebar-link">MoltyID</a>
+                <a href="lichenid.html" class="sidebar-link">LichenID</a>
             </div>
         </aside>
 
@@ -89,14 +89,14 @@
 
             <div class="callout callout-info" style="margin-top: 1rem;">
                 <div class="callout-title"><i class="fas fa-rocket"></i> Open Fullscreen</div>
-                Launch the standalone IDE at <a id="fullscreenPlaygroundLink" href="#" data-molt-app="programs"
-                    data-molt-path="/playground.html" target="_blank" rel="noopener noreferrer"
+                Launch the standalone IDE at <a id="fullscreenPlaygroundLink" href="#" data-lichen-app="programs"
+                    data-lichen-path="/playground.html" target="_blank" rel="noopener noreferrer"
                     style="color: var(--primary); font-weight: 600;">Programs Playground</a>.
             </div>
 
             <div
                 style="margin-top: 1rem; border: 1px solid var(--glass-border); border-radius: 14px; overflow: hidden; background: var(--bg-secondary);">
-                <iframe id="programsPlaygroundFrame" src="about:blank" title="MoltChain Programs Playground"
+                <iframe id="programsPlaygroundFrame" src="about:blank" title="Lichen Programs Playground"
                     style="width: 100%; height: 78vh; min-height: 680px; border: 0;" loading="lazy"
                     referrerpolicy="strict-origin-when-cross-origin"></iframe>
             </div>
@@ -125,8 +125,8 @@
     <script src="js/developers.js"></script>
     <script>
         (function () {
-            // Use MOLT_CONFIG for environment-aware URL resolution
-            const programsUrl = MOLT_CONFIG.programs + '/playground.html';
+            // Use LICHEN_CONFIG for environment-aware URL resolution
+            const programsUrl = LICHEN_CONFIG.programs + '/playground.html';
 
             const frame = document.getElementById('programsPlaygroundFrame');
             if (frame) frame.src = programsUrl;

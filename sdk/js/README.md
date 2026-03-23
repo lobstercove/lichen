@@ -1,25 +1,25 @@
-# MoltChain JavaScript/TypeScript SDK
+# Lichen JavaScript/TypeScript SDK
 
-Official SDK for interacting with MoltChain blockchain.
+Official SDK for interacting with Lichen blockchain.
 
 ## Installation
 
 ```bash
-npm install @moltchain/sdk
+npm install @lichen/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { Connection, PublicKey } from '@moltchain/sdk';
+import { Connection, PublicKey } from '@lichen/sdk';
 
-// Connect to MoltChain
+// Connect to Lichen
 const connection = new Connection('http://localhost:8899');
 
 // Get account balance
 const pubkey = new PublicKey('YourPublicKeyHere...');
 const balance = await connection.getBalance(pubkey);
-console.log(`Balance: ${balance.molt} MOLT`);
+console.log(`Balance: ${balance.licn} LICN`);
 
 // Subscribe to blocks
 connection.onBlock((block) => {

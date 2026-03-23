@@ -12,7 +12,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "dex-margin"
 version = "0.1.0"
 dependencies = [
- "moltchain-contract-sdk",
+ "lichen-contract-sdk",
 ]
 
 [[package]]
@@ -33,7 +33,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
-name = "moltchain-contract-sdk"
+name = "lichen-contract-sdk"
 version = "0.1.0"
 dependencies = [
  "dlmalloc",

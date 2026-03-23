@@ -1,6 +1,6 @@
 // Chain Synchronization Manager
 
-use moltchain_core::{Block, Hash};
+use lichen_core::{Block, Hash};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -817,7 +817,7 @@ mod tests {
 
     /// Helper: create a minimal test block for the given slot
     fn test_block(slot: u64) -> Block {
-        use moltchain_core::Hash;
+        use lichen_core::Hash;
         Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![])
     }
 

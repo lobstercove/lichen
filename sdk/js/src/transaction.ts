@@ -1,4 +1,4 @@
-// MoltChain SDK - Transaction Types and Builder
+// Lichen SDK - Transaction Types and Builder
 
 import { PublicKey } from './publickey';
 import { Keypair } from './keypair';
@@ -89,7 +89,7 @@ export class TransactionBuilder {
    *
    * P9-SDK-01: `amount` accepts `number | bigint` to avoid silent truncation
    * for values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1).
-   * Using `bigint` is recommended for large MOLT amounts.
+   * Using `bigint` is recommended for large LICN amounts.
    */
   static transfer(from: PublicKey, to: PublicKey, amount: number | bigint): Instruction {
     const amt = BigInt(amount);

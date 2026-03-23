@@ -3,7 +3,7 @@
 use crate::message::{MessageType, P2PMessage, PeerInfoMsg};
 use crate::peer::PeerManager;
 use crate::peer_store::PeerStore;
-use moltchain_core::Pubkey;
+use lichen_core::Pubkey;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

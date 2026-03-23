@@ -146,7 +146,7 @@ mod tests {
     fn unique_path(label: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         std::env::temp_dir().join(format!(
-            "moltchain_ban_{}_{}_{}_{}.json",
+            "lichen_ban_{}_{}_{}_{}.json",
             label,
             std::process::id(),
             std::time::SystemTime::now()

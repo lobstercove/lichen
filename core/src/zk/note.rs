@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 pub struct Note {
     /// Recipient's shielded public key (viewing key)
     pub owner: [u8; 32],
-    /// Amount in shells
+    /// Amount in spores
     pub value: u64,
     /// Blinding factor for Pedersen commitment
     pub blinding: Fr,
@@ -252,7 +252,7 @@ mod tests {
     fn test_note() -> Note {
         Note::new(
             [1u8; 32],
-            1_000_000_000, // 1 MOLT
+            1_000_000_000, // 1 LICN
             Fr::rand(&mut OsRng),
             Fr::rand(&mut OsRng),
         )

@@ -1,8 +1,8 @@
-import { MoltChainRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { base58Decode, decryptPrivateKey } from './crypto-service.js';
 import { buildSignedSingleInstructionTransaction, encodeTransactionBase64 } from './tx-service.js';
 
-const BASE_FEE_MOLT = 0.001;
+const BASE_FEE_LICN = 0.001;
 
 function ensureWalletAndPassword(wallet, password) {
   if (!wallet) throw new Error('No active wallet');
@@ -12,7 +12,7 @@ function ensureWalletAndPassword(wallet, password) {
 }
 
 function normalizeName(input) {
-  return String(input || '').trim().toLowerCase().replace(/\.molt$/, '');
+  return String(input || '').trim().toLowerCase().replace(/\.licn$/, '');
 }
 
 // ── Binary Arg Encoding (WASM ABI layout descriptor) ──
@@ -54,7 +54,7 @@ function u64LE(v) {
   return b;
 }
 
-function encodeMoltyIdArgs(callerHex, functionName, params) {
+function encodeLichenIdArgs(callerHex, functionName, params) {
   const caller = hexToBytes(callerHex);
   const te = new TextEncoder();
   switch (functionName) {
@@ -93,7 +93,7 @@ function encodeMoltyIdArgs(callerHex, functionName, params) {
       return buildLayoutArgs([0x20, stride, 0x04], [caller, padBytes(url, stride), u32LE(url.length)]);
     }
     case 'set_rate': {
-      const d = new Uint8Array(40); d.set(caller, 0); d.set(u64LE(params.molt_per_unit || 0), 32);
+      const d = new Uint8Array(40); d.set(caller, 0); d.set(u64LE(params.licn_per_unit || 0), 32);
       return d;
     }
     case 'set_availability':
@@ -158,8 +158,8 @@ function validateEndpoint(endpoint) {
   return value;
 }
 
-function parseRateMolt(rateMolt) {
-  const parsed = Number(rateMolt ?? 0);
+function parseRateLicn(rateLicn) {
+  const parsed = Number(rateLicn ?? 0);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error('Rate must be a non-negative number');
   }
@@ -172,14 +172,14 @@ function parseRateMolt(rateMolt) {
 export async function loadIdentitySnapshot(address, network) {
   if (!address) return null;
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
-  const [profile, moltNameResult] = await Promise.all([
-    rpc.call('getMoltyIdProfile', [address]).catch(() => null),
-    rpc.call('reverseMoltName', [address]).catch(() => null)
+  const [profile, lichenNameResult] = await Promise.all([
+    rpc.call('getLichenIdProfile', [address]).catch(() => null),
+    rpc.call('reverseLichenName', [address]).catch(() => null)
   ]);
-  // reverseMoltName returns {"name": "x.molt"} or null — extract string
-  const moltName = moltNameResult?.name || null;
+  // reverseLichenName returns {"name": "x.lichen"} or null — extract string
+  const lichenName = lichenNameResult?.name || null;
 
   const rep = Number(profile?.reputation?.score || profile?.identity?.reputation || 0);
   const skills = Array.isArray(profile?.skills) ? profile.skills.length : 0;
@@ -187,7 +187,7 @@ export async function loadIdentitySnapshot(address, network) {
 
   return {
     name: identityName,
-    moltName: moltName,
+    lichenName: lichenName,
     reputation: rep,
     skills,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,
@@ -198,12 +198,12 @@ export async function loadIdentitySnapshot(address, network) {
 export async function loadIdentityDetails(address, network) {
   if (!address) return null;
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
-  const [profile, moltNameResult2] = await Promise.all([
-    rpc.call('getMoltyIdProfile', [address]).catch(() => null),
-    rpc.call('reverseMoltName', [address]).catch(() => null)
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
+  const [profile, lichenNameResult2] = await Promise.all([
+    rpc.call('getLichenIdProfile', [address]).catch(() => null),
+    rpc.call('reverseLichenName', [address]).catch(() => null)
   ]);
-  const moltName2 = moltNameResult2?.name || null;
+  const lichenName2 = lichenNameResult2?.name || null;
 
   if (!profile) {
     return null;
@@ -213,7 +213,7 @@ export async function loadIdentityDetails(address, network) {
 
   return {
     name: identityName,
-    moltName: moltName2,
+    lichenName: lichenName2,
     reputation: Number(profile?.reputation?.score || profile?.identity?.reputation || 0),
     agentType: profile?.identity?.agent_type ?? null,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,
@@ -228,8 +228,8 @@ export async function loadIdentityDetails(address, network) {
   };
 }
 
-async function getMoltyIdProgramAddress(rpc) {
-  const symbols = ['YID', 'yid', 'MOLTYID'];
+async function getLichenIdProgramAddress(rpc) {
+  const symbols = ['YID', 'yid', 'LICHENID'];
   for (const symbol of symbols) {
     try {
       const result = await rpc.call('getSymbolRegistry', [symbol]);
@@ -239,40 +239,40 @@ async function getMoltyIdProgramAddress(rpc) {
       // keep trying
     }
   }
-  throw new Error('MoltyID contract not found on network');
+  throw new Error('LichenID contract not found on network');
 }
 
-async function sendIdentityContractCall({ wallet, password, network, functionName, args, valueMolt = 0 }) {
+async function sendIdentityContractCall({ wallet, password, network, functionName, args, valueLicn = 0 }) {
   ensureWalletAndPassword(wallet, password);
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
-  const moltyidAddr = await getMoltyIdProgramAddress(rpc);
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
+  const lichenidAddr = await getLichenIdProgramAddress(rpc);
   const latestBlock = await rpc.getLatestBlock();
 
   try {
     const balanceResult = await rpc.getBalance(wallet.address);
     const spendable = Number(balanceResult?.spendable ?? balanceResult?.balance ?? 0) / 1_000_000_000;
-    const required = Number(valueMolt || 0) + BASE_FEE_MOLT;
+    const required = Number(valueLicn || 0) + BASE_FEE_LICN;
     if (Number.isFinite(spendable) && spendable < required) {
-      throw new Error(`Insufficient MOLT: need ${required.toFixed(6)}, have ${spendable.toFixed(6)} spendable`);
+      throw new Error(`Insufficient LICN: need ${required.toFixed(6)}, have ${spendable.toFixed(6)} spendable`);
     }
   } catch (error) {
-    if (String(error?.message || '').includes('Insufficient MOLT')) {
+    if (String(error?.message || '').includes('Insufficient LICN')) {
       throw error;
     }
   }
 
   const contractProgramId = new Uint8Array(32).fill(0xff);
-  const moltyIdPubkey = base58Decode(moltyidAddr);
+  const lichenIdPubkey = base58Decode(lichenidAddr);
 
   // Encode args as proper binary with WASM ABI layout descriptor
-  const argsBytes = encodeMoltyIdArgs(wallet.publicKey, functionName, args);
+  const argsBytes = encodeLichenIdArgs(wallet.publicKey, functionName, args);
 
   const callPayload = JSON.stringify({
     Call: {
       function: functionName,
       args: Array.from(argsBytes),
-      value: Math.floor(valueMolt * 1_000_000_000)
+      value: Math.floor(valueLicn * 1_000_000_000)
     }
   });
 
@@ -283,7 +283,7 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
     fromPublicKeyHex: wallet.publicKey,
     blockhash: latestBlock.hash,
     programIdBytes: contractProgramId,
-    accountPubkeys: [moltyIdPubkey],
+    accountPubkeys: [lichenIdPubkey],
     instructionDataBytes: new TextEncoder().encode(callPayload)
   });
 
@@ -388,8 +388,8 @@ export async function setIdentityAvailability({ wallet, password, network, onlin
   });
 }
 
-export async function setIdentityRate({ wallet, password, network, rateMolt }) {
-  const rateShells = Math.floor(parseRateMolt(rateMolt) * 1_000_000_000);
+export async function setIdentityRate({ wallet, password, network, rateLicn }) {
+  const rateSpores = Math.floor(parseRateLicn(rateLicn) * 1_000_000_000);
 
   return sendIdentityContractCall({
     wallet,
@@ -397,7 +397,7 @@ export async function setIdentityRate({ wallet, password, network, rateMolt }) {
     network,
     functionName: 'set_rate',
     args: {
-      molt_per_unit: rateShells
+      licn_per_unit: rateSpores
     }
   });
 }
@@ -408,7 +408,7 @@ function getNameCostPerYear(nameLength) {
   return 20;
 }
 
-export async function registerMoltName({ wallet, password, network, name, durationYears }) {
+export async function registerLichenName({ wallet, password, network, name, durationYears }) {
   const normalized = normalizeName(name);
   validateNameFormat(normalized);
   if (normalized.length <= 4) {
@@ -416,7 +416,7 @@ export async function registerMoltName({ wallet, password, network, name, durati
   }
 
   const years = Math.max(1, Math.min(10, Number(durationYears || 1)));
-  const valueMolt = getNameCostPerYear(normalized.length) * years;
+  const valueLicn = getNameCostPerYear(normalized.length) * years;
 
   return sendIdentityContractCall({
     wallet,
@@ -427,16 +427,16 @@ export async function registerMoltName({ wallet, password, network, name, durati
       name: normalized,
       duration_years: years
     },
-    valueMolt
+    valueLicn
   });
 }
 
-export async function renewMoltName({ wallet, password, network, name, additionalYears }) {
+export async function renewLichenName({ wallet, password, network, name, additionalYears }) {
   const normalized = normalizeName(name);
   validateNameFormat(normalized);
 
   const years = Math.max(1, Math.min(10, Number(additionalYears || 1)));
-  const valueMolt = getNameCostPerYear(normalized.length) * years;
+  const valueLicn = getNameCostPerYear(normalized.length) * years;
 
   return sendIdentityContractCall({
     wallet,
@@ -447,11 +447,11 @@ export async function renewMoltName({ wallet, password, network, name, additiona
       name: normalized,
       additional_years: years
     },
-    valueMolt
+    valueLicn
   });
 }
 
-export async function transferMoltName({ wallet, password, network, name, recipient }) {
+export async function transferLichenName({ wallet, password, network, name, recipient }) {
   const normalized = normalizeName(name);
   validateNameFormat(normalized);
 
@@ -471,7 +471,7 @@ export async function transferMoltName({ wallet, password, network, name, recipi
   });
 }
 
-export async function releaseMoltName({ wallet, password, network, name }) {
+export async function releaseLichenName({ wallet, password, network, name }) {
   const normalized = normalizeName(name);
   validateNameFormat(normalized);
 

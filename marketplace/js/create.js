@@ -1,14 +1,14 @@
-// Molt Market — Create / Mint NFT Page
+// Lichen Market — Create / Mint NFT Page
 // Full wallet gating, user's own collections, balance check, price breakdown,
 // new collection creation, proper on-chain transactions
 
 (function () {
     'use strict';
 
-    var RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
     var CONTRACT_PROGRAM_ID = null; // resolved lazily
     var SYSTEM_PROGRAM_ID = null;   // resolved lazily
-    var REEF_STORAGE_PROGRAM_ID = null; // resolved lazily
+    var MOSS_STORAGE_PROGRAM_ID = null; // resolved lazily
     var MINTING_FEE = 0.5; // default — overridden by on-chain value at init\n    var _mintingFeeLoaded = false;
     var CREATE_COLLECTION_OPCODE = 6;
     var MINT_NFT_OPCODE = 7;
@@ -112,29 +112,29 @@
 
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
-        var entry = await rpcCall('getSymbolRegistry', ['MOLTMARKET']);
+        var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
         marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
         if (!marketplaceProgram) throw new Error('Marketplace program not found in symbol registry');
         CONTRACT_PROGRAM_ID = marketplaceProgram;
         return marketplaceProgram;
     }
 
-    async function resolveReefStorageProgram() {
+    async function resolveMossStorageProgram() {
         lazyAddresses();
-        if (REEF_STORAGE_PROGRAM_ID) return REEF_STORAGE_PROGRAM_ID;
-        var entry = await rpcCall('getSymbolRegistry', ['REEF']);
+        if (MOSS_STORAGE_PROGRAM_ID) return MOSS_STORAGE_PROGRAM_ID;
+        var entry = await rpcCall('getSymbolRegistry', ['MOSS']);
         var candidate = null;
         if (typeof entry === 'string') {
             candidate = entry;
         } else if (entry && typeof entry === 'object') {
             candidate = entry.id || entry.program_id || entry.contract_id || null;
         }
-        if (!candidate) throw new Error('REEF storage contract not found in symbol registry');
-        REEF_STORAGE_PROGRAM_ID = candidate;
-        return REEF_STORAGE_PROGRAM_ID;
+        if (!candidate) throw new Error('Moss storage contract not found in symbol registry');
+        MOSS_STORAGE_PROGRAM_ID = candidate;
+        return MOSS_STORAGE_PROGRAM_ID;
     }
 
-    function estimateReefStorageCost(sizeBytes, replicationFactor, durationSlots) {
+    function estimateMossStorageCost(sizeBytes, replicationFactor, durationSlots) {
         var size = BigInt(Math.max(1, Number(sizeBytes) || 1));
         var replication = BigInt(Math.max(1, Number(replicationFactor) || 1));
         var duration = BigInt(Math.max(1000, Number(durationSlots) || 1000));
@@ -147,14 +147,14 @@
         return Number(buffered);
     }
 
-    async function storeMetadataOnReef(metadataObj) {
-        var reefProgram = await resolveReefStorageProgram();
+    async function storeMetadataOnMoss(metadataObj) {
+        var mossProgram = await resolveMossStorageProgram();
         var metadataJson = JSON.stringify(metadataObj);
         var metadataBytes = new TextEncoder().encode(metadataJson);
         var metadataHash = bs58encode(await sha256Bytes(metadataBytes));
         var replicationFactor = 1;
         var durationSlots = 1000;
-        var storageValue = estimateReefStorageCost(metadataBytes.length, replicationFactor, durationSlots);
+        var storageValue = estimateMossStorageCost(metadataBytes.length, replicationFactor, durationSlots);
 
         var callData = buildContractCallData('store_data', [
             currentWallet.address,
@@ -164,13 +164,13 @@
             durationSlots
         ], storageValue);
 
-        await window.moltWallet.sendTransaction([{
-            program_id: reefProgram,
+        await window.lichenWallet.sendTransaction([{
+            program_id: mossProgram,
             accounts: [currentWallet.address],
             data: callData,
         }]);
 
-        return 'reef://' + metadataHash;
+        return 'moss://' + metadataHash;
     }
 
     async function deriveCollectionAccount(creatorAddress, name, symbol) {
@@ -281,12 +281,12 @@
                 overlay.innerHTML = '<div style="text-align:center;color:#fff;max-width:420px;padding:48px;">' +
                     '<i class="fas fa-wallet" style="font-size:64px;margin-bottom:24px;color:var(--accent-color,#f97316);"></i>' +
                     '<h2 style="margin-bottom:12px;font-size:1.5rem;">Connect Your Wallet</h2>' +
-                    '<p style="opacity:0.7;margin-bottom:24px;line-height:1.6;">You need to connect your wallet to create collections and mint NFTs on MoltChain.</p>' +
+                    '<p style="opacity:0.7;margin-bottom:24px;line-height:1.6;">You need to connect your wallet to create collections and mint NFTs on Lichen.</p>' +
                     '<button class="btn btn-primary btn-large" id="overlayConnectBtn"><i class="fas fa-wallet"></i> Connect Wallet</button>' +
                     '</div>';
                 document.body.appendChild(overlay);
                 document.getElementById('overlayConnectBtn').addEventListener('click', function () {
-                    if (window.moltWallet) window.moltWallet._openWalletModal();
+                    if (window.lichenWallet) window.lichenWallet._openWalletModal();
                 });
             }
             overlay.style.display = 'flex';
@@ -332,15 +332,15 @@
 
         var html = '';
         if (isNewCollection) {
-            html += '<div class="detail-row"><span>Collection Deployment</span><strong>' + collectionFee.toFixed(3) + ' MOLT</strong></div>';
+            html += '<div class="detail-row"><span>Collection Deployment</span><strong>' + collectionFee.toFixed(3) + ' LICN</strong></div>';
         }
-        html += '<div class="detail-row"><span>Minting Fee (' + supply + '&times;)</span><strong>' + totalMintFee.toFixed(3) + ' MOLT</strong></div>';
+        html += '<div class="detail-row"><span>Minting Fee (' + supply + '&times;)</span><strong>' + totalMintFee.toFixed(3) + ' LICN</strong></div>';
         html += '<div class="detail-row" style="border-top:1px solid var(--border-color);padding-top:8px;margin-top:8px;">' +
-            '<span><strong>Total</strong></span><strong>' + total.toFixed(3) + ' MOLT</strong></div>';
+            '<span><strong>Total</strong></span><strong>' + total.toFixed(3) + ' LICN</strong></div>';
 
         if (currentWallet) {
             html += '<div class="detail-row"><span>Your Balance</span><strong style="color:' +
-                (hasBalance ? '#22c55e' : '#ef4444') + ';">' + userBalance.toFixed(4) + ' MOLT</strong></div>';
+                (hasBalance ? '#22c55e' : '#ef4444') + ';">' + userBalance.toFixed(4) + ' LICN</strong></div>';
             if (!hasBalance) {
                 html += '<div style="color:#ef4444;font-size:13px;margin-top:8px;"><i class="fas fa-exclamation-triangle"></i> Insufficient balance</div>';
             }
@@ -426,7 +426,7 @@
 
         if (userBalance < totalCost) {
             createBtn.disabled = true;
-            createBtn.title = 'Insufficient balance (need ' + totalCost.toFixed(3) + ' MOLT)';
+            createBtn.title = 'Insufficient balance (need ' + totalCost.toFixed(3) + ' LICN)';
             createBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Insufficient Balance';
             return;
         }
@@ -568,7 +568,7 @@
                 var price = parseFloat(listingPriceInput.value);
                 var previewPrice = document.getElementById('previewPrice');
                 if (previewPrice) {
-                    previewPrice.textContent = (price > 0) ? (price + ' MOLT') : 'Not for sale';
+                    previewPrice.textContent = (price > 0) ? (price + ' LICN') : 'Not for sale';
                 }
             });
         }
@@ -592,12 +592,12 @@
     // ===== Create Collection =====
     async function createNewCollection(name, symbol) {
         lazyAddresses();
-        if (!currentWallet || !window.moltWallet) {
+        if (!currentWallet || !window.lichenWallet) {
             throw new Error('Wallet not connected');
         }
         var collectionAddress = await deriveCollectionAccount(currentWallet.address, name, symbol);
         var ixData = buildCreateCollectionInstructionData(name, symbol, 250, 1000000, true);
-        await window.moltWallet.sendTransaction([{
+        await window.lichenWallet.sendTransaction([{
             program_id: SYSTEM_PROGRAM_ID,
             accounts: [currentWallet.address, collectionAddress],
             data: ixData,
@@ -649,11 +649,11 @@
         var totalCost = (MINTING_FEE * supply) + collectionFee;
         await refreshBalance();
         if (userBalance < totalCost) {
-            alert('Insufficient balance. Need ' + totalCost.toFixed(3) + ' MOLT, you have ' + userBalance.toFixed(4) + ' MOLT.');
+            alert('Insufficient balance. Need ' + totalCost.toFixed(3) + ' LICN, you have ' + userBalance.toFixed(4) + ' LICN.');
             return;
         }
 
-        if (!window.moltWallet || typeof window.moltWallet.sendTransaction !== 'function') {
+        if (!window.lichenWallet || typeof window.lichenWallet.sendTransaction !== 'function') {
             alert('Wallet signing unavailable. Reconnect wallet and try again.');
             return;
         }
@@ -678,11 +678,11 @@
 
             var mediaHash = await hashFileToBase58(uploadedFile);
 
-            // Build metadata (stored via REEF hash URI)
+            // Build metadata (stored via Moss hash URI)
             var metadata = {
                 name: name,
                 description: description,
-                image: 'reef://' + mediaHash,
+                image: 'moss://' + mediaHash,
                 media_hash: mediaHash,
                 media_type: uploadedFile.type,
                 media_size: uploadedFile.size,
@@ -693,7 +693,7 @@
             };
 
             if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Storing metadata...';
-            var metadataUri = await storeMetadataOnReef(metadata);
+            var metadataUri = await storeMetadataOnMoss(metadata);
             var tokenBaseId = makeTokenBaseId();
             var mintedTokenIds = [];
 
@@ -704,7 +704,7 @@
                 var tokenAccount = await deriveTokenAccount(collectionAddress, tokenId);
                 var instructionData = buildMintInstructionData(tokenId, metadataUri);
 
-                await window.moltWallet.sendTransaction([{
+                await window.lichenWallet.sendTransaction([{
                     program_id: SYSTEM_PROGRAM_ID,
                     accounts: [currentWallet.address, collectionAddress, tokenAccount, currentWallet.address],
                     data: instructionData,
@@ -738,8 +738,8 @@
                 try {
                     if (createBtn) createBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Listing for sale...';
                     var mp = await resolveMarketplaceProgram();
-                    var priceShells = Math.round(listingPrice * 1e9);
-                    var paymentToken = bs58encode(new Uint8Array(32)); // native MOLT
+                    var priceSpores = Math.round(listingPrice * 1e9);
+                    var paymentToken = bs58encode(new Uint8Array(32)); // native LICN
                     var royaltyBps = Math.max(0, Math.min(5000, Math.round(Number(royalty || 0) * 100)));
                     var royaltyRecipient = currentWallet.address;
 
@@ -750,7 +750,7 @@
                                 currentWallet.address,
                                 collectionAddress,
                                 String(mintedTokenIds[li]),
-                                priceShells,
+                                priceSpores,
                                 paymentToken,
                                 royaltyRecipient,
                                 royaltyBps
@@ -760,18 +760,18 @@
                                 currentWallet.address,
                                 collectionAddress,
                                 String(mintedTokenIds[li]),
-                                priceShells,
+                                priceSpores,
                                 paymentToken
                             ], 0);
                         }
 
-                        await window.moltWallet.sendTransaction([{
+                        await window.lichenWallet.sendTransaction([{
                             program_id: mp,
                             accounts: [currentWallet.address, collectionAddress],
                             data: listCallData,
                         }]);
                     }
-                    showToast('Listed for ' + listingPrice + ' MOLT!', 'success');
+                    showToast('Listed for ' + listingPrice + ' LICN!', 'success');
                 } catch (listErr) {
                     showToast('Minted successfully but listing failed: ' + listErr.message, 'error');
                 }
@@ -844,14 +844,14 @@
         }
 
         // Wallet
-        if (window.MoltWallet) {
-            window.moltWallet = window.moltWallet || new MoltWallet({ rpcUrl: RPC_URL });
-            window.moltWallet.bindConnectButton('#connectWallet');
-            window.moltWallet.onConnect(function (info) {
+        if (window.LichenWallet) {
+            window.lichenWallet = window.lichenWallet || new LichenWallet({ rpcUrl: RPC_URL });
+            window.lichenWallet.bindConnectButton('#connectWallet');
+            window.lichenWallet.onConnect(function (info) {
                 currentWallet = info;
                 updateWalletGate();
             });
-            window.moltWallet.onDisconnect(function () {
+            window.lichenWallet.onDisconnect(function () {
                 currentWallet = null;
                 userBalance = 0;
                 updateWalletGate();

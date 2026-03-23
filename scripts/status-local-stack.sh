@@ -27,7 +27,7 @@ json_rpc() {
     -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
 }
 
-echo "🦞 MoltChain local stack status ($NETWORK)"
+echo "🦞 Lichen local stack status ($NETWORK)"
 
 echo "Validators:"
 for port in "${RPC_PORTS[@]}"; do

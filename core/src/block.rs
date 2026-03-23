@@ -1,4 +1,4 @@
-// MoltChain Core - Block Structure
+// Lichen Core - Block Structure
 
 use crate::hash::Hash;
 use crate::transaction::Transaction;
@@ -1303,7 +1303,7 @@ mod tests {
         };
 
         // Stakes proportional: 60%, 25%, 15% above MIN_VALIDATOR_STAKE
-        let base = 100_000_000_000_000u64; // 100K MOLT
+        let base = 100_000_000_000_000u64; // 100K LICN
         for (k, stake) in [(ka, base * 6), (kb, base * 25 / 10), (kc, base * 15 / 10)] {
             vs.add_validator(ValidatorInfo {
                 pubkey: crate::Pubkey(k),
@@ -1357,7 +1357,7 @@ mod tests {
             k
         };
 
-        let stake = 100_000_000_000_000u64; // 100K MOLT
+        let stake = 100_000_000_000_000u64; // 100K LICN
         vs.add_validator(ValidatorInfo {
             pubkey: crate::Pubkey(k),
             reputation: 100,

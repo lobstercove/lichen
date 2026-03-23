@@ -1,33 +1,33 @@
-// shared-config.js — Unified frontend configuration for MoltChain
+// shared-config.js — Unified frontend configuration for Lichen
 // Single source of truth for environment, network endpoints, and cross-app URLs.
 //
 // Load order in every HTML page:
-//   1. shared/env.js        — sets window.MOLTCHAIN_ENV ('development' | 'production')
-//   2. shared-config.js     — this file (reads env, builds MOLT_CONFIG)
-//   3. app-specific scripts — read MOLT_CONFIG.networks, MOLT_CONFIG.rpc(), etc.
+//   1. shared/env.js        — sets window.LICHEN_ENV ('development' | 'production')
+//   2. shared-config.js     — this file (reads env, builds LICHEN_CONFIG)
+//   3. app-specific scripts — read LICHEN_CONFIG.networks, LICHEN_CONFIG.rpc(), etc.
 //
-// On VPS: set window.MOLTCHAIN_ENV = 'production' in env.js
+// On VPS: set window.LICHEN_ENV = 'production' in env.js
 // Locally: leave it as 'development' (default)
 
-const MOLT_CONFIG = (() => {
+const LICHEN_CONFIG = (() => {
     // ── Environment Detection ───────────────────────────────────────────
     const hostname = window.location.hostname;
     const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-    const env = window.MOLTCHAIN_ENV || (isLocalhost ? 'development' : 'production');
+    const env = window.LICHEN_ENV || (isLocalhost ? 'development' : 'production');
     const isProduction = env === 'production';
 
     // ── Network Definitions ─────────────────────────────────────────────
     const networks = {
         mainnet: {
             label: 'Mainnet',
-            rpc: 'https://rpc.moltchain.network',
-            ws: 'wss://ws.moltchain.network',
+            rpc: 'https://rpc.lichen.network',
+            ws: 'wss://ws.lichen.network',
             local: false,
         },
         testnet: {
             label: 'Testnet',
-            rpc: 'https://testnet-rpc.moltchain.network',
-            ws: 'wss://testnet-ws.moltchain.network',
+            rpc: 'https://testnet-rpc.lichen.network',
+            ws: 'wss://testnet-ws.lichen.network',
             local: false,
         },
         'local-testnet': {
@@ -70,14 +70,14 @@ const MOLT_CONFIG = (() => {
         };
     } else {
         apps = {
-            explorer: 'https://explorer.moltchain.network',
-            wallet: 'https://wallet.moltchain.network',
-            marketplace: 'https://marketplace.moltchain.network',
-            dex: 'https://dex.moltchain.network',
-            website: 'https://moltchain.network',
-            developers: 'https://developers.moltchain.network',
-            programs: 'https://programs.moltchain.network',
-            faucet: 'https://faucet.moltchain.network',
+            explorer: 'https://explorer.lichen.network',
+            wallet: 'https://wallet.lichen.network',
+            marketplace: 'https://marketplace.lichen.network',
+            dex: 'https://dex.lichen.network',
+            website: 'https://lichen.network',
+            developers: 'https://developers.lichen.network',
+            programs: 'https://programs.lichen.network',
+            faucet: 'https://faucet.lichen.network',
         };
     }
 
@@ -181,11 +181,11 @@ const MOLT_CONFIG = (() => {
 
 // ── Auto-resolve cross-app nav links ────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('a[data-molt-app]').forEach(link => {
-        const app = link.dataset.moltApp;
-        const path = link.dataset.moltPath || '';
-        if (MOLT_CONFIG[app]) {
-            link.href = MOLT_CONFIG[app] + path;
+    document.querySelectorAll('a[data-lichen-app]').forEach(link => {
+        const app = link.dataset.lichenApp;
+        const path = link.dataset.lichenPath || '';
+        if (LICHEN_CONFIG[app]) {
+            link.href = LICHEN_CONFIG[app] + path;
         }
     });
 });

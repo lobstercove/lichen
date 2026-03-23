@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: moltchain-validator
+    container_name: lichen-validator
     restart: unless-stopped
     ports:
       - "7001:7001"   # P2P
@@ -13,14 +13,14 @@ services:
       - "8900:8900"   # WebSocket
       - "9100:9100"   # Metrics
     volumes:
-      - moltchain-data:/var/lib/moltchain
-      - ./config.toml:/etc/moltchain/config.toml:ro
+      - lichen-data:/var/lib/lichen
+      - ./config.toml:/etc/lichen/config.toml:ro
     environment:
       - RUST_LOG=info
-      - MOLTCHAIN_DATA_DIR=/var/lib/moltchain
-      - MOLTCHAIN_ADMIN_TOKEN=${MOLTCHAIN_ADMIN_TOKEN:-}
+      - LICHEN_DATA_DIR=/var/lib/lichen
+      - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
-      - moltchain
+      - lichen
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
       interval: 30s
@@ -32,9 +32,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: moltchain-faucet
+    container_name: lichen-faucet
     restart: unless-stopped
-    entrypoint: ["moltchain-faucet"]
+    entrypoint: ["lichen-faucet"]
     ports:
       - "9101:9101"
     environment:
@@ -49,12 +49,12 @@ services:
       validator:
         condition: service_healthy
     networks:
-      - moltchain
+      - lichen
 
   # Optional: explorer frontend (static)
   explorer:
     image: nginx:alpine
-    container_name: moltchain-explorer
+    container_name: lichen-explorer
     restart: unless-stopped
     ports:
       - "3000:80"
@@ -64,14 +64,14 @@ services:
       validator:
         condition: service_healthy
     networks:
-      - moltchain
+      - lichen
 
 volumes:
-  moltchain-data:
+  lichen-data:
     driver: local
   faucet-data:
     driver: local
 
 networks:
-  moltchain:
+  lichen:
     driver: bridge

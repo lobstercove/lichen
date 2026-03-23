@@ -1,4 +1,4 @@
-// MoltChain Smart Contract System
+// Lichen Smart Contract System
 // WASM-based programmable contracts with proper host function implementations
 
 use crate::{Account, Hash, Pubkey, StateStore};
@@ -472,7 +472,7 @@ pub struct ContractContext {
     pub caller: Pubkey,
     /// Contract address
     pub contract: Pubkey,
-    /// Value transferred (in shells)
+    /// Value transferred (in spores)
     pub value: u64,
     /// Block slot (used for deterministic timestamp)
     pub slot: u64,
@@ -501,7 +501,7 @@ pub struct ContractContext {
     pub compute_limit: u64,
     /// Cross-contract storage entries injected by the processor.
     /// Merged into `storage` at execution time so contracts can read other
-    /// contracts' data (e.g., MoltyID reputation) via normal `storage_read`.
+    /// contracts' data (e.g., LichenID reputation) via normal `storage_read`.
     /// NOT tracked in `storage_changes`, NOT persisted to the contract's DB.
     pub cross_contract_storage: HashMap<Vec<u8>, Vec<u8>>,
     /// Shared reference to the state store for cross-contract calls.
@@ -1058,7 +1058,7 @@ impl ContractRuntime {
             //   The actual arg data starts at offset 1 + N.
             //
             // This allows callers to correctly encode args for functions with
-            // mixed pointer and plain-integer I32 parameters (e.g. moltdao's
+            // mixed pointer and plain-integer I32 parameters (e.g. lichendao's
             // create_proposal which takes both *const u8 and u32 lengths).
             let has_layout = !args.is_empty() && args[0] == 0xAB && args.len() > params.len();
             let layout: Vec<u8> = if has_layout {
@@ -1252,8 +1252,8 @@ impl ContractRuntime {
             Ok(values) => {
                 // Extract the WASM function's return code for informational
                 // purposes.  Contracts use inconsistent conventions — some
-                // return 0=success (musd_token, moltyid), others return
-                // 1=success (moltoracle queries, moltpunks), and some return
+                // return 0=success (lusd_token, lichenid), others return
+                // 1=success (lichenoracle queries, lichenpunks), and some return
                 // meaningful i64 values (swap outputs, balances).  We record
                 // the code but do NOT use it to override success/failure:
                 // the JSON arg encoding fix ensures args arrive correctly,
@@ -1781,7 +1781,7 @@ fn host_get_contract_address(mut env: FunctionEnvMut<ContractContext>, out_ptr: 
     0
 }
 
-/// Return the value (shells) transferred with the call.
+/// Return the value (spores) transferred with the call.
 fn host_get_value(env: FunctionEnvMut<ContractContext>) -> u64 {
     env.data().value
 }

@@ -1,8 +1,8 @@
-// Wallet operations - Full wallet management for MoltChain CLI
+// Wallet operations - Full wallet management for Lichen CLI
 // Create, import, list, and manage multiple wallets
 
 use anyhow::{Context, Result};
-use moltchain_core::Keypair;
+use lichen_core::Keypair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -28,7 +28,7 @@ impl WalletManager {
     pub fn new() -> Result<Self> {
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
 
-        let wallets_dir = PathBuf::from(home).join(".moltchain").join("wallets");
+        let wallets_dir = PathBuf::from(home).join(".lichen").join("wallets");
 
         let index_path = wallets_dir.join("index.json");
 
@@ -87,7 +87,7 @@ impl WalletManager {
         let keypair = Keypair::new();
         let address = keypair.pubkey().to_base58();
 
-        // Save keypair to file using KeypairFile (supports encryption via MOLTCHAIN_KEYPAIR_PASSWORD)
+        // Save keypair to file using KeypairFile (supports encryption via LICHEN_KEYPAIR_PASSWORD)
         let keypair_path = self.wallets_dir.join(format!("{}.json", wallet_name));
         let keypair_file = crate::keygen::KeypairFile::from_keypair(&keypair);
         keypair_file.save(&keypair_path)?;
@@ -159,11 +159,11 @@ impl WalletManager {
         let index = self.load_index()?;
 
         if index.is_empty() {
-            println!("No wallets found. Create one with: molt wallet create");
+            println!("No wallets found. Create one with: lichen wallet create");
             return Ok(());
         }
 
-        println!("📋 MoltChain Wallets\n");
+        println!("📋 Lichen Wallets\n");
 
         let mut wallets: Vec<_> = index.values().collect();
         wallets.sort_by_key(|w| w.created_at);

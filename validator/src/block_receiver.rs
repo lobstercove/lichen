@@ -1,10 +1,10 @@
-// MoltChain Block Receiver / Validator
+// Lichen Block Receiver / Validator
 //
 // Validates incoming blocks before they are accepted by the consensus
 // engine (via proposals) or the sync manager (via block range responses).
 // This module contains pure validation logic — no state mutation.
 
-use moltchain_core::{Block, Pubkey, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE};
+use lichen_core::{Block, Pubkey, StakePool, ValidatorSet, MIN_VALIDATOR_STAKE};
 
 /// Errors from block validation.
 #[derive(Debug)]

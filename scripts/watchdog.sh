@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-#  MoltChain Validator Watchdog — auto-restart stale or crashed nodes
+#  Lichen Validator Watchdog — auto-restart stale or crashed nodes
 # ─────────────────────────────────────────────────────────────────────
 #
 # Usage:
@@ -28,12 +28,12 @@ set -euo pipefail
 # ── Defaults ─────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BINARY="${PROJECT_DIR}/target/release/moltchain-validator"
+BINARY="${PROJECT_DIR}/target/release/lichen-validator"
 
 CHECK_INTERVAL="${WATCHDOG_INTERVAL:-15}"       # seconds between checks
 STALE_THRESHOLD="${WATCHDOG_STALE:-5}"          # consecutive stale checks before restart
 MAX_RESTARTS="${WATCHDOG_MAX_RESTARTS:-10}"      # max restarts per validator before giving up
-WATCHDOG_LOG="${WATCHDOG_LOG:-/tmp/moltchain-watchdog.log}"
+WATCHDOG_LOG="${WATCHDOG_LOG:-/tmp/lichen-watchdog.log}"
 
 # ── Validator definitions ────────────────────────────────────────────
 # Each entry: "name|rpc_port|p2p_port|extra_args|log_file"
@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
       echo "  WATCHDOG_INTERVAL       Same as --interval"
       echo "  WATCHDOG_STALE          Same as --threshold"
       echo "  WATCHDOG_MAX_RESTARTS   Max restarts per validator (default: 10)"
-      echo "  WATCHDOG_LOG            Log file (default: /tmp/moltchain-watchdog.log)"
+      echo "  WATCHDOG_LOG            Log file (default: /tmp/lichen-watchdog.log)"
       exit 0
       ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -125,7 +125,7 @@ get_slot() {
 # ── Helper: find PID by p2p port ─────────────────────────────────────
 find_pid() {
   local p2p_port="$1"
-  ps aux | grep "moltchain-validator" | grep -v grep | grep "\-\-p2p-port $p2p_port\b" | awk '{print $2}' | head -1
+  ps aux | grep "lichen-validator" | grep -v grep | grep "\-\-p2p-port $p2p_port\b" | awk '{print $2}' | head -1
 }
 
 # ── Helper: start a validator ────────────────────────────────────────
@@ -136,7 +136,7 @@ start_validator() {
   log "🚀 Starting $name (RPC:$rpc_port, P2P:$p2p_port)"
 
   # Build command
-  local cmd="MOLTCHAIN_SIGNER_BIND=off $BINARY --p2p-port $p2p_port --rpc-port $rpc_port --network testnet"
+  local cmd="LICHEN_SIGNER_BIND=off $BINARY --p2p-port $p2p_port --rpc-port $rpc_port --network testnet"
   if [[ -n "$extra_args" ]]; then
     cmd="$cmd $extra_args"
   fi
@@ -216,7 +216,7 @@ trap cleanup SIGINT SIGTERM
 
 # ── Main loop ────────────────────────────────────────────────────────
 log "════════════════════════════════════════════════════════════════"
-log "🐺 MoltChain Watchdog started"
+log "🐺 Lichen Watchdog started"
 log "   Validators: ${#VALIDATORS[@]}"
 log "   Check interval: ${CHECK_INTERVAL}s"
 log "   Stale threshold: ${STALE_THRESHOLD} checks ($(( CHECK_INTERVAL * STALE_THRESHOLD ))s)"

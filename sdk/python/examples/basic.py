@@ -1,14 +1,14 @@
-"""Basic usage example for MoltChain Python SDK"""
+"""Basic usage example for Lichen Python SDK"""
 
 import asyncio
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
 
 async def main():
-    # Connect to MoltChain
+    # Connect to Lichen
     connection = Connection('http://localhost:8899', 'ws://localhost:8900')
     
-    print('🦞 MoltChain Python SDK Example\n')
+    print('🦞 Lichen Python SDK Example\n')
     
     # 1. Get network info
     print('📡 Network Information:')
@@ -23,7 +23,7 @@ async def main():
     pubkey = PublicKey('YourPublicKeyHere...')
     try:
         balance = await connection.get_balance(pubkey)
-        print(f"  Balance: {balance['molt']} MOLT ({balance['shells']} shells)\n")
+        print(f"  Balance: {balance['licn']} LICN ({balance['spores']} spores)\n")
     except Exception as e:
         print(f"  Error: {e}\n")
     
@@ -40,7 +40,7 @@ async def main():
     validators = await connection.get_validators()
     print(f"  Total: {len(validators)}")
     for i, v in enumerate(validators[:5], 1):
-        print(f"  {i}. {v['pubkey'][:12]}... (Stake: {v['stake'] / 1e9} MOLT)")
+        print(f"  {i}. {v['pubkey'][:12]}... (Stake: {v['stake'] / 1e9} LICN)")
     print()
     
     # 5. Subscribe to real-time events

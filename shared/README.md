@@ -1,6 +1,6 @@
 # shared/
 
-Shared utilities and configuration used across all MoltChain frontend apps.
+Shared utilities and configuration used across all Lichen frontend apps.
 
 ## Canonical Source
 

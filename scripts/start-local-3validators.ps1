@@ -12,8 +12,8 @@ $PidFile = Join-Path $ArtDir 'pids.txt'
 $Log1 = Join-Path $ArtDir 'v1.log'
 $Log2 = Join-Path $ArtDir 'v2.log'
 $Log3 = Join-Path $ArtDir 'v3.log'
-$Bin = Join-Path $Root 'target/release/moltchain-validator.exe'
-$Stagger = [int]($env:MOLT_LOCAL_STAGGER_SECS ?? '15')
+$Bin = Join-Path $Root 'target/release/lichen-validator.exe'
+$Stagger = [int]($env:LICHEN_LOCAL_STAGGER_SECS ?? '15')
 
 New-Item -ItemType Directory -Path $ArtDir -Force | Out-Null
 
@@ -62,7 +62,7 @@ function Ensure-Binary {
     if (-not (Test-Path $Bin)) {
         Push-Location $Root
         try {
-            cargo build --release --bin moltchain-validator | Out-Null
+            cargo build --release --bin lichen-validator | Out-Null
         } finally {
             Pop-Location
         }
@@ -100,7 +100,7 @@ function Start-Validator {
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    $psi.EnvironmentVariables['MOLTCHAIN_SIGNER_BIND'] = $signerBind
+    $psi.EnvironmentVariables['LICHEN_SIGNER_BIND'] = $signerBind
     $psi.EnvironmentVariables['RUST_LOG'] = 'warn'
 
     $proc = New-Object System.Diagnostics.Process

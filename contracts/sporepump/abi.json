@@ -1,0 +1,148 @@
+{
+  "contract": "sporepump",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "create_token",
+      "opcode": 1,
+      "params": [
+        { "name": "creator_ptr", "type": "Pubkey" },
+        { "name": "fee_paid", "type": "u64" }
+      ]
+    },
+    {
+      "name": "buy",
+      "opcode": 2,
+      "params": [
+        { "name": "buyer_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "licn_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "sell",
+      "opcode": 3,
+      "params": [
+        { "name": "seller_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "token_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_token_info",
+      "opcode": 4,
+      "params": [
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_buy_quote",
+      "opcode": 5,
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "licn_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_token_count",
+      "opcode": 6,
+      "params": []
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 7,
+      "params": []
+    },
+    {
+      "name": "pause",
+      "opcode": 8,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "unpause",
+      "opcode": 9,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "freeze_token",
+      "opcode": 10,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "unfreeze_token",
+      "opcode": 11,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_buy_cooldown",
+      "opcode": 12,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "cooldown_ms", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_sell_cooldown",
+      "opcode": 13,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "cooldown_ms", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_max_buy",
+      "opcode": 14,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "max_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_creator_royalty",
+      "opcode": 15,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw_fees",
+      "opcode": 16,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_dex_addresses",
+      "opcode": 17,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "core_ptr", "type": "Pubkey" },
+        { "name": "amm_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_graduation_info",
+      "opcode": 18,
+      "params": []
+    }
+  ]
+}

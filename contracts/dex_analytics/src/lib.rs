@@ -1,14 +1,14 @@
 // DEX Analytics — On-Chain OHLCV, Volume Tracking, Leaderboards (DEEP hardened)
 //
-// All trading pairs are denominated in mUSD (preferred quote currency).
-// Prices and volumes are therefore expressed in mUSD units (6 decimals).
+// All trading pairs are denominated in lUSD (preferred quote currency).
+// Prices and volumes are therefore expressed in lUSD units (6 decimals).
 //
 // Features:
 //   - OHLCV candle aggregation (1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y)
 //   - 24h rolling stats per pair (volume, high, low, price change)
 //   - Trader stats: volume, trade count, PnL
 //   - Leaderboard tracking (top traders by volume/PnL)
-//   - Price feed publication to MoltOracle
+//   - Price feed publication to LichenOracle
 //   - Emergency pause, admin controls
 
 #![no_std]
@@ -22,7 +22,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
 };
 
@@ -723,7 +723,7 @@ pub fn get_ohlcv(pair_id: u64, interval: u64, count: u64) -> u64 {
         }
     }
     if !result.is_empty() {
-        moltchain_sdk::set_return_data(&result);
+        lichen_sdk::set_return_data(&result);
     }
     total.min(count)
 }
@@ -733,7 +733,7 @@ pub fn get_24h_stats(pair_id: u64) -> u64 {
     let sk = stats_24h_key(pair_id);
     match storage_get(&sk) {
         Some(d) if d.len() >= STATS_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             1
         }
         _ => 0,
@@ -749,7 +749,7 @@ pub fn get_trader_stats(trader: *const u8) -> u64 {
     let tk = trader_stats_key(&t);
     match storage_get(&tk) {
         Some(d) if d.len() >= TRADER_STATS_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             1
         }
         _ => 0,
@@ -825,7 +825,7 @@ pub fn set_authorized_caller(caller: *const u8, authorized: *const u8) -> u32 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -834,7 +834,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 1 = record_trade(pair_id[8], price[8], volume[8], trader[32])
@@ -844,7 +844,7 @@ pub extern "C" fn call() {
                 let price = bytes_to_u64(&args[9..17]);
                 let volume = bytes_to_u64(&args[17..25]);
                 let r = record_trade(pair_id, price, volume, args[25..57].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 2 = get_ohlcv(pair_id[8], interval[8], count[8])
@@ -854,7 +854,7 @@ pub extern "C" fn call() {
                 let interval = bytes_to_u64(&args[9..17]);
                 let count = bytes_to_u64(&args[17..25]);
                 let n = get_ohlcv(pair_id, interval, count);
-                moltchain_sdk::set_return_data(&u64_to_bytes(n));
+                lichen_sdk::set_return_data(&u64_to_bytes(n));
             }
         }
         // 3 = get_24h_stats(pair_id[8])
@@ -863,7 +863,7 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[1..9]);
                 let r = get_24h_stats(pair_id);
                 if r == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -872,7 +872,7 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let r = get_trader_stats(args[1..33].as_ptr());
                 if r == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -881,31 +881,31 @@ pub extern "C" fn call() {
             if args.len() >= 9 {
                 let pair_id = bytes_to_u64(&args[1..9]);
                 let p = get_last_price(pair_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(p));
+                lichen_sdk::set_return_data(&u64_to_bytes(p));
             }
         }
         // 6 = get_record_count()
         6 => {
             let c = get_record_count();
-            moltchain_sdk::set_return_data(&u64_to_bytes(c));
+            lichen_sdk::set_return_data(&u64_to_bytes(c));
         }
         // 7 = emergency_pause(caller[32])
         7 => {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 8 = emergency_unpause(caller[32])
         8 => {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         9 => {
             // get_trader_count — unique traders seen by analytics
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
         }
         10 => {
             // get_global_stats — [record_count, trader_count, total_volume]
@@ -913,13 +913,13 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(TRADE_RECORD_COUNT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         // 11 = F18.2: set_authorized_caller(caller[32], authorized[32])
         11 => {
             if args.len() >= 65 {
                 let r = set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 12 = F18.10: record_pnl(trader[32], pnl_biased[8])
@@ -927,11 +927,11 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pnl_biased = bytes_to_u64(&args[33..41]);
                 let r = record_pnl(args[1..33].as_ptr(), pnl_biased);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -944,7 +944,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();

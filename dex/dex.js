@@ -1,6 +1,6 @@
 /* ========================================
-   MoltyDEX — Production JavaScript Engine
-   Wired to MoltChain RPC + WebSocket
+   Lichen DEX — Production JavaScript Engine
+   Wired to Lichen RPC + WebSocket
    ======================================== */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -8,12 +8,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ═══════════════════════════════════════════════════════════════════════
     // Configuration — override via window globals or <script> config block
-    // Uses MOLT_CONFIG (shared-config.js) for environment-aware defaults.
+    // Uses LICHEN_CONFIG (shared-config.js) for environment-aware defaults.
     // ═══════════════════════════════════════════════════════════════════════
-    const _moltRpc = (typeof MOLT_CONFIG !== 'undefined') ? MOLT_CONFIG.rpc('dexNetwork') : 'http://localhost:8899';
-    const _moltWs = (typeof MOLT_CONFIG !== 'undefined') ? MOLT_CONFIG.ws('dexNetwork') : 'ws://localhost:8900';
-    const RPC_BASE = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || _moltRpc).replace(/\/$/, '');
-    const WS_URL = (localStorage.getItem('dexWsUrl') || window.MOLTCHAIN_WS || _moltWs).replace(/\/$/, '');
+    const _licnRpc = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.rpc('dexNetwork') : 'http://localhost:8899';
+    const _licnWs = (typeof LICHEN_CONFIG !== 'undefined') ? LICHEN_CONFIG.ws('dexNetwork') : 'ws://localhost:8900';
+    const RPC_BASE = (localStorage.getItem('dexRpcUrl') || window.LICHEN_RPC || _licnRpc).replace(/\/$/, '');
+    const WS_URL = (localStorage.getItem('dexWsUrl') || window.LICHEN_WS || _licnWs).replace(/\/$/, '');
     const API_BASE = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
 
@@ -235,20 +235,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wallet
     // ═══════════════════════════════════════════════════════════════════════
     const wallet = {
-        keypair: null, address: null, shortAddr: null, _moltWallet: null,
+        keypair: null, address: null, shortAddr: null, _lichenWallet: null,
 
         async _ensureWallet() {
-            if (this._moltWallet) return this._moltWallet;
+            if (this._lichenWallet) return this._lichenWallet;
             // Try wallet extension first
-            if (typeof MoltWallet !== 'undefined') {
-                this._moltWallet = new MoltWallet({ rpcUrl: RPC_BASE });
-                return this._moltWallet;
+            if (typeof LichenWallet !== 'undefined') {
+                this._lichenWallet = new LichenWallet({ rpcUrl: RPC_BASE });
+                return this._lichenWallet;
             }
             return null;
         },
         async connect() {
             const w = await this._ensureWallet();
-            if (!w) throw new Error('MoltChain Wallet extension not found — install it from the wallet page');
+            if (!w) throw new Error('Lichen Wallet extension not found — install it from the wallet page');
             const result = await w.connect();
             if (result && result.address) {
                 this.address = result.address;
@@ -338,8 +338,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 return w.sendTransaction(instructions);
             }
             // Fallback: build unsigned TX and request extension signature
-            if (typeof window !== 'undefined' && window.MoltChain && window.MoltChain.Wallet) {
-                return window.MoltChain.Wallet.signAndSend(instructions);
+            if (typeof window !== 'undefined' && window.Lichen && window.Lichen.Wallet) {
+                return window.Lichen.Wallet.signAndSend(instructions);
             }
             // Last resort: submit via RPC (for server-side wallets)
             const blockhash = await api.rpc('getRecentBlockhash');
@@ -447,7 +447,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // Build a named-export contract call (for ClawPump ABI which uses function names, not opcodes)
+    // Build a named-export contract call (for SporePump ABI which uses function names, not opcodes)
     function namedCallIx(contractAddr, funcName, argsBytes, value = 0) {
         const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value } });
         return {
@@ -757,7 +757,7 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, 33, marketId);
         writeU8(arr, 41, winningOutcome);
         // attestation_hash: 32 zero bytes (oracle verification skipped when not configured)
-        // bond: DISPUTE_BOND = 100_000_000 (100 mUSD)
+        // bond: DISPUTE_BOND = 100_000_000 (100 lUSD)
         writeU64LE(view, 74, 100_000_000);
         return arr;
     }
@@ -820,7 +820,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < evBytes.length; i++) hashBytes[i % 32] ^= evBytes[i];
             arr.set(hashBytes, 41);
         }
-        // bond: DISPUTE_BOND = 100_000_000 (100 mUSD)
+        // bond: DISPUTE_BOND = 100_000_000 (100 lUSD)
         writeU64LE(view, 73, 100_000_000);
         return arr;
     }
@@ -859,7 +859,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
-    // ── ClawPump (Launchpad) instruction builders ──
+    // ── SporePump (Launchpad) instruction builders ──
     // Uses named-export ABI — function names instead of opcode bytes
     // create_token(creator_ptr[32], fee_paid[8]) = 40 bytes
     function buildCPCreateTokenArgs(creator) {
@@ -867,27 +867,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writePubkey(arr, 0, creator);
-        writeU64LE(view, 32, 10_000_000_000); // 10 MOLT creation fee
+        writeU64LE(view, 32, 10_000_000_000); // 10 LICN creation fee
         return arr;
     }
-    // buy(buyer_ptr[32], token_id[8], molt_amount[8]) = 48 bytes
-    function buildCPBuyArgs(buyer, tokenId, moltShells) {
+    // buy(buyer_ptr[32], token_id[8], licn_amount[8]) = 48 bytes
+    function buildCPBuyArgs(buyer, tokenId, licnSpores) {
         const buf = new ArrayBuffer(48);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writePubkey(arr, 0, buyer);
         writeU64LE(view, 32, tokenId);
-        writeU64LE(view, 40, moltShells);
+        writeU64LE(view, 40, licnSpores);
         return arr;
     }
     // sell(seller_ptr[32], token_id[8], token_amount[8]) = 48 bytes
-    function buildCPSellArgs(seller, tokenId, tokenShells) {
+    function buildCPSellArgs(seller, tokenId, tokenSpores) {
         const buf = new ArrayBuffer(48);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writePubkey(arr, 0, seller);
         writeU64LE(view, 32, tokenId);
-        writeU64LE(view, 40, tokenShells);
+        writeU64LE(view, 40, tokenSpores);
         return arr;
     }
     // get_token_info(token_id[8]) = 8 bytes
@@ -897,12 +897,12 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, 0, tokenId);
         return new Uint8Array(buf);
     }
-    // get_buy_quote(token_id[8], molt_amount[8]) = 16 bytes
-    function buildCPGetBuyQuoteArgs(tokenId, moltShells) {
+    // get_buy_quote(token_id[8], licn_amount[8]) = 16 bytes
+    function buildCPGetBuyQuoteArgs(tokenId, licnSpores) {
         const buf = new ArrayBuffer(16);
         const view = new DataView(buf);
         writeU64LE(view, 0, tokenId);
-        writeU64LE(view, 8, moltShells);
+        writeU64LE(view, 8, licnSpores);
         return new Uint8Array(buf);
     }
 
@@ -967,26 +967,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // State
     // ═══════════════════════════════════════════════════════════════════════
-    // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch.
+    // F10E.6: LICN genesis price — $0.10 per LICN at network launch.
     // Used ONLY as bootstrap fallback before any on-chain trading data exists.
     // Once the oracle or first trade provides a real price, this value is never used.
-    const MOLT_GENESIS_PRICE = 0.10;
+    const LICHEN_GENESIS_PRICE = 0.10;
     let _genesisOverridden = false;
     const MAX_OPEN_ORDERS_PER_USER = 100;
     const GOVERNANCE_SLOT_SECONDS = 0.4;
     const GOVERNANCE_MIN_QUORUM_DEFAULT = 3;
     const ENABLE_EXTERNAL_PRICE_WS = localStorage.getItem('dexEnableExternalPriceWs') === '1';
 
-    // Display-inversion helpers for MOLT-quoted wrapped pairs.
-    // On-chain pairs are stored as wBNB/MOLT (base=wBNB, quote=MOLT) with price
-    // in MOLT/wBNB (~5850). The UI displays these as MOLT/wBNB with price in
-    // wBNB/MOLT (~0.000171). All data from the API/WS must be inverted to match
+    // Display-inversion helpers for LICN-quoted wrapped pairs.
+    // On-chain pairs are stored as wBNB/LICN (base=wBNB, quote=LICN) with price
+    // in LICN/wBNB (~5850). The UI displays these as LICN/wBNB with price in
+    // wBNB/LICN (~0.000171). All data from the API/WS must be inverted to match
     // the display convention before reaching the chart.
     function isDisplayInvertedPair(pair) {
         if (!pair) return false;
         const base = (pair.base || '').toUpperCase();
         const quote = (pair.quote || '').toUpperCase();
-        return quote === 'MOLT' && ['WSOL', 'WETH', 'WBNB'].includes(base);
+        return quote === 'LICN' && ['WSOL', 'WETH', 'WBNB'].includes(base);
     }
 
     function invertPrice(price) {
@@ -1008,7 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const state = {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
-        currentView: 'trade', leverageValue: 2, lastPrice: MOLT_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
+        currentView: 'trade', leverageValue: 2, lastPrice: LICHEN_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [], _predictWsSub: null, _predictWsRefreshTimer: null, _predictCountdownTimer: null, _marginRealtimeRefreshTimer: null, marginMaxLeverage: 100,
         _predictSlotAnchor: { slot: 0, ts: 0 },
         governanceMinQuorum: GOVERNANCE_MIN_QUORUM_DEFAULT,
@@ -1025,7 +1025,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const contracts = {
         dex_core: null, dex_amm: null, dex_router: null, dex_margin: null,
         dex_rewards: null, dex_governance: null, dex_analytics: null, prediction_market: null,
-        clawpump: null,
+        sporepump: null,
     };
 
     async function loadContractAddresses() {
@@ -1042,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 contracts.dex_governance = map['DEXGOV'] || null;
                 contracts.dex_analytics = map['ANALYTICS'] || null;
                 contracts.prediction_market = map['PREDICT'] || null;
-                contracts.clawpump = map['CLAWPUMP'] || null;
+                contracts.sporepump = map['SPOREPUMP'] || null;
                 // Contract addresses loaded from symbol registry
             }
         } catch (e) {
@@ -1091,7 +1091,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 el('govReqReputation', `≥ ${formatNumber(minRep)}`);
-                el('govReqMinLiq', `${formatNumber(minLiq)} MOLT`);
+                el('govReqMinLiq', `${formatNumber(minLiq)} LICN`);
                 el('govReqMinHolders', String(minHolders));
                 el('govReqVotePeriod', `${votePeriod} hours`);
                 el('govReqTimelock', `${timelock} hour${timelock !== 1 ? 's' : ''}`);
@@ -1113,9 +1113,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const gradThreshold = data.graduation_threshold ?? 100000;
                 const platformFee = data.platform_fee_pct ?? 1;
                 const feePill = document.getElementById('launchFeePill');
-                if (feePill) feePill.innerHTML = `<i class="fas fa-coins"></i> ${creationFee} MOLT to launch`;
+                if (feePill) feePill.innerHTML = `<i class="fas fa-coins"></i> ${creationFee} LICN to launch`;
                 const gradPill = document.getElementById('launchGradPill');
-                if (gradPill) gradPill.innerHTML = `<i class="fas fa-trophy"></i> Graduates at ${formatNumber(gradThreshold)} MOLT mcap`;
+                if (gradPill) gradPill.innerHTML = `<i class="fas fa-trophy"></i> Graduates at ${formatNumber(gradThreshold)} LICN mcap`;
             }
         } catch { /* launchpad config unavailable — keep defaults */ }
 
@@ -1126,8 +1126,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const minLiq = data.min_collateral ?? 100;
                 const feePct = data.trading_fee_bps ? (data.trading_fee_bps / 100) : 2;
                 const repPill = document.getElementById('pmRepPill');
-                if (repPill) repPill.innerHTML = `<i class="fas fa-id-badge"></i> ${formatNumber(minRep)}+ MoltyID rep to create`;
-                el('pmReqMinLiq', `${formatNumber(minLiq)} mUSD`);
+                if (repPill) repPill.innerHTML = `<i class="fas fa-id-badge"></i> ${formatNumber(minRep)}+ LichenID rep to create`;
+                el('pmReqMinLiq', `${formatNumber(minLiq)} lUSD`);
                 el('pmReqReputation', `≥ ${formatNumber(minRep)}`);
                 el('predictFeeLabel', `Fee (${feePct}%)`);
             }
@@ -1148,19 +1148,19 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         if (!base || !quote) {
-            const id = fallbackSymbol || `${base || 'MOLT'}/${quote || 'mUSD'}`;
+            const id = fallbackSymbol || `${base || 'LICN'}/${quote || 'lUSD'}`;
             return { id, baseDisplay: display(base), quoteDisplay: display(quote) };
         }
 
         const quoteUpper = quote.toUpperCase();
         const baseUpper = base.toUpperCase();
 
-        if (quoteUpper === 'MOLT' && ['WSOL', 'WETH', 'WBNB'].includes(baseUpper)) {
-            return { id: `MOLT/${base}`, baseDisplay: 'MOLT', quoteDisplay: display(base) };
+        if (quoteUpper === 'LICN' && ['WSOL', 'WETH', 'WBNB'].includes(baseUpper)) {
+            return { id: `LICN/${base}`, baseDisplay: 'LICN', quoteDisplay: display(base) };
         }
 
-        if (baseUpper === 'WBNB' && quoteUpper === 'MUSD') {
-            return { id: 'BNB/mUSD', baseDisplay: 'BNB', quoteDisplay: 'mUSD' };
+        if (baseUpper === 'WBNB' && quoteUpper === 'LUSD') {
+            return { id: 'BNB/lUSD', baseDisplay: 'BNB', quoteDisplay: 'lUSD' };
         }
 
         const id = fallbackSymbol || `${base}/${quote}`;
@@ -1176,7 +1176,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ...normalizePairDisplay(
                             p.baseSymbol || p.baseToken,
                             p.quoteSymbol || p.quoteToken,
-                            p.symbol || `${p.baseSymbol || p.baseToken || 'MOLT'}/${p.quoteSymbol || p.quoteToken || 'mUSD'}`
+                            p.symbol || `${p.baseSymbol || p.baseToken || 'LICN'}/${p.quoteSymbol || p.quoteToken || 'lUSD'}`
                         ),
                         pairId: p.pairId,
                         base: p.baseSymbol || p.baseToken,
@@ -1184,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         price: p.lastPrice || 0, change: p.change24h ?? 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
                         hasMarketPrice: (p.lastPrice || 0) > 0,
                     };
-                    // Invert API price for display-inverted pairs (on-chain wBNB/MOLT → display MOLT/wBNB)
+                    // Invert API price for display-inverted pairs (on-chain wBNB/LICN → display LICN/wBNB)
                     if (isDisplayInvertedPair(pair) && pair.price > 0) {
                         pair.price = invertPrice(pair.price);
                     }
@@ -1200,25 +1200,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.activePair = savedPair; state.activePairId = savedPair.pairId;
                 state.lastPrice = savedPair.hasMarketPrice
                     ? savedPair.price
-                    : ((savedPair.id === 'MOLT/mUSD' || savedPair.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0);
+                    : ((savedPair.id === 'LICN/lUSD' || savedPair.base === 'LICN') ? LICHEN_GENESIS_PRICE : 0);
             } else {
                 state.activePair = pairs[0]; state.activePairId = pairs[0].pairId;
                 state.lastPrice = pairs[0].hasMarketPrice
                     ? pairs[0].price
-                    : ((pairs[0].id === 'MOLT/mUSD' || pairs[0].base === 'MOLT') ? MOLT_GENESIS_PRICE : 0);
+                    : ((pairs[0].id === 'LICN/lUSD' || pairs[0].base === 'LICN') ? LICHEN_GENESIS_PRICE : 0);
             }
             // F10E.6: Ensure pairs with zero price get genesis fallback (only before first real trade)
             pairs.forEach(p => {
                 if (!p.price) {
-                    p.price = (!_genesisOverridden && (p.id === 'MOLT/mUSD' || p.base === 'MOLT')) ? MOLT_GENESIS_PRICE : 0;
-                } else if (p.id === 'MOLT/mUSD' || p.base === 'MOLT') {
+                    p.price = (!_genesisOverridden && (p.id === 'LICN/lUSD' || p.base === 'LICN')) ? LICHEN_GENESIS_PRICE : 0;
+                } else if (p.id === 'LICN/lUSD' || p.base === 'LICN') {
                     _genesisOverridden = true; // real price from chain — disable genesis fallback
                 }
             });
         } else {
-            // F10E.6: No pairs from API — create genesis MOLT/mUSD pair
-            pairs = [{ pairId: 1, id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: MOLT_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'MOLT/mUSD', hasMarketPrice: false }];
-            state.activePair = pairs[0]; state.activePairId = 1; state.lastPrice = MOLT_GENESIS_PRICE;
+            // F10E.6: No pairs from API — create genesis LICN/lUSD pair
+            pairs = [{ pairId: 1, id: 'LICN/lUSD', base: 'LICN', quote: 'lUSD', price: LICHEN_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'LICN/lUSD', hasMarketPrice: false }];
+            state.activePair = pairs[0]; state.activePairId = 1; state.lastPrice = LICHEN_GENESIS_PRICE;
         }
         // Populate all select dropdowns from real pairs
         populateSelectsFromPairs();
@@ -1305,18 +1305,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await api.rpc('getBalance', [address]);
             if (result && typeof result === 'object') {
                 balances = {};
-                // F19.4b: Use spendable (excludes staked/locked) instead of total shells
+                // F19.4b: Use spendable (excludes staked/locked) instead of total spores
                 if (result.spendable !== undefined) {
-                    balances['MOLT'] = { available: result.spendable / 1e9, usd: (result.spendable / 1e9) * state.lastPrice };
-                } else if (result.shells !== undefined) {
-                    balances['MOLT'] = { available: result.shells / 1e9, usd: (result.shells / 1e9) * state.lastPrice };
+                    balances['LICN'] = { available: result.spendable / 1e9, usd: (result.spendable / 1e9) * state.lastPrice };
+                } else if (result.spores !== undefined) {
+                    balances['LICN'] = { available: result.spores / 1e9, usd: (result.spores / 1e9) * state.lastPrice };
                 }
             }
             // F19.4a: Fetch token balances via getTokenAccounts
             const tokenResult = await api.rpc('getTokenAccounts', [address]);
             if (tokenResult && tokenResult.accounts) {
                 for (const ta of tokenResult.accounts) {
-                    if (ta.symbol && ta.symbol !== 'MOLT') {
+                    if (ta.symbol && ta.symbol !== 'LICN') {
                         const decimals = ta.decimals ?? 9;
                         const amt = ta.ui_amount || (ta.balance / Math.pow(10, decimals));
                         // Task 7.1: Derive USD value from pair prices
@@ -1327,7 +1327,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch { /* RPC unavailable */ }
         if (!Object.keys(balances).length) {
-            balances = { MOLT: { available: 0, usd: 0 }, mUSD: { available: 0, usd: 0 } };
+            balances = { LICN: { available: 0, usd: 0 }, lUSD: { available: 0, usd: 0 } };
         }
         renderBalances();
     }
@@ -1462,7 +1462,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         dexWs.subscribe(`trades:${pairId}`, (d) => {
             if (d.price) {
-                // Invert on-chain price for display-inverted pairs (wBNB/MOLT → MOLT/wBNB)
+                // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
                 const displayPrice = isDisplayInvertedPair(state.activePair) ? invertPrice(d.price) : d.price;
                 if (state.activePair) state.activePair.hasMarketPrice = true;
                 state.lastPrice = displayPrice; updateTickerDisplay();
@@ -1615,7 +1615,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.activePair = pair; state.activePairId = pair.pairId;
         state.lastPrice = pair.hasMarketPrice
             ? pair.price
-            : ((pair.id === 'MOLT/mUSD' || pair.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0);
+            : ((pair.id === 'LICN/lUSD' || pair.base === 'LICN') ? LICHEN_GENESIS_PRICE : 0);
         // Task 5.4: Remember last selected pair
         localStorage.setItem('dexLastPair', String(pair.pairId));
         if (pairActive) pairActive.querySelector('.pair-name').textContent = pair.id;
@@ -1659,7 +1659,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateTickerDisplay() {
         const tp = document.querySelector('.ticker-pair'), t = document.querySelector('.ticker-price'), ch = document.querySelector('.ticker-change');
-        if (tp && state.activePair) tp.textContent = state.activePair.id || 'MOLT/mUSD';
+        if (tp && state.activePair) tp.textContent = state.activePair.id || 'LICN/lUSD';
         if (t) t.textContent = formatPrice(state.lastPrice);
         if (ch && state.activePair) { const c = state.activePair.change || 0; ch.textContent = `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`; ch.className = `ticker-change ${c >= 0 ? 'positive' : 'negative'}`; }
     }
@@ -1667,8 +1667,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateOrderBookLabels(pair) {
         const priceLabel = document.getElementById('bookPriceLabel');
         const sizeLabel = document.getElementById('bookSizeLabel');
-        const quote = pair?.quote || pair?.quoteSymbol || 'mUSD';
-        const base = pair?.base || pair?.baseSymbol || 'MOLT';
+        const quote = pair?.quote || pair?.quoteSymbol || 'lUSD';
+        const base = pair?.base || pair?.baseSymbol || 'LICN';
         if (priceLabel) priceLabel.textContent = `Price (${quote})`;
         if (sizeLabel) sizeLabel.textContent = `Size (${base})`;
     }
@@ -1785,14 +1785,14 @@ document.addEventListener('DOMContentLoaded', () => {
     pollBlockHeight();
     setInterval(pollBlockHeight, 3000);
 
-    // Footer links (data-molt-app) are auto-resolved by shared-config.js
+    // Footer links (data-lichen-app) are auto-resolved by shared-config.js
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Network Selector — wired to MOLT_CONFIG (shared-config.js)
+    // Network Selector — wired to LICHEN_CONFIG (shared-config.js)
     // ═══════════════════════════════════════════════════════════════════════
     const networkSelect = document.getElementById('networkSelect');
     if (networkSelect) {
-        MOLT_CONFIG.initNetworkSelector(networkSelect, 'dexNetwork', (network, cfg) => {
+        LICHEN_CONFIG.initNetworkSelector(networkSelect, 'dexNetwork', (network, cfg) => {
             localStorage.setItem('dexRpcUrl', cfg.rpc);
             localStorage.setItem('dexWsUrl', cfg.ws);
             window.location.reload();
@@ -1813,14 +1813,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function createDatafeed() {
         return {
-            onReady: cb => setTimeout(() => cb({ supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], exchanges: [{ value: 'MoltChain', name: 'MoltChain', desc: 'MoltChain DEX' }], symbols_types: [{ name: 'crypto', value: 'crypto' }] }), 0),
-            searchSymbols: (input, ex, st, cb) => cb(pairs.filter(p => p.id.toLowerCase().includes(input.toLowerCase())).map(p => ({ symbol: p.id, full_name: 'MoltChain:' + p.id, description: p.id, exchange: 'MoltChain', type: 'crypto' }))),
+            onReady: cb => setTimeout(() => cb({ supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], exchanges: [{ value: 'Lichen', name: 'Lichen', desc: 'Lichen DEX' }], symbols_types: [{ name: 'crypto', value: 'crypto' }] }), 0),
+            searchSymbols: (input, ex, st, cb) => cb(pairs.filter(p => p.id.toLowerCase().includes(input.toLowerCase())).map(p => ({ symbol: p.id, full_name: 'Lichen:' + p.id, description: p.id, exchange: 'Lichen', type: 'crypto' }))),
             resolveSymbol: (name, ok, err) => {
-                const p = pairs.find(x => x.id === name || ('MoltChain:' + x.id) === name) || pairs[0];
+                const p = pairs.find(x => x.id === name || ('Lichen:' + x.id) === name) || pairs[0];
                 if (!p) { err('Not found'); return; }
                 // Display-inverted pairs have very small prices (~0.000171) — always use high pricescale
                 const ps = isDisplayInvertedPair(p) ? 100000000 : (p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100);
-                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'MoltChain', listed_exchange: 'MoltChain', minmov: 1, pricescale: ps, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], volume_precision: 2, data_status: 'streaming' }), 0);
+                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'Lichen', listed_exchange: 'Lichen', minmov: 1, pricescale: ps, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1', '5', '15', '60', '240', '1D', '3D', '1W'], volume_precision: 2, data_status: 'streaming' }), 0);
             },
             getBars: async (si, res, pp, ok) => {
                 const apiC = await loadCandles(pp.from, pp.to, res);
@@ -1906,13 +1906,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById('tvChartContainer');
         if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; if (++tvRetryCount < 5) setTimeout(initTradingView, 5000); return; }
         tvWidget = new TradingView.widget({
-            symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: localStorage.getItem('dexChartInterval') || '15', toolbar_bg: '#0d1117',
-            loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
+            symbol: state.activePair?.id || 'LICN/lUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: localStorage.getItem('dexChartInterval') || '15', toolbar_bg: '#0d1117',
+            loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#00C9DB' },
             overrides: { 'paneProperties.background': '#0d1117', 'paneProperties.backgroundType': 'solid', 'paneProperties.vertGridProperties.color': 'rgba(255,255,255,0.04)', 'paneProperties.horzGridProperties.color': 'rgba(255,255,255,0.04)', 'scalesProperties.textColor': 'rgba(255,255,255,0.5)', 'scalesProperties.lineColor': 'rgba(255,255,255,0.08)', 'mainSeriesProperties.candleStyle.upColor': '#06d6a0', 'mainSeriesProperties.candleStyle.downColor': '#ef4444', 'mainSeriesProperties.candleStyle.borderUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.borderDownColor': '#ef4444', 'mainSeriesProperties.candleStyle.wickUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.wickDownColor': '#ef4444' },
             disabled_features: ['header_compare', 'header_undo_redo', 'go_to_date', 'use_localstorage_for_settings', 'study_templates'],
             enabled_features: ['side_toolbar_in_fullscreen_mode', 'header_symbol_search'],
         });
-        tvWidget.onChartReady(() => { tvWidget.activeChart().onSymbolChanged().subscribe(null, () => { const s = tvWidget.activeChart().symbol(); const p = pairs.find(x => x.id === s || ('MoltChain:' + x.id) === s); if (p && p.id !== state.activePair?.id) selectPair(p); }); });
+        tvWidget.onChartReady(() => { tvWidget.activeChart().onSymbolChanged().subscribe(null, () => { const s = tvWidget.activeChart().symbol(); const p = pairs.find(x => x.id === s || ('Lichen:' + x.id) === s); if (p && p.id !== state.activePair?.id) selectPair(p); }); });
     }
 
     function drawChart() { if (realtimeCallback && state.candles.length) { const l = state.candles[state.candles.length - 1]; const ms = resolutionToMs(activeResolution); realtimeCallback({ time: Math.floor(l.time / ms) * ms, open: l.open, high: l.high, low: l.low, close: l.close, volume: l.volume }); } }
@@ -2296,10 +2296,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 7. Minimum notional check (MIN_ORDER_VALUE = 1000 shells = 0.000001 in human)
+        // 7. Minimum notional check (MIN_ORDER_VALUE = 1000 spores = 0.000001 in human)
         {
             const notional = orderType === 'market' ? amount * (state.lastPrice || 1) : price * amount;
-            const minNotionalHuman = 1000 / PRICE_SCALE; // MIN_ORDER_VALUE in shells
+            const minNotionalHuman = 1000 / PRICE_SCALE; // MIN_ORDER_VALUE in spores
             if (notional < minNotionalHuman && notional > 0) {
                 return { ok: false, error: `Order notional ${formatAmount(notional)} below minimum (${formatAmount(minNotionalHuman)})`, code: 'MIN_NOTIONAL' };
             }
@@ -2347,7 +2347,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch { }
         }
         {
-            const neededToken = side === 'buy' ? (pair?.quote || 'mUSD') : (pair?.base || 'MOLT');
+            const neededToken = side === 'buy' ? (pair?.quote || 'lUSD') : (pair?.base || 'LICN');
             const effectivePrice = orderType === 'market' ? (state.lastPrice || 0) : price;
             const neededAmount = side === 'buy' ? (effectivePrice * amount) : amount;
             const available = balances[neededToken]?.available || 0;
@@ -2535,8 +2535,8 @@ document.addEventListener('DOMContentLoaded', () => {
             row.classList.add('editing');
             const origPrice = parseFloat(btn.dataset.price) || 0;
             const origAmount = parseFloat(btn.dataset.amount) || 0;
-            priceCell.innerHTML = `<input type="number" class="edit-price-input" value="${origPrice}" step="0.0001" style="width:80px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--orange-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
-            qtyCell.innerHTML = `<input type="number" class="edit-qty-input" value="${origAmount}" step="0.01" style="width:70px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--orange-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            priceCell.innerHTML = `<input type="number" class="edit-price-input" value="${origPrice}" step="0.0001" style="width:80px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            qtyCell.innerHTML = `<input type="number" class="edit-qty-input" value="${origAmount}" step="0.01" style="width:70px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--teal-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
             // Change pencil to save icon
             btn.innerHTML = '<i class="fas fa-check" style="color:var(--green-success);"></i>';
             btn.title = 'Save changes';
@@ -2701,8 +2701,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function encryptSeedHex(seedHex, password) {
-        if (window.MoltCrypto && typeof window.MoltCrypto.encryptPrivateKey === 'function') {
-            return window.MoltCrypto.encryptPrivateKey(seedHex, password);
+        if (window.LichenCrypto && typeof window.LichenCrypto.encryptPrivateKey === 'function') {
+            return window.LichenCrypto.encryptPrivateKey(seedHex, password);
         }
         const salt = crypto.getRandomValues(new Uint8Array(16));
         const key = await deriveSessionKey(password, salt);
@@ -2717,8 +2717,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function decryptSeedHex(encryptedData, password) {
-        if (window.MoltCrypto && typeof window.MoltCrypto.decryptPrivateKey === 'function') {
-            return window.MoltCrypto.decryptPrivateKey(encryptedData, password);
+        if (window.LichenCrypto && typeof window.LichenCrypto.decryptPrivateKey === 'function') {
+            return window.LichenCrypto.decryptPrivateKey(encryptedData, password);
         }
         const saltBytes = hexToBytes(encryptedData.salt || '');
         const ivBytes = hexToBytes(encryptedData.iv || '');
@@ -3011,29 +3011,29 @@ document.addEventListener('DOMContentLoaded', () => {
             resolvedSigningReady = !!resolved.signingReady;
         }
         await wallet.connectAddress(address, { signingReady: resolvedSigningReady || !!resolvedSessionKey, localKeypair: resolvedSessionKey });
-        // M16: Resolve .molt name and fetch MoltyID profile for connected trader
+        // M16: Resolve .lichen name and fetch LichenID profile for connected trader
         let displayLabel = shortAddr;
         try {
-            const reverseResult = await api.rpc('reverseMoltName', [address]);
+            const reverseResult = await api.rpc('reverseLichenName', [address]);
             if (reverseResult && reverseResult.name) {
-                state.moltName = reverseResult.name + '.molt';
-                displayLabel = state.moltName;
+                state.lichenName = reverseResult.name + '.lichen';
+                displayLabel = state.lichenName;
             } else {
-                state.moltName = null;
+                state.lichenName = null;
             }
-        } catch { state.moltName = null; }
+        } catch { state.lichenName = null; }
         try {
-            const profileResult = await api.rpc('getMoltyIdProfile', [address]);
+            const profileResult = await api.rpc('getLichenIdProfile', [address]);
             if (profileResult) {
-                state.moltyIdProfile = profileResult;
+                state.lichenIdProfile = profileResult;
                 state.reputation = profileResult.reputation || 0;
                 state.trustTier = profileResult.trustTier || profileResult.trust_tier || 0;
             } else {
-                state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
+                state.lichenIdProfile = null; state.reputation = 0; state.trustTier = 0;
             }
-        } catch { state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0; }
+        } catch { state.lichenIdProfile = null; state.reputation = 0; state.trustTier = 0; }
         const repBadge = state.reputation > 0
-            ? ` <span class="moltyid-rep-badge" title="MoltyID Reputation: ${state.reputation}">\u2b50${state.reputation}</span>`
+            ? ` <span class="lichenid-rep-badge" title="LichenID Reputation: ${state.reputation}">\u2b50${state.reputation}</span>`
             : '';
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(displayLabel)}${repBadge}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
@@ -3047,9 +3047,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function disconnectWallet() {
-        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet._moltWallet = null;
+        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.signingReady = false; wallet.address = null; wallet._lichenWallet = null;
         localStorage.removeItem(ACTIVE_WALLET_KEY);
-        state.moltName = null; state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
+        state.lichenName = null; state.lichenIdProfile = null; state.reputation = 0; state.trustTier = 0;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
         toggleWalletPanels(false);
@@ -3076,11 +3076,11 @@ document.addEventListener('DOMContentLoaded', () => {
     async function renderWalletList() {
         const list = document.getElementById('wmWalletsList'); if (!list) return;
         if (!savedWallets.length) { list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>`; const b = document.getElementById('wmEmptyImport'); if (b) b.addEventListener('click', () => switchWmTab('import')); return; }
-        // M16: Batch-resolve .molt names for saved wallets
+        // M16: Batch-resolve .lichen names for saved wallets
         const nameMap = {};
         try {
-            const result = await api.rpc('batchReverseMoltNames', [savedWallets.map(w => w.address)]);
-            if (result && typeof result === 'object') { for (const [addr, name] of Object.entries(result)) { if (name) nameMap[addr] = name + '.molt'; } }
+            const result = await api.rpc('batchReverseLichenNames', [savedWallets.map(w => w.address)]);
+            if (result && typeof result === 'object') { for (const [addr, name] of Object.entries(result)) { if (name) nameMap[addr] = name + '.lichen'; } }
         } catch { /* RPC unavailable — show plain addresses */ }
         list.innerHTML = savedWallets.map((w, i) => {
             const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);
@@ -3164,24 +3164,24 @@ document.addEventListener('DOMContentLoaded', () => {
             el.textContent = 'Connect wallet';
             return;
         }
-        const available = balances.mUSD?.available ?? 0;
-        el.textContent = `${formatAmount(available)} mUSD`;
+        const available = balances.lUSD?.available ?? 0;
+        el.textContent = `${formatAmount(available)} lUSD`;
     }
 
     // Task 7.1: Derive USD value for a token using pair prices
     function computeTokenUsd(symbol, amount) {
-        if (symbol === 'mUSD' || symbol === 'USDT' || symbol === 'USDC') return amount; // stablecoins ≈ $1
-        // Find a pair where this symbol is the base (e.g., MOLT/mUSD → MOLT price)
-        const directPair = pairs.find(p => p.base === symbol && (p.quote === 'mUSD' || p.quote === 'USDT' || p.quote === 'USDC'));
+        if (symbol === 'lUSD' || symbol === 'USDT' || symbol === 'USDC') return amount; // stablecoins ≈ $1
+        // Find a pair where this symbol is the base (e.g., LICN/lUSD → LICN price)
+        const directPair = pairs.find(p => p.base === symbol && (p.quote === 'lUSD' || p.quote === 'USDT' || p.quote === 'USDC'));
         if (directPair && directPair.price > 0) return amount * directPair.price;
         // Find a pair where this symbol is the quote and invert
-        const inversePair = pairs.find(p => p.quote === symbol && (p.base === 'mUSD' || p.base === 'USDT' || p.base === 'USDC'));
+        const inversePair = pairs.find(p => p.quote === symbol && (p.base === 'lUSD' || p.base === 'USDT' || p.base === 'USDC'));
         if (inversePair && inversePair.price > 0) return amount / inversePair.price;
-        // Cross-reference via MOLT if available
-        const moltPair = pairs.find(p => p.base === symbol && p.quote === 'MOLT');
-        if (moltPair && moltPair.price > 0) {
-            const moltUsd = pairs.find(p => p.base === 'MOLT' && (p.quote === 'mUSD' || p.quote === 'USDT'));
-            if (moltUsd && moltUsd.price > 0) return amount * moltPair.price * moltUsd.price;
+        // Cross-reference via LICN if available
+        const licnPair = pairs.find(p => p.base === symbol && p.quote === 'LICN');
+        if (licnPair && licnPair.price > 0) {
+            const licnUsd = pairs.find(p => p.base === 'LICN' && (p.quote === 'lUSD' || p.quote === 'USDT'));
+            if (licnUsd && licnUsd.price > 0) return amount * licnPair.price * licnUsd.price;
         }
         return 0;
     }
@@ -3433,7 +3433,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (canSign) {
                 launchCreateGate.disabled = false;
                 launchCreateGate.classList.remove('btn-wallet-gate');
-                launchCreateGate.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 MOLT)';
+                launchCreateGate.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
             } else {
                 launchCreateGate.disabled = true;
                 launchCreateGate.className = 'btn btn-full btn-wallet-gate';
@@ -3449,7 +3449,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // F10E.7 — Oracle Fast-Poll Price Overlay
     // FE-06 FIX: Replaced direct Binance WebSocket with internal oracle
-    // polling. All price data now flows through the MoltChain oracle API
+    // polling. All price data now flows through the Lichen oracle API
     // (/api/v1/oracle/prices) — no external third-party connections.
     // When ENABLE_EXTERNAL_PRICE_WS is true, poll rate increases from 5s
     // to 2s for more responsive real-time price overlay on pair list and
@@ -3479,8 +3479,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function applyOracleRealTimeOverlay(skipRender) {
         // Update ALL oracle-priced pairs in the dropdown + active pair ticker
-        const moltPairRef = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
-        const moltUsd = moltPairRef?.price || MOLT_GENESIS_PRICE;
+        const licnPairRef = pairs.find(p => (p.base || '').toUpperCase() === 'LICN' && (p.quote || '').toUpperCase() === 'LUSD');
+        const licnUsd = licnPairRef?.price || LICHEN_GENESIS_PRICE;
         let dropdownChanged = false;
 
         for (const p of pairs) {
@@ -3492,8 +3492,8 @@ document.addEventListener('DOMContentLoaded', () => {
             else if ((base === 'WBNB' || base === 'BNB') && oracleRefPrices['wBNB'] > 0) extPrice = oracleRefPrices['wBNB'];
 
             // Safety guard: display-inverted pairs should NEVER show price > 1
-            // (MOLT/wSOL ≈ 0.001, MOLT/wETH ≈ 0.00005, MOLT/wBNB ≈ 0.00016)
-            // If price > 1 it means the raw on-chain MOLT-denominated price leaked through
+            // (LICN/wSOL ≈ 0.001, LICN/wETH ≈ 0.00005, LICN/wBNB ≈ 0.00016)
+            // If price > 1 it means the raw on-chain LICN-denominated price leaked through
             if (!p.hasMarketPrice && extPrice <= 0 && isDisplayInvertedPair(p) && p.price > 1) {
                 p.price = invertPrice(p.price);
                 dropdownChanged = true;
@@ -3503,10 +3503,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (p.hasMarketPrice) continue;
             if (extPrice <= 0) continue;
 
-            // For MOLT-quoted pairs (on-chain: wSOL/MOLT, display: MOLT/wSOL),
-            // the display price = MOLT_USD / asset_USD (how much asset per 1 MOLT)
-            if (quote === 'MOLT' && moltUsd > 0) extPrice = moltUsd / extPrice;
-            else if (quote !== 'MUSD' && quote !== 'USD') continue;
+            // For LICN-quoted pairs (on-chain: wSOL/LICN, display: LICN/wSOL),
+            // the display price = LICN_USD / asset_USD (how much asset per 1 LICN)
+            if (quote === 'LICN' && licnUsd > 0) extPrice = licnUsd / extPrice;
+            else if (quote !== 'LUSD' && quote !== 'USD') continue;
 
             p.price = extPrice;
             dropdownChanged = true;
@@ -3652,7 +3652,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const vol = p.totalVolume ? formatVolume(p.totalVolume) : '—';
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
                         return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
-                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${escapeHtml((p.tokenASymbol || 'A')[0])}</span><span class="mini-icon">${escapeHtml((p.tokenBSymbol || 'B')[0])}</span></span> ${pair}</td>
+                            <td class="pool-pair">${pair}</td>
                             <td><span class="fee-badge">${fee}</span></td>
                             <td class="mono-value">${tvl}</td>
                             <td class="mono-value">${vol}</td>
@@ -3947,10 +3947,10 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.roundRect(1, 1, W - 2, H - 2, 12);
         ctx.stroke();
 
-        // Header: MoltChain DEX branding
+        // Header: Lichen DEX branding
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 14px monospace';
-        ctx.fillText('MoltChain DEX', 20, 30);
+        ctx.fillText('Lichen DEX', 20, 30);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = '11px monospace';
         ctx.fillText('Margin Trade', 160, 30);
@@ -4001,7 +4001,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Footer
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
         ctx.font = '10px monospace';
-        ctx.fillText(`moltchain.network • ${new Date().toISOString().slice(0, 10)}`, 20, H - 12);
+        ctx.fillText(`lichen.network • ${new Date().toISOString().slice(0, 10)}`, 20, H - 12);
 
         return canvas;
     }
@@ -4043,7 +4043,7 @@ document.addEventListener('DOMContentLoaded', () => {
         dlBtn.textContent = '⬇ Download PNG';
         dlBtn.addEventListener('click', () => {
             const a = document.createElement('a');
-            a.download = `moltchain-pnl-${opts.pair.replace('/', '-')}-${Date.now()}.png`;
+            a.download = `lichen-pnl-${opts.pair.replace('/', '-')}-${Date.now()}.png`;
             a.href = canvas.toDataURL('image/png');
             a.click();
         });
@@ -4306,7 +4306,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const isOpen = pos.status !== 'closed' && pos.status !== 'liquidated';
                         return `<div class="${rowClass}" data-position-id="${posId}">
                             <div class="margin-pos-info">
-                                <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
+                                <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'LICN/lUSD')}</span>
                                 <span class="mono-value">${leverage}x · ${marginType}</span>
                             </div>
                             <div class="margin-pos-details">
@@ -4324,7 +4324,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <button class="btn btn-small btn-margin-remove" data-position-id="${posId}" title="Remove Margin">−</button>
                                 ${isOpen ? `<button class="btn btn-small btn-margin-sltp" data-position-id="${posId}" title="Edit SL/TP" style="font-size:0.72rem;">SL/TP</button>` : ''}
                                 ${isOpen ? `<button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}" data-size="${sizeRaw}" data-side="${side.toLowerCase()}">Close ▾</button>` : ''}
-                                ${isOpen ? `<button class="btn btn-small btn-outline margin-share-btn" data-position-id="${posId}" data-pair="${escapeHtml(pos.pair || 'MOLT/mUSD')}" data-side="${escapeHtml(side)}" data-entry="${pos.entryPrice || 0}" data-mark="${mark}" data-pnl="${pnl}" data-pnlpct="${pnlPctStr}" data-leverage="${leverage}" data-slot="${pos.createdSlot || 0}" title="Share PnL">📤</button>` : ''}
+                                ${isOpen ? `<button class="btn btn-small btn-outline margin-share-btn" data-position-id="${posId}" data-pair="${escapeHtml(pos.pair || 'LICN/lUSD')}" data-side="${escapeHtml(side)}" data-entry="${pos.entryPrice || 0}" data-mark="${mark}" data-pnl="${pnl}" data-pnlpct="${pnlPctStr}" data-leverage="${leverage}" data-slot="${pos.createdSlot || 0}" title="Share PnL">📤</button>` : ''}
                             </div>
                             <div class="margin-sltp-inline hidden" data-position-id="${posId}" data-side="${side.toLowerCase()}" data-entry-price="${entryHuman}">
                                 <div style="display:flex;gap:6px;align-items:center;">
@@ -4556,7 +4556,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     totalUnrealizedPnl += uPnl;
                 });
-                const eq = (balances.mUSD?.available || 0) + totalMargin + totalUnrealizedPnl;
+                const eq = (balances.lUSD?.available || 0) + totalMargin + totalUnrealizedPnl;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginEquity', formatVolume(eq));
                 el('marginUsed', formatVolume(totalMargin));
@@ -4566,9 +4566,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 // No positions — show empty state
                 if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No open positions</div>';
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('marginEquity', formatVolume(balances.mUSD?.available || 0));
+                el('marginEquity', formatVolume(balances.lUSD?.available || 0));
                 el('marginUsed', '$0.00');
-                el('marginAvailable', formatVolume(balances.mUSD?.available || 0));
+                el('marginAvailable', formatVolume(balances.lUSD?.available || 0));
             }
         } catch { /* keep empty state */ }
     }
@@ -4659,7 +4659,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         const dateStr = new Date().toISOString().split('T')[0];
-        a.href = url; a.download = `moltchain-trades-${dateStr}.csv`;
+        a.href = url; a.download = `lichen-trades-${dateStr}.csv`;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(url);
         showNotification('Trade history exported', 'success');
@@ -4670,17 +4670,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Rewards View — Load from API
     // ═══════════════════════════════════════════════════════════════════════
-    // F13.2: Compute tier from volume client-side (contract thresholds in shells: 1 MOLT = 1e9 shells)
+    // F13.2: Compute tier from volume client-side (contract thresholds in spores: 1 LICN = 1e9 spores)
     const TIER_THRESHOLDS = [
-        { name: 'Bronze', max: 100_000_000_000_000, mult: 1.0 },  // < 100K MOLT
-        { name: 'Silver', max: 1_000_000_000_000_000, mult: 1.5 },  // 100K — 1M MOLT
-        { name: 'Gold', max: 10_000_000_000_000_000, mult: 2.0 },  // 1M — 10M MOLT
-        { name: 'Diamond', max: Infinity, mult: 3.0 },  // >= 10M MOLT
+        { name: 'Bronze', max: 100_000_000_000_000, mult: 1.0 },  // < 100K LICN
+        { name: 'Silver', max: 1_000_000_000_000_000, mult: 1.5 },  // 100K — 1M LICN
+        { name: 'Gold', max: 10_000_000_000_000_000, mult: 2.0 },  // 1M — 10M LICN
+        { name: 'Diamond', max: Infinity, mult: 3.0 },  // >= 10M LICN
     ];
 
-    function computeRewardTier(volumeShells) {
+    function computeRewardTier(volumeSpores) {
         for (let i = 0; i < TIER_THRESHOLDS.length; i++) {
-            if (volumeShells < TIER_THRESHOLDS[i].max) return i;
+            if (volumeSpores < TIER_THRESHOLDS[i].max) return i;
         }
         return TIER_THRESHOLDS.length - 1;
     }
@@ -4691,7 +4691,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/stats/rewards');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('rewardsTotalDist', formatAmount(data.totalDistributed ? data.totalDistributed / 1e9 : 0) + ' MOLT');
+                el('rewardsTotalDist', formatAmount(data.totalDistributed ? data.totalDistributed / 1e9 : 0) + ' LICN');
             }
         } catch { /* API unavailable */ }
         // F13.4: Generate referral link when wallet connected
@@ -4706,7 +4706,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 const pending = data.pending ? data.pending / 1e9 : 0;
-                el('rewardsPending', formatAmount(pending) + ' MOLT');
+                el('rewardsPending', formatAmount(pending) + ' LICN');
                 el('rewardsPendingUsd', `≈ $${formatAmount(pending * state.lastPrice)}`);
                 // F13.2: Compute tier from totalVolume (camelCase from RPC)
                 const volume = data.totalVolume || 0;
@@ -4725,15 +4725,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 const tierBar = document.querySelector('.tier-bar');
                 if (tierBar) tierBar.style.width = `${pct.toFixed(1)}%`;
                 // Update tier progress text
-                const volMolt = volume / 1e9;
+                const volLicn = volume / 1e9;
                 const progStats = document.querySelectorAll('.tier-your-progress .progress-stat .mono-value');
                 if (progStats.length >= 2) {
-                    progStats[0].textContent = formatAmount(volMolt) + ' MOLT';
+                    progStats[0].textContent = formatAmount(volLicn) + ' LICN';
                     if (tierNum < TIER_THRESHOLDS.length - 1) {
                         const nextTier = TIER_THRESHOLDS[tierNum + 1] || TIER_THRESHOLDS[tierNum];
                         const nextName = nextTier === TIER_THRESHOLDS[tierNum] ? tierName : TIER_THRESHOLDS[tierNum + 1].name;
-                        const remaining = (tier.max / 1e9) - volMolt;
-                        progStats[1].textContent = `${formatAmount(remaining)} MOLT to ${tierNum < 3 ? TIER_THRESHOLDS[tierNum + 1].name : tierName}`;
+                        const remaining = (tier.max / 1e9) - volLicn;
+                        progStats[1].textContent = `${formatAmount(remaining)} LICN to ${tierNum < 3 ? TIER_THRESHOLDS[tierNum + 1].name : tierName}`;
                     } else {
                         progStats[1].textContent = 'Max tier reached!';
                     }
@@ -4744,18 +4744,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     row.classList.toggle('active-tier', idx === tierNum);
                 });
                 // Trading reward card metrics
-                el('rewardTradePending', formatAmount(pending) + ' MOLT');
+                el('rewardTradePending', formatAmount(pending) + ' LICN');
                 // F13.7: Use claimed (available from RPC) for "All Time"; no monthly field in contract
                 const claimed = data.claimed ? data.claimed / 1e9 : 0;
                 el('rewardTradeMonth', '—');
-                el('rewardTradeAll', formatAmount(claimed + pending) + ' MOLT');
+                el('rewardTradeAll', formatAmount(claimed + pending) + ' LICN');
                 // LP Mining card — no per-user LP reward data in contract; show pending or —
                 el('rewardLpPending', '—');
                 el('rewardLpPositions', '—');
                 el('rewardLpLiquidity', '—');
                 // F13.3: Referral card metrics — use camelCase field names from RPC
                 el('rewardRefCount', (data.referralCount ?? 0) + ' traders');
-                el('rewardRefEarnings', formatAmount(data.referralEarnings ? data.referralEarnings / 1e9 : 0) + ' MOLT');
+                el('rewardRefEarnings', formatAmount(data.referralEarnings ? data.referralEarnings / 1e9 : 0) + ' LICN');
                 el('rewardRefRate', '10%');
             }
         } catch { /* API unavailable */ }
@@ -4778,7 +4778,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadProposals() {
         try {
             const { data, slot: currentSlot } = await api.get('/governance/proposals');
-            // F16.9: Time remaining uses currentSlot * 0.4 seconds per Moltchain slot
+            // F16.9: Time remaining uses currentSlot * 0.4 seconds per Lichen slot
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.getElementById('proposalsList');
                 if (container) {
@@ -4901,7 +4901,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
             if (!walletCanSign()) { showNotification('Reconnect wallet to sign', 'warning'); return; }
             const card = btn.closest('.proposal-card');
-            // F14.7: Contract uses MoltyID reputation check (>=500), not MOLT balance
+            // F14.7: Contract uses LichenID reputation check (>=500), not LICN balance
             // Vote via signed sendTransaction
             const pid = card?.dataset?.proposalId;
             const title = card?.querySelector('h4')?.textContent || '';
@@ -5033,7 +5033,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.base_token = base;
                 proposalData.quote_token = quote;
             } else if (ptype === 'fee') {
-                proposalData.pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
+                proposalData.pair = document.getElementById('propFeePair')?.value || 'LICN/lUSD';
                 proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
                 proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
             } else if (ptype === 'delist') {
@@ -5105,12 +5105,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PredictionReef — Predict View (Live API)
+    // Prediction Market — Predict View (Live API)
     // ═══════════════════════════════════════════════════════════════════════
 
     // Only real on-chain prediction markets displayed
     const INITIAL_MARKETS = [];
-    const PREDICT_DISPUTE_BOND = 100_000_000; // 100 mUSD
+    const PREDICT_DISPUTE_BOND = 100_000_000; // 100 lUSD
 
     const predictState = {
         selectedMarket: 1,
@@ -5332,7 +5332,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!now) return `Slot ${formatNumber(close)}`;
         const remainingSlots = close - now;
         if (remainingSlots <= 0) return 'Closed';
-        // DEX-09: MoltChain slot time is 400ms (0.4s), not 500ms
+        // DEX-09: Lichen slot time is 400ms (0.4s), not 500ms
         const totalSeconds = Math.floor(remainingSlots * 0.4);
         const days = Math.floor(totalSeconds / 86400);
         const hours = Math.floor((totalSeconds % 86400) / 3600);
@@ -5692,7 +5692,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
-            const evidence = prompt(`Challenge resolution of "${m.question}"?\n\nThis requires a bond of 100 mUSD.\n\nProvide evidence or reason for challenge:`);
+            const evidence = prompt(`Challenge resolution of "${m.question}"?\n\nThis requires a bond of 100 lUSD.\n\nProvide evidence or reason for challenge:`);
             if (!evidence) { showNotification('Challenge cancelled', 'info'); return; }
             btn.disabled = true; btn.textContent = 'Challenging...';
             try {
@@ -6014,7 +6014,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
             const outcomeVal = predictState.selectedOutcome === 'yes' ? 0 : 1;
-            // F12.1 FIX: Contract uses MUSD_UNIT (1e6), not PRICE_SCALE (1e9)
+            // F12.1 FIX: Contract uses LUSD_UNIT (1e6), not PRICE_SCALE (1e9)
             const tradeAmountMicros = Math.round(amt * 1e6);
             await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, tradeAmountMicros), tradeAmountMicros)]);
             showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
@@ -6043,7 +6043,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const q = document.getElementById('predictQuestion')?.value?.trim();
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
-        if (liq < 100) { showNotification('Min 100 mUSD initial liquidity', 'warning'); return; }
+        if (liq < 100) { showNotification('Min 100 lUSD initial liquidity', 'warning'); return; }
 
         // Collect outcomes for multi-outcome markets
         let outcomes = [];
@@ -6082,7 +6082,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // If we couldn't get current slot, use a large estimate
             if (!currentSlot) currentSlot = Math.round(Date.now() / 400); // F16.9: 400ms per slot
             const closeSlot = currentSlot + durationSlots;
-            const predictCreateFee = 10_000_000; // 10 mUSD, matches prediction contract MARKET_CREATION_FEE
+            const predictCreateFee = 10_000_000; // 10 lUSD, matches prediction contract MARKET_CREATION_FEE
             const createIx = contractIx(contracts.prediction_market, await buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot), predictCreateFee);
             await wallet.sendTransaction([createIx]);
 
@@ -6112,7 +6112,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (createdMarketId) {
                 const liqIx = contractIx(contracts.prediction_market, buildAddInitialLiquidityArgs(wallet.address, createdMarketId, initialLiquidityMicros), initialLiquidityMicros);
                 await wallet.sendTransaction([liqIx]);
-                showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with ${liq} mUSD liquidity`, 'success');
+                showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with ${liq} lUSD liquidity`, 'success');
             } else {
                 showNotification('Market created, but liquidity step is pending (could not resolve market id yet)', 'warning');
             }
@@ -6254,7 +6254,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (copyBtn) copyBtn.addEventListener('click', () => { const c = document.querySelector('.referral-link-box code'); if (c) navigator.clipboard.writeText(c.textContent).then(() => showNotification('Referral link copied!', 'success')); });
 
     // ═══════════════════════════════════════════════════════════════════════
-    // ClawPump Launchpad — Full token launch + bonding curve UI
+    // SporePump Launchpad — Full token launch + bonding curve UI
     // ═══════════════════════════════════════════════════════════════════════
 
     const launchState = { tokens: [], selectedToken: null, tradeMode: 'buy', quoteTimer: null };
@@ -6272,7 +6272,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('launchTokenCount', data.token_count || 0);
                 el('launchTotalRaised', formatVolume(parseFloat(data.fees_collected || 0) * 0.10)); // rough USD estimate
                 el('launchGraduated', data.total_graduated || 0);
-                el('launchFees', formatAmount(data.fees_collected || 0) + ' MOLT');
+                el('launchFees', formatAmount(data.fees_collected || 0) + ' LICN');
             }
         } catch { /* API unavailable */ }
     }
@@ -6308,7 +6308,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const gradPct = (t.graduation_pct || 0).toFixed(1);
             const isGrad = t.graduated;
             const priceStr = formatPrice(t.current_price || 0);
-            const raisedStr = formatAmount(t.molt_raised || 0);
+            const raisedStr = formatAmount(t.licn_raised || 0);
             const mcapStr = formatAmount(t.market_cap || 0);
             const creatorShort = t.creator ? (t.creator.slice(0, 6) + '...' + t.creator.slice(-4)) : '—';
             const selectedClass = launchState.selectedToken === t.id ? 'selected' : '';
@@ -6319,9 +6319,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="ltc-creator"><i class="fas fa-user"></i> ${escapeHtml(creatorShort)}</div>
                 <div class="ltc-stats">
-                    <div class="ltc-stat"><span class="ltc-stat-label">Price</span><span class="ltc-stat-value mono-value">${priceStr} MOLT</span></div>
-                    <div class="ltc-stat"><span class="ltc-stat-label">Raised</span><span class="ltc-stat-value mono-value">${raisedStr} MOLT</span></div>
-                    <div class="ltc-stat"><span class="ltc-stat-label">MktCap</span><span class="ltc-stat-value mono-value">${mcapStr} MOLT</span></div>
+                    <div class="ltc-stat"><span class="ltc-stat-label">Price</span><span class="ltc-stat-value mono-value">${priceStr} LICN</span></div>
+                    <div class="ltc-stat"><span class="ltc-stat-label">Raised</span><span class="ltc-stat-value mono-value">${raisedStr} LICN</span></div>
+                    <div class="ltc-stat"><span class="ltc-stat-label">MktCap</span><span class="ltc-stat-value mono-value">${mcapStr} LICN</span></div>
                 </div>
                 <div class="ltc-grad-bar">
                     <div class="ltc-grad-track"><div class="ltc-grad-fill" style="width:${gradPct}%"></div></div>
@@ -6379,15 +6379,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
         if (!t) {
             el('launchCurrentPrice', '—'); el('launchMarketCap', '—');
-            el('launchMoltRaised', '—'); el('launchSupplySold', '—');
+            el('launchLicnRaised', '—'); el('launchSupplySold', '—');
             el('launchGradPct', '0%');
             const fill = document.getElementById('launchGradFill');
             if (fill) fill.style.width = '0%';
             return;
         }
-        el('launchCurrentPrice', formatPrice(t.current_price) + ' MOLT');
-        el('launchMarketCap', formatAmount(t.market_cap) + ' MOLT');
-        el('launchMoltRaised', formatAmount(t.molt_raised) + ' MOLT');
+        el('launchCurrentPrice', formatPrice(t.current_price) + ' LICN');
+        el('launchMarketCap', formatAmount(t.market_cap) + ' LICN');
+        el('launchLicnRaised', formatAmount(t.licn_raised) + ' LICN');
         el('launchSupplySold', formatAmount(t.supply_sold));
         const gradPct = (t.graduation_pct || 0).toFixed(1);
         el('launchGradPct', gradPct + '%');
@@ -6408,7 +6408,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.clearRect(0, 0, W, H);
 
         // Bonding curve: price(s) = BASE_PRICE + s * SLOPE / SLOPE_SCALE
-        // In MOLT: price(s) = (1000 + s / 1e6) / 1e9
+        // In LICN: price(s) = (1000 + s / 1e6) / 1e9
         const BASE = 1000;
         const supplySoldRaw = (token.supply_sold || 0) * 1e9; // convert back to raw
         // Plot from 0 to 2x current supply (or min 1M if zero)
@@ -6503,8 +6503,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const amtUnit = document.getElementById('launchAmountUnit');
         const tradeBtn = document.getElementById('launchTradeBtn');
         if (side === 'buy') {
-            if (amtLabel) amtLabel.textContent = 'Amount (MOLT)';
-            if (amtUnit) amtUnit.textContent = 'MOLT';
+            if (amtLabel) amtLabel.textContent = 'Amount (LICN)';
+            if (amtUnit) amtUnit.textContent = 'LICN';
             if (tradeBtn) { tradeBtn.innerHTML = '<i class="fas fa-bolt"></i> Buy Tokens'; tradeBtn.className = 'btn btn-full btn-buy'; }
         } else {
             if (amtLabel) amtLabel.textContent = 'Amount (Tokens)';
@@ -6524,8 +6524,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (launchState.tradeMode === 'buy') {
             // Client-side bonding curve estimate
-            const moltShells = amt * 1e9;
-            const afterFee = moltShells * 0.99;
+            const licnSpores = amt * 1e9;
+            const afterFee = licnSpores * 0.99;
             const supplyRaw = (t.supply_sold || 0) * 1e9;
             // Quadratic solve for tokens out (same as REST API)
             const aCoeff = 1 / (2 * 1e6);
@@ -6538,22 +6538,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
             el('launchQuoteTokens', formatAmount(tokensF) + ' tokens');
             el('launchQuoteImpact', impact.toFixed(2) + '%');
-            el('launchQuoteFee', formatAmount(amt * 0.01) + ' MOLT');
+            el('launchQuoteFee', formatAmount(amt * 0.01) + ' LICN');
         } else {
             // Sell estimate
-            const tokenShells = amt * 1e9;
+            const tokenSpores = amt * 1e9;
             const supplyRaw = (t.supply_sold || 0) * 1e9;
-            if (tokenShells > supplyRaw) { el('launchQuoteTokens', 'Exceeds supply'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—'); return; }
+            if (tokenSpores > supplyRaw) { el('launchQuoteTokens', 'Exceeds supply'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—'); return; }
             // Sell refund: (BASE_PRICE * a + SLOPE * a * (2*s - a) / (2 * SLOPE_SCALE)) / norm
-            const a = tokenShells, s = supplyRaw;
+            const a = tokenSpores, s = supplyRaw;
             const refundRaw = (1000 * a + 1 * a * (2 * s - a) / (2 * 1e6)) / 1e9;
             const refundAfterFee = refundRaw * 0.99;
             const priceBefore = (1000 + s / 1e6) / 1e9;
             const priceAfter = (1000 + (s - a) / 1e6) / 1e9;
             const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
-            el('launchQuoteTokens', formatAmount(refundAfterFee) + ' MOLT');
+            el('launchQuoteTokens', formatAmount(refundAfterFee) + ' LICN');
             el('launchQuoteImpact', impact.toFixed(2) + '%');
-            el('launchQuoteFee', formatAmount(refundRaw * 0.01) + ' MOLT');
+            el('launchQuoteFee', formatAmount(refundRaw * 0.01) + ' LICN');
         }
     }
 
@@ -6622,7 +6622,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (launchTradeBtn) launchTradeBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
+        if (!contracts.sporepump) { showNotification('SporePump contract not found in registry', 'error'); return; }
         const tid = launchState.selectedToken;
         if (!tid) { showNotification('Select a token first', 'warning'); return; }
         const amt = parseFloat(document.getElementById('launchAmountInput')?.value) || 0;
@@ -6635,12 +6635,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             if (launchState.tradeMode === 'buy') {
-                const moltShells = Math.round(amt * 1e9);
-                await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'buy', buildCPBuyArgs(wallet.address, tid, moltShells), moltShells)]);
+                const licnSpores = Math.round(amt * 1e9);
+                await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'buy', buildCPBuyArgs(wallet.address, tid, licnSpores), licnSpores)]);
                 showNotification(`Bought tokens on Token #${tid}!`, 'success');
             } else {
-                const tokenShells = Math.round(amt * 1e9);
-                await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'sell', buildCPSellArgs(wallet.address, tid, tokenShells))]);
+                const tokenSpores = Math.round(amt * 1e9);
+                await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'sell', buildCPSellArgs(wallet.address, tid, tokenSpores))]);
                 showNotification(`Sold tokens on Token #${tid}!`, 'success');
             }
             // Refresh
@@ -6659,17 +6659,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
         if (!walletCanSign()) { showNotification('Reconnect wallet to sign transactions', 'warning'); return; }
-        if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
+        if (!contracts.sporepump) { showNotification('SporePump contract not found in registry', 'error'); return; }
 
         // Check balance
-        const moltBal = balances['MOLT']?.available || 0;
-        if (moltBal < 10) { showNotification(`Insufficient MOLT: need 10, have ${formatAmount(moltBal)}`, 'warning'); return; }
+        const licnBal = balances['LICN']?.available || 0;
+        if (licnBal < 10) { showNotification(`Insufficient LICN: need 10, have ${formatAmount(licnBal)}`, 'warning'); return; }
 
         launchCreateBtn.disabled = true;
         launchCreateBtn.textContent = 'Launching...';
         try {
-            const creationFee = 10_000_000_000; // 10 MOLT in shells
-            await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'create_token', buildCPCreateTokenArgs(wallet.address), creationFee)]);
+            const creationFee = 10_000_000_000; // 10 LICN in spores
+            await wallet.sendTransaction([namedCallIx(contracts.sporepump, 'create_token', buildCPCreateTokenArgs(wallet.address), creationFee)]);
             showNotification('Token launched! 🚀', 'success');
             // Refresh
             await loadLaunchpadStats();
@@ -6678,7 +6678,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showNotification(`Launch failed: ${e.message}`, 'error');
         }
         launchCreateBtn.disabled = false;
-        launchCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 MOLT)';
+        launchCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 LICN)';
     });
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -6757,7 +6757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await loadOrderBook();
                     const t = await loadTicker(state.activePairId);
                     if (t?.lastPrice) {
-                        // Invert on-chain price for display-inverted pairs (wBNB/MOLT → MOLT/wBNB)
+                        // Invert on-chain price for display-inverted pairs (wBNB/LICN → LICN/wBNB)
                         const dp = isDisplayInvertedPair(state.activePair) ? invertPrice(t.lastPrice) : t.lastPrice;
                         state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(dp, 0);
                     }

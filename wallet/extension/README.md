@@ -1,4 +1,4 @@
-# MoltWallet Extension Scaffold
+# LichenWallet Extension Scaffold
 
 This directory is the implementation workspace for the Brave/Chrome extension build.
 
@@ -47,7 +47,7 @@ Begin Phase 0 by adding:
 - Full-page export parity: password-gated private key and seed phrase download actions (txt)
 - dApp permission management: list/revoke approved provider origins from settings route
 - Identity detail actions: register, add skill, agent type, vouch, endpoint/availability/rate updates
-- Identity name lifecycle actions: register/renew/transfer/release `.molt` names
+- Identity name lifecycle actions: register/renew/transfer/release `.lichen` names
 - Identity safety parity: core service validation hardening for names/addresses/endpoints/rates/password and transaction preflight spendability checks
 - Route-level UX validation hardening: stricter input checks, address/url validation, and action status feedback on home/identity pages
 - Bridge UX parity upgrades: mapped deposit status lifecycle text, adaptive polling cadence, and copy-address action in full-page dashboard
@@ -60,25 +60,25 @@ Begin Phase 0 by adding:
 - Core state + lock services: ready
 
 ## Provider Status
-- `molt_getProviderState`: supported
-- `molt_isConnected`: supported
-- `molt_chainId`: supported
-- `molt_network`: supported
-- `molt_version`: supported
-- `molt_accounts`: supported
-- `molt_requestAccounts`: supported with approval page flow
-- `molt_connect`: supported (alias to account request flow)
-- `molt_disconnect`: supported (origin-scoped)
-- `molt_getPermissions`: supported (origin-scoped permission view)
+- `licn_getProviderState`: supported
+- `licn_isConnected`: supported
+- `licn_chainId`: supported
+- `licn_network`: supported
+- `licn_version`: supported
+- `licn_accounts`: supported
+- `licn_requestAccounts`: supported with approval page flow
+- `licn_connect`: supported (alias to account request flow)
+- `licn_disconnect`: supported (origin-scoped)
+- `licn_getPermissions`: supported (origin-scoped permission view)
 - `wallet_getPermissions`: supported (compat alias)
 - `wallet_revokePermissions`: supported (compat alias)
-- `molt_getBalance`: supported
-- `molt_getAccount`: supported
-- `molt_getLatestBlock`: supported
-- `molt_getTransactions`: supported
-- `molt_signMessage`: supported with approval + password flow
-- `molt_signTransaction`: supported with approval + password flow
-- `molt_sendTransaction`: supported with approval + password + broadcast flow
+- `licn_getBalance`: supported
+- `licn_getAccount`: supported
+- `licn_getLatestBlock`: supported
+- `licn_getTransactions`: supported
+- `licn_signMessage`: supported with approval + password flow
+- `licn_signTransaction`: supported with approval + password flow
+- `licn_sendTransaction`: supported with approval + password + broadcast flow
 - `eth_chainId`: supported (compat alias)
 - `net_version`: supported (compat alias)
 - `eth_coinbase`: supported (compat alias)
@@ -103,14 +103,14 @@ Begin Phase 0 by adding:
 - Approval page metadata: network/chain/account/lock-state context now shown
 - Provider compatibility hardening: method alias normalization and flexible request input forms (`request({method, params})` or `request(method, params)`)
 - Provider approval parity fix: pending approval finalization now resolves normalized method aliases correctly
-- Provider compatibility expansion: common Ethereum-style aliases (`eth_accounts`, `eth_requestAccounts`, `personal_sign`, `eth_sign`, `eth_signTransaction`, `eth_sendTransaction`) mapped to Molt flows
-- Provider permissions/connect compatibility: `molt_connect`, `molt_getPermissions`, `wallet_getPermissions`, and `wallet_revokePermissions` bridged to extension origin permissions model
+- Provider compatibility expansion: common Ethereum-style aliases (`eth_accounts`, `eth_requestAccounts`, `personal_sign`, `eth_sign`, `eth_signTransaction`, `eth_sendTransaction`) mapped to Lichen flows
+- Provider permissions/connect compatibility: `licn_connect`, `licn_getPermissions`, `wallet_getPermissions`, and `wallet_revokePermissions` bridged to extension origin permissions model
 - Provider network compatibility: `eth_chainId`, `net_version`, and `eth_coinbase` compatibility paths added
 - Approval queue UX: pending requests list + picker when approval page opens directly
 - Approval UX hardening: alias-aware signing password requirement, stale-request button disablement, and escaped request rendering
 - Provider pending lifecycle hardening: pending approval TTL timeout + bounded queue size protection
-- Provider lock awareness: `molt_accounts` hides accounts while locked and `molt_requestAccounts` returns explicit locked error
-- In-page EVM bridge compatibility: `window.ethereum` mirror (non-MetaMask) backed by Molt provider methods/events
+- Provider lock awareness: `licn_accounts` hides accounts while locked and `licn_requestAccounts` returns explicit locked error
+- In-page EVM bridge compatibility: `window.ethereum` mirror (non-MetaMask) backed by Lichen provider methods/events
 
 ## Current Limitations
 - No known parity blockers remain for wallet web-surface feature coverage in this release.

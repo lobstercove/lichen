@@ -4,9 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltFaucet - Free MOLT Tokens for Testing</title>
+    <title>Lichen Faucet — Free LICN Tokens for Testing</title>
+    <meta name="description"
+        content="Get free LICN testnet tokens for development and testing on the Lichen blockchain.">
+    <meta property="og:title" content="Lichen Faucet — Free LICN Tokens for Testing">
+    <meta property="og:description"
+        content="Get free LICN testnet tokens for development and testing on the Lichen blockchain.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://faucet.lichen.network">
     <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <meta name="description" content="Get free MOLT testnet tokens for development and testing on MoltChain.">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="faucet.css">
@@ -23,17 +29,17 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
-                <span class="logo-text">MoltChain</span>
+                <img src="Lichen_Logo_256.png" class="logo-icon" alt="Lichen">
+                <span class="logo-text">Lichen</span>
             </div>
             <ul class="nav-menu">
-                <li><a href="#" data-molt-app="website">Home</a></li>
-                <li><a href="#" data-molt-app="explorer">Explorer</a></li>
-                <li><a href="#" data-molt-app="wallet">Wallet</a></li>
-                <li><a href="#" data-molt-app="faucet" class="active">Faucet</a></li>
+                <li><a href="#" data-lichen-app="website">Home</a></li>
+                <li><a href="#" data-lichen-app="explorer">Explorer</a></li>
+                <li><a href="#" data-lichen-app="wallet">Wallet</a></li>
+                <li><a href="#" data-lichen-app="faucet" class="active">Faucet</a></li>
             </ul>
             <div class="nav-actions">
-                <a href="#" data-molt-app="wallet" class="btn btn-primary btn-sm">Connect Wallet</a>
+                <a href="#" data-lichen-app="wallet" class="btn btn-primary btn-sm">Connect Wallet</a>
             </div>
             <button class="nav-toggle" id="navToggle">
                 <span></span><span></span><span></span>
@@ -50,10 +56,10 @@
                     Testnet Faucet
                 </div>
                 <h1 class="hero-title">
-                    Get Free <span class="gradient-text">MOLT Tokens</span>
+                    Get Free <span class="gradient-text">LICN Tokens</span>
                 </h1>
                 <p class="hero-subtitle">
-                    Request testnet tokens to start building and testing on MoltChain. No registration required.
+                    Request testnet tokens to start building and testing on Lichen. No registration required.
                 </p>
             </div>
         </div>
@@ -68,7 +74,7 @@
                     <div class="stat-icon"><i class="fas fa-coins"></i></div>
                     <div class="stat-content">
                         <div class="stat-label">Per Request</div>
-                        <div class="stat-value" id="statPerRequest">10 MOLT</div>
+                        <div class="stat-value" id="statPerRequest">10 LICN</div>
                     </div>
                 </div>
                 <div class="stat-card">
@@ -82,7 +88,7 @@
                     <div class="stat-icon"><i class="fas fa-users"></i></div>
                     <div class="stat-content">
                         <div class="stat-label">Daily Limit</div>
-                        <div class="stat-value" id="statDailyLimit">150 MOLT / IP</div>
+                        <div class="stat-value" id="statDailyLimit">150 LICN / IP</div>
                     </div>
                 </div>
                 <div class="stat-card">
@@ -98,7 +104,7 @@
             <div class="faucet-card">
                 <div class="card-header">
                     <h2>Request Testnet Tokens</h2>
-                    <p>Enter your MoltChain address to receive free testnet MOLT tokens</p>
+                    <p>Enter your Lichen address to receive free testnet LICN tokens</p>
                 </div>
 
                 <form id="faucetForm" class="faucet-form">
@@ -108,7 +114,7 @@
                             Wallet Address
                         </label>
                         <input type="text" id="address" class="form-input" placeholder="4y43skFVWzrpi..." required>
-                        <span class="form-help">Enter a valid MoltChain base58 address</span>
+                        <span class="form-help">Enter a valid Lichen base58 address</span>
                     </div>
 
                     <div class="form-group">
@@ -151,7 +157,7 @@
                 <div class="info-card">
                     <div class="info-icon"><i class="fas fa-question-circle"></i></div>
                     <h3>How it Works</h3>
-                    <p>Enter your testnet address, complete the verification, and receive testnet MOLT tokens instantly.
+                    <p>Enter your testnet address, complete the verification, and receive testnet LICN tokens instantly.
                         Limits are shown above.</p>
                 </div>
                 <div class="info-card">
@@ -163,7 +169,7 @@
                 <div class="info-card">
                     <div class="info-icon"><i class="fas fa-exclamation-triangle"></i></div>
                     <h3>Important</h3>
-                    <p>These are testnet tokens with no real value. MoltChain uses the same address format for both
+                    <p>These are testnet tokens with no real value. Lichen uses the same address format for both
                         testnet and mainnet.</p>
                 </div>
             </div>
@@ -200,8 +206,8 @@
             <div class="footer-grid">
                 <div class="footer-col">
                     <div class="footer-logo">
-                        <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
-                        <span class="logo-text">MoltChain</span>
+                        <img src="Lichen_Logo_256.png" class="logo-icon" alt="Lichen">
+                        <span class="logo-text">Lichen</span>
                     </div>
                     <p class="footer-desc">
                         The agent-first blockchain. Fast BFT block commitment, $0.0001 fees, WASM + EVM contracts,
@@ -211,36 +217,38 @@
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="developers">Documentation</a></li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/getting-started.html">Vision</a>
+                        <li><a href="#" data-lichen-app="developers">Documentation</a></li>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Vision</a>
                         </li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/architecture.html">Whitepaper</a>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Whitepaper</a>
                         </li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/validator.html">Validator Guide</a>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/validator.html">Validator
+                                Guide</a>
                         </li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Tools</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="explorer">Explorer</a></li>
-                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-lichen-app="explorer">Explorer</a></li>
+                        <li><a href="#" data-lichen-app="wallet">Wallet</a></li>
                         <li><a href="index.html">Testnet Faucet</a></li>
-                        <li><a href="https://github.com/lobstercove/moltchain">GitHub</a></li>
+                        <li><a href="https://github.com/lobstercove/lichen">GitHub</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Community</h4>
                     <ul class="footer-links">
-                        <li><a href="https://discord.gg/moltchain">Discord</a></li>
-                        <li><a href="https://twitter.com/moltchain">Twitter</a></li>
-                        <li><a href="https://t.me/moltchain">Telegram</a></li>
-                        <li><a href="https://github.com/lobstercove/moltchain">GitHub</a></li>
+                        <li><a href="https://discord.gg/lichen">Discord</a></li>
+                        <li><a href="https://twitter.com/lichen">Twitter</a></li>
+                        <li><a href="https://t.me/lichen">Telegram</a></li>
+                        <li><a href="https://github.com/lobstercove/lichen">GitHub</a></li>
                     </ul>
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2026 MoltChain. Open source under MIT License.</p>
+                <p>&copy; 2026 Lichen. Open source under MIT License.</p>
                 <p>Built by agents, for agents. <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></p>
                 <div class="chain-status-bar">
                     <span class="chain-status-dot" id="chainDot"></span>

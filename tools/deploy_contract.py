@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy a single WASM contract to MoltChain validator.
+"""Deploy a single WASM contract to Lichen validator.
 
 Uses system program instruction type 17 (consensus deploy):
   data = [17 | code_length(4 LE) | code_bytes | init_data_json]
@@ -15,9 +15,9 @@ import hashlib
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
-RPC_URL = os.environ.get("CUSTODY_MOLT_RPC_URL", "http://127.0.0.1:8899")
+RPC_URL = os.environ.get("CUSTODY_LICHEN_RPC_URL", "http://127.0.0.1:8899")
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
 DEPLOYER_PATH = KEYPAIR_DIR / "deployer.json"
 SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZK Privacy Layer - MoltChain Developer Portal</title>
+    <title>ZK Privacy Layer - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -16,8 +16,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -26,7 +26,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html" class="active">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -87,13 +87,13 @@
 
         <main class="docs-main">
             <h1>ZK Shielded Privacy Layer</h1>
-            <p class="subtitle">Groth16/BN254 zero-knowledge proofs for private value transfers on MoltChain.</p>
+            <p class="subtitle">Groth16/BN254 zero-knowledge proofs for private value transfers on Lichen.</p>
 
             <!-- ── Architecture ── -->
             <section id="architecture">
                 <h2>Architecture</h2>
                 <p>
-                    MoltChain's privacy layer uses a <strong>shielded UTXO pool</strong> model (similar to Zcash Sapling).
+                    Lichen's privacy layer uses a <strong>shielded UTXO pool</strong> model (similar to Zcash Sapling).
                     Value enters the pool via <em>shield</em> operations, moves privately via <em>transfers</em>,
                     and exits via <em>unshield</em> operations. All state transitions are validated by Groth16
                     zero-knowledge proofs over the BN254 elliptic curve.
@@ -113,7 +113,7 @@
                         <tr><td>Merkle tree</td><td>Binary, depth 20 (1,048,576 leaf capacity)</td></tr>
                         <tr><td>Note format</td><td><code>commitment = Poseidon(value, blinding)</code></td></tr>
                         <tr><td>Nullifier</td><td><code>Poseidon(serial, spending_key)</code></td></tr>
-                        <tr><td>Key directory</td><td><code>~/.moltchain/zk/</code> (pk + vk for each circuit)</td></tr>
+                        <tr><td>Key directory</td><td><code>~/.lichen/zk/</code> (pk + vk for each circuit)</td></tr>
                         <tr><td>Proof size</td><td>128 bytes (compressed BN254 Groth16)</td></tr>
                     </tbody>
                 </table>
@@ -126,7 +126,7 @@
                 <h3 id="notes">Notes</h3>
                 <p>A <em>note</em> represents value in the shielded pool. Each note has:</p>
                 <ul>
-                    <li><strong>value</strong> — amount in shells (1 MOLT = 1,000,000,000 shells)</li>
+                    <li><strong>value</strong> — amount in spores (1 LICN = 1,000,000,000 spores)</li>
                     <li><strong>blinding</strong> — random BN254 field element for hiding the value</li>
                     <li><strong>serial</strong> — random unique identifier for nullifier derivation</li>
                     <li><strong>spending_key</strong> — secret key that authorizes spending</li>
@@ -151,9 +151,9 @@
                 <table class="reference-table">
                     <thead><tr><th>Operation</th><th>Opcode</th><th>Compute Units</th><th>Approx. Fee</th></tr></thead>
                     <tbody>
-                        <tr><td>Shield</td><td>23</td><td>100,000</td><td>~0.0001 MOLT</td></tr>
-                        <tr><td>Unshield</td><td>24</td><td>150,000</td><td>~0.00015 MOLT</td></tr>
-                        <tr><td>Transfer</td><td>25</td><td>200,000</td><td>~0.0002 MOLT</td></tr>
+                        <tr><td>Shield</td><td>23</td><td>100,000</td><td>~0.0001 LICN</td></tr>
+                        <tr><td>Unshield</td><td>24</td><td>150,000</td><td>~0.00015 LICN</td></tr>
+                        <tr><td>Transfer</td><td>25</td><td>200,000</td><td>~0.0002 LICN</td></tr>
                     </tbody>
                 </table>
                 <p>The fee payer is always <code>instruction.accounts[0]</code> — a transparent account that pays
@@ -229,7 +229,7 @@
             <!-- ── CLI Shield ── -->
             <section id="cli-shield">
                 <h2><code>zk-prove shield</code></h2>
-                <div class="code-block"><pre><code>./target/release/zk-prove shield --amount &lt;shells&gt; --pk-dir ~/.moltchain/zk</code></pre></div>
+                <div class="code-block"><pre><code>./target/release/zk-prove shield --amount &lt;spores&gt; --pk-dir ~/.lichen/zk</code></pre></div>
                 <p>Generates a Groth16 proof for a shield operation.</p>
                 <h3>Output (JSON)</h3>
                 <div class="code-block"><pre><code>{
@@ -246,11 +246,11 @@
             <section id="cli-unshield">
                 <h2><code>zk-prove unshield</code></h2>
                 <div class="code-block"><pre><code>./target/release/zk-prove unshield \
-  --amount &lt;shells&gt; \
+  --amount &lt;spores&gt; \
   --blinding &lt;hex&gt; --serial &lt;hex&gt; --spending-key &lt;hex&gt; \
   --recipient &lt;base58_pubkey&gt; \
   --merkle-root &lt;hex&gt; --merkle-path &lt;hex,hex,...&gt; --path-bits 0,1,0,... \
-  --pk-dir ~/.moltchain/zk</code></pre></div>
+  --pk-dir ~/.lichen/zk</code></pre></div>
                 <p>Generates a Groth16 proof for an unshield (withdrawal) operation.</p>
                 <h3>Prerequisites</h3>
                 <ul>
@@ -271,7 +271,7 @@
                 <h2><code>zk-prove transfer</code></h2>
                 <div class="code-block"><pre><code>./target/release/zk-prove transfer \
   --transfer-json witness.json \
-  --pk-dir ~/.moltchain/zk</code></pre></div>
+  --pk-dir ~/.lichen/zk</code></pre></div>
                 <p>Generates a Groth16 proof for a 2-in-2-out shielded transfer.</p>
 
                 <h3>Witness file format (<code>witness.json</code>)</h3>
@@ -327,8 +327,8 @@
             <!-- ── Python SDK ── -->
             <section id="python-sdk">
                 <h2>Python SDK</h2>
-                <p>The <code>moltchain</code> Python package provides instruction builders for all three operations:</p>
-                <div class="code-block"><pre><code>from moltchain import (
+                <p>The <code>lichen</code> Python package provides instruction builders for all three operations:</p>
+                <div class="code-block"><pre><code>from lichen import (
     Connection, Keypair, TransactionBuilder,
     shield_instruction, unshield_instruction, transfer_instruction,
 )
@@ -339,7 +339,7 @@ kp = Keypair.load("keypairs/deployer.json")
 # ── Shield ──
 ix = shield_instruction(
     sender=kp.public_key(),
-    amount=500_000_000,          # 0.5 MOLT in shells
+    amount=500_000_000,          # 0.5 LICN in spores
     commitment=bytes.fromhex(shield_json["commitment"]),
     proof=bytes.fromhex(shield_json["proof"]),
 )
@@ -370,8 +370,8 @@ ix = transfer_instruction(
             <!-- ── Workflow ── -->
             <section id="workflow">
                 <h2>End-to-End Workflow</h2>
-                <div class="code-block"><pre><code># 1. Shield — deposit 0.5 MOLT into the pool
-zk-prove shield --amount 500000000 --pk-dir ~/.moltchain/zk > shield.json
+                <div class="code-block"><pre><code># 1. Shield — deposit 0.5 LICN into the pool
+zk-prove shield --amount 500000000 --pk-dir ~/.lichen/zk > shield.json
 # → Save blinding, serial, spending_key from shield.json
 
 # 2. Build &amp; send the shield transaction (Python)
@@ -383,13 +383,13 @@ path = await conn._rpc("getShieldedMerklePath", [leaf_index])
 
 # 4. (Optional) Transfer within pool
 # Build witness.json with 2 input notes + 2 output amounts
-zk-prove transfer --transfer-json witness.json --pk-dir ~/.moltchain/zk > transfer.json
+zk-prove transfer --transfer-json witness.json --pk-dir ~/.lichen/zk > transfer.json
 # → New output note secrets are in transfer.json["outputs"]
 
 # 5. Unshield — withdraw back to transparent account
-zk-prove unshield --amount 500000000 ... --pk-dir ~/.moltchain/zk > unshield.json
+zk-prove unshield --amount 500000000 ... --pk-dir ~/.lichen/zk > unshield.json
 ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
-# → Shells appear in recipient's transparent balance</code></pre></div>
+# → Spores appear in recipient's transparent balance</code></pre></div>
             </section>
 
             <!-- ── RPC Methods ── -->
@@ -407,7 +407,7 @@ ix = unshield_instruction(recipient, 500000000, nullifier, root, hash, proof)
   "merkleRoot": "43b19b67fc7151e1...",
   "commitmentCount": 4,
   "totalShielded": 500000000,
-  "totalShieldedMolt": "0.500000000",
+  "totalShieldedLicn": "0.500000000",
   "nullifierCount": 2,
   "shieldCount": 2,
   "unshieldCount": 0,

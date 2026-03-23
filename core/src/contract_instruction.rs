@@ -1,4 +1,4 @@
-// MoltChain Smart Contract Instructions
+// Lichen Smart Contract Instructions
 // Deploy and invoke WASM contracts
 
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub enum ContractInstruction {
         function: String,
         /// Function arguments (serialized)
         args: Vec<u8>,
-        /// Value to transfer (in lamports)
+        /// Value to transfer (in spores)
         value: u64,
     },
 

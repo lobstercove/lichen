@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use moltchain_core::Pubkey;
+use lichen_core::Pubkey;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
-const SHELLS_PER_MOLT: u64 = 1_000_000_000;
+const SPORES_PER_LICN: u64 = 1_000_000_000;
 const DEFAULT_PORT: u16 = 9100;
 const DEFAULT_MAX_PER_REQUEST: u64 = 10;
 const DEFAULT_DAILY_LIMIT_PER_IP: u64 = 150;
@@ -61,15 +61,15 @@ struct FaucetPublicConfig {
 struct FaucetStatusResponse {
     network: String,
     faucet_address: String,
-    balance_shells: u64,
-    balance_molt: u64,
+    balance_spores: u64,
+    balance_licn: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AirdropRecord {
     signature: Option<String>,
     recipient: String,
-    amount_molt: u64,
+    amount_licn: u64,
     timestamp_ms: u64,
 }
 
@@ -98,7 +98,7 @@ impl RateLimiter {
         ip: &str,
         address: &str,
         now_ms: u64,
-        daily_limit_molt: u64,
+        daily_limit_licn: u64,
         cooldown_seconds: u64,
     ) -> Result<(), String> {
         self.prune(now_ms);
@@ -112,29 +112,29 @@ impl RateLimiter {
         }
 
         let used_today: u64 = entries.iter().map(|(_, amt)| *amt).sum();
-        if used_today >= daily_limit_molt {
+        if used_today >= daily_limit_licn {
             return Err("Daily faucet limit reached for this IP".to_string());
         }
 
         // AUDIT-FIX M-24: Also check per-address daily limit
         let addr_entries = self.by_address.entry(address.to_string()).or_default();
         let addr_used: u64 = addr_entries.iter().map(|(_, amt)| *amt).sum();
-        if addr_used >= daily_limit_molt {
+        if addr_used >= daily_limit_licn {
             return Err("Daily faucet limit reached for this address".to_string());
         }
 
         Ok(())
     }
 
-    fn record(&mut self, ip: &str, address: &str, now_ms: u64, amount_molt: u64) {
+    fn record(&mut self, ip: &str, address: &str, now_ms: u64, amount_licn: u64) {
         self.by_ip
             .entry(ip.to_string())
             .or_default()
-            .push((now_ms, amount_molt));
+            .push((now_ms, amount_licn));
         self.by_address
             .entry(address.to_string())
             .or_default()
-            .push((now_ms, amount_molt));
+            .push((now_ms, amount_licn));
         self.prune(now_ms);
     }
 }
@@ -207,10 +207,10 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE])
         .allow_origin([
-            "https://faucet.moltchain.network"
+            "https://faucet.lichen.network"
                 .parse::<HeaderValue>()
                 .unwrap(),
-            "https://moltchain.network".parse::<HeaderValue>().unwrap(),
+            "https://lichen.network".parse::<HeaderValue>().unwrap(),
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3003".parse::<HeaderValue>().unwrap(),
             "http://localhost:9100".parse::<HeaderValue>().unwrap(),
@@ -231,7 +231,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind faucet listener");
-    info!("moltchain-faucet listening on {}", addr);
+    info!("lichen-faucet listening on {}", addr);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -258,8 +258,8 @@ async fn get_status(State(state): State<FaucetState>) -> Response {
         Ok(info) => Json(FaucetStatusResponse {
             network: state.config.network.clone(),
             faucet_address: info.treasury_pubkey.unwrap_or_default(),
-            balance_shells: info.treasury_balance,
-            balance_molt: info.treasury_balance / SHELLS_PER_MOLT,
+            balance_spores: info.treasury_balance,
+            balance_licn: info.treasury_balance / SPORES_PER_LICN,
         })
         .into_response(),
         Err(err) => error_response(StatusCode::BAD_GATEWAY, &err),
@@ -284,8 +284,8 @@ async fn request_airdrop(
     headers: HeaderMap,
     Json(request): Json<FaucetRequest>,
 ) -> Response {
-    let amount_molt = request.amount.unwrap_or(state.config.max_per_request);
-    if amount_molt == 0 || amount_molt > state.config.max_per_request {
+    let amount_licn = request.amount.unwrap_or(state.config.max_per_request);
+    if amount_licn == 0 || amount_licn > state.config.max_per_request {
         return error_json(
             StatusCode::BAD_REQUEST,
             "Requested amount exceeds faucet limit",
@@ -317,8 +317,8 @@ async fn request_airdrop(
         Err(err) => return error_response(StatusCode::BAD_GATEWAY, &err),
     };
 
-    let required_shells = amount_molt.saturating_mul(SHELLS_PER_MOLT);
-    if treasury.treasury_balance < required_shells {
+    let required_spores = amount_licn.saturating_mul(SPORES_PER_LICN);
+    if treasury.treasury_balance < required_spores {
         return error_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "Faucet temporarily empty - check back soon",
@@ -328,7 +328,7 @@ async fn request_airdrop(
     let rpc_result = match rpc_call(
         &state,
         "requestAirdrop",
-        json!([request.address.trim(), amount_molt]),
+        json!([request.address.trim(), amount_licn]),
     )
     .await
     {
@@ -337,7 +337,7 @@ async fn request_airdrop(
     };
 
     let mut limiter = state.rate_limiter.write().await;
-    limiter.record(&client_ip, request.address.trim(), now_ms, amount_molt);
+    limiter.record(&client_ip, request.address.trim(), now_ms, amount_licn);
     drop(limiter);
 
     let response = FaucetResponse {
@@ -349,15 +349,15 @@ async fn request_airdrop(
         amount: rpc_result
             .get("amount")
             .and_then(|value| value.as_u64())
-            .or(Some(amount_molt)),
+            .or(Some(amount_licn)),
         recipient: Some(request.address.trim().to_string()),
         message: rpc_result
             .get("message")
             .and_then(|value| value.as_str())
             .map(|value| value.to_string())
             .or(Some(format!(
-                "{} MOLT airdropped successfully",
-                amount_molt
+                "{} LICN airdropped successfully",
+                amount_licn
             ))),
         error: None,
     };
@@ -366,7 +366,7 @@ async fn request_airdrop(
     airdrops.push(AirdropRecord {
         signature: response.signature.clone(),
         recipient: request.address.trim().to_string(),
-        amount_molt,
+        amount_licn,
         timestamp_ms: now_ms,
     });
     if let Err(err) = save_airdrops(&state.config.airdrops_file, &airdrops) {

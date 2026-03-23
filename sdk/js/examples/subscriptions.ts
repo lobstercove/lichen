@@ -1,4 +1,4 @@
-// Subscription example for MoltChain SDK
+// Subscription example for Lichen SDK
 
 import { Connection, PublicKey } from '../dist/index';
 
@@ -8,7 +8,7 @@ async function main() {
     'ws://localhost:8900'
   );
 
-  console.log('🦞 MoltChain Subscription Example\n');
+  console.log('🦞 Lichen Subscription Example\n');
   console.log('Press Ctrl+C to exit\n');
 
   // Subscribe to all events
@@ -39,7 +39,7 @@ async function main() {
   console.log('📡 Subscribing to account changes...');
   const pubkey = new PublicKey('YourPublicKeyHere...');
   const accountSub = await connection.onAccountChange(pubkey, (account) => {
-    console.log(`👤 Account ${account.pubkey.substring(0, 12)}... balance: ${account.molt} MOLT`);
+    console.log(`👤 Account ${account.pubkey.substring(0, 12)}... balance: ${account.licn} LICN`);
   });
   subscriptions.push(accountSub);
 

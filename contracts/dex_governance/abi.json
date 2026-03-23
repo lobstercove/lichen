@@ -16,7 +16,7 @@
     {"name": "set_listing_requirements", "opcode": 11, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "min_stake", "type": "u64"}, {"name": "voting_period", "type": "u64"}]},
     {"name": "emergency_pause", "opcode": 12, "params": [{"name": "caller", "type": "Pubkey"}]},
     {"name": "emergency_unpause", "opcode": 13, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "set_moltyid_address", "opcode": 14, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
+    {"name": "set_lichenid_address", "opcode": 14, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
     {"name": "add_allowed_quote", "opcode": 15, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
     {"name": "remove_allowed_quote", "opcode": 16, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "quote_address", "type": "Pubkey"}]},
     {"name": "get_allowed_quote_count", "opcode": 17, "params": []},

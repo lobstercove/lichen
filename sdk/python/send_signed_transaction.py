@@ -14,11 +14,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from moltchain import Connection, PublicKey, Keypair, TransactionBuilder
+from lichen import Connection, PublicKey, Keypair, TransactionBuilder
 
 
 async def main():
-    print("🦞 MoltChain Transaction Sender\n")
+    print("🦞 Lichen Transaction Sender\n")
     print("=" * 60)
     
     # Load wallet
@@ -49,10 +49,10 @@ async def main():
         try:
             balance = await connection.get_balance(PublicKey(pubkey_b58))
             if balance:
-                molt_balance = balance.get('molt', 0) / 1_000_000_000
-                print(f"   Wallet Balance: {molt_balance:.9f} MOLT")
+                licn_balance = balance.get('licn', 0) / 1_000_000_000
+                print(f"   Wallet Balance: {licn_balance:.9f} LICN")
         except Exception as e:
-            print(f"   Wallet Balance: 0 MOLT (account not found)")
+            print(f"   Wallet Balance: 0 LICN (account not found)")
         
         # Get validators to use as recipient
         validators = await connection.get_validators()
@@ -65,9 +65,9 @@ async def main():
         print(f"\n📤 Preparing transaction:")
         print(f"   From: {pubkey_b58[:20]}...")
         print(f"   To:   {recipient_pubkey_b58[:20]}...")
-        print(f"   Amount: 0.001 MOLT (1,000,000 shells)")
+        print(f"   Amount: 0.001 LICN (1,000,000 spores)")
         
-        amount = 1_000_000  # 0.001 MOLT
+        amount = 1_000_000  # 0.001 LICN
         instruction = TransactionBuilder.transfer(
             keypair.public_key(),
             PublicKey(recipient_pubkey_b58),

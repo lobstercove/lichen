@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-MoltChain Wallet Generator
+Lichen Wallet Generator
 
-Generates Ed25519 keypairs compatible with MoltChain validator.
+Generates Ed25519 keypairs compatible with Lichen validator.
 Saves keypair to a JSON file for later use.
 """
 
@@ -11,11 +11,11 @@ import sys
 from pathlib import Path
 
 
-from moltchain import Keypair
+from lichen import Keypair
 
 
 def main():
-    print("🦞 MoltChain Wallet Generator\n")
+    print("🦞 Lichen Wallet Generator\n")
     print("=" * 60)
     
     # Create wallets directory if it doesn't exist
@@ -41,7 +41,7 @@ def main():
     
     # Test signing
     print("\n🧪 Testing signature...")
-    test_message = b"Hello MoltChain!"
+    test_message = b"Hello Lichen!"
     signature = keypair.sign(test_message)
     print(f"   Message: {test_message.decode()}")
     print(f"   Signature (first 16 bytes): {signature[:16].hex()}...")

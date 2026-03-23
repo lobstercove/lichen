@@ -1,7 +1,7 @@
 //! Generate real test transactions for explorer
 
-use moltchain_client_sdk::{Client, Keypair};
-use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
+use lichen_client_sdk::{Client, Keypair};
+use lichen_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
 use base64::Engine;
 use std::error::Error;
 
@@ -38,12 +38,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..3 {
         let sender = &keypairs[i];
         let recipient = &keypairs[(i + 1) % 3];
-        let amount = (i + 1) as u64 * 100_000_000; // 0.1, 0.2, 0.3 MOLT
+        let amount = (i + 1) as u64 * 100_000_000; // 0.1, 0.2, 0.3 LICN
         
         println!("Transaction {}:", i + 1);
         println!("  From: {}...", &sender.pubkey().to_base58()[..16]);
         println!("  To:   {}...", &recipient.pubkey().to_base58()[..16]);
-        println!("  Amount: {} shells ({} MOLT)", amount, amount as f64 / 1_000_000_000.0);
+        println!("  Amount: {} spores ({} LICN)", amount, amount as f64 / 1_000_000_000.0);
         
         // Build transfer instruction
         let mut data = vec![0u8]; // Transfer instruction type
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         
         // Build transaction
-        use moltchain_core::{Message, Transaction};
+        use lichen_core::{Message, Transaction};
         let message = Message::new(vec![instruction], blockhash);
         
         // Sign transaction

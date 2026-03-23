@@ -17,7 +17,7 @@ if [[ -z "${KEYPAIR_PATH}" ]]; then
   exit 1
 fi
 
-CLI_BIN="$REPO_ROOT/target/release/molt"
+CLI_BIN="$REPO_ROOT/target/release/licn"
 if [[ ! -x "$CLI_BIN" ]]; then
   echo "ERROR: CLI binary not found at $CLI_BIN" >&2
   exit 1
@@ -41,7 +41,7 @@ airdrop_once() {
     if [[ -z "$pubkey" ]]; then
       continue
     fi
-    echo "Sending 1 MOLT -> $pubkey"
+    echo "Sending 1 LICN -> $pubkey"
     "$CLI_BIN" --rpc-url "$RPC_URL" transfer "$pubkey" 1 --keypair "$KEYPAIR_PATH"
   done <<< "$validators"
 }

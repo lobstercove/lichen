@@ -25,7 +25,7 @@ body {
 .vision-card:hover {
     transform: translateY(-8px);
     border-color: var(--primary);
-    box-shadow: 0 20px 60px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 20px 60px rgba(0, 201, 219, 0.2);
 }
 
 .vision-icon {
@@ -40,7 +40,7 @@ body {
 
 .vision-card:hover .vision-icon {
     transform: scale(1.1) rotate(5deg);
-    filter: drop-shadow(0 0 15px rgba(255, 107, 53, 0.5));
+    filter: drop-shadow(0 0 15px rgba(0, 201, 219, 0.5));
 }
 
 .vision-card h3 {
@@ -71,7 +71,7 @@ body {
 .spec-card:hover {
     transform: translateY(-8px);
     border-color: var(--primary);
-    box-shadow: 0 12px 48px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 12px 48px rgba(0, 201, 219, 0.2);
 }
 
 .spec-header {
@@ -79,7 +79,7 @@ body {
     align-items: center;
     gap: 1rem;
     padding: 1.5rem 2rem;
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.12) 0%, rgba(247, 127, 0, 0.06) 100%);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.12) 0%, rgba(0, 229, 255, 0.06) 100%);
     border-bottom: 1px solid var(--border);
 }
 
@@ -107,7 +107,7 @@ body {
 }
 
 .spec-row:hover {
-    background: rgba(255, 107, 53, 0.05);
+    background: rgba(0, 201, 219, 0.05);
 }
 
 .spec-label {
@@ -162,7 +162,7 @@ body {
 
 #architecture .comparison-card.featured {
     border-color: var(--primary);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.2);
 }
 
 /* Match How We Compare hover behavior for Validator cards */
@@ -204,11 +204,11 @@ body {
     color: #00FFA3;
 }
 
-.comparison-header.molt {
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.15) 0%, rgba(247, 127, 0, 0.08) 100%);
+.comparison-header.lichen {
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.15) 0%, rgba(0, 229, 255, 0.08) 100%);
 }
 
-.comparison-header.molt i {
+.comparison-header.lichen i {
     color: var(--primary);
 }
 
@@ -280,7 +280,7 @@ body {
 
 .token-card.featured {
     border-color: var(--primary);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.2);
 }
 
 .token-header {
@@ -288,7 +288,7 @@ body {
     align-items: center;
     gap: 1rem;
     padding: 1.5rem 2rem;
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.12) 0%, rgba(247, 127, 0, 0.06) 100%);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.12) 0%, rgba(0, 229, 255, 0.06) 100%);
     border-bottom: 1px solid var(--border);
 }
 
@@ -316,7 +316,7 @@ body {
 }
 
 .token-row:hover {
-    background: rgba(255, 107, 53, 0.05);
+    background: rgba(0, 201, 219, 0.05);
 }
 
 .token-row span:first-child {
@@ -409,22 +409,22 @@ body {
 .contract-card:hover {
     transform: translateY(-6px);
     border-color: var(--primary);
-    box-shadow: 0 16px 48px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 16px 48px rgba(0, 201, 219, 0.2);
 }
 
 .contract-icon {
-    font-size: 2.5rem;
+    font-size: 1.5rem;
     margin-bottom: 0.5rem;
     transition: all 0.3s ease;
 }
 
 .contract-icon i {
-    color: var(--primary);
+    color: #fff;
 }
 
 .contract-card:hover .contract-icon {
     transform: scale(1.1);
-    filter: drop-shadow(0 0 12px rgba(255, 107, 53, 0.5));
+    filter: drop-shadow(0 0 12px rgba(0, 201, 219, 0.5));
 }
 
 .contract-card h3 {
@@ -442,10 +442,11 @@ body {
 .contract-size {
     display: inline-block;
     padding: 0.35rem 0.7rem;
-    background: rgba(255, 107, 53, 0.1);
+    background: rgba(0, 229, 255, 0.12);
+    border: 1px solid rgba(0, 229, 255, 0.3);
     border-radius: 6px;
     font-size: 0.8rem;
-    color: var(--primary);
+    color: #00E5FF;
     font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
     width: fit-content;
@@ -486,8 +487,8 @@ body {
 
 .roadmap-phase.featured {
     border-color: var(--primary);
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.08) 0%, rgba(247, 127, 0, 0.04) 100%);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.15);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.08) 0%, rgba(0, 229, 255, 0.04) 100%);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.15);
 }
 
 .phase-marker {
@@ -506,13 +507,20 @@ body {
 .phase-marker.current {
     background: var(--primary);
     border-color: var(--primary);
-    box-shadow: 0 0 20px rgba(255, 107, 53, 0.6);
+    box-shadow: 0 0 20px rgba(0, 201, 219, 0.6);
     animation: pulse-dot 2s infinite;
 }
 
 @keyframes pulse-dot {
-    0%, 100% { box-shadow: 0 0 8px rgba(255, 107, 53, 0.6); }
-    50% { box-shadow: 0 0 24px rgba(255, 107, 53, 0.9); }
+
+    0%,
+    100% {
+        box-shadow: 0 0 8px rgba(0, 201, 219, 0.6);
+    }
+
+    50% {
+        box-shadow: 0 0 24px rgba(0, 201, 219, 0.9);
+    }
 }
 
 .phase-content h3 {
@@ -568,7 +576,7 @@ body {
     color: var(--text-muted);
 }
 
-/* ═══════ MOLTYID 3×2 GRID ═══════ */
+/* ═══════ LICHENID 3×2 GRID ═══════ */
 .identity-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -595,6 +603,7 @@ body {
 
 /* ═══════ RESPONSIVE ═══════ */
 @media (max-width: 1200px) {
+
     .specs-grid,
     .tokenomics-grid,
     .identity-grid,
@@ -604,6 +613,7 @@ body {
 }
 
 @media (max-width: 768px) {
+
     .vision-grid,
     .specs-grid,
     .tokenomics-grid,

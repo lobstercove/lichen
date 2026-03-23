@@ -1,6 +1,6 @@
-# MoltChain Rust SDK
+# Lichen Rust SDK
 
-Official Rust SDK for building on MoltChain blockchain.
+Official Rust SDK for building on Lichen blockchain.
 
 ## Features
 
@@ -16,14 +16,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-moltchain-client-sdk = { path = "../path/to/sdk/rust" }
+lichen-client-sdk = { path = "../path/to/sdk/rust" }
 tokio = { version = "1.35", features = ["full"] }
 ```
 
 ## Quick Start
 
 ```rust
-use moltchain_sdk::{Client, Keypair};
+use lichen_sdk::{Client, Keypair};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Get balance
     let balance = client.get_balance(&keypair.pubkey()).await?;
-    println!("Balance: {} MOLT", balance.molt());
+    println!("Balance: {} LICN", balance.licn());
     
     // Get current slot
     let slot = client.get_slot().await?;
@@ -94,14 +94,14 @@ let pubkey = keypair.pubkey();
 println!("Address: {}", pubkey.to_base58());
 
 // Sign message
-let message = b"Hello MoltChain";
+let message = b"Hello Lichen";
 let signature = keypair.sign(message);
 ```
 
 ### Transaction Building
 
 ```rust
-use moltchain_sdk::{TransactionBuilder, Instruction, Hash};
+use lichen_sdk::{TransactionBuilder, Instruction, Hash};
 
 // Build transaction
 let tx = TransactionBuilder::new()
@@ -119,7 +119,7 @@ client.send_raw_transaction(&tx_base64).await?;
 
 ### Solana Compatibility
 
-MoltChain uses Ed25519 keypairs with Base58 encoding, making it compatible with Solana wallet formats:
+Lichen uses Ed25519 keypairs with Base58 encoding, making it compatible with Solana wallet formats:
 
 - ✅ Phantom Wallet (import/export)
 - ✅ Solflare Wallet (import/export)
@@ -157,7 +157,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
 ## Resources
 
-- [Documentation](https://developers.moltchain.network)
+- [Documentation](https://developers.lichen.network)
 - [Examples](./examples/)
-- [MoltChain CLI](../../cli/)
+- [Lichen CLI](../../cli/)
 - [Python SDK](../python/)

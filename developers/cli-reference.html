@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CLI Reference - MoltChain Developer Portal</title>
+    <title>CLI Reference - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html" class="active">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -159,20 +159,20 @@
             </div>
 
             <h1>CLI Reference</h1>
-            <p>Complete reference for the <code>molt</code> command-line interface. The CLI is the primary tool for
-                interacting with the MoltChain network — managing wallets, deploying contracts, querying state, and
+            <p>Complete reference for the <code>lichen</code> command-line interface. The CLI is the primary tool for
+                interacting with the Lichen network — managing wallets, deploying contracts, querying state, and
                 operating validators.</p>
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Installation</div>
-                Install with <code>cargo install moltchain-cli</code> or build from source. See the <a
+                Install with <code>cargo install lichen-cli</code> or build from source. See the <a
                     href="getting-started.html#install-cli">Getting Started</a> guide for full setup instructions.
             </div>
 
             <!-- ========== GLOBAL OPTIONS ========== -->
             <h2 id="global-options">Global Options</h2>
 
-            <p>These flags apply to every <code>molt</code> command.</p>
+            <p>These flags apply to every <code>lichen</code> command.</p>
 
             <table class="flags-table">
                 <thead>
@@ -210,9 +210,9 @@
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt --rpc-url https://testnet-rpc.moltchain.network balance
-$ molt --version
-molt-cli 0.9.2 (moltchain)</code></pre>
+                <pre><code>$ lichen --rpc-url https://testnet-rpc.lichen.network balance
+$ lichen --version
+lichen-cli 0.9.2 (lichen)</code></pre>
             </div>
 
             <!-- ================================================================ -->
@@ -220,12 +220,12 @@ molt-cli 0.9.2 (moltchain)</code></pre>
             <!-- ================================================================ -->
             <h2>Wallet Commands</h2>
             <p>Multi-wallet management — create, import, inspect, and remove wallets. Wallet keypairs are stored in
-                <code>~/.moltchain/wallets/</code>.
+                <code>~/.lichen/wallets/</code>.
             </p>
 
             <!-- wallet create -->
             <div class="cmd-section" id="wallet-create">
-                <h3><code>molt wallet create</code></h3>
+                <h3><code>lichen wallet create</code></h3>
                 <p>Create a new wallet with a fresh Ed25519 keypair. If no name is given, an auto-incrementing name
                     (<code>wallet-1</code>, <code>wallet-2</code>, …) is used.</p>
 
@@ -234,7 +234,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet create [name]</code></pre>
+                    <pre><code>lichen wallet create [name]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -261,19 +261,19 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet create my-agent
+                    <pre><code>$ lichen wallet create my-agent
 
 <i class="fa-solid fa-shrimp"></i> Created wallet 'my-agent'
 <i class="fa-solid fa-location-dot"></i> Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
-<i class="fa-solid fa-floppy-disk"></i> Keypair:  ~/.moltchain/wallets/my-agent.json
+<i class="fa-solid fa-floppy-disk"></i> Keypair:  ~/.lichen/wallets/my-agent.json
 
-<i class="fa-solid fa-check"></i> Done! Fund with: molt airdrop 100</code></pre>
+<i class="fa-solid fa-check"></i> Done! Fund with: lichen airdrop 100</code></pre>
                 </div>
             </div>
 
             <!-- wallet import -->
             <div class="cmd-section" id="wallet-import">
-                <h3><code>molt wallet import</code></h3>
+                <h3><code>lichen wallet import</code></h3>
                 <p>Import an existing keypair file as a named wallet.</p>
 
                 <div class="code-block">
@@ -281,7 +281,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet import &lt;name&gt; --keypair &lt;path&gt;</code></pre>
+                    <pre><code>lichen wallet import &lt;name&gt; --keypair &lt;path&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -314,17 +314,17 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet import treasury --keypair ~/keys/treasury.json
+                    <pre><code>$ lichen wallet import treasury --keypair ~/keys/treasury.json
 
 <i class="fa-solid fa-shrimp"></i> Imported wallet 'treasury'
 <i class="fa-solid fa-location-dot"></i> Address: Mo1tTreasury12345abcdefghijklmnopqrs
-<i class="fa-solid fa-floppy-disk"></i> Stored in: ~/.moltchain/wallets/treasury.json</code></pre>
+<i class="fa-solid fa-floppy-disk"></i> Stored in: ~/.lichen/wallets/treasury.json</code></pre>
                 </div>
             </div>
 
             <!-- wallet list -->
             <div class="cmd-section" id="wallet-list">
-                <h3><code>molt wallet list</code></h3>
+                <h3><code>lichen wallet list</code></h3>
                 <p>List all wallets stored locally with their addresses.</p>
 
                 <div class="code-block">
@@ -332,7 +332,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet list</code></pre>
+                    <pre><code>lichen wallet list</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -340,7 +340,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet list
+                    <pre><code>$ lichen wallet list
 
 <i class="fa-solid fa-shrimp"></i> Wallets
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -353,7 +353,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
 
             <!-- wallet show -->
             <div class="cmd-section" id="wallet-show">
-                <h3><code>molt wallet show</code></h3>
+                <h3><code>lichen wallet show</code></h3>
                 <p>Display detailed information for a specific wallet, including its full address and keypair file path.
                 </p>
 
@@ -362,7 +362,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet show &lt;name&gt;</code></pre>
+                    <pre><code>lichen wallet show &lt;name&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -389,18 +389,18 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet show my-agent
+                    <pre><code>$ lichen wallet show my-agent
 
 <i class="fa-solid fa-shrimp"></i> Wallet: my-agent
 <i class="fa-solid fa-location-dot"></i> Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
-<i class="fa-solid fa-file"></i> Keypair:  ~/.moltchain/wallets/my-agent.json
+<i class="fa-solid fa-file"></i> Keypair:  ~/.lichen/wallets/my-agent.json
 <i class="fa-solid fa-calendar-days"></i> Created:  2026-02-10 14:32:01 UTC</code></pre>
                 </div>
             </div>
 
             <!-- wallet balance -->
             <div class="cmd-section" id="wallet-balance">
-                <h3><code>molt wallet balance</code></h3>
+                <h3><code>lichen wallet balance</code></h3>
                 <p>Query the on-chain balance for a named wallet, broken down by spendable, staked, and locked amounts.
                 </p>
 
@@ -409,7 +409,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet balance &lt;name&gt;</code></pre>
+                    <pre><code>lichen wallet balance &lt;name&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -436,22 +436,22 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet balance my-agent
+                    <pre><code>$ lichen wallet balance my-agent
 
 <i class="fa-solid fa-shrimp"></i> Wallet: my-agent
 <i class="fa-solid fa-location-dot"></i> Address: Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 ─────────────────────────────────────────────────────────
-<i class="fa-solid fa-coins"></i> Total:       100.0000 MOLT
-   Spendable:   90.0000 MOLT
-   Staked:       10.0000 MOLT
-   Locked:        0.0000 MOLT
+<i class="fa-solid fa-coins"></i> Total:       100.0000 LICN
+   Spendable:   90.0000 LICN
+   Staked:       10.0000 LICN
+   Locked:        0.0000 LICN
 ─────────────────────────────────────────────────────────</code></pre>
                 </div>
             </div>
 
             <!-- wallet remove -->
             <div class="cmd-section" id="wallet-remove">
-                <h3><code>molt wallet remove</code></h3>
+                <h3><code>lichen wallet remove</code></h3>
                 <p>Remove a wallet from local storage. This deletes the keypair file — make sure you have a backup.</p>
 
                 <div class="code-block">
@@ -459,7 +459,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt wallet remove &lt;name&gt;</code></pre>
+                    <pre><code>lichen wallet remove &lt;name&gt;</code></pre>
                 </div>
 
                 <div class="callout callout-warning">
@@ -473,7 +473,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt wallet remove old-wallet
+                    <pre><code>$ lichen wallet remove old-wallet
 
 <i class="fa-solid fa-triangle-exclamation"></i>  Removing wallet 'old-wallet' — this cannot be undone.
 <i class="fa-solid fa-check"></i> Wallet removed.</code></pre>
@@ -485,13 +485,13 @@ molt-cli 0.9.2 (moltchain)</code></pre>
             <!-- ================================================================ -->
             <h2>Identity Commands</h2>
             <p>Manage your on-chain identity. Your identity is based on an Ed25519 keypair stored at
-                <code>~/.moltchain/keypairs/id.json</code> by default.
+                <code>~/.lichen/keypairs/id.json</code> by default.
             </p>
 
             <!-- identity new -->
             <div class="cmd-section" id="identity-new">
-                <h3><code>molt identity new</code></h3>
-                <p>Generate a new identity keypair. This creates your public key (MoltChain address) and a corresponding
+                <h3><code>lichen identity new</code></h3>
+                <p>Generate a new identity keypair. This creates your public key (Lichen address) and a corresponding
                     EVM-compatible address.</p>
 
                 <div class="code-block">
@@ -499,7 +499,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt identity new [--output &lt;path&gt;]</code></pre>
+                    <pre><code>lichen identity new [--output &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -515,7 +515,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <tr>
                             <td><code>--output, -o</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Output file for the keypair</td>
                         </tr>
                     </tbody>
@@ -526,19 +526,19 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt identity new
+                    <pre><code>$ lichen identity new
 
 <i class="fa-solid fa-shrimp"></i> Generated new identity!
 <i class="fa-solid fa-location-dot"></i> Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 <i class="fa-solid fa-lock"></i> EVM Address: 0x7a3b...9f2e
-<i class="fa-solid fa-floppy-disk"></i> Saved to:    ~/.moltchain/keypairs/id.json
+<i class="fa-solid fa-floppy-disk"></i> Saved to:    ~/.lichen/keypairs/id.json
 
-<i class="fa-solid fa-lightbulb"></i> Get test tokens: molt airdrop 100</code></pre>
+<i class="fa-solid fa-lightbulb"></i> Get test tokens: lichen airdrop 100</code></pre>
                 </div>
 
                 <div class="callout callout-tip">
                     <div class="callout-title"><i class="fas fa-lightbulb"></i> Keypair Encryption</div>
-                    Set the <code>MOLTCHAIN_KEYPAIR_PASSWORD</code> environment variable before generating to encrypt
+                    Set the <code>LICHEN_KEYPAIR_PASSWORD</code> environment variable before generating to encrypt
                     the keypair file at rest with <strong>AES-256-GCM</strong> authenticated encryption (12-byte random
                     nonce, password-derived key). Legacy keypairs (v1) are auto-detected and upgraded on next use.
                 </div>
@@ -546,15 +546,15 @@ molt-cli 0.9.2 (moltchain)</code></pre>
 
             <!-- identity show -->
             <div class="cmd-section" id="identity-show">
-                <h3><code>molt identity show</code></h3>
-                <p>Display your MoltChain identity — public key, EVM address, and keypair file location.</p>
+                <h3><code>lichen identity show</code></h3>
+                <p>Display your Lichen identity — public key, EVM address, and keypair file location.</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt identity show [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen identity show [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -570,7 +570,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair file to read</td>
                         </tr>
                     </tbody>
@@ -581,12 +581,12 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt identity show
+                    <pre><code>$ lichen identity show
 
-<i class="fa-solid fa-shrimp"></i> Your MoltChain Identity
+<i class="fa-solid fa-shrimp"></i> Your Lichen Identity
 <i class="fa-solid fa-location-dot"></i> Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 <i class="fa-solid fa-lock"></i> EVM Address: 0x7a3b...9f2e
-<i class="fa-solid fa-file"></i> Keypair:     ~/.moltchain/keypairs/id.json</code></pre>
+<i class="fa-solid fa-file"></i> Keypair:     ~/.lichen/keypairs/id.json</code></pre>
                 </div>
             </div>
 
@@ -598,7 +598,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
 
             <!-- validator info -->
             <div class="cmd-section" id="validator-info">
-                <h3><code>molt validator info</code></h3>
+                <h3><code>lichen validator info</code></h3>
                 <p>Show detailed information for a specific validator: stake, reputation, activity status, and blocks
                     produced.</p>
 
@@ -607,7 +607,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt validator info &lt;address&gt;</code></pre>
+                    <pre><code>lichen validator info &lt;address&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -634,12 +634,12 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt validator info Mo1tVa1iDatoR12345abcdef
+                    <pre><code>$ lichen validator info Mo1tVa1iDatoR12345abcdef
 
 <i class="fa-solid fa-shrimp"></i> Validator Information
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Pubkey:          Mo1tVa1iDatoR12345abcdef
-<i class="fa-solid fa-coins"></i> Stake:           50000.0000 MOLT
+<i class="fa-solid fa-coins"></i> Stake:           50000.0000 LICN
 <i class="fa-solid fa-star"></i> Reputation:      98
 <i class="fa-solid fa-chart-bar"></i> Status:          Active
 <i class="fa-solid fa-cube"></i> Blocks produced: 12,847</code></pre>
@@ -648,7 +648,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
 
             <!-- validator performance -->
             <div class="cmd-section" id="validator-performance">
-                <h3><code>molt validator performance</code></h3>
+                <h3><code>lichen validator performance</code></h3>
                 <p>Show epoch-level performance metrics for a validator: block production rate, average block time, and
                     uptime.</p>
 
@@ -657,7 +657,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt validator performance &lt;address&gt;</code></pre>
+                    <pre><code>lichen validator performance &lt;address&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -684,7 +684,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt validator performance Mo1tVa1iDatoR12345abcdef
+                    <pre><code>$ lichen validator performance Mo1tVa1iDatoR12345abcdef
 
 <i class="fa-solid fa-shrimp"></i> Validator Performance
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -702,7 +702,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
 
             <!-- validator list -->
             <div class="cmd-section" id="validator-list">
-                <h3><code>molt validator list</code></h3>
+                <h3><code>lichen validator list</code></h3>
                 <p>List all active validators with their stake and reputation scores.</p>
 
                 <div class="code-block">
@@ -710,7 +710,7 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt validator list</code></pre>
+                    <pre><code>lichen validator list</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -718,20 +718,20 @@ molt-cli 0.9.2 (moltchain)</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt validator list
+                    <pre><code>$ lichen validator list
 
 <i class="fa-solid fa-shrimp"></i> Active Validators
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #1 Mo1tVa1iDatoR12345abcdef
-    Stake: 125000.0 MOLT
+    Stake: 125000.0 LICN
    Reputation: 98
 
 #2 Mo1tVa1iDatoR67890ghijkl
-    Stake: 80000.0 MOLT
+    Stake: 80000.0 LICN
    Reputation: 95
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Total: 2 validators, 205000.0 MOLT staked</code></pre>
+Total: 2 validators, 205000.0 LICN staked</code></pre>
                 </div>
             </div>
 
@@ -739,21 +739,21 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
             <!--                          STAKING                                 -->
             <!-- ================================================================ -->
             <h2>Staking Commands</h2>
-            <p>Stake and unstake MOLT to participate in consensus. Staked tokens are locked and earn rewards each epoch.
+            <p>Stake and unstake LICN to participate in consensus. Staked tokens are locked and earn rewards each epoch.
             </p>
 
             <!-- stake add -->
             <div class="cmd-section" id="stake-add">
-                <h3><code>molt stake add</code></h3>
-                <p>Stake MOLT to register as a validator or increase your existing stake. Amount is in shells (1 MOLT =
-                    1,000,000,000 shells).</p>
+                <h3><code>lichen stake add</code></h3>
+                <p>Stake LICN to register as a validator or increase your existing stake. Amount is in spores (1 LICN =
+                    1,000,000,000 spores).</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt stake add &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen stake add &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -770,12 +770,12 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                             <td><code>amount</code></td>
                             <td>u64</td>
                             <td><em>required</em></td>
-                            <td>Amount in shells to stake</td>
+                            <td>Amount in spores to stake</td>
                         </tr>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair file for the staking account</td>
                         </tr>
                     </tbody>
@@ -786,11 +786,11 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt stake add 10000000000000
+                    <pre><code>$ lichen stake add 10000000000000
 
-<i class="fa-solid fa-shrimp"></i> Staking MOLT
+<i class="fa-solid fa-shrimp"></i> Staking LICN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<i class="fa-solid fa-coins"></i> Amount:    10000.0 MOLT
+<i class="fa-solid fa-coins"></i> Amount:    10000.0 LICN
 <i class="fa-solid fa-user"></i> Validator: Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
 <i class="fa-solid fa-circle-check"></i> Stake transaction confirmed!</code></pre>
                 </div>
@@ -798,15 +798,15 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- stake remove -->
             <div class="cmd-section" id="stake-remove">
-                <h3><code>molt stake remove</code></h3>
-                <p>Unstake MOLT from your validator. Unstaked tokens become spendable after a cooldown period.</p>
+                <h3><code>lichen stake remove</code></h3>
+                <p>Unstake LICN from your validator. Unstaked tokens become spendable after a cooldown period.</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt stake remove &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen stake remove &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -823,12 +823,12 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                             <td><code>amount</code></td>
                             <td>u64</td>
                             <td><em>required</em></td>
-                            <td>Amount in shells to unstake</td>
+                            <td>Amount in spores to unstake</td>
                         </tr>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair file</td>
                         </tr>
                     </tbody>
@@ -839,9 +839,9 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt stake remove 5000000000000
+                    <pre><code>$ lichen stake remove 5000000000000
 
-<i class="fa-solid fa-shrimp"></i> Unstaking 5000.0 MOLT...
+<i class="fa-solid fa-shrimp"></i> Unstaking 5000.0 LICN...
 <i class="fa-solid fa-circle-check"></i> Unstake transaction confirmed!
 <i class="fa-solid fa-hourglass-half"></i> Cooldown: tokens will be spendable in ~2 epochs</code></pre>
                 </div>
@@ -849,7 +849,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- stake status -->
             <div class="cmd-section" id="stake-status">
-                <h3><code>molt stake status</code></h3>
+                <h3><code>lichen stake status</code></h3>
                 <p>Show current staking status for an account — how much is staked and current validator standing.</p>
 
                 <div class="code-block">
@@ -857,7 +857,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt stake status [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen stake status [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -879,7 +879,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair file (used if no address given)</td>
                         </tr>
                     </tbody>
@@ -890,12 +890,12 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt stake status
+                    <pre><code>$ lichen stake status
 
 <i class="fa-solid fa-shrimp"></i> Staking Status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Account:   Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
-<i class="fa-solid fa-coins"></i> Staked:    100000.0000 MOLT
+<i class="fa-solid fa-coins"></i> Staked:    100000.0000 LICN
 <i class="fa-solid fa-chart-bar"></i> Status:    Active Validator
 <i class="fa-solid fa-star"></i> Reputation: 98</code></pre>
                 </div>
@@ -903,7 +903,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- stake rewards -->
             <div class="cmd-section" id="stake-rewards">
-                <h3><code>molt stake rewards</code></h3>
+                <h3><code>lichen stake rewards</code></h3>
                 <p>Show accumulated staking rewards for an account.</p>
 
                 <div class="code-block">
@@ -911,7 +911,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt stake rewards [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen stake rewards [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -933,7 +933,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair file</td>
                         </tr>
                     </tbody>
@@ -944,14 +944,14 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt stake rewards
+                    <pre><code>$ lichen stake rewards
 
 <i class="fa-solid fa-shrimp"></i> Staking Rewards
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Account:        Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
-<i class="fa-solid fa-coins"></i> Total earned:   42.7500 MOLT
+<i class="fa-solid fa-coins"></i> Total earned:   42.7500 LICN
 <i class="fa-solid fa-calendar-days"></i> Current epoch:  127
-<i class="fa-solid fa-gem"></i> This epoch:     0.3200 MOLT</code></pre>
+<i class="fa-solid fa-gem"></i> This epoch:     0.3200 LICN</code></pre>
                 </div>
             </div>
 
@@ -963,8 +963,8 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- deploy -->
             <div class="cmd-section" id="deploy">
-                <h3><code>molt deploy</code></h3>
-                <p>Deploy a compiled WASM contract binary to the chain. Cost is a flat fee of 25 MOLT
+                <h3><code>lichen deploy</code></h3>
+                <p>Deploy a compiled WASM contract binary to the chain. Cost is a flat fee of 25 LICN
                     (CONTRACT_DEPLOY_FEE). Optionally register the contract in the symbol registry
                     by providing <code>--symbol</code>.</p>
 
@@ -973,7 +973,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt deploy &lt;contract.wasm&gt; [--symbol &lt;SYM&gt;] [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--supply &lt;amount&gt;] [--metadata &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen deploy &lt;contract.wasm&gt; [--symbol &lt;SYM&gt;] [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--supply &lt;amount&gt;] [--metadata &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1021,7 +1021,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                             <td><code>--supply</code></td>
                             <td>u64</td>
                             <td>&mdash;</td>
-                            <td>Initial total supply in whole tokens (auto-converted to shells via decimals)</td>
+                            <td>Initial total supply in whole tokens (auto-converted to spores via decimals)</td>
                         </tr>
                         <tr>
                             <td><code>--metadata</code></td>
@@ -1037,7 +1037,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Deployer keypair</td>
                         </tr>
                     </tbody>
@@ -1048,7 +1048,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
+                    <pre><code>$ lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
     --symbol MYTK --name "My Token" --template token --decimals 9 \
     --supply 1000000 \
     --metadata '{"description":"Community token","website":"https://mytoken.io","logo_url":"https://mytoken.io/logo.png","twitter":"https://x.com/mytoken","telegram":"https://t.me/mytoken","discord":"https://discord.gg/mytoken","mintable":true,"burnable":false}'
@@ -1060,7 +1060,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
   Template:    token
   Size:        14,832 bytes
   Deploy tx:   9kR7...sWmN
-  Fee:         25.001000000 MOLT
+  Fee:         25.001000000 LICN
   Status:      Finalized
 
 <i class="fa-solid fa-check"></i> Contract deployed and verified on-chain!</code></pre>
@@ -1075,7 +1075,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- call -->
             <div class="cmd-section" id="call">
-                <h3><code>molt call</code></h3>
+                <h3><code>lichen call</code></h3>
                 <p>Invoke a function on a deployed smart contract. Arguments are passed as a JSON array.</p>
 
                 <div class="code-block">
@@ -1083,7 +1083,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt call &lt;contract&gt; &lt;function&gt; [--args &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen call &lt;contract&gt; &lt;function&gt; [--args &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1117,7 +1117,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Caller keypair</td>
                         </tr>
                     </tbody>
@@ -1128,19 +1128,19 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt call Mo1tProg1D12345abcdefghijklmnop set_greeting \
-    --args '["Hello, MoltChain!"]'
+                    <pre><code>$ lichen call Mo1tProg1D12345abcdefghijklmnop set_greeting \
+    --args '["Hello, Lichen!"]'
 
 <i class="fa-solid fa-shrimp"></i> Calling set_greeting on Mo1tProg1D...
 <i class="fa-solid fa-file-signature"></i> Tx: 4xK9...mNpQ
 <i class="fa-solid fa-circle-check"></i> Success — 1 event emitted
-   Event: GreetingSet("Hello, MoltChain!")</code></pre>
+   Event: GreetingSet("Hello, Lichen!")</code></pre>
                 </div>
             </div>
 
             <!-- contract info -->
             <div class="cmd-section" id="contract-info">
-                <h3><code>molt contract info</code></h3>
+                <h3><code>lichen contract info</code></h3>
                 <p>Show on-chain metadata for a deployed contract: owner, size, and deployment details.</p>
 
                 <div class="code-block">
@@ -1148,7 +1148,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt contract info &lt;address&gt;</code></pre>
+                    <pre><code>lichen contract info &lt;address&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1175,7 +1175,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt contract info Mo1tProg1D12345abcdefghijklmnop
+                    <pre><code>$ lichen contract info Mo1tProg1D12345abcdefghijklmnop
 
 <i class="fa-solid fa-shrimp"></i> Contract Information
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1188,7 +1188,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- contract logs -->
             <div class="cmd-section" id="contract-logs">
-                <h3><code>molt contract logs</code></h3>
+                <h3><code>lichen contract logs</code></h3>
                 <p>Retrieve recent log entries (events) emitted by a contract.</p>
 
                 <div class="code-block">
@@ -1196,7 +1196,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt contract logs &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
+                    <pre><code>lichen contract logs &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1229,11 +1229,11 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt contract logs Mo1tProg1D12345abcdefghijklmnop --limit 5
+                    <pre><code>$ lichen contract logs Mo1tProg1D12345abcdefghijklmnop --limit 5
 
 <i class="fa-solid fa-shrimp"></i> Contract Logs (last 5)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[slot 482917] GreetingSet("Hello, MoltChain!")
+[slot 482917] GreetingSet("Hello, Lichen!")
 [slot 482850] GreetingSet("Testing 1-2-3")
 [slot 482790] GreetingSet("First message")</code></pre>
                 </div>
@@ -1241,7 +1241,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- contract list -->
             <div class="cmd-section" id="contract-list">
-                <h3><code>molt contract list</code></h3>
+                <h3><code>lichen contract list</code></h3>
                 <p>List all contracts deployed on the connected network.</p>
 
                 <div class="code-block">
@@ -1249,7 +1249,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt contract list</code></pre>
+                    <pre><code>lichen contract list</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1257,7 +1257,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt contract list
+                    <pre><code>$ lichen contract list
 
 <i class="fa-solid fa-shrimp"></i> Deployed Contracts
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1270,9 +1270,9 @@ Total: 2 contracts</code></pre>
 
             <!-- contract register -->
             <div class="cmd-section" id="contract-register">
-                <h3><code>molt contract register</code></h3>
+                <h3><code>lichen contract register</code></h3>
                 <p>Retroactively register an already-deployed contract in the symbol registry.
-                    Use this when a contract was deployed without <code>--symbol</code>. Costs 0.001 MOLT (base fee
+                    Use this when a contract was deployed without <code>--symbol</code>. Costs 0.001 LICN (base fee
                     only).</p>
 
                 <div class="code-block">
@@ -1280,7 +1280,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt contract register &lt;address&gt; --symbol &lt;SYM&gt; [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen contract register &lt;address&gt; --symbol &lt;SYM&gt; [--name &lt;name&gt;] [--template &lt;type&gt;] [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1327,7 +1327,7 @@ Total: 2 contracts</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Must be the contract owner</td>
                         </tr>
                     </tbody>
@@ -1338,7 +1338,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt contract register 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
+                    <pre><code>$ lichen contract register 5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL \
     --symbol VYRN --name "VYRN Token" --template token --decimals 9
 
 <i class="fa-solid fa-check"></i> Symbol registered: VYRN → 5A19vK...9RxBWL</code></pre>
@@ -1353,15 +1353,15 @@ Total: 2 contracts</code></pre>
 
             <!-- balance -->
             <div class="cmd-section" id="balance">
-                <h3><code>molt balance</code></h3>
-                <p>Check the MOLT balance for any address. Shows total, spendable, staked, and locked breakdowns.</p>
+                <h3><code>lichen balance</code></h3>
+                <p>Check the LICN balance for any address. Shows total, spendable, staked, and locked breakdowns.</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt balance [address] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen balance [address] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1383,7 +1383,7 @@ Total: 2 contracts</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair to derive address from (if no address given)</td>
                         </tr>
                     </tbody>
@@ -1394,23 +1394,23 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt balance
+                    <pre><code>$ lichen balance
 
 <i class="fa-solid fa-shrimp"></i> Balance for Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<i class="fa-solid fa-coins"></i> Total:       100.0000 MOLT (100000000000 shells)
+<i class="fa-solid fa-coins"></i> Total:       100.0000 LICN (100000000000 spores)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   Spendable:    90.0000 MOLT (available for transfers)
-   Staked:        10.0000 MOLT (locked in validation)
-   Locked:         0.0000 MOLT (locked in contracts)
+   Spendable:    90.0000 LICN (available for transfers)
+   Staked:        10.0000 LICN (locked in validation)
+   Locked:         0.0000 LICN (locked in contracts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code></pre>
                 </div>
             </div>
 
             <!-- transfer -->
             <div class="cmd-section" id="transfer">
-                <h3><code>molt transfer</code></h3>
-                <p>Send MOLT to another address. The fee is deducted from the sender's spendable balance (40% of the fee
+                <h3><code>lichen transfer</code></h3>
+                <p>Send LICN to another address. The fee is deducted from the sender's spendable balance (40% of the fee
                     is burned).</p>
 
                 <div class="code-block">
@@ -1418,7 +1418,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt transfer &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen transfer &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1441,12 +1441,12 @@ Total: 2 contracts</code></pre>
                             <td><code>amount</code></td>
                             <td>f64</td>
                             <td><em>required</em></td>
-                            <td>Amount in MOLT</td>
+                            <td>Amount in LICN</td>
                         </tr>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Sender keypair</td>
                         </tr>
                     </tbody>
@@ -1457,9 +1457,9 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt transfer Mo1tRecipientAddress123456789abcdefghijk 1.5
+                    <pre><code>$ lichen transfer Mo1tRecipientAddress123456789abcdefghijk 1.5
 
-<i class="fa-solid fa-shrimp"></i> Transferring 1.5 MOLT (1500000000 shells)
+<i class="fa-solid fa-shrimp"></i> Transferring 1.5 LICN (1500000000 spores)
 <i class="fa-solid fa-arrow-up-from-bracket"></i> From: Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 <i class="fa-solid fa-download"></i> To:   Mo1tRecipientAddress123456789abcdefghijk
 <i class="fa-solid fa-circle-check"></i> Transaction sent!
@@ -1469,7 +1469,7 @@ Total: 2 contracts</code></pre>
 
             <!-- airdrop -->
             <div class="cmd-section" id="airdrop">
-                <h3><code>molt airdrop</code></h3>
+                <h3><code>lichen airdrop</code></h3>
                 <p>Request free test tokens from the faucet. Only available on testnet and local networks.</p>
 
                 <div class="code-block">
@@ -1477,7 +1477,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt airdrop [amount] [--pubkey &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen airdrop [amount] [--pubkey &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1494,7 +1494,7 @@ Total: 2 contracts</code></pre>
                             <td><code>amount</code></td>
                             <td>f64</td>
                             <td><code>100.0</code></td>
-                            <td>Amount in MOLT to request</td>
+                            <td>Amount in LICN to request</td>
                         </tr>
                         <tr>
                             <td><code>--pubkey, -p</code></td>
@@ -1505,7 +1505,7 @@ Total: 2 contracts</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair to derive address from</td>
                         </tr>
                     </tbody>
@@ -1516,12 +1516,12 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt airdrop 50
+                    <pre><code>$ lichen airdrop 50
 
-<i class="fa-solid fa-shrimp"></i> Requesting 50 MOLT airdrop...
+<i class="fa-solid fa-shrimp"></i> Requesting 50 LICN airdrop...
 
   Transaction: 4xK9...mNpQ
-  New balance: 50.000000000 MOLT
+  New balance: 50.000000000 LICN
 
 <i class="fa-solid fa-check"></i> Airdrop successful!</code></pre>
                 </div>
@@ -1529,7 +1529,7 @@ Total: 2 contracts</code></pre>
 
             <!-- block -->
             <div class="cmd-section" id="block">
-                <h3><code>molt block</code></h3>
+                <h3><code>lichen block</code></h3>
                 <p>Retrieve block information by slot number — hash, parent, state root, validator, timestamp, and
                     transaction count.</p>
 
@@ -1538,7 +1538,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt block &lt;slot&gt;</code></pre>
+                    <pre><code>lichen block &lt;slot&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1565,7 +1565,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt block 482917
+                    <pre><code>$ lichen block 482917
 
 <i class="fa-solid fa-cube"></i> Block #482917
 <i class="fa-solid fa-link"></i> Hash:         a3f8...7b2c
@@ -1579,7 +1579,7 @@ Total: 2 contracts</code></pre>
 
             <!-- latest -->
             <div class="cmd-section" id="latest">
-                <h3><code>molt latest</code></h3>
+                <h3><code>lichen latest</code></h3>
                 <p>Get the most recent finalized block.</p>
 
                 <div class="code-block">
@@ -1587,7 +1587,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt latest</code></pre>
+                    <pre><code>lichen latest</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1595,7 +1595,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt latest
+                    <pre><code>$ lichen latest
 
 <i class="fa-solid fa-cube"></i> Latest Block #483201
 <i class="fa-solid fa-link"></i> Hash:         f2a1...8d4e
@@ -1609,7 +1609,7 @@ Total: 2 contracts</code></pre>
 
             <!-- slot -->
             <div class="cmd-section" id="slot">
-                <h3><code>molt slot</code></h3>
+                <h3><code>lichen slot</code></h3>
                 <p>Print the current slot number.</p>
 
                 <div class="code-block">
@@ -1617,7 +1617,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt slot</code></pre>
+                    <pre><code>lichen slot</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1625,14 +1625,14 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt slot
+                    <pre><code>$ lichen slot
 <i class="fa-solid fa-shrimp"></i> Current slot: 483201</code></pre>
                 </div>
             </div>
 
             <!-- blockhash -->
             <div class="cmd-section" id="blockhash">
-                <h3><code>molt blockhash</code></h3>
+                <h3><code>lichen blockhash</code></h3>
                 <p>Retrieve the most recent blockhash. Useful for constructing transactions client-side.</p>
 
                 <div class="code-block">
@@ -1640,7 +1640,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt blockhash</code></pre>
+                    <pre><code>lichen blockhash</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1648,15 +1648,15 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt blockhash
+                    <pre><code>$ lichen blockhash
 <i class="fa-solid fa-shrimp"></i> Recent blockhash: f2a1b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0</code></pre>
                 </div>
             </div>
 
             <!-- burned -->
             <div class="cmd-section" id="burned">
-                <h3><code>molt burned</code></h3>
-                <p>Show the total amount of MOLT permanently burned via the deflationary fee mechanism (40% of all
+                <h3><code>lichen burned</code></h3>
+                <p>Show the total amount of LICN permanently burned via the deflationary fee mechanism (40% of all
                     transaction fees).</p>
 
                 <div class="code-block">
@@ -1664,7 +1664,7 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt burned</code></pre>
+                    <pre><code>lichen burned</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1672,10 +1672,10 @@ Total: 2 contracts</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt burned
+                    <pre><code>$ lichen burned
 
-<i class="fa-solid fa-fire"></i> Total MOLT Burned
-<i class="fa-solid fa-coins"></i> 1,247.832000000 MOLT (1247832000000 shells)
+<i class="fa-solid fa-fire"></i> Total LICN Burned
+<i class="fa-solid fa-coins"></i> 1,247.832000000 LICN (1247832000000 spores)
 
 Deflationary mechanism: 40% of all transaction fees are burned forever! <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></code></pre>
                 </div>
@@ -1683,15 +1683,15 @@ Deflationary mechanism: 40% of all transaction fees are burned forever! <i class
 
             <!-- validators (top-level) -->
             <div class="cmd-section" id="validators">
-                <h3><code>molt validators</code></h3>
-                <p>List all active validators on the network (shorthand for <code>molt validator list</code>).</p>
+                <h3><code>lichen validators</code></h3>
+                <p>List all active validators on the network (shorthand for <code>lichen validator list</code>).</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt validators</code></pre>
+                    <pre><code>lichen validators</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1699,23 +1699,23 @@ Deflationary mechanism: 40% of all transaction fees are burned forever! <i class
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt validators
+                    <pre><code>$ lichen validators
 
 <i class="fa-solid fa-shrimp"></i> Active Validators
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #1 Mo1tVa1iDatoR12345abcdef
-    Stake: 125000.0 MOLT    Reputation: 98
+    Stake: 125000.0 LICN    Reputation: 98
 
 #2 Mo1tVa1iDatoR67890ghijkl
-    Stake: 80000.0 MOLT    Reputation: 95
+    Stake: 80000.0 LICN    Reputation: 95
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Total: 2 validators, 205000.0 MOLT staked</code></pre>
+Total: 2 validators, 205000.0 LICN staked</code></pre>
                 </div>
             </div>
 
             <!-- status -->
             <div class="cmd-section" id="status">
-                <h3><code>molt status</code></h3>
+                <h3><code>lichen status</code></h3>
                 <p>Show a comprehensive overview of the chain: current slot, validator count, TPS, block and transaction
                     totals.</p>
 
@@ -1724,7 +1724,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt status</code></pre>
+                    <pre><code>lichen status</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1732,9 +1732,9 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt status
+                    <pre><code>$ lichen status
 
-<i class="fa-solid fa-shrimp"></i> MoltChain Status
+<i class="fa-solid fa-shrimp"></i> Lichen Status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-chart-bar"></i> Current slot:        483,201
 <i class="fa-solid fa-users"></i> Active validators:   2
@@ -1747,7 +1747,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- metrics -->
             <div class="cmd-section" id="metrics">
-                <h3><code>molt metrics</code></h3>
+                <h3><code>lichen metrics</code></h3>
                 <p>Display real-time performance metrics for the connected node.</p>
 
                 <div class="code-block">
@@ -1755,7 +1755,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt metrics</code></pre>
+                    <pre><code>lichen metrics</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1763,7 +1763,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt metrics
+                    <pre><code>$ lichen metrics
 
 <i class="fa-solid fa-shrimp"></i> Performance Metrics
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1776,7 +1776,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- account info -->
             <div class="cmd-section" id="account-info">
-                <h3><code>molt account info</code></h3>
+                <h3><code>lichen account info</code></h3>
                 <p>Show detailed account information for any on-chain address.</p>
 
                 <div class="code-block">
@@ -1784,7 +1784,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt account info &lt;address&gt;</code></pre>
+                    <pre><code>lichen account info &lt;address&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1811,12 +1811,12 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt account info Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+                    <pre><code>$ lichen account info Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
 
 <i class="fa-solid fa-shrimp"></i> Account Details
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Address:     Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
-<i class="fa-solid fa-coins"></i> Balance:     100.0000 MOLT
+<i class="fa-solid fa-coins"></i> Balance:     100.0000 LICN
 <i class="fa-solid fa-file-signature"></i> Nonce:       47
 <i class="fa-solid fa-tag"></i>  Type:        User Account</code></pre>
                 </div>
@@ -1824,7 +1824,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- account history -->
             <div class="cmd-section" id="account-history">
-                <h3><code>molt account history</code></h3>
+                <h3><code>lichen account history</code></h3>
                 <p>Show recent transaction history for an account.</p>
 
                 <div class="code-block">
@@ -1832,7 +1832,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt account history &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
+                    <pre><code>lichen account history &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -1865,13 +1865,13 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt account history Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab --limit 3
+                    <pre><code>$ lichen account history Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab --limit 3
 
 <i class="fa-solid fa-shrimp"></i> Transaction History (last 3)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[slot 482917] Transfer  -1.5000 MOLT → Mo1tRecip...
-[slot 482800] Airdrop  +50.0000 MOLT
-[slot 482750] Stake    -10.0000 MOLT (staked)</code></pre>
+[slot 482917] Transfer  -1.5000 LICN → Mo1tRecip...
+[slot 482800] Airdrop  +50.0000 LICN
+[slot 482750] Stake    -10.0000 LICN (staked)</code></pre>
                 </div>
             </div>
 
@@ -1883,7 +1883,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- network status -->
             <div class="cmd-section" id="network-status">
-                <h3><code>molt network status</code></h3>
+                <h3><code>lichen network status</code></h3>
                 <p>Show overall network health — current slot, validator count, TPS, and block/transaction totals.</p>
 
                 <div class="code-block">
@@ -1891,7 +1891,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt network status</code></pre>
+                    <pre><code>lichen network status</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1899,7 +1899,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt network status
+                    <pre><code>$ lichen network status
 
 <i class="fa-solid fa-shrimp"></i> Network Status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1915,7 +1915,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
 
             <!-- network peers -->
             <div class="cmd-section" id="network-peers">
-                <h3><code>molt network peers</code></h3>
+                <h3><code>lichen network peers</code></h3>
                 <p>List all connected P2P peers on the local node.</p>
 
                 <div class="code-block">
@@ -1923,7 +1923,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt network peers</code></pre>
+                    <pre><code>lichen network peers</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1931,7 +1931,7 @@ Total: 2 validators, 205000.0 MOLT staked</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt network peers
+                    <pre><code>$ lichen network peers
 
 <i class="fa-solid fa-shrimp"></i> Connected Peers
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1947,7 +1947,7 @@ Total: 2 peers</code></pre>
 
             <!-- network info -->
             <div class="cmd-section" id="network-info">
-                <h3><code>molt network info</code></h3>
+                <h3><code>lichen network info</code></h3>
                 <p>Display network metadata — network ID, chain ID, RPC endpoint, and basic statistics.</p>
 
                 <div class="code-block">
@@ -1955,7 +1955,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt network info</code></pre>
+                    <pre><code>lichen network info</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -1963,11 +1963,11 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt network info
+                    <pre><code>$ lichen network info
 
 <i class="fa-solid fa-shrimp"></i> Network Information
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<i class="fa-solid fa-globe"></i> Network ID:  moltchain-mainnet-1
+<i class="fa-solid fa-globe"></i> Network ID:  lichen-mainnet-1
 <i class="fa-solid fa-link"></i>  Chain ID:    1337
 <i class="fa-solid fa-link"></i> RPC Endpoint: http://localhost:8899
 
@@ -1982,21 +1982,21 @@ Total: 2 peers</code></pre>
             <!--                          TOKEN                                   -->
             <!-- ================================================================ -->
             <h2>Token Commands</h2>
-            <p>Create custom tokens, mint, transfer, and query token balances on MoltChain.</p>
+            <p>Create custom tokens, mint, transfer, and query token balances on Lichen.</p>
 
             <!-- token create -->
             <div class="cmd-section" id="token-create">
-                <h3><code>molt token create</code></h3>
+                <h3><code>lichen token create</code></h3>
                 <p>Deploy a WASM token contract and automatically register it in the symbol registry
                     with <code>template=&quot;token&quot;</code>. Requires a compiled WASM binary.
-                    Cost is 25.001 MOLT (same as <code>molt deploy</code>).</p>
+                    Cost is 25.001 LICN (same as <code>lichen deploy</code>).</p>
 
                 <div class="code-block">
                     <div class="code-block-header">
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token create &lt;name&gt; &lt;symbol&gt; --wasm &lt;path&gt; [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen token create &lt;name&gt; &lt;symbol&gt; --wasm &lt;path&gt; [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2036,7 +2036,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Token owner keypair</td>
                         </tr>
                     </tbody>
@@ -2047,21 +2047,21 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token create "VYRN Token" VYRN --wasm target/wasm32-unknown-unknown/release/vyrn_token.wasm --decimals 9
+                    <pre><code>$ lichen token create "VYRN Token" VYRN --wasm target/wasm32-unknown-unknown/release/vyrn_token.wasm --decimals 9
 
 <i class="fa-solid fa-shrimp"></i> Deploying token contract...
   Name:     VYRN Token
   Symbol:   VYRN
   Decimals: 9
   Address:  5A19vK1LMPsFAk1Q7t6AHpBXAkyWiFxbat39GF9RxBWL
-  Fee:      25.001000000 MOLT
+  Fee:      25.001000000 LICN
 <i class="fa-solid fa-circle-check"></i> Token created!</code></pre>
                 </div>
             </div>
 
             <!-- token info -->
             <div class="cmd-section" id="token-info">
-                <h3><code>molt token info</code></h3>
+                <h3><code>lichen token info</code></h3>
                 <p>Show metadata and supply information for a token.</p>
 
                 <div class="code-block">
@@ -2069,7 +2069,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token info &lt;token&gt;</code></pre>
+                    <pre><code>lichen token info &lt;token&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2096,20 +2096,20 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token info REEF
+                    <pre><code>$ lichen token info MOSS
 
-<i class="fa-solid fa-shrimp"></i> Token: Reef Token (REEF)
+<i class="fa-solid fa-shrimp"></i> Token: Moss Storage (MOSS)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <i class="fa-solid fa-location-dot"></i> Address:   Mo1tToken1234567890abcdefghijk
 <i class="fa-solid fa-user"></i> Owner:     Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
-<i class="fa-solid fa-coins"></i> Supply:    500,000 REEF
+<i class="fa-solid fa-coins"></i> Supply:    500,000 MOSS
 <i class="fa-solid fa-hashtag"></i> Decimals:  6</code></pre>
                 </div>
             </div>
 
             <!-- token mint -->
             <div class="cmd-section" id="token-mint">
-                <h3><code>molt token mint</code></h3>
+                <h3><code>lichen token mint</code></h3>
                 <p>Mint additional tokens (owner only). Tokens are sent to yourself unless <code>--to</code> is
                     specified.</p>
 
@@ -2118,7 +2118,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token mint &lt;token&gt; &lt;amount&gt; [--to &lt;address&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen token mint &lt;token&gt; &lt;amount&gt; [--to &lt;address&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2152,7 +2152,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Token owner keypair</td>
                         </tr>
                     </tbody>
@@ -2163,16 +2163,16 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token mint Mo1tToken1234567890abcdefghijk 10000
+                    <pre><code>$ lichen token mint Mo1tToken1234567890abcdefghijk 10000
 
-<i class="fa-solid fa-shrimp"></i> Minting 10,000 REEF...
-<i class="fa-solid fa-circle-check"></i> Minted! New supply: 510,000 REEF</code></pre>
+<i class="fa-solid fa-shrimp"></i> Minting 10,000 MOSS...
+<i class="fa-solid fa-circle-check"></i> Minted! New supply: 510,000 MOSS</code></pre>
                 </div>
             </div>
 
             <!-- token send -->
             <div class="cmd-section" id="token-send">
-                <h3><code>molt token send</code></h3>
+                <h3><code>lichen token send</code></h3>
                 <p>Transfer custom tokens to another address.</p>
 
                 <div class="code-block">
@@ -2180,7 +2180,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token send &lt;token&gt; &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen token send &lt;token&gt; &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2214,7 +2214,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Sender keypair</td>
                         </tr>
                     </tbody>
@@ -2225,9 +2225,9 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token send Mo1tToken1234567890abcdefghijk Mo1tRecipient... 500
+                    <pre><code>$ lichen token send Mo1tToken1234567890abcdefghijk Mo1tRecipient... 500
 
-<i class="fa-solid fa-shrimp"></i> Sending 500 REEF → Mo1tRecipient...
+<i class="fa-solid fa-shrimp"></i> Sending 500 MOSS → Mo1tRecipient...
 <i class="fa-solid fa-circle-check"></i> Transfer confirmed!
 <i class="fa-solid fa-file-signature"></i> Tx: 8bN2...kLm4</code></pre>
                 </div>
@@ -2235,7 +2235,7 @@ Total: 2 peers</code></pre>
 
             <!-- token balance -->
             <div class="cmd-section" id="token-balance">
-                <h3><code>molt token balance</code></h3>
+                <h3><code>lichen token balance</code></h3>
                 <p>Query the token balance for a given account.</p>
 
                 <div class="code-block">
@@ -2243,7 +2243,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token balance &lt;token&gt; [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen token balance &lt;token&gt; [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2271,7 +2271,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Keypair (used if no address)</td>
                         </tr>
                     </tbody>
@@ -2282,16 +2282,16 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token balance Mo1tToken1234567890abcdefghijk
+                    <pre><code>$ lichen token balance Mo1tToken1234567890abcdefghijk
 
 <i class="fa-solid fa-shrimp"></i> Token Balance
-   REEF: 499,500</code></pre>
+   MOSS: 499,500</code></pre>
                 </div>
             </div>
 
             <!-- token list -->
             <div class="cmd-section" id="token-list">
-                <h3><code>molt token list</code></h3>
+                <h3><code>lichen token list</code></h3>
                 <p>List all registered tokens on the network.</p>
 
                 <div class="code-block">
@@ -2299,7 +2299,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt token list</code></pre>
+                    <pre><code>lichen token list</code></pre>
                 </div>
 
                 <div class="code-block">
@@ -2307,12 +2307,11 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt token list
+                    <pre><code>$ lichen token list
 
 <i class="fa-solid fa-shrimp"></i> Registered Tokens
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  REEF    Reef Token      Supply: 510,000
-  CLAW    Claw Credits    Supply: 1,000,000
+  MOSS    Moss Storage      Supply: 510,000 LICN    Spore Credits    Supply: 1,000,000
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Total: 2 tokens</code></pre>
                 </div>
@@ -2326,7 +2325,7 @@ Total: 2 peers</code></pre>
 
             <!-- gov propose -->
             <div class="cmd-section" id="gov-propose">
-                <h3><code>molt gov propose</code></h3>
+                <h3><code>lichen gov propose</code></h3>
                 <p>Submit a new governance proposal. Proposal types: <code>fast-track</code>, <code>standard</code>,
                     <code>constitutional</code>.
                 </p>
@@ -2336,7 +2335,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov propose &lt;title&gt; &lt;description&gt; [--proposal-type &lt;type&gt;] [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen gov propose &lt;title&gt; &lt;description&gt; [--proposal-type &lt;type&gt;] [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2370,7 +2369,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Proposer keypair</td>
                         </tr>
                     </tbody>
@@ -2381,7 +2380,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov propose "Increase block size" "Raise max block size to 2MB" \
+                    <pre><code>$ lichen gov propose "Increase block size" "Raise max block size to 2MB" \
     --proposal-type standard
 
 <i class="fa-solid fa-shrimp"></i> Governance Proposal Created
@@ -2395,7 +2394,7 @@ Total: 2 peers</code></pre>
 
             <!-- gov vote -->
             <div class="cmd-section" id="gov-vote">
-                <h3><code>molt gov vote</code></h3>
+                <h3><code>lichen gov vote</code></h3>
                 <p>Cast a vote on an active proposal. Vote options: <code>yes</code>, <code>no</code>,
                     <code>abstain</code>.
                 </p>
@@ -2405,7 +2404,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov vote &lt;proposal_id&gt; &lt;vote&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen gov vote &lt;proposal_id&gt; &lt;vote&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2433,7 +2432,7 @@ Total: 2 peers</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Voter keypair</td>
                         </tr>
                     </tbody>
@@ -2444,7 +2443,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov vote 7 yes
+                    <pre><code>$ lichen gov vote 7 yes
 
 <i class="fa-solid fa-shrimp"></i> Vote Cast
   Proposal: #7 — Increase block size
@@ -2455,7 +2454,7 @@ Total: 2 peers</code></pre>
 
             <!-- gov list -->
             <div class="cmd-section" id="gov-list">
-                <h3><code>molt gov list</code></h3>
+                <h3><code>lichen gov list</code></h3>
                 <p>List governance proposals. By default shows only active proposals; use <code>--all</code> to include
                     executed and cancelled.</p>
 
@@ -2464,7 +2463,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov list [--all]</code></pre>
+                    <pre><code>lichen gov list [--all]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2491,7 +2490,7 @@ Total: 2 peers</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov list
+                    <pre><code>$ lichen gov list
 
 <i class="fa-solid fa-shrimp"></i> Active Proposals
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2504,7 +2503,7 @@ Total: 2 active proposals</code></pre>
 
             <!-- gov info -->
             <div class="cmd-section" id="gov-info">
-                <h3><code>molt gov info</code></h3>
+                <h3><code>lichen gov info</code></h3>
                 <p>Show full details for a governance proposal.</p>
 
                 <div class="code-block">
@@ -2512,7 +2511,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov info &lt;proposal_id&gt;</code></pre>
+                    <pre><code>lichen gov info &lt;proposal_id&gt;</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2539,7 +2538,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov info 7
+                    <pre><code>$ lichen gov info 7
 
 <i class="fa-solid fa-shrimp"></i> Proposal #7
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2555,7 +2554,7 @@ Total: 2 active proposals</code></pre>
 
             <!-- gov execute -->
             <div class="cmd-section" id="gov-execute">
-                <h3><code>molt gov execute</code></h3>
+                <h3><code>lichen gov execute</code></h3>
                 <p>Execute a proposal that has passed voting and completed its time-lock period.</p>
 
                 <div class="code-block">
@@ -2563,7 +2562,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov execute &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen gov execute &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2585,7 +2584,7 @@ Total: 2 active proposals</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Executor keypair</td>
                         </tr>
                     </tbody>
@@ -2596,7 +2595,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov execute 6
+                    <pre><code>$ lichen gov execute 6
 
 <i class="fa-solid fa-shrimp"></i> Executing Proposal #6 — Add token burn events
 <i class="fa-solid fa-circle-check"></i> Proposal executed successfully!
@@ -2606,7 +2605,7 @@ Total: 2 active proposals</code></pre>
 
             <!-- gov veto -->
             <div class="cmd-section" id="gov-veto">
-                <h3><code>molt gov veto</code></h3>
+                <h3><code>lichen gov veto</code></h3>
                 <p>Veto a proposal during its time-lock period (requires sufficient stake or governance authority).</p>
 
                 <div class="code-block">
@@ -2614,7 +2613,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>molt gov veto &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
+                    <pre><code>lichen gov veto &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
                 </div>
 
                 <table class="flags-table">
@@ -2636,7 +2635,7 @@ Total: 2 active proposals</code></pre>
                         <tr>
                             <td><code>--keypair, -k</code></td>
                             <td>path</td>
-                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td><code>~/.lichen/keypairs/id.json</code></td>
                             <td>Authority keypair</td>
                         </tr>
                     </tbody>
@@ -2647,7 +2646,7 @@ Total: 2 active proposals</code></pre>
                         <span class="code-lang">Shell</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>$ molt gov veto 7
+                    <pre><code>$ lichen gov veto 7
 
 <i class="fa-solid fa-shrimp"></i> Vetoing Proposal #7 — Increase block size
 <i class="fa-solid fa-circle-check"></i> Proposal vetoed!
@@ -2669,21 +2668,21 @@ Total: 2 active proposals</code></pre>
                 <a href="rpc-reference.html" class="hub-card">
                     <div class="hub-card-icon blue"><i class="fas fa-plug"></i></div>
                     <div class="hub-card-title">RPC API Reference</div>
-                    <div class="hub-card-desc">Full JSON-RPC endpoint docs for programmatic access to the MoltChain
+                    <div class="hub-card-desc">Full JSON-RPC endpoint docs for programmatic access to the Lichen
                         network.</div>
                 </a>
 
                 <a href="contracts.html" class="hub-card">
                     <div class="hub-card-icon purple"><i class="fas fa-file-code"></i></div>
                     <div class="hub-card-title">Smart Contracts</div>
-                    <div class="hub-card-desc">Write, test, and deploy WASM contracts on MoltChain with the Rust SDK.
+                    <div class="hub-card-desc">Write, test, and deploy WASM contracts on Lichen with the Rust SDK.
                     </div>
                 </a>
 
-                <a href="https://github.com/lobstercove/moltchain" class="hub-card" target="_blank">
+                <a href="https://github.com/lobstercove/lichen" class="hub-card" target="_blank">
                     <div class="hub-card-icon primary"><i class="fab fa-github"></i></div>
                     <div class="hub-card-title">GitHub</div>
-                    <div class="hub-card-desc">Source code, issues, and contributions — moltchain-cli, validator, SDK,
+                    <div class="hub-card-desc">Source code, issues, and contributions — lichen-cli, validator, SDK,
                         and contracts.</div>
                 </a>
             </div>

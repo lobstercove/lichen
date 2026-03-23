@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::{ContractInstruction, Instruction, Pubkey};
+use lichen_core::{ContractInstruction, Instruction, Pubkey};
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz ContractInstruction deserialization — should never panic.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy MoltCoin, MoltPunks, and MoltSwap contracts to a live MoltChain validator."""
+"""Deploy LichenCoin, LichenPunks, and LichenSwap contracts to a live Lichen validator."""
 
 import sys
 import os
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
 RPC_URL = "http://127.0.0.1:8899"
 KEYPAIR_DIR = Path(__file__).resolve().parent.parent / "keypairs"
@@ -20,9 +20,9 @@ CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)  # for Call instructions
 SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)   # for Deploy instructions (type 17)
 
 CONTRACTS = [
-    {"name": "MoltCoin",  "wasm": "moltcoin.wasm"},
-    {"name": "MoltPunks", "wasm": "moltpunks.wasm"},
-    {"name": "MoltSwap",  "wasm": "moltswap.wasm"},
+    {"name": "LichenCoin",  "wasm": "lichencoin.wasm"},
+    {"name": "LichenPunks", "wasm": "lichenpunks.wasm"},
+    {"name": "LichenSwap",  "wasm": "lichenswap.wasm"},
 ]
 
 WASM_SEARCH_DIRS = [
@@ -110,8 +110,8 @@ async def call_contract(
 
 async def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Deploy MoltChain core contracts")
-    parser.add_argument("--rpc", default=RPC_URL, help="MoltChain RPC URL")
+    parser = argparse.ArgumentParser(description="Deploy Lichen core contracts")
+    parser.add_argument("--rpc", default=RPC_URL, help="Lichen RPC URL")
     parser.add_argument("--admin", default=None, help="Admin/treasury pubkey (base58). Required for mainnet.")
     parser.add_argument("--network", default="testnet", choices=["testnet", "mainnet"],
                         help="Network type. Mainnet requires --admin (multisig address).")

@@ -15,7 +15,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
     storage_get, storage_set, u64_to_bytes, Address,
 };
@@ -24,13 +24,13 @@ use moltchain_sdk::{
 // CONSTANTS
 // ============================================================================
 
-const REWARD_POOL_PER_MONTH: u64 = 100_000_000_000_000; // 100K MOLT (in shells) — sustainable rate per TOKENOMICS_OVERHAUL_PLAN.md
+const REWARD_POOL_PER_MONTH: u64 = 100_000_000_000_000; // 100K LICN (in spores) — sustainable rate per TOKENOMICS_OVERHAUL_PLAN.md
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
-// Tier thresholds (cumulative volume in shells)
-const TIER_BRONZE_MAX: u64 = 100_000_000_000_000; // <100k MOLT ($10K at $0.10)
-const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000; // 100k-1M MOLT ($100K at $0.10)
-const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000; // 1M-10M MOLT ($1M at $0.10)
+// Tier thresholds (cumulative volume in spores)
+const TIER_BRONZE_MAX: u64 = 100_000_000_000_000; // <100k LICN ($10K at $0.10)
+const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000; // 100k-1M LICN ($100K at $0.10)
+const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000; // 1M-10M LICN ($1M at $0.10)
                                                    // Above GOLD_MAX = Diamond
 
 // Tier multipliers (in basis points, 10000 = 1x)
@@ -42,7 +42,7 @@ const MULTIPLIER_DIAMOND: u64 = 30_000; // 3x
 // Referral rates
 const REFERRAL_RATE_BPS: u64 = 1000; // 10% of fees to referrer
 const REFERRAL_DISCOUNT_BPS: u64 = 500; // 5% fee discount for referee
-const REFERRAL_VERIFIED_RATE_BPS: u64 = 1500; // 15% for MoltyID-verified
+const REFERRAL_VERIFIED_RATE_BPS: u64 = 1500; // 15% for LichenID-verified
 const REFERRAL_DISCOUNT_DURATION: u64 = 2_592_000; // 30 days
 
 // Storage keys
@@ -52,7 +52,7 @@ const REENTRANCY_KEY: &[u8] = b"rew_reentrancy";
 const TOTAL_DISTRIBUTED_KEY: &[u8] = b"rew_total_dist";
 const REWARD_EPOCH_KEY: &[u8] = b"rew_epoch";
 const REFERRAL_RATE_KEY: &[u8] = b"rew_ref_rate";
-const MOLTCOIN_ADDRESS_KEY: &[u8] = b"rew_molt_addr";
+const LICHENCOIN_ADDRESS_KEY: &[u8] = b"rew_licn_addr";
 const REWARDS_POOL_KEY: &[u8] = b"rew_pool_addr";
 const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
 const TOTAL_VOLUME_KEY: &[u8] = b"rew_total_volume";
@@ -343,10 +343,10 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     0
 }
 
-/// Claim trading rewards — transfers MOLT from contract's own balance to trader.
+/// Claim trading rewards — transfers LICN from contract's own balance to trader.
 /// The contract itself holds the reward tokens (self-custody pattern).
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
-///          4=transfer failed, 5=moltcoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -373,18 +373,18 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
         return 1;
     }
 
-    // Transfer MOLT from contract's own balance to trader.
+    // Transfer LICN from contract's own balance to trader.
     // AUDIT-FIX G7-02: Use self-custody pattern — the contract holds reward
     // tokens at its own address. get_contract_address() == caller in CCC context,
-    // satisfying moltcoin's caller==from check.
-    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if is_zero(&molt_addr) {
-        log_info("claim_trading_rewards: moltcoin address not configured");
+    // satisfying lichencoin's caller==from check.
+    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if is_zero(&licn_addr) {
+        log_info("claim_trading_rewards: lichencoin address not configured");
         reentrancy_exit();
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(t), pending) {
+    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(t), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -396,15 +396,15 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
     save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(pending));
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(pending));
+    lichen_sdk::set_return_data(&u64_to_bytes(pending));
     log_info("Trading rewards claimed");
     reentrancy_exit();
     0
 }
 
-/// Claim LP rewards for a position — transfers MOLT from contract's own balance to provider.
+/// Claim LP rewards for a position — transfers LICN from contract's own balance to provider.
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
-///          4=transfer failed, 5=moltcoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -432,16 +432,16 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
         return 1;
     }
 
-    // Transfer MOLT from contract's own balance to provider.
+    // Transfer LICN from contract's own balance to provider.
     // AUDIT-FIX G7-02: self-custody pattern (see claim_trading_rewards).
-    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if is_zero(&molt_addr) {
-        log_info("claim_lp_rewards: moltcoin address not configured");
+    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if is_zero(&licn_addr) {
+        log_info("claim_lp_rewards: lichencoin address not configured");
         reentrancy_exit();
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(p), pending) {
+    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(p), pending) {
         reentrancy_exit();
         return 4;
     }
@@ -450,7 +450,7 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
     save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(pending));
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(pending));
+    lichen_sdk::set_return_data(&u64_to_bytes(pending));
     log_info("LP rewards claimed");
     reentrancy_exit();
     0
@@ -502,7 +502,7 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
 /// AUDIT-FIX G7-02: referral earnings were recorded in record_trade but had
 /// no claim path. This function completes the referral economy.
 /// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
-///          4=transfer failed, 5=moltcoin address not configured
+///          4=transfer failed, 5=lichencoin address not configured
 pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -529,15 +529,15 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
         return 1;
     }
 
-    // Transfer MOLT from contract's own balance to referrer (self-custody pattern)
-    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if is_zero(&molt_addr) {
-        log_info("claim_referral_rewards: moltcoin address not configured");
+    // Transfer LICN from contract's own balance to referrer (self-custody pattern)
+    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if is_zero(&licn_addr) {
+        log_info("claim_referral_rewards: lichencoin address not configured");
         reentrancy_exit();
         return 5;
     }
     let self_addr = get_contract_address();
-    if let Err(_) = call_token_transfer(Address(molt_addr), self_addr, Address(r), earnings) {
+    if let Err(_) = call_token_transfer(Address(licn_addr), self_addr, Address(r), earnings) {
         reentrancy_exit();
         return 4;
     }
@@ -546,7 +546,7 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
     save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(earnings));
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(earnings));
+    lichen_sdk::set_return_data(&u64_to_bytes(earnings));
     log_info("Referral rewards claimed");
     reentrancy_exit();
     0
@@ -652,8 +652,8 @@ pub fn get_referral_rate() -> u64 {
     }
 }
 
-/// Set the MOLT coin contract address (admin only)
-pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
+/// Set the LICN coin contract address (admin only)
+pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
     unsafe {
@@ -671,11 +671,11 @@ pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if is_zero(&a) {
         return 2;
     }
-    storage_set(MOLTCOIN_ADDRESS_KEY, &a);
+    storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
 }
 
-/// Set the rewards pool address that holds MOLT tokens (admin only)
+/// Set the rewards pool address that holds LICN tokens (admin only)
 pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
@@ -763,7 +763,7 @@ pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enable
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -772,7 +772,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 1: record_trade(trader[32], fee_paid[8], volume[8])
@@ -781,14 +781,14 @@ pub extern "C" fn call() {
                 let fee = bytes_to_u64(&args[33..41]);
                 let vol = bytes_to_u64(&args[41..49]);
                 let r = record_trade(args[1..33].as_ptr(), fee, vol);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 2: claim_trading_rewards(trader[32])
         2 => {
             if args.len() >= 33 {
                 let r = claim_trading_rewards(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 3: claim_lp_rewards(provider[32], position_id[8])
@@ -796,14 +796,14 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = claim_lp_rewards(args[1..33].as_ptr(), pos_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 4: register_referral(trader[32], referrer[32])
         4 => {
             if args.len() >= 65 {
                 let r = register_referral(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 5: set_reward_rate(caller[32], pair_id[8], rate[8])
@@ -812,7 +812,7 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let rate = bytes_to_u64(&args[41..49]);
                 let r = set_reward_rate(args[1..33].as_ptr(), pair_id, rate);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 6: accrue_lp_rewards(position_id[8], liquidity[8], pair_id[8])
@@ -822,35 +822,35 @@ pub extern "C" fn call() {
                 let liq = bytes_to_u64(&args[9..17]);
                 let pair_id = bytes_to_u64(&args[17..25]);
                 let r = accrue_lp_rewards(pos_id, liq, pair_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 7: get_pending_rewards(addr[32])
         7 => {
             if args.len() >= 33 {
                 let r = get_pending_rewards(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 8: get_trading_tier(addr[32])
         8 => {
             if args.len() >= 33 {
                 let r = get_trading_tier(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 9: emergency_pause(caller[32])
         9 => {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 10: emergency_unpause(caller[32])
         10 => {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 11: set_referral_rate(caller[32], rate_bps[8])
@@ -858,38 +858,38 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let rate = bytes_to_u64(&args[33..41]);
                 let r = set_referral_rate(args[1..33].as_ptr(), rate);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        // 12: set_moltcoin_address(caller[32], addr[32])
+        // 12: set_lichencoin_address(caller[32], addr[32])
         12 => {
             if args.len() >= 65 {
-                let r = set_moltcoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                let r = set_lichencoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 13: set_rewards_pool(caller[32], addr[32])
         13 => {
             if args.len() >= 65 {
                 let r = set_rewards_pool(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 14: get_referral_rate
         14 => {
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_referral_rate()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_referral_rate()));
         }
         // 15: get_total_distributed
         15 => {
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_total_distributed()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_total_distributed()));
         }
         16 => {
             // get_trader_count — unique traders who have earned rewards
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
         }
         17 => {
             // get_total_volume — cumulative volume recorded for rewards
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         18 => {
             // get_reward_stats — [trade_count, trader_count, total_volume, total_distributed, epoch]
@@ -899,17 +899,17 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
             buf.extend_from_slice(&u64_to_bytes(get_total_distributed()));
             buf.extend_from_slice(&u64_to_bytes(load_u64(REWARD_EPOCH_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         // 19: claim_referral_rewards(referrer[32])
         19 => {
             if args.len() >= 33 {
                 let r = claim_referral_rewards(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -922,22 +922,22 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
-    /// Standard setup: admin created, moltcoin address configured, dex caller
+    /// Standard setup: admin created, lichencoin address configured, dex caller
     /// authorized, and contract address set. Tokens are held at the contract
     /// address (self-custody pattern per G7-02).
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
-        let molt = [10u8; 32];
+        let licn = [10u8; 32];
         let contract_self = [0xAAu8; 32]; // contract's own address
         test_mock::set_caller(admin);
         test_mock::set_contract_address(contract_self);
         assert_eq!(initialize(admin.as_ptr()), 0);
-        // Configure moltcoin address so claims actually transfer
+        // Configure lichencoin address so claims actually transfer
         test_mock::set_caller(admin);
-        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), licn.as_ptr()), 0);
         // Authorize a caller address for record_trade / accrue_lp_rewards
         let dex_caller = [0xFFu8; 32];
         assert_eq!(
@@ -948,8 +948,8 @@ mod tests {
         admin
     }
 
-    /// Setup without moltcoin address configured — for testing error path.
-    fn setup_no_molt() -> [u8; 32] {
+    /// Setup without lichencoin address configured — for testing error path.
+    fn setup_no_licn() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
         let contract_self = [0xAAu8; 32];
@@ -997,7 +997,7 @@ mod tests {
     fn test_tier_multiplier_silver() {
         let _admin = setup();
         let trader = [2u8; 32];
-        // Accumulate enough for Silver tier (>10k MOLT)
+        // Accumulate enough for Silver tier (>10k LICN)
         save_u64(&trader_volume_key(&trader), TIER_BRONZE_MAX);
         assert_eq!(record_trade(trader.as_ptr(), 1000, 1_000_000), 0);
         let pending = load_u64(&trader_pending_key(&trader));
@@ -1099,7 +1099,7 @@ mod tests {
         register_referral(trader.as_ptr(), referrer.as_ptr());
         test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
-        // Referrer has 1000 shells in earnings (10% of 10_000 fee)
+        // Referrer has 1000 spores in earnings (10% of 10_000 fee)
         assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 1000);
         // Referrer claims
         test_mock::set_caller(referrer);
@@ -1247,32 +1247,32 @@ mod tests {
         assert_eq!(ref_earnings, 2000); // 20% of 10000
     }
 
-    // --- MOLT Token Transfer Tests ---
+    // --- LICN Token Transfer Tests ---
 
     #[test]
-    fn test_set_moltcoin_address() {
+    fn test_set_lichencoin_address() {
         let admin = setup();
-        let molt = [10u8; 32];
+        let licn = [10u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
-        assert_eq!(load_addr(MOLTCOIN_ADDRESS_KEY), molt);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), licn.as_ptr()), 0);
+        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), licn);
     }
 
     #[test]
-    fn test_set_moltcoin_address_zero() {
+    fn test_set_lichencoin_address_zero() {
         let admin = setup();
         let zero = [0u8; 32];
         test_mock::set_caller(admin);
-        assert_eq!(set_moltcoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
     }
 
     #[test]
-    fn test_set_moltcoin_address_not_admin() {
+    fn test_set_lichencoin_address_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
-        let molt = [10u8; 32];
+        let licn = [10u8; 32];
         test_mock::set_caller(rando);
-        assert_eq!(set_moltcoin_address(rando.as_ptr(), molt.as_ptr()), 1);
+        assert_eq!(set_lichencoin_address(rando.as_ptr(), licn.as_ptr()), 1);
     }
 
     #[test]
@@ -1302,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_with_molt_configured() {
+    fn test_claim_with_licn_configured() {
         let admin = setup();
         let trader = [2u8; 32];
 
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_lp_with_molt_configured() {
+    fn test_claim_lp_with_licn_configured() {
         let admin = setup();
         let provider = [2u8; 32];
         test_mock::set_caller(admin);
@@ -1331,10 +1331,10 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_without_molt_configured_fails() {
-        // AUDIT-FIX G7-02: Without MOLT address configured, claims MUST fail
+    fn test_claim_without_licn_configured_fails() {
+        // AUDIT-FIX G7-02: Without LICN address configured, claims MUST fail
         // (error 5) instead of silently proceeding with bookkeeping only.
-        let _admin = setup_no_molt();
+        let _admin = setup_no_licn();
         let trader = [2u8; 32];
         record_trade(trader.as_ptr(), 5000, 5_000_000);
         test_mock::set_caller(trader);
@@ -1344,8 +1344,8 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_lp_without_molt_configured_fails() {
-        let admin = setup_no_molt();
+    fn test_claim_lp_without_licn_configured_fails() {
+        let admin = setup_no_licn();
         let provider = [2u8; 32];
         test_mock::set_caller(admin);
         set_reward_rate(admin.as_ptr(), 1, 1_000_000);
@@ -1358,8 +1358,8 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_referral_without_molt_configured_fails() {
-        let _admin = setup_no_molt();
+    fn test_claim_referral_without_licn_configured_fails() {
+        let _admin = setup_no_licn();
         let trader = [2u8; 32];
         let referrer = [3u8; 32];
         test_mock::set_slot(100);
@@ -1397,7 +1397,7 @@ mod tests {
 
     #[test]
     fn test_reward_pool_per_month_is_100k() {
-        // Reduced from 500K to 100K MOLT per TOKENOMICS_OVERHAUL_PLAN.md
+        // Reduced from 500K to 100K LICN per TOKENOMICS_OVERHAUL_PLAN.md
         assert_eq!(REWARD_POOL_PER_MONTH, 100_000_000_000_000);
     }
 

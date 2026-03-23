@@ -4,11 +4,11 @@ Post-Genesis Deployment — Wrapped Token + DEX Contracts
 ========================================================
 
 This script deploys and initializes all wrapped-asset tokens and DEX contracts
-on a running MoltChain validator. Run once after genesis to bring the full
+on a running Lichen validator. Run once after genesis to bring the full
 DEX trading infrastructure online.
 
 Deployment order matters:
-  Phase 1 — Wrapped tokens (musd_token, wsol_token, weth_token)
+  Phase 1 — Wrapped tokens (lusd_token, wsol_token, weth_token)
             These are the quote/base assets the DEX trades.
   Phase 2 — DEX core    (dex_core, dex_amm, dex_router)
             Core trading engine. dex_core gets the token addresses.
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Optional, Dict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
 # ===========================================================================
 # Configuration
@@ -51,7 +51,7 @@ OUTPUT_PATH = Path(__file__).resolve().parent.parent / "deploy-manifest.json"
 
 # Contracts in deployment order
 PHASE_1_TOKENS = [
-    {"name": "musd_token",  "wasm": "musd_token.wasm"},
+    {"name": "lusd_token",  "wasm": "lusd_token.wasm"},
     {"name": "wsol_token",  "wasm": "wsol_token.wasm"},
     {"name": "weth_token",  "wasm": "weth_token.wasm"},
     {"name": "wbnb_token",  "wasm": "wbnb_token.wasm"},
@@ -119,7 +119,7 @@ def derive_program_address(deployer: PublicKey, wasm_bytes: bytes) -> PublicKey:
 
 # Maps symbol registry names → deploy_dex contract names
 SYMBOL_TO_CONTRACT = {
-    "MUSD": "musd_token",
+    "LUSD": "lusd_token",
     "WSOL": "wsol_token",
     "WETH": "weth_token",
     "WBNB": "wbnb_token",
@@ -279,7 +279,7 @@ async def phase_initialize_tokens(
     print(f"  Admin: {admin_pubkey}")
     admin_bytes = list(admin_pubkey.to_bytes())  # 32-byte admin address
 
-    for name in ["musd_token", "wsol_token", "weth_token", "wbnb_token"]:
+    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token"]:
         if name not in addrs:
             print(f"  ⚠️  {name} not deployed, skipping init")
             continue
@@ -319,7 +319,7 @@ async def phase_initialize_dex(
     if "dex_core" in addrs:
         print(f"\n  --- Registering tokens with dex_core ---")
         token_map = {
-            "musd_token": "mUSD",
+            "lusd_token": "lUSD",
             "wsol_token": "wSOL",
             "weth_token": "wETH",
             "wbnb_token": "wBNB",
@@ -340,15 +340,15 @@ async def phase_initialize_dex(
     if "dex_core" in addrs:
         print(f"\n  --- Registering trading pairs ---")
         pairs = [
-            ("MOLT", "mUSD"),   # Native MOLT priced in mUSD
-            ("wSOL", "mUSD"),   # Wrapped SOL priced in mUSD
-            ("wETH", "mUSD"),   # Wrapped ETH priced in mUSD
-            ("wBNB", "mUSD"),   # Wrapped BNB priced in mUSD
-            ("REEF", "mUSD"),   # REEF priced in mUSD
-            ("wSOL", "MOLT"),   # Direct SOL/MOLT pair
-            ("wETH", "MOLT"),   # Direct ETH/MOLT pair
-            ("wBNB", "MOLT"),   # Direct BNB/MOLT pair
-            ("REEF", "MOLT"),   # REEF/MOLT pair
+            ("LICN", "lUSD"),   # Native LICN priced in lUSD
+            ("wSOL", "lUSD"),   # Wrapped SOL priced in lUSD
+            ("wETH", "lUSD"),   # Wrapped ETH priced in lUSD
+            ("wBNB", "lUSD"),   # Wrapped BNB priced in lUSD
+            ("MOSS", "lUSD"),   # MOSS priced in lUSD
+            ("wSOL", "LICN"),   # Direct SOL/LICN pair
+            ("wETH", "LICN"),   # Direct ETH/LICN pair
+            ("wBNB", "LICN"),   # Direct BNB/LICN pair
+            ("MOSS", "LICN"),   # MOSS/LICN pair
         ]
         for base, quote in pairs:
             try:
@@ -359,9 +359,9 @@ async def phase_initialize_dex(
                 print(f"  ✅ create_pair({base}/{quote}) — sig={sig}")
             except Exception as e:
                 print(f"  ⚠️  create_pair({base}/{quote}) failed: {e}")
-        # Set allowed quote tokens: mUSD + MOLT (for dual-quote trading)
-        print(f"\n  --- Setting allowed quote tokens (mUSD + MOLT) ---")
-        for symbol in ["mUSD", "MOLT"]:
+        # Set allowed quote tokens: lUSD + LICN (for dual-quote trading)
+        print(f"\n  --- Setting allowed quote tokens (lUSD + LICN) ---")
+        for symbol in ["lUSD", "LICN"]:
             try:
                 sig = await call_contract(
                     conn, deployer, addrs["dex_core"], "add_allowed_quote",
@@ -374,7 +374,7 @@ async def phase_initialize_dex(
     # Set allowed quotes on dex_governance too
     if "dex_governance" in addrs:
         print(f"\n  --- Setting governance allowed quote tokens ---")
-        for symbol in ["mUSD", "MOLT"]:
+        for symbol in ["lUSD", "LICN"]:
             try:
                 sig = await call_contract(
                     conn, deployer, addrs["dex_governance"], "add_allowed_quote",
@@ -478,34 +478,34 @@ async def phase_initialize_prediction_market(
     except Exception as e:
         print(f"  ⚠️  {name}.initialize() failed: {e}")
 
-    # Wire MoltyID address (for reputation checks)
-    if "moltyid" in addrs:
+    # Wire LichenID address (for reputation checks)
+    if "lichenid" in addrs:
         try:
             sig = await call_contract(
-                conn, deployer, addrs[name], "set_moltyid_address",
-                {"address": str(addrs["moltyid"])}
+                conn, deployer, addrs[name], "set_lichenid_address",
+                {"address": str(addrs["lichenid"])}
             )
-            print(f"  ✅ {name}.set_moltyid_address() — sig={sig}")
+            print(f"  ✅ {name}.set_lichenid_address() — sig={sig}")
         except Exception as e:
-            print(f"  ⚠️  {name}.set_moltyid_address() failed: {e}")
+            print(f"  ⚠️  {name}.set_lichenid_address() failed: {e}")
 
-    # Wire MoltOracle address (for resolution attestation)
-    if "moltoracle" in addrs:
+    # Wire LichenOracle address (for resolution attestation)
+    if "lichenoracle" in addrs:
         try:
             sig = await call_contract(
                 conn, deployer, addrs[name], "set_oracle_address",
-                {"address": str(addrs["moltoracle"])}
+                {"address": str(addrs["lichenoracle"])}
             )
             print(f"  ✅ {name}.set_oracle_address() — sig={sig}")
         except Exception as e:
             print(f"  ⚠️  {name}.set_oracle_address() failed: {e}")
 
-    # Wire mUSD token address (collateral token)
-    if "musd_token" in addrs:
+    # Wire lUSD token address (collateral token)
+    if "lusd_token" in addrs:
         try:
             sig = await call_contract(
                 conn, deployer, addrs[name], "set_musd_address",
-                {"address": str(addrs["musd_token"])}
+                {"address": str(addrs["lusd_token"])}
             )
             print(f"  ✅ {name}.set_musd_address() — sig={sig}")
         except Exception as e:
@@ -545,7 +545,7 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
         "deployed_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
         "contracts": {name: str(pubkey) for name, pubkey in addrs.items()},
         "token_contracts": {
-            "mUSD": str(addrs["musd_token"]) if "musd_token" in addrs else None,
+            "lUSD": str(addrs["lusd_token"]) if "lusd_token" in addrs else None,
             "wSOL": str(addrs["wsol_token"]) if "wsol_token" in addrs else None,
             "wETH": str(addrs["weth_token"]) if "weth_token" in addrs else None,
             "wBNB": str(addrs["wbnb_token"]) if "wbnb_token" in addrs else None,
@@ -558,8 +558,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
             if name in addrs
         },
         "trading_pairs": [
-            "MOLT/mUSD", "wSOL/mUSD", "wETH/mUSD", "wBNB/mUSD", "REEF/mUSD",
-            "wSOL/MOLT", "wETH/MOLT", "wBNB/MOLT", "REEF/MOLT",
+            "LICN/lUSD", "wSOL/lUSD", "wETH/lUSD", "wBNB/lUSD", "MOSS/lUSD",
+            "wSOL/LICN", "wETH/LICN", "wBNB/LICN", "MOSS/LICN",
         ],
     }
     OUTPUT_PATH.write_text(json.dumps(manifest, indent=2))
@@ -572,8 +572,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
 
 async def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Deploy MoltChain DEX + wrapped tokens")
-    parser.add_argument("--rpc", default=RPC_URL, help="MoltChain RPC URL")
+    parser = argparse.ArgumentParser(description="Deploy Lichen DEX + wrapped tokens")
+    parser.add_argument("--rpc", default=RPC_URL, help="Lichen RPC URL")
     parser.add_argument("--admin", default=None, help="Admin/treasury pubkey (base58). Required for mainnet.")
     parser.add_argument("--network", default="testnet", choices=["testnet", "mainnet"],
                         help="Network type. Mainnet requires --admin (multisig address).")
@@ -674,13 +674,13 @@ async def main():
 
     print(f"\n  Next steps:")
     print(f"  1. Copy deployer keypair to custody treasury (CRITICAL — admin must match):")
-    print(f"     sudo cp {DEPLOYER_PATH} /etc/moltchain/custody-treasury.json")
+    print(f"     sudo cp {DEPLOYER_PATH} /etc/lichen/custody-treasury.json")
     print(f"  2. Copy token addresses to custody config:")
-    for name in ["musd_token", "wsol_token", "weth_token", "wbnb_token"]:
+    for name in ["lusd_token", "wsol_token", "weth_token", "wbnb_token"]:
         if name in all_addrs:
             env_key = f"CUSTODY_{name.upper()}_ADDR"
             print(f"     export {env_key}={all_addrs[name]}")
-    print(f"  3. Set CUSTODY_TREASURY_KEYPAIR=/etc/moltchain/custody-treasury.json in custody env")
+    print(f"  3. Set CUSTODY_TREASURY_KEYPAIR=/etc/lichen/custody-treasury.json in custody env")
     print(f"  4. Restart custody service with new env vars")
     print(f"  5. First deposit will trigger wrapped token minting ✅")
 

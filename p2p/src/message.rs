@@ -1,6 +1,6 @@
 // P2P Message Types
 
-use moltchain_core::{
+use lichen_core::{
     Block, BlockHeader, CommitSignature, Hash, Precommit, Prevote, Proposal, Pubkey,
     SlashingEvidence, StakePool, Transaction, ValidatorSet, Vote,
 };
@@ -519,7 +519,7 @@ impl P2PMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_core::Keypair;
+    use lichen_core::Keypair;
 
     #[test]
     fn test_message_serialization() {
@@ -609,7 +609,7 @@ mod tests {
     fn test_large_message_compressed() {
         // Create a message with enough data to exceed COMPRESSION_THRESHOLD.
         // Use BlockRangeResponse with multiple blocks to push over 1KB.
-        use moltchain_core::{Block, Hash};
+        use lichen_core::{Block, Hash};
         let addr = "127.0.0.1:8000".parse().unwrap();
         let blocks: Vec<Block> = (0..20)
             .map(|i| Block::new(i, Hash::default(), Hash::default(), [0u8; 32], vec![]))
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn test_compact_block_from_block() {
-        use moltchain_core::Block;
+        use lichen_core::Block;
         let block = Block::new(42, Hash::default(), Hash::default(), [1u8; 32], vec![]);
         let compact = CompactBlock::from_block(&block);
         assert_eq!(compact.header.slot, 42);
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn test_compact_block_roundtrip() {
-        use moltchain_core::Block;
+        use lichen_core::Block;
         let block = Block::new(99, Hash::default(), Hash::default(), [2u8; 32], vec![]);
         let compact = CompactBlock::from_block(&block);
         let addr = "127.0.0.1:9000".parse().unwrap();

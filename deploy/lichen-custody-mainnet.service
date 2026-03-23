@@ -1,0 +1,34 @@
+[Unit]
+Description=Lichen Custody Bridge (Mainnet)
+After=network-online.target lichen-validator-mainnet.service
+Wants=network-online.target
+Requires=lichen-validator-mainnet.service
+
+[Service]
+Type=simple
+User=lichen
+Group=lichen
+ExecStart=/usr/local/bin/lichen-custody
+EnvironmentFile=/etc/lichen/custody-env-mainnet
+WorkingDirectory=/var/lib/lichen
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lichen/custody-db-mainnet
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lichen-custody-mainnet
+
+[Install]
+WantedBy=multi-user.target

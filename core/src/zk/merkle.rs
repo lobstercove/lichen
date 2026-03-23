@@ -296,7 +296,7 @@ pub fn poseidon_config() -> PoseidonConfig<Fr> {
         for w in 0..width {
             let i: u64 = (r * width + w) as u64;
             let mut hasher = Sha256::new();
-            hasher.update(b"MoltChain-Poseidon-RC-");
+            hasher.update(b"Lichen-Poseidon-RC-");
             hasher.update(i.to_le_bytes());
             let hash = hasher.finalize();
             round_rc.push(Fr::from_le_bytes_mod_order(&hash));

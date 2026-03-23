@@ -1,5 +1,5 @@
-// Molt Explorer — Smart Contracts (on-chain data ONLY)
-// Shows contracts actually deployed on MoltChain.
+// Lichen Explorer — Smart Contracts (on-chain data ONLY)
+// Shows contracts actually deployed on Lichen.
 // Uses shared NETWORKS, RPC_URL, rpc from explorer.js
 
 // Template → category mapping
@@ -148,7 +148,7 @@ function renderContracts() {
             '<i class="fas fa-file-code empty-state-icon"></i>' +
             '<h3>No Contracts Deployed</h3>' +
             '<p>Smart contracts will appear here once they are deployed on-chain.<br>' +
-            'Deploy contracts using the MoltChain SDK or run <code>first-boot-deploy.sh</code> to deploy the DEX and token infrastructure.</p>' +
+            'Deploy contracts using the Lichen SDK or run <code>first-boot-deploy.sh</code> to deploy the DEX and token infrastructure.</p>' +
             '</div>'
             : '<div class="empty-state-box">' +
             '<i class="fas fa-filter empty-state-icon"></i>' +
@@ -162,8 +162,8 @@ function renderContracts() {
 
     var renderRows = async function () {
         var ownerAddresses = paged.map(function (c) { return c.owner; }).filter(Boolean);
-        var nameMap = (typeof batchResolveMoltNames === 'function')
-            ? await batchResolveMoltNames(ownerAddresses)
+        var nameMap = (typeof batchResolveLichenNames === 'function')
+            ? await batchResolveLichenNames(ownerAddresses)
             : {};
 
         tbody.innerHTML = paged.map(function (c) {
@@ -172,7 +172,7 @@ function renderContracts() {
             var codeSize = c.codeSize > 0 ? formatBytes(c.codeSize) : '<span class="text-muted">\u2014</span>';
             var abiFuncs = c.abiFuncs > 0 ? c.abiFuncs : '<span class="text-muted">\u2014</span>';
             var ownerName = c.owner ? nameMap[c.owner] : null;
-            var ownerLabel = ownerName ? (ownerName + '.molt') : formatHash(c.owner);
+            var ownerLabel = ownerName ? (ownerName + '.lichen') : formatHash(c.owner);
             var owner = c.owner
                 ? '<a href="address.html?address=' + c.owner + '" class="hash-link" title="' + c.owner + '">' + ownerLabel + '</a>'
                 : '<span class="text-muted">\u2014</span>';

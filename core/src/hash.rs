@@ -1,4 +1,4 @@
-// MoltChain Core - Cryptographic Hash
+// Lichen Core - Cryptographic Hash
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_hash() {
-        let data = b"The reef is ready!";
+        let data = b"The moss is ready!";
         let hash = Hash::hash(data);
         println!("Hash: {}", hash);
         assert_ne!(hash.0, [0u8; 32]);
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_hex_roundtrip() {
-        let original = Hash::hash(b"MoltChain");
+        let original = Hash::hash(b"Lichen");
         let hex = original.to_hex();
         let parsed = Hash::from_hex(&hex).unwrap();
         assert_eq!(original, parsed);

@@ -1,0 +1,55 @@
+[Unit]
+Description=Lichen Validator Node
+Documentation=https://developers.lichen.network/validator.html
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lichen
+Group=lichen
+
+# Network is set via /etc/lichen/env (LICHEN_NETWORK=testnet|mainnet)
+# Port assignments: testnet → RPC=8899 WS=8900 P2P=7001
+#                   mainnet → RPC=9899 WS=9900 P2P=8001
+ExecStart=/usr/local/bin/lichen-validator \
+    --network ${LICHEN_NETWORK} \
+    --listen-addr 0.0.0.0 \
+    --rpc-port ${LICHEN_RPC_PORT} \
+    --ws-port ${LICHEN_WS_PORT} \
+    --p2p-port ${LICHEN_P2P_PORT} \
+    --db-path /var/lib/lichen/state-${LICHEN_NETWORK} \
+    ${LICHEN_EXTRA_ARGS}
+
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lichen /var/log/lichen
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Environment — LICHEN_HOME pins the P2P identity directory so cert
+# files are always found at the same path regardless of HOME, db-path, or
+# binary location changes.  This prevents accidental identity regeneration
+# (and TOFU violations) during updates or deployments.
+# HOME is also overridden for ZK keys and validator keypairs.
+Environment=RUST_LOG=info
+Environment=HOME=/var/lib/lichen
+Environment=LICHEN_HOME=/var/lib/lichen
+Environment=LICHEN_CONTRACTS_DIR=/var/lib/lichen/contracts
+EnvironmentFile=/etc/lichen/env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lichen-validator
+
+[Install]
+WantedBy=multi-user.target

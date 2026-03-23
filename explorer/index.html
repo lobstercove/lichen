@@ -4,9 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Molt Explorer - MoltChain Blockchain Explorer</title>
+    <title>Lichen Explorer — Blockchain Explorer</title>
     <meta name="description"
-        content="Explore the MoltChain blockchain. View blocks, transactions, accounts, and validators in real-time.">
+        content="Explore the Lichen blockchain. View blocks, transactions, accounts, and validators in real-time.">
+    <meta property="og:title" content="Lichen Explorer — Blockchain Explorer">
+    <meta property="og:description"
+        content="Explore the Lichen blockchain. View blocks, transactions, accounts, and validators in real-time.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://explorer.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="explorer.css">
@@ -25,8 +30,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
-                <span class="logo-text">Molt Explorer</span>
+                <img src="LichenExplorer_Logo_256.png" class="logo-icon" alt="Lichen Explorer">
+                <span class="logo-text">Lichen Explorer</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html" class="active">Dashboard</a></li>
@@ -101,7 +106,7 @@
                     </div>
                     <div class="stat-content">
                         <div class="stat-label">Total Supply</div>
-                        <div class="stat-value" id="totalSupply">500,000,000 MOLT</div>
+                        <div class="stat-value" id="totalSupply">500,000,000 LICN</div>
                         <div class="stat-change" id="supplyChange">Genesis + minted - burned</div>
                     </div>
                 </div>
@@ -111,7 +116,7 @@
                         <i class="fas fa-hammer"></i>
                     </div>
                     <div class="stat-content">
-                        <div class="stat-label">MOLT Minted</div>
+                        <div class="stat-label">LICN Minted</div>
                         <div class="stat-value" id="totalMinted">0</div>
                         <div class="stat-change">Minted on-chain at epoch boundaries</div>
                     </div>
@@ -122,7 +127,7 @@
                         <i class="fas fa-fire"></i>
                     </div>
                     <div class="stat-content">
-                        <div class="stat-label">MOLT Burned</div>
+                        <div class="stat-label">LICN Burned</div>
                         <div class="stat-value" id="totalBurned">0</div>
                         <div class="stat-change"><span id="burnPctLabel">—</span>% of all fees</div>
                     </div>
@@ -171,8 +176,8 @@
                     </div>
                     <div class="stat-content">
                         <div class="stat-label">Shielded Balance</div>
-                        <div class="stat-value" id="shieldedBalance">0 MOLT</div>
-                        <div class="stat-change" id="shieldedBalanceShells">0 shells</div>
+                        <div class="stat-value" id="shieldedBalance">0 LICN</div>
+                        <div class="stat-change" id="shieldedBalanceSpores">0 spores</div>
                     </div>
                 </div>
 
@@ -304,11 +309,11 @@
             <div class="footer-grid">
                 <div class="footer-col">
                     <div class="footer-logo">
-                        <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
-                        <span class="logo-text">Molt Explorer</span>
+                        <img src="LichenExplorer_Logo_256.png" class="logo-icon" alt="Lichen Explorer">
+                        <span class="logo-text">Lichen Explorer</span>
                     </div>
                     <p class="footer-desc">
-                        Real-time MoltChain blockchain explorer. View blocks, transactions, and network stats.
+                        Real-time Lichen blockchain explorer. View blocks, transactions, and network stats.
                     </p>
                 </div>
                 <div class="footer-col">
@@ -323,38 +328,39 @@
                 <div class="footer-col">
                     <h4>Tools</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="website">Website</a></li>
-                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
-                        <li><a href="#" data-molt-app="faucet">Faucet</a></li>
-                        <li><a href="https://github.com/lobstercove/moltchain">GitHub</a></li>
+                        <li><a href="#" data-lichen-app="website">Website</a></li>
+                        <li><a href="#" data-lichen-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-lichen-app="faucet">Faucet</a></li>
+                        <li><a href="https://github.com/lobstercove/lichen">GitHub</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/getting-started.html">Getting
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Getting
                                 Started</a></li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/architecture.html">Architecture</a>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Architecture</a>
                         </li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/rpc-reference.html">API Docs</a>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html">API Docs</a>
                         </li>
                         <li><a href="https://discord.gg/gkQmsHXRXp">Support</a></li>
                     </ul>
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2026 MoltChain. Dual-licensed: Apache 2.0 core, MIT for SDKs and auxiliary apps.</p>
-                <p>Molt Explorer powered by RPC <i class="fas fa-bolt"></i></p>
+                <p>&copy; 2026 Lichen. Dual-licensed: Apache 2.0 core, MIT for SDKs and auxiliary apps.</p>
+                <p>Lichen Explorer powered by RPC <i class="fas fa-bolt"></i></p>
             </div>
         </div>
     </footer>
 
     <!-- Version 2 - Forces cache reload -->
-    <script src="shared/utils.js"></script>
-    <script src="shared/env.js"></script>
-    <script src="shared-config.js"></script>
-    <script src="js/utils.js?v=20260211"></script>
-    <script src="js/explorer.js?v=20260211"></script>
+    <script src="shared/utils.js?v=20260322"></script>
+    <script src="shared/env.js?v=20260322"></script>
+    <script src="shared-config.js?v=20260322"></script>
+    <script src="js/utils.js?v=20260322"></script>
+    <script src="js/explorer.js?v=20260322"></script>
 </body>
 
 </html>

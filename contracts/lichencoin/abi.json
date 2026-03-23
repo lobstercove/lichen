@@ -1,0 +1,60 @@
+{
+  "contract": "lichencoin",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "balance_of",
+      "opcode": 1,
+      "params": [
+        { "name": "account_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "transfer",
+      "opcode": 2,
+      "params": [
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "mint",
+      "opcode": 3,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "burn",
+      "opcode": 4,
+      "params": [
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "approve",
+      "opcode": 5,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" },
+        { "name": "spender_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "total_supply",
+      "opcode": 6,
+      "params": []
+    }
+  ]
+}

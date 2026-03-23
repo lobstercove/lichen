@@ -1,10 +1,10 @@
 #!/bin/bash
-# MoltChain Validator Health Check
+# Lichen Validator Health Check
 # Monitors validator status and alerts on issues
 
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
-ALERT_EMAIL="${MOLTCHAIN_ALERT_EMAIL:-}"
-SLACK_WEBHOOK="${MOLTCHAIN_SLACK_WEBHOOK:-}"
+RPC_URL="${LICHEN_RPC_URL:-http://localhost:8899}"
+ALERT_EMAIL="${LICHEN_ALERT_EMAIL:-}"
+SLACK_WEBHOOK="${LICHEN_SLACK_WEBHOOK:-}"
 CHECK_INTERVAL=30
 MAX_MISSED_SLOTS=10
 
@@ -31,14 +31,14 @@ send_alert() {
     
     # Send email if configured
     if [ -n "$ALERT_EMAIL" ] && command -v mail &> /dev/null; then
-        echo "$message" | mail -s "MoltChain Validator Alert" "$ALERT_EMAIL"
+        echo "$message" | mail -s "Lichen Validator Alert" "$ALERT_EMAIL"
     fi
     
     # Send Slack notification if configured
     if [ -n "$SLACK_WEBHOOK" ]; then
         curl -X POST "$SLACK_WEBHOOK" \
             -H 'Content-Type: application/json' \
-            -d "{\"text\":\"🦞 MoltChain Alert: $message\"}" \
+            -d "{\"text\":\"🦞 Lichen Alert: $message\"}" \
             2>/dev/null
     fi
 }
@@ -140,7 +140,7 @@ check_metrics() {
 }
 
 check_disk_space() {
-    local data_dir="${MOLTCHAIN_DATA_DIR:-$HOME/.moltchain/data}"
+    local data_dir="${LICHEN_DATA_DIR:-$HOME/.lichen/data}"
     
     if [ ! -d "$data_dir" ]; then
         print_warning "Data directory not found: $data_dir"
@@ -164,7 +164,7 @@ check_disk_space() {
 
 # Main health check
 main() {
-    echo "🦞 MoltChain Validator Health Check"
+    echo "🦞 Lichen Validator Health Check"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Checking: $RPC_URL"
     echo ""

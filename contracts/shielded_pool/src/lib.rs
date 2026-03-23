@@ -1,4 +1,4 @@
-//! MoltChain Shielded Pool Contract
+//! Lichen Shielded Pool Contract
 //!
 //! On-chain contract managing the shielded transaction pool.
 //! Stores the commitment Merkle tree root, spent nullifier set,
@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 // vk_shield        -> Vec<u8>        Shield verification key
 // vk_unshield      -> Vec<u8>        Unshield verification key
 // vk_transfer      -> Vec<u8>        Transfer verification key
-// pool_balance     -> u64            Total shielded MOLT (shells)
+// pool_balance     -> u64            Total shielded LICN (spores)
 
 /// Shielded pool state (persisted in contract storage)
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,7 +43,7 @@ pub struct ShieldedPoolState {
     pub merkle_root: [u8; 32],
     /// Number of commitments inserted
     pub commitment_count: u64,
-    /// Total shielded balance in shells
+    /// Total shielded balance in spores
     pub pool_balance: u64,
     /// Spent nullifier set
     pub spent_nullifiers: BTreeSet<[u8; 32]>,
@@ -66,10 +66,10 @@ pub struct CommitmentEntry {
     pub ephemeral_pk: [u8; 32],
 }
 
-/// Shield request: deposit transparent MOLT into the shielded pool
+/// Shield request: deposit transparent LICN into the shielded pool
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShieldRequest {
-    /// Amount to shield (in shells)
+    /// Amount to shield (in spores)
     pub amount: u64,
     /// Pedersen commitment to the note value
     pub commitment: [u8; 32],
@@ -86,7 +86,7 @@ pub struct ShieldRequest {
 pub struct UnshieldRequest {
     /// Nullifier proving note ownership (prevents double-spend)
     pub nullifier: [u8; 32],
-    /// Amount to withdraw (in shells)
+    /// Amount to withdraw (in spores)
     pub amount: u64,
     /// Recipient's transparent address
     pub recipient: [u8; 32],
@@ -127,10 +127,10 @@ pub struct PoolStats {
     pub merkle_root: String,
     /// Total commitments in the tree
     pub commitment_count: u64,
-    /// Total shielded balance in shells
+    /// Total shielded balance in spores
     pub pool_balance: u64,
-    /// Pool balance in MOLT
-    pub pool_balance_molt: f64,
+    /// Pool balance in LICN
+    pub pool_balance_licn: f64,
     /// Number of spent nullifiers
     pub nullifier_count: u64,
     /// Whether VKs are initialized
@@ -324,7 +324,7 @@ impl ShieldedPoolState {
             merkle_root: hex::encode(self.merkle_root),
             commitment_count: self.commitment_count,
             pool_balance: self.pool_balance,
-            pool_balance_molt: self.pool_balance as f64 / 1_000_000_000.0,
+            pool_balance_licn: self.pool_balance as f64 / 1_000_000_000.0,
             nullifier_count: self.spent_nullifiers.len() as u64,
             vk_initialized: self.vk_initialized,
         }
@@ -484,9 +484,9 @@ pub enum ShieldedPoolInstruction {
         vk_unshield: Vec<u8>,
         vk_transfer: Vec<u8>,
     },
-    /// Shield (deposit) MOLT into the pool
+    /// Shield (deposit) LICN into the pool
     Shield(ShieldRequest),
-    /// Unshield (withdraw) MOLT from the pool
+    /// Unshield (withdraw) LICN from the pool
     Unshield(UnshieldRequest),
     /// Shielded transfer between notes
     Transfer(TransferRequest),
@@ -521,7 +521,7 @@ pub enum ShieldedPoolInstruction {
 #[cfg(target_arch = "wasm32")]
 mod wasm_abi {
     use super::*;
-    use moltchain_sdk::{
+    use lichen_sdk::{
         get_caller, get_slot, log_info, set_return_data, storage_get, storage_set,
     };
 
@@ -672,7 +672,7 @@ mod wasm_abi {
         0
     }
 
-    /// Shield (deposit) MOLT into the shielded pool.
+    /// Shield (deposit) LICN into the shielded pool.
     /// args: JSON-serialized ShieldRequest.
     #[no_mangle]
     pub extern "C" fn shield(args_ptr: *const u8, args_len: u32) -> u32 {
@@ -713,7 +713,7 @@ mod wasm_abi {
         result
     }
 
-    /// Unshield (withdraw) MOLT from the shielded pool.
+    /// Unshield (withdraw) LICN from the shielded pool.
     /// args: JSON-serialized UnshieldRequest.
     #[no_mangle]
     pub extern "C" fn unshield(args_ptr: *const u8, args_len: u32) -> u32 {
@@ -811,7 +811,7 @@ mod tests {
     fn test_shield() {
         let mut pool = test_pool();
         let request = ShieldRequest {
-            amount: 1_000_000_000, // 1 MOLT
+            amount: 1_000_000_000, // 1 LICN
             commitment: [1u8; 32],
             proof: vec![0u8; 128], // proof already verified by processor
             encrypted_note: vec![0xAA, 0xBB],
@@ -840,7 +840,7 @@ mod tests {
         // Then unshield
         let unshield_req = UnshieldRequest {
             nullifier: [3u8; 32],
-            amount: 500_000_000, // 0.5 MOLT
+            amount: 500_000_000, // 0.5 LICN
             recipient: [4u8; 32],
             merkle_root: pool.merkle_root,
             proof: vec![0u8; 128],

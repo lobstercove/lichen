@@ -1,16 +1,16 @@
 #!/bin/bash
-# MoltChain Launch Verification Test
+# Lichen Launch Verification Test
 # Final comprehensive check before launch
 
 set -e
 
-echo "🦞 MoltChain Launch Verification"
+echo "🦞 Lichen Launch Verification"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "Testing all systems before launch..."
 echo ""
 
-MOLT="./target/release/molt"
+LICN="./target/release/licn"
 RPC_URL="http://localhost:8899"
 VALIDATOR_ADDR="B21dUmYNBTHCBgdemEXYRu6voEsECC4fD77D94ienMcN"
 
@@ -41,12 +41,12 @@ echo "1️⃣  CLI COMMANDS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-test_item "status command" "$MOLT status"
-test_item "metrics command" "$MOLT metrics"
-test_item "validators command" "$MOLT validators"
-test_item "balance command" "$MOLT balance $VALIDATOR_ADDR"
-test_item "account info command" "$MOLT account info $VALIDATOR_ADDR"
-test_item "network info command" "$MOLT network info"
+test_item "status command" "$LICN status"
+test_item "metrics command" "$LICN metrics"
+test_item "validators command" "$LICN validators"
+test_item "balance command" "$LICN balance $VALIDATOR_ADDR"
+test_item "account info command" "$LICN account info $VALIDATOR_ADDR"
+test_item "network info command" "$LICN network info"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -54,7 +54,7 @@ echo "2️⃣  RPC ENDPOINTS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-test_item "getBalance" "curl -s -X POST $RPC_URL -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"$VALIDATOR_ADDR\"]}' | jq -e '.result.shells'"
+test_item "getBalance" "curl -s -X POST $RPC_URL -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBalance\",\"params\":[\"$VALIDATOR_ADDR\"]}' | jq -e '.result.spores'"
 test_item "getAccountInfo" "curl -s -X POST $RPC_URL -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"$VALIDATOR_ADDR\"]}' | jq -e '.result.pubkey'"
 test_item "getValidators" "curl -s -X POST $RPC_URL -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getValidators\",\"params\":[]}' | jq -e '.result.validators'"
 test_item "getStakingRewards" "curl -s -X POST $RPC_URL -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getStakingRewards\",\"params\":[\"$VALIDATOR_ADDR\"]}' | jq -e '.result.bootstrap_debt'"
@@ -75,13 +75,13 @@ balance_result=$(curl -s -X POST $RPC_URL -d '{"jsonrpc":"2.0","id":1,"method":"
 spendable=$(echo $balance_result | jq -r '.result.spendable')
 staked=$(echo $balance_result | jq -r '.result.staked')
 locked=$(echo $balance_result | jq -r '.result.locked')
-total=$(echo $balance_result | jq -r '.result.shells')
+total=$(echo $balance_result | jq -r '.result.spores')
 
 echo "Balance breakdown:"
-echo "  Spendable: $(echo "scale=4; $spendable / 1000000000" | bc) MOLT"
-echo "  Staked:    $(echo "scale=4; $staked / 1000000000" | bc) MOLT"
-echo "  Locked:    $(echo "scale=4; $locked / 1000000000" | bc) MOLT"
-echo "  Total:     $(echo "scale=4; $total / 1000000000" | bc) MOLT"
+echo "  Spendable: $(echo "scale=4; $spendable / 1000000000" | bc) LICN"
+echo "  Staked:    $(echo "scale=4; $staked / 1000000000" | bc) LICN"
+echo "  Locked:    $(echo "scale=4; $locked / 1000000000" | bc) LICN"
+echo "  Total:     $(echo "scale=4; $total / 1000000000" | bc) LICN"
 echo ""
 
 # Verify invariant: total = spendable + staked + locked
@@ -94,13 +94,13 @@ else
     ((fail_count++))
 fi
 
-# Verify staked amount is correct (10K MOLT)
+# Verify staked amount is correct (10K LICN)
 expected_staked=10000000000000
 if [ "$staked" -eq "$expected_staked" ]; then
-    echo -e "${GREEN}✅ PASS: Bootstrap stake correct (10,000 MOLT)${NC}"
+    echo -e "${GREEN}✅ PASS: Bootstrap stake correct (10,000 LICN)${NC}"
     ((pass_count++))
 else
-    echo -e "${RED}❌ FAIL: Bootstrap stake incorrect! Expected 10,000 MOLT${NC}"
+    echo -e "${RED}❌ FAIL: Bootstrap stake incorrect! Expected 10,000 LICN${NC}"
     ((fail_count++))
 fi
 
@@ -114,7 +114,7 @@ rewards_result=$(curl -s -X POST $RPC_URL -d '{"jsonrpc":"2.0","id":1,"method":"
 bootstrap_debt=$(echo $rewards_result | jq -r '.result.bootstrap_debt')
 
 echo "StakePool data:"
-echo "  Bootstrap debt: $(echo "scale=4; $bootstrap_debt / 1000000000" | bc) MOLT"
+echo "  Bootstrap debt: $(echo "scale=4; $bootstrap_debt / 1000000000" | bc) LICN"
 echo ""
 
 if [ "$bootstrap_debt" -eq "$expected_staked" ]; then
@@ -157,7 +157,7 @@ else
     ((fail_count++))
 fi
 
-if [ -f "python-sdk/setup.py" ] && [ -f "python-sdk/moltchain/__init__.py" ]; then
+if [ -f "python-sdk/setup.py" ] && [ -f "python-sdk/lichen/__init__.py" ]; then
     echo -e "${GREEN}✅ PASS: Python SDK complete${NC}"
     ((pass_count++))
 else

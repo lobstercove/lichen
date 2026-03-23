@@ -1,12 +1,12 @@
 // ============================================================================
-// MoltyID Identity Module — Full wallet integration
-// Handles: profile, .molt names, reputation, skills, vouches, achievements,
+// LichenID Identity Module — Full wallet integration
+// Handles: profile, .lichen names, reputation, skills, vouches, achievements,
 //          agent service config, and all signed contract transactions
 // ============================================================================
 
 // ── Constants ──
-const MOLTYID_PROGRAM_ADDRESS = null; // Resolved at runtime via RPC
-let _moltyidAddress = null;
+const LICHENID_PROGRAM_ADDRESS = null; // Resolved at runtime via RPC
+let _lichenidAddress = null;
 let _identityCache = null;
 let _identityLoading = false;
 
@@ -41,9 +41,9 @@ const TRUST_TIERS = [
 ];
 
 const NAME_PRICING = {
-    3: { cost: 500, label: '500 MOLT', auctionOnly: true },
-    4: { cost: 100, label: '100 MOLT', auctionOnly: true },
-    5: { cost: 20, label: '20 MOLT', auctionOnly: false },
+    3: { cost: 500, label: '500 LICN', auctionOnly: true },
+    4: { cost: 100, label: '100 LICN', auctionOnly: true },
+    5: { cost: 20, label: '20 LICN', auctionOnly: false },
 };
 
 // ── Helpers ──
@@ -69,8 +69,8 @@ function escHtml(s) {
 
 function fmtNumber(n) { return Number(n).toLocaleString(); }
 
-function fmtMolt(shells) {
-    return (Number(shells) / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 });
+function fmtLicn(spores) {
+    return (Number(spores) / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 });
 }
 
 function fmtAddr(addr, len = 8) {
@@ -90,7 +90,7 @@ function getNameCostPerYear(nameLen) {
 }
 
 // ── Binary Arg Encoding Helpers (WASM ABI Layout Descriptor) ──
-// The MoltyID contract uses raw WASM function params (pointers + values).
+// The LichenID contract uses raw WASM function params (pointers + values).
 // The runtime's "layout descriptor" mode (0xAB prefix) lets us specify
 // which I32 params are pointers (stride >= 32) vs raw values (stride < 32).
 
@@ -129,12 +129,12 @@ function u64LE(val) {
 }
 
 /**
- * Encode args for a MoltyID contract call using the WASM ABI layout descriptor.
+ * Encode args for a LichenID contract call using the WASM ABI layout descriptor.
  * callerPubkey: Uint8Array (32 bytes) — the transaction signer's public key
  * functionName: string — the contract function to call
  * params: object — the high-level params from the modal (same keys as before)
  */
-function encodeMoltyIdArgs(callerPubkey, functionName, params) {
+function encodeLichenIdArgs(callerPubkey, functionName, params) {
     const te = new TextEncoder();
     switch (functionName) {
         case 'register_identity': {
@@ -223,10 +223,10 @@ function encodeMoltyIdArgs(callerPubkey, functionName, params) {
             ]);
         }
         case 'set_rate': {
-            // set_rate(caller_ptr:I32, molt_per_unit:I64) — default mode works
+            // set_rate(caller_ptr:I32, licn_per_unit:I64) — default mode works
             const data = new Uint8Array(32 + 8);
             data.set(callerPubkey, 0);
-            data.set(u64LE(params.molt_per_unit || 0), 32);
+            data.set(u64LE(params.licn_per_unit || 0), 32);
             return data; // no layout prefix — default handles I32 ptr + I64 val
         }
         case 'set_availability': {
@@ -287,8 +287,8 @@ function encodeMoltyIdArgs(callerPubkey, functionName, params) {
                 u32LE(nameBytes.length),
             ]);
             // Append bid_amount as raw I64 LE
-            const bidAmountShells = Math.floor((params.bid_amount || 0) * 1_000_000_000);
-            const extra = u64LE(bidAmountShells);
+            const bidAmountSpores = Math.floor((params.bid_amount || 0) * 1_000_000_000);
+            const extra = u64LE(bidAmountSpores);
             const result = new Uint8Array(base.length + extra.length);
             result.set(base, 0);
             result.set(extra, base.length);
@@ -300,80 +300,80 @@ function encodeMoltyIdArgs(callerPubkey, functionName, params) {
     }
 }
 
-// ── MoltyID Program Address Resolution ──
-async function getMoltyIdProgramAddress() {
-    if (_moltyidAddress) return _moltyidAddress;
+// ── LichenID Program Address Resolution ──
+async function getLichenIdProgramAddress() {
+    if (_lichenidAddress) return _lichenidAddress;
     // Try each symbol individually (RPC expects a single string, not an array)
-    const symbols = ['YID', 'yid', 'MOLTYID'];
+    const symbols = ['YID', 'yid', 'LICHENID'];
     for (const symbol of symbols) {
         try {
             const result = await rpc.call('getSymbolRegistry', [symbol]);
             const program = result?.program || result?.address || result?.pubkey;
-            if (program) { _moltyidAddress = program; return _moltyidAddress; }
+            if (program) { _lichenidAddress = program; return _lichenidAddress; }
         } catch (_) { continue; }
     }
     // Fallback: scan full contract list
     try {
         const contracts = await rpc.call('getAllContracts');
         if (Array.isArray(contracts)) {
-            const c = contracts.find(c => c.name === 'moltyid' || c.symbol === 'YID');
-            if (c) { _moltyidAddress = c.program_id || c.address; return _moltyidAddress; }
+            const c = contracts.find(c => c.name === 'lichenid' || c.symbol === 'YID');
+            if (c) { _lichenidAddress = c.program_id || c.address; return _lichenidAddress; }
         }
     } catch (_) { }
     return null;
 }
 
 // ── Contract Call Builder ──
-// Build a signed MoltyID contract call transaction
-async function buildContractCall(functionName, args, password, valueMolt = 0) {
+// Build a signed LichenID contract call transaction
+async function buildContractCall(functionName, args, password, valueLicn = 0) {
     const wallet = getActiveWallet();
     if (!wallet) throw new Error('No active wallet');
 
-    // Pre-flight: check MOLT balance covers fee + value
+    // Pre-flight: check LICN balance covers fee + value
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
         const spendable = (balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
-        const baseFee = 0.001; // 0.001 MOLT base fee
-        const totalNeeded = valueMolt + baseFee;
+        const baseFee = 0.001; // 0.001 LICN base fee
+        const totalNeeded = valueLicn + baseFee;
         if (spendable < totalNeeded) {
-            throw new Error(`Insufficient MOLT: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })} (${valueMolt > 0 ? valueMolt + ' value + ' : ''}${baseFee} fee), have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })} spendable`);
+            throw new Error(`Insufficient LICN: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })} (${valueLicn > 0 ? valueLicn + ' value + ' : ''}${baseFee} fee), have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })} spendable`);
         }
     } catch (e) {
         if (e.message.includes('Insufficient')) throw e;
         // Non-blocking on RPC errors
     }
 
-    const moltyidAddr = await getMoltyIdProgramAddress();
-    if (!moltyidAddr) throw new Error('MoltyID contract not found on network');
+    const lichenidAddr = await getLichenIdProgramAddress();
+    if (!lichenidAddr) throw new Error('LichenID contract not found on network');
 
     const latestBlock = await rpc.getLatestBlock();
-    const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+    const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
-    const moltyidPubkey = bs58.decode(moltyidAddr);
+    const lichenidPubkey = bs58.decode(lichenidAddr);
 
     // Encode args as proper binary with WASM ABI layout descriptor
-    const argsBytes = encodeMoltyIdArgs(fromPubkey, functionName, args);
+    const argsBytes = encodeLichenIdArgs(fromPubkey, functionName, args);
 
     const callPayload = JSON.stringify({
         Call: {
             function: functionName,
             args: Array.from(argsBytes),
-            value: Math.floor(valueMolt * 1_000_000_000)
+            value: Math.floor(valueLicn * 1_000_000_000)
         }
     });
 
     const message = {
         instructions: [{
             program_id: Array.from(contractProgramId),
-            accounts: [Array.from(fromPubkey), Array.from(moltyidPubkey)],
+            accounts: [Array.from(fromPubkey), Array.from(lichenidPubkey)],
             data: Array.from(new TextEncoder().encode(callPayload))
         }],
         blockhash: latestBlock.hash
     };
 
-    const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
-    const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
     const transaction = { signatures: [Array.from(signature)], message };
     const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
@@ -386,23 +386,23 @@ async function loadIdentityData() {
     if (!wallet) return null;
 
     try {
-        const [profile, moltNameResult] = await Promise.all([
-            rpc.call('getMoltyIdProfile', [wallet.address]).catch(() => null),
-            rpc.call('reverseMoltName', [wallet.address]).catch(() => null),
+        const [profile, lichenNameResult] = await Promise.all([
+            rpc.call('getLichenIdProfile', [wallet.address]).catch(() => null),
+            rpc.call('reverseLichenName', [wallet.address]).catch(() => null),
         ]);
-        // reverseMoltName returns {"name": "alice.molt"} or null — extract the string
-        const moltName = moltNameResult?.name || null;
+        // reverseLichenName returns {"name": "alice.lichen"} or null — extract the string
+        const lichenName = lichenNameResult?.name || null;
 
         let nameDetails = null;
-        if (moltName) {
+        if (lichenName) {
             try {
-                nameDetails = await rpc.call('resolveMoltName', [moltName]);
+                nameDetails = await rpc.call('resolveLichenName', [lichenName]);
             } catch (_) { }
         }
 
         _identityCache = {
             profile,
-            moltName,
+            lichenName,
             nameDetails,
             address: wallet.address,
             timestamp: Date.now()
@@ -427,7 +427,7 @@ async function loadIdentity() {
     container.innerHTML = `
         <div class="id-loading">
             <i class="fas fa-spinner fa-spin"></i>
-            <span>Loading MoltyID...</span>
+            <span>Loading LichenID...</span>
         </div>
     `;
 
@@ -463,15 +463,15 @@ if (typeof window !== 'undefined') {
     window.clearIdentityCache = clearIdentityCache;
 }
 
-// ── MoltyID Intro Banner ──
+// ── LichenID Intro Banner ──
 function renderIdentityBanner(compact = false) {
     if (compact) {
         return `
             <div class="id-banner id-banner-compact">
                 <div class="id-banner-icon"><i class="fas fa-fingerprint"></i></div>
                 <div class="id-banner-text">
-                    <h3>MoltyID</h3>
-                    <p>On-chain identity, .molt name, reputation &amp; agent services.</p>
+                    <h3>LichenID</h3>
+                    <p>On-chain identity, .lichen name, reputation &amp; agent services.</p>
                 </div>
             </div>
         `;
@@ -480,8 +480,8 @@ function renderIdentityBanner(compact = false) {
         <div class="id-banner">
             <div class="id-banner-icon"><i class="fas fa-fingerprint"></i></div>
             <div class="id-banner-text">
-                <h3>MoltyID — On-Chain Identity</h3>
-                <p>Your portable reputation, .molt name, skills, and agent service profile — all anchored on MoltChain.</p>
+                <h3>LichenID — On-Chain Identity</h3>
+                <p>Your portable reputation, .lichen name, skills, and agent service profile — all anchored on Lichen.</p>
             </div>
         </div>
     `;
@@ -494,8 +494,8 @@ function renderNoIdentity(container) {
             <div class="id-onboard-step id-onboard-active" onclick="showRegisterIdentityModal()">
                 <div class="id-onboard-num"><i class="fas fa-fingerprint" style="font-size:1rem;"></i></div>
                 <div class="id-onboard-body">
-                    <div class="id-onboard-title">Register Your MoltyID</div>
-                    <div class="id-onboard-desc">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 MOLT transaction fee.</div>
+                    <div class="id-onboard-title">Register Your LichenID</div>
+                    <div class="id-onboard-desc">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 LICN transaction fee.</div>
                 </div>
                 <div class="id-onboard-arrow"><i class="fas fa-chevron-right"></i></div>
             </div>
@@ -505,7 +505,7 @@ function renderNoIdentity(container) {
 
 // ── Full Identity Render ──
 function renderIdentity(container, data) {
-    const { profile, moltName, nameDetails } = data;
+    const { profile, lichenName, nameDetails } = data;
     const identity = profile.identity;
     const rep = Number(profile?.reputation?.score || identity?.reputation || 0);
     const tier = getTrustTier(rep);
@@ -530,17 +530,17 @@ function renderIdentity(container, data) {
     // Agent service data
     const endpoint = profile?.agent?.endpoint || '';
     const availability = profile?.agent?.availability_name || 'offline';
-    const rateMolt = (Number(profile?.agent?.rate || 0) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
+    const rateLicn = (Number(profile?.agent?.rate || 0) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
 
     container.innerHTML = `
-        ${renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, moltName)}
+        ${renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, lichenName)}
         <div class="id-grid">
             ${renderRepSection(rep, tier, nextTier, repPct, maxRep)}
-            ${renderNameSection(moltName, nameDetails)}
+            ${renderNameSection(lichenName, nameDetails)}
             ${renderSkillsSection(skills)}
             ${renderVouchesSection(vouchesReceived, vouchesGiven)}
             ${renderAchievementsSection(achievements, achievedIds)}
-            ${renderAgentSection(endpoint, availability, rateMolt, profile?.agent?.metadata)}
+            ${renderAgentSection(endpoint, availability, rateLicn, profile?.agent?.metadata)}
         </div>
     `;
     // Load auctions after DOM is rendered
@@ -552,12 +552,12 @@ function renderIdentity(container, data) {
 // ============================================================================
 
 // ── Profile Strip (top bar, always visible when has identity) ──
-function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, moltName) {
-    const moltDisplay = moltName ? escHtml((moltName.endsWith('.molt') ? moltName : moltName + '.molt')) : null;
-    // Avoid showing "name name.molt" when display name matches the .molt name
-    const moltBase = moltName ? moltName.replace(/\.molt$/, '').toLowerCase() : null;
-    const rawDisplayLower = String(displayName).toLowerCase().replace(/\.molt$/, '');
-    const showDisplayName = !moltDisplay || rawDisplayLower !== moltBase;
+function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, lichenName) {
+    const lichenDisplay = lichenName ? escHtml((lichenName.endsWith('.lichen') ? lichenName : lichenName + '.lichen')) : null;
+    // Avoid showing "name name.lichen" when display name matches the .lichen name
+    const lichenBase = lichenName ? lichenName.replace(/\.lichen$/, '').toLowerCase() : null;
+    const rawDisplayLower = String(displayName).toLowerCase().replace(/\.lichen$/, '');
+    const showDisplayName = !lichenDisplay || rawDisplayLower !== lichenBase;
     return `
         <div class="id-profile-strip">
             <div class="id-strip-avatar" style="background:${tier.color}18; border-color:${tier.color};">
@@ -566,7 +566,7 @@ function renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActi
             <div class="id-strip-info">
                 <div class="id-strip-name">
                     ${showDisplayName ? escHtml(displayName) : ''}
-                    ${moltDisplay ? `<span class="id-strip-molt">${moltDisplay}</span>` : (showDisplayName ? '' : escHtml(displayName))}
+                    ${lichenDisplay ? `<span class="id-strip-lichen">${lichenDisplay}</span>` : (showDisplayName ? '' : escHtml(displayName))}
                 </div>
                 <div class="id-strip-meta">
                     <span class="id-pill" style="background:${tier.color}18;color:${tier.color};border-color:${tier.color}33;">${tier.name}</span>
@@ -614,7 +614,7 @@ function renderRepSection(rep, tier, nextTier, repPct, maxRep) {
 }
 
 // ── Name Section ──
-function renderNameSection(moltName, nameDetails) {
+function renderNameSection(lichenName, nameDetails) {
     // Auction sub-section (always shown)
     const auctionHtml = `
         <div class="id-section-divider" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border,#2a2e3e);">
@@ -629,15 +629,15 @@ function renderNameSection(moltName, nameDetails) {
         </div>
     `;
 
-    if (!moltName) {
+    if (!lichenName) {
         return `
             <div class="id-section">
                 <div class="id-section-head">
-                    <span><i class="fas fa-at"></i> .molt Name</span>
+                    <span><i class="fas fa-at"></i> .lichen Name</span>
                 </div>
                 <div class="id-section-body id-section-empty">
                     <p>No name registered</p>
-                    <small>5+ chars from 20 MOLT/yr</small>
+                    <small>5+ chars from 20 LICN/yr</small>
                     <div style="margin-top:0.75rem;">
                         <button class="btn btn-small btn-primary" onclick="showRegisterNameModal()">
                             <i class="fas fa-plus"></i> Register
@@ -649,7 +649,7 @@ function renderNameSection(moltName, nameDetails) {
         `;
     }
 
-    const name = moltName.endsWith('.molt') ? moltName : moltName + '.molt';
+    const name = lichenName.endsWith('.lichen') ? lichenName : lichenName + '.lichen';
     const expiry = nameDetails?.expiry_slot;
     const registered = nameDetails?.registered_slot || 0;
     // Expiry will be updated asynchronously
@@ -667,7 +667,7 @@ function renderNameSection(moltName, nameDetails) {
     return `
         <div class="id-section">
             <div class="id-section-head">
-                <span><i class="fas fa-at"></i> .molt Name</span>
+                <span><i class="fas fa-at"></i> .lichen Name</span>
             </div>
             <div class="id-section-body">
                 <div class="id-name-display">${escHtml(name)}</div>
@@ -717,7 +717,7 @@ function renderSkillsSection(skills) {
 function renderVouchesSection(received, given) {
     const chips = received.length > 0
         ? received.slice(0, 12).map(v => {
-            const label = v.voucher_name ? escHtml(v.voucher_name) + '.molt' : fmtAddr(v.voucher, 8);
+            const label = v.voucher_name ? escHtml(v.voucher_name) + '.lichen' : fmtAddr(v.voucher, 8);
             return `<span class="id-chip">${label}</span>`;
         }).join('')
         : '<span class="id-chip id-chip-muted">None yet</span>';
@@ -760,7 +760,7 @@ function renderAchievementsSection(achievements, achievedIds) {
 }
 
 // ── Agent Service Section ──
-function renderAgentSection(endpoint, availability, rateMolt, metadata) {
+function renderAgentSection(endpoint, availability, rateLicn, metadata) {
     const isOnline = availability === 'online';
     return `
         <div class="id-section id-section-full">
@@ -782,7 +782,7 @@ function renderAgentSection(endpoint, availability, rateMolt, metadata) {
                     </div>
                     <div class="id-agent-item">
                         <span class="id-kv-label">Rate</span>
-                        <span class="id-kv-value">${rateMolt} MOLT/req</span>
+                        <span class="id-kv-value">${rateLicn} LICN/req</span>
                     </div>
                 </div>
             </div>
@@ -849,13 +849,13 @@ function formatSlotExpiry(expirySlot, registeredSlot, currentSlot) {
 
 // ── Register Identity ──
 async function showRegisterIdentityModal() {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: 'Register MoltyID',
-        message: 'Create your on-chain identity. Choose a display name and agent type.<br><small style="color:var(--text-muted);">This is free — only the 0.0001 MOLT transaction fee applies.</small>',
+        title: 'Register LichenID',
+        message: 'Create your on-chain identity. Choose a display name and agent type.<br><small style="color:var(--text-muted);">This is free — only the 0.0001 LICN transaction fee applies.</small>',
         icon: 'fas fa-fingerprint',
         confirmText: 'Register',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'displayName', label: 'Display Name', type: 'text', placeholder: 'e.g. CryptoBuilder' },
             {
@@ -907,13 +907,13 @@ async function showRegisterIdentityModal() {
 // ── Edit Profile (Agent Type) ──
 async function showEditProfileModal() {
     const current = _identityCache?.profile?.identity?.agent_type || 9;
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
         title: 'Update Agent Type',
         message: 'Change your agent classification.',
         icon: 'fas fa-id-badge',
         confirmText: 'Update',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             {
                 id: 'agentType', label: 'Agent Type', type: 'select',
@@ -940,17 +940,17 @@ async function showEditProfileModal() {
     }
 }
 
-// ── Register .molt Name ──
+// ── Register .lichen Name ──
 async function showRegisterNameModal() {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: 'Register .molt Name',
-        requiredMolt: 20 + FEE,
+        title: 'Register .lichen Name',
+        requiredLicn: 20 + FEE,
         message: `
             <div class="id-pricing-table">
-                <div class="id-pricing-row"><span>5+ chars</span><span>20 MOLT/year</span></div>
-                <div class="id-pricing-row id-pricing-muted"><span>4 chars</span><span>100 MOLT/year <em>(auction only)</em></span></div>
-                <div class="id-pricing-row id-pricing-muted"><span>3 chars</span><span>500 MOLT/year <em>(auction only)</em></span></div>
+                <div class="id-pricing-row"><span>5+ chars</span><span>20 LICN/year</span></div>
+                <div class="id-pricing-row id-pricing-muted"><span>4 chars</span><span>100 LICN/year <em>(auction only)</em></span></div>
+                <div class="id-pricing-row id-pricing-muted"><span>3 chars</span><span>500 LICN/year <em>(auction only)</em></span></div>
             </div>
             <small>Names are lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.<br>Premium short names (3-4 chars) can only be acquired through the auction system.</small>
             <div id="nameRegCostPreview" style="margin-top:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-tertiary,#1a1e2e);border-radius:8px;font-size:0.85rem;display:none;">
@@ -960,7 +960,7 @@ async function showRegisterNameModal() {
         icon: 'fas fa-at',
         confirmText: 'Register Name',
         fields: [
-            { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname (5+ characters)' },
+            { id: 'name', label: 'Name (without .licn)', type: 'text', placeholder: 'myname (5+ characters)' },
             { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ],
@@ -980,12 +980,12 @@ async function showRegisterNameModal() {
                 });
             }
             const updateCost = () => {
-                const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
+                const n = (nameInput?.value || '').toLowerCase().replace(/\.lichen$/, '').trim();
                 const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
                 if (n.length >= 5) {
                     const costPerYear = getNameCostPerYear(n.length);
                     const total = costPerYear * d;
-                    if (costValue) costValue.textContent = `${total} MOLT (${costPerYear} MOLT × ${d} yr)`;
+                    if (costValue) costValue.textContent = `${total} LICN (${costPerYear} LICN × ${d} yr)`;
                     if (preview) preview.style.display = 'block';
                 } else {
                     if (preview) preview.style.display = 'none';
@@ -997,7 +997,7 @@ async function showRegisterNameModal() {
     });
     if (!values || !values.password || !values.name) return;
 
-    const name = values.name.toLowerCase().replace(/\.molt$/, '').trim();
+    const name = values.name.toLowerCase().replace(/\.lichen$/, '').trim();
     const duration = Math.max(1, Math.min(10, parseInt(values.duration) || 1));
     const costPerYear = getNameCostPerYear(name.length);
     const totalCost = costPerYear * duration;
@@ -1015,7 +1015,7 @@ async function showRegisterNameModal() {
     }
 
     try {
-        showToast(`Registering ${name}.molt for ${duration}yr (${totalCost} MOLT)...`);
+        showToast(`Registering ${name}.lichen for ${duration}yr (${totalCost} LICN)...`);
         const tx = await buildContractCall('register_name', {
             name: name,
             duration_years: duration
@@ -1025,7 +1025,7 @@ async function showRegisterNameModal() {
             showToast('Registration failed: ' + (result.error || 'unknown'));
             return;
         }
-        showToast(`${name}.molt registered!`);
+        showToast(`${name}.lichen registered!`);
         _identityCache = null;
         await retryLoadIdentity(5, 1200);
     } catch (e) {
@@ -1033,21 +1033,21 @@ async function showRegisterNameModal() {
     }
 }
 
-// ── Renew .molt Name ──
+// ── Renew .lichen Name ──
 async function showRenewNameModal() {
-    const currentName = _identityCache?.moltName;
+    const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to renew'); return; }
 
-    const name = currentName.replace(/\.molt$/, '');
+    const name = currentName.replace(/\.lichen$/, '');
     const costPerYear = getNameCostPerYear(name.length);
 
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Renew ${name}.molt`,
-        message: `Cost: ${costPerYear} MOLT per additional year.`,
+        title: `Renew ${name}.licn`,
+        message: `Cost: ${costPerYear} LICN per additional year.`,
         icon: 'fas fa-redo',
         confirmText: 'Renew Name',
-        requiredMolt: costPerYear + FEE,
+        requiredLicn: costPerYear + FEE,
         fields: [
             { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', min: 1, max: 10, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1059,7 +1059,7 @@ async function showRenewNameModal() {
     const totalCost = costPerYear * years;
 
     try {
-        showToast(`Renewing for ${years}yr (${totalCost} MOLT)...`);
+        showToast(`Renewing for ${years}yr (${totalCost} LICN)...`);
         const tx = await buildContractCall('renew_name', {
             name: name,
             additional_years: years
@@ -1077,20 +1077,20 @@ async function showRenewNameModal() {
     }
 }
 
-// ── Transfer .molt Name ──
+// ── Transfer .lichen Name ──
 async function showTransferNameModal() {
-    const currentName = _identityCache?.moltName;
+    const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to transfer'); return; }
 
-    const name = currentName.replace(/\.molt$/, '');
+    const name = currentName.replace(/\.lichen$/, '');
 
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Transfer ${name}.molt`,
+        title: `Transfer ${name}.licn`,
         message: 'Transfer ownership to another address. This is irreversible.',
         icon: 'fas fa-exchange-alt',
         confirmText: 'Transfer Name',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'recipient', label: 'Recipient Address', type: 'text', placeholder: 'Base58 address' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1099,7 +1099,7 @@ async function showTransferNameModal() {
     if (!values || !values.password || !values.recipient) return;
 
     // AUDIT-FIX W-6: Validate recipient address format before building tx
-    if (!MoltCrypto.isValidAddress(values.recipient)) {
+    if (!LichenCrypto.isValidAddress(values.recipient)) {
         showToast('Invalid recipient address — must be a valid Base58 address');
         return;
     }
@@ -1123,16 +1123,16 @@ async function showTransferNameModal() {
     }
 }
 
-// ── Release .molt Name ──
+// ── Release .lichen Name ──
 async function showReleaseNameModal() {
-    const currentName = _identityCache?.moltName;
+    const currentName = _identityCache?.lichenName;
     if (!currentName) { showToast('No name to release'); return; }
 
-    const name = currentName.replace(/\.molt$/, '');
+    const name = currentName.replace(/\.lichen$/, '');
 
     const confirmed = await showConfirmModal({
-        title: `Release ${name}.molt?`,
-        message: 'This will permanently release your .molt name. It can be re-registered by anyone. This action cannot be undone.',
+        title: `Release ${name}.licn?`,
+        message: 'This will permanently release your .lichen name. It can be re-registered by anyone. This action cannot be undone.',
         icon: 'fas fa-exclamation-triangle',
         confirmText: 'Release Name',
         cancelText: 'Keep Name',
@@ -1140,13 +1140,13 @@ async function showReleaseNameModal() {
     });
     if (!confirmed) return;
 
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
         title: 'Confirm Release',
-        message: `You are about to release <strong>${escHtml(name)}.molt</strong>.`,
+        message: `You are about to release <strong>${escHtml(name)}.lichen</strong>.`,
         icon: 'fas fa-trash-alt',
         confirmText: 'Sign & Release',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ]
@@ -1171,13 +1171,13 @@ async function showReleaseNameModal() {
 
 // ── Add Skill ──
 async function showAddSkillModal() {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
         title: 'Add Skill',
         message: 'Add a skill to your identity profile.',
         icon: 'fas fa-tools',
         confirmText: 'Add Skill',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'skillName', label: 'Skill Name', type: 'text', placeholder: 'e.g. Rust, Trading, Security' },
             { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50', min: 1, max: 100, step: 1 },
@@ -1215,13 +1215,13 @@ async function showAddSkillModal() {
 
 // ── Vouch for Someone ──
 async function showVouchModal() {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
         title: 'Vouch for Identity',
-        message: 'Vouch for another MoltyID holder. Both parties must have registered identities.',
+        message: 'Vouch for another LichenID holder. Both parties must have registered identities.',
         icon: 'fas fa-handshake',
         confirmText: 'Vouch',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'vouchee', label: 'Address to Vouch For', type: 'text', placeholder: 'Base58 address' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1230,7 +1230,7 @@ async function showVouchModal() {
     if (!values || !values.password || !values.vouchee) return;
 
     // AUDIT-FIX W-6: Validate vouchee address format before building tx
-    if (!MoltCrypto.isValidAddress(values.vouchee)) {
+    if (!LichenCrypto.isValidAddress(values.vouchee)) {
         showToast('Invalid address — must be a valid Base58 address');
         return;
     }
@@ -1257,17 +1257,17 @@ async function showEditAgentModal() {
     const currentEndpoint = agent.endpoint || '';
     const currentRate = (Number(agent.rate || 0) / 1_000_000_000).toString();
     const currentAvailability = agent.availability_name || 'offline';
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
 
     const values = await showPasswordModal({
         title: 'Agent Service Configuration',
         message: 'Configure how other agents discover and interact with your identity.',
         icon: 'fas fa-satellite-dish',
         confirmText: 'Save Changes',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'endpoint', label: 'Service Endpoint URL', type: 'text', placeholder: 'https://api.example.com/agent', value: currentEndpoint },
-            { id: 'rate', label: 'Rate (MOLT per request)', type: 'number', placeholder: '0.001', value: currentRate },
+            { id: 'rate', label: 'Rate (LICN per request)', type: 'number', placeholder: '0.001', value: currentRate },
             {
                 id: 'availability', label: 'Availability', type: 'select',
                 options: [
@@ -1292,12 +1292,12 @@ async function showEditAgentModal() {
         }
 
         // Update rate if changed
-        const newRateMolt = parseFloat(values.rate || '0');
-        const newRateShells = Math.floor(newRateMolt * 1_000_000_000);
-        const oldRateShells = Number(agent.rate || 0);
-        if (newRateShells !== oldRateShells) {
+        const newRateLicn = parseFloat(values.rate || '0');
+        const newRateSpores = Math.floor(newRateLicn * 1_000_000_000);
+        const oldRateSpores = Number(agent.rate || 0);
+        if (newRateSpores !== oldRateSpores) {
             tasks.push(async () => {
-                const tx = await buildContractCall('set_rate', { molt_per_unit: newRateShells }, values.password);
+                const tx = await buildContractCall('set_rate', { licn_per_unit: newRateSpores }, values.password);
                 return await rpc.sendTransaction(tx);
             });
         }
@@ -1335,11 +1335,11 @@ async function showEditAgentModal() {
 }
 
 // ============================================================================
-// AUCTION SYSTEM — Premium .molt Name Auctions
+// AUCTION SYSTEM — Premium .lichen Name Auctions
 // ============================================================================
 
 // Known premium names that may have auctions (admin curated)
-const PREMIUM_AUCTION_NAMES = ['eth', 'btc', 'sol', 'dex', 'dao', 'nft', 'defi', 'swap', 'lend', 'pay', 'molt', 'reef', 'claw', 'moon', 'pump'];
+const PREMIUM_AUCTION_NAMES = ['eth', 'btc', 'sol', 'dex', 'dao', 'nft', 'defi', 'swap', 'lend', 'pay', 'lichen', 'moss', 'spore', 'moon', 'pump'];
 
 async function loadAuctionList() {
     const container = document.getElementById('auctionListContainer');
@@ -1378,13 +1378,13 @@ async function loadAuctionList() {
                 return `
                     <div style="padding:0.4rem 0;border-bottom:1px solid var(--border,#2a2e3e22);">
                         <div style="display:flex;justify-content:space-between;align-items:center;">
-                            <strong style="color:var(--accent,#ff6b35);">${escHtml(a.name)}.molt</strong>
+                            <strong style="color:var(--accent,#00C9DB);">${escHtml(a.name)}.lichen</strong>
                             ${ended
                         ? '<span style="font-size:0.7rem;color:#f59e0b;">ENDED</span>'
                         : `<span style="font-size:0.7rem;opacity:0.6;">${timeLeft} left</span>`}
                         </div>
                         <div style="display:flex;justify-content:space-between;font-size:0.75rem;opacity:0.7;">
-                            <span>Bid: ${highBid} MOLT (reserve: ${reserve})</span>
+                            <span>Bid: ${highBid} LICN (reserve: ${reserve})</span>
                             <span>By: ${bidder}</span>
                         </div>
                         ${!ended ? `<button class="id-link-btn" onclick="showBidAuctionModal('${escHtml(a.name)}')" style="margin-top:0.25rem;font-size:0.75rem;"><i class="fas fa-gavel"></i> Place Bid</button>` : ''}
@@ -1399,9 +1399,9 @@ async function loadAuctionList() {
             // Check if current wallet is admin (simple heuristic: check if the wallet deployed the contract)
             try {
                 const wallet = getActiveWallet();
-                const moltyidAddr = await getMoltyIdProgramAddress();
-                if (wallet && moltyidAddr) {
-                    const accountInfo = await rpc.call('getAccount', [moltyidAddr]).catch(() => null);
+                const lichenidAddr = await getLichenIdProgramAddress();
+                if (wallet && lichenidAddr) {
+                    const accountInfo = await rpc.call('getAccount', [lichenidAddr]).catch(() => null);
                     const deployer = accountInfo?.deployer || accountInfo?.owner || '';
                     if (deployer === wallet.address) {
                         adminContainer.innerHTML = `
@@ -1419,15 +1419,15 @@ async function loadAuctionList() {
 }
 
 async function showBidAuctionModal(name) {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
-        title: `Bid on ${name}.molt`,
-        message: 'Enter your bid amount in MOLT. Must exceed the current highest bid.',
+        title: `Bid on ${name}.licn`,
+        message: 'Enter your bid amount in LICN. Must exceed the current highest bid.',
         icon: 'fas fa-gavel',
         confirmText: 'Place Bid',
-        requiredMolt: 1 + FEE,
+        requiredLicn: 1 + FEE,
         fields: [
-            { id: 'amount', label: 'Bid Amount (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },
+            { id: 'amount', label: 'Bid Amount (LICN)', type: 'number', placeholder: '100', min: 1, step: 'any' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ]
     });
@@ -1440,7 +1440,7 @@ async function showBidAuctionModal(name) {
     }
 
     try {
-        showToast(`Placing bid of ${bidAmount} MOLT on ${name}.molt...`);
+        showToast(`Placing bid of ${bidAmount} LICN on ${name}.licn...`);
         const tx = await buildContractCall('bid_name_auction', {
             name: name,
             bid_amount: bidAmount
@@ -1450,7 +1450,7 @@ async function showBidAuctionModal(name) {
             showToast('Bid failed: ' + (result.error || 'unknown'));
             return;
         }
-        showToast(`Bid placed on ${name}.molt!`);
+        showToast(`Bid placed on ${name}.licn!`);
         await loadAuctionList();
     } catch (e) {
         showToast('Bid failed: ' + e.message);
@@ -1458,16 +1458,16 @@ async function showBidAuctionModal(name) {
 }
 
 async function showCreateAuctionModal() {
-    const FEE = typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001;
+    const FEE = typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001;
     const values = await showPasswordModal({
         title: 'Create Premium Name Auction',
         message: 'Admin only: create an auction for a premium short name (3-4 chars).',
         icon: 'fas fa-gavel',
         confirmText: 'Create Auction',
-        requiredMolt: FEE,
+        requiredLicn: FEE,
         fields: [
             { id: 'name', label: 'Name (3-4 chars)', type: 'text', placeholder: 'eth' },
-            { id: 'reserve', label: 'Reserve Bid (MOLT)', type: 'number', placeholder: '100', min: 1, step: 'any' },
+            { id: 'reserve', label: 'Reserve Bid (LICN)', type: 'number', placeholder: '100', min: 1, step: 'any' },
             { id: 'endSlots', label: 'Duration (slots, ~2/sec)', type: 'number', placeholder: '432000', min: 216000, max: 3024000, step: 1 },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
         ],
@@ -1491,14 +1491,14 @@ async function showCreateAuctionModal() {
         return;
     }
 
-    const reserveShells = Math.floor(parseFloat(values.reserve || '100') * 1_000_000_000);
+    const reserveSpores = Math.floor(parseFloat(values.reserve || '100') * 1_000_000_000);
     const endSlots = parseInt(values.endSlots || '432000');
 
     try {
-        showToast(`Creating auction for ${name}.molt...`);
+        showToast(`Creating auction for ${name}.licn...`);
         const tx = await buildContractCall('create_name_auction', {
             name: name,
-            reserve_bid: reserveShells,
+            reserve_bid: reserveSpores,
             end_slot_offset: endSlots
         }, values.password);
         const result = await rpc.sendTransaction(tx);
@@ -1506,7 +1506,7 @@ async function showCreateAuctionModal() {
             showToast('Failed: ' + (result.error || 'unknown'));
             return;
         }
-        showToast(`Auction created for ${name}.molt!`);
+        showToast(`Auction created for ${name}.licn!`);
         await loadAuctionList();
     } catch (e) {
         showToast('Failed: ' + e.message);

@@ -1,10 +1,10 @@
 [package]
-name = "moltchain-faucet"
+name = "lichen-faucet"
 version = "1.0.0"
 edition = "2021"
 
-authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
-description = "MoltChain faucet service"
+authors = ["Lichen Labs <trading.lobster@lichen.network>"]
+description = "Lichen faucet service"
 
 [dependencies]
 axum = "0.7"
@@ -16,4 +16,4 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-moltchain-core = { path = "../core" }
+lichen-core = { path = "../core" }

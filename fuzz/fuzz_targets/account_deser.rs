@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::{Account, Pubkey};
+use lichen_core::{Account, Pubkey};
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz account deserialization — must never panic.

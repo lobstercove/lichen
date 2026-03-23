@@ -1,7 +1,7 @@
 // Query operations (balance, blocks, validators, etc.)
 
 use anyhow::{Context, Result};
-use moltchain_core::Pubkey;
+use lichen_core::Pubkey;
 
 use crate::config::CliConfig;
 
@@ -36,10 +36,10 @@ pub async fn get_balance(config: &CliConfig, address: &str) -> Result<()> {
     }
     
     if let Some(result) = response.get("result") {
-        if let Some(shells) = result["molt"].as_u64() {
-            let molt = shells as f64 / 1_000_000_000.0;
-            println!("\n💰 Balance: {} MOLT", molt);
-            println!("   ({} shells)", shells);
+        if let Some(spores) = result["lichen"].as_u64() {
+            let lichen = spores as f64 / 1_000_000_000.0;
+            println!("\n💰 Balance: {} LICN", lichen);
+            println!("   ({} spores)", spores);
         } else {
             println!("\n💰 Account not found or has 0 balance");
         }
@@ -107,17 +107,17 @@ pub async fn list_validators(config: &CliConfig) -> Result<()> {
     
     if let Some(validators) = response["result"].as_array() {
         println!("\n👥 Active Validators ({})", validators.len());
-        println!("\n{:<45} {:>15} {:>10}", "Public Key", "Stake (MOLT)", "Status");
+        println!("\n{:<45} {:>15} {:>10}", "Public Key", "Stake (LICN)", "Status");
         println!("{}", "─".repeat(75));
         
         for validator in validators {
             let pubkey = validator["pubkey"].as_str().unwrap_or("Unknown");
             let stake = validator["stake"].as_u64().unwrap_or(0);
-            let molt = stake as f64 / 1_000_000_000.0;
+            let lichen = stake as f64 / 1_000_000_000.0;
             
             println!("{:<45} {:>15.2} {:>10}", 
                 pubkey.get(..44).unwrap_or(pubkey), 
-                molt,
+                lichen,
                 "Active"
             );
         }
@@ -164,7 +164,7 @@ pub async fn chain_status(config: &CliConfig) -> Result<()> {
         .json::<serde_json::Value>()
         .await?;
     
-    println!("\n⛓️  MoltChain Status");
+    println!("\n⛓️  Lichen Status");
     
     if let Some(slot) = slot_res["result"].as_u64() {
         println!("   Current Slot: {}", slot);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoltChain Validator Upgrade Script
+# Lichen Validator Upgrade Script
 # Safely upgrade validator to new version with rollback support
 
 set -e
@@ -10,9 +10,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-MOLTCHAIN_HOME="${MOLTCHAIN_HOME:-$HOME/.moltchain}"
-PROJECT_ROOT="/opt/moltchain"
-BACKUP_DIR="$MOLTCHAIN_HOME/backups"
+LICHEN_HOME="${LICHEN_HOME:-$HOME/.lichen}"
+PROJECT_ROOT="/opt/lichen"
+BACKUP_DIR="$LICHEN_HOME/backups"
 ROLLBACK_VERSION=""
 
 print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
@@ -20,7 +20,7 @@ print_success() { echo -e "${GREEN}✓${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_error() { echo -e "${RED}✗${NC} $1"; }
 
-echo "🦞 MoltChain Validator Upgrade"
+echo "🦞 Lichen Validator Upgrade"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -29,7 +29,7 @@ print_info "Use deploy/setup.sh and docs/deployment/PRODUCTION_DEPLOYMENT.md for
 exit 1
 
 # Check if validator is running
-if systemctl is-active --quiet moltchain-validator 2>/dev/null; then
+if systemctl is-active --quiet lichen-validator 2>/dev/null; then
     print_info "Validator is running, will stop for upgrade"
     VALIDATOR_RUNNING=true
 else
@@ -44,8 +44,8 @@ mkdir -p "$BACKUP_DIR"
 
 # Backup current binary and config
 tar -czf "$BACKUP_FILE" \
-    -C "$PROJECT_ROOT" target/release/moltchain-validator \
-    -C "$MOLTCHAIN_HOME" config.toml genesis.json 2>/dev/null || true
+    -C "$PROJECT_ROOT" target/release/lichen-validator \
+    -C "$LICHEN_HOME" config.toml genesis.json 2>/dev/null || true
 
 print_success "Backup created: $BACKUP_FILE"
 ROLLBACK_VERSION="$BACKUP_FILE"
@@ -53,7 +53,7 @@ ROLLBACK_VERSION="$BACKUP_FILE"
 # Stop validator
 if [ "$VALIDATOR_RUNNING" = true ]; then
     print_info "Stopping validator..."
-    sudo systemctl stop moltchain-validator
+    sudo systemctl stop lichen-validator
     sleep 2
     print_success "Validator stopped"
 fi
@@ -75,7 +75,7 @@ if [ $? -ne 0 ]; then
     tar -xzf "$ROLLBACK_VERSION" -C /
     
     if [ "$VALIDATOR_RUNNING" = true ]; then
-        sudo systemctl start moltchain-validator
+        sudo systemctl start lichen-validator
     fi
     
     print_error "Upgrade failed, rolled back to previous version"
@@ -95,14 +95,14 @@ fi
 # Start validator
 if [ "$VALIDATOR_RUNNING" = true ]; then
     print_info "Starting validator..."
-    sudo systemctl start moltchain-validator
+    sudo systemctl start lichen-validator
     sleep 3
     
-    if systemctl is-active --quiet moltchain-validator; then
+    if systemctl is-active --quiet lichen-validator; then
         print_success "Validator started successfully"
     else
         print_error "Validator failed to start"
-        print_warning "Check logs: sudo journalctl -u moltchain-validator -n 50"
+        print_warning "Check logs: sudo journalctl -u lichen-validator -n 50"
         exit 1
     fi
 fi
@@ -125,5 +125,5 @@ print_success "🦞 Upgrade complete!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 print_info "Backup available at: $BACKUP_FILE"
-print_info "Monitor logs: sudo journalctl -u moltchain-validator -f"
-print_info "Check health: $MOLTCHAIN_HOME/health-check.sh"
+print_info "Monitor logs: sudo journalctl -u lichen-validator -f"
+print_info "Check health: $LICHEN_HOME/health-check.sh"

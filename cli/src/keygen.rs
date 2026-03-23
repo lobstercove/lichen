@@ -1,7 +1,7 @@
 // Keypair generation and management
 
 use anyhow::{bail, Context, Result};
-use moltchain_core::Keypair;
+use lichen_core::Keypair;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
@@ -13,7 +13,7 @@ use aes_gcm::{
 };
 
 /// Keypair file format (production-ready, Solana-compatible)
-/// Supports optional at-rest encryption via MOLTCHAIN_KEYPAIR_PASSWORD env var (T1.8).
+/// Supports optional at-rest encryption via LICHEN_KEYPAIR_PASSWORD env var (T1.8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeypairFile {
     /// Private key seed (32 bytes) as array of integers
@@ -139,10 +139,10 @@ impl KeypairFile {
     }
 
     /// Save to file with secure permissions.
-    /// If MOLTCHAIN_KEYPAIR_PASSWORD is set, encrypts the private key at rest (T1.8).
+    /// If LICHEN_KEYPAIR_PASSWORD is set, encrypts the private key at rest (T1.8).
     #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
-        let file_to_save = match std::env::var("MOLTCHAIN_KEYPAIR_PASSWORD") {
+        let file_to_save = match std::env::var("LICHEN_KEYPAIR_PASSWORD") {
             Ok(password) if !password.is_empty() => {
                 // T1.8: Encrypt private key at rest using password-derived key
                 let mut salt = [0u8; 16];
@@ -159,8 +159,8 @@ impl KeypairFile {
                 }
             }
             _ => {
-                eprintln!("\u{26a0}\u{fe0f}  WARNING: MOLTCHAIN_KEYPAIR_PASSWORD not set \u{2014} keypair stored in PLAINTEXT.");
-                eprintln!("   Set MOLTCHAIN_KEYPAIR_PASSWORD for encrypted storage (T1.8).");
+                eprintln!("\u{26a0}\u{fe0f}  WARNING: LICHEN_KEYPAIR_PASSWORD not set \u{2014} keypair stored in PLAINTEXT.");
+                eprintln!("   Set LICHEN_KEYPAIR_PASSWORD for encrypted storage (T1.8).");
                 self.clone()
             }
         };
@@ -183,7 +183,7 @@ impl KeypairFile {
     }
 
     /// Load from file.
-    /// If the file is encrypted, requires MOLTCHAIN_KEYPAIR_PASSWORD to decrypt (T1.8).
+    /// If the file is encrypted, requires LICHEN_KEYPAIR_PASSWORD to decrypt (T1.8).
     /// Warns if file permissions are too open on Unix systems.
     pub fn load(path: &Path) -> Result<Self> {
         // T1.8: Check file permissions on Unix
@@ -214,14 +214,14 @@ impl KeypairFile {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Encrypted keypair file missing salt field"))?;
 
-            let password = std::env::var("MOLTCHAIN_KEYPAIR_PASSWORD").map_err(|_| {
+            let password = std::env::var("LICHEN_KEYPAIR_PASSWORD").map_err(|_| {
                 anyhow::anyhow!(
-                    "Keypair file is encrypted. Set MOLTCHAIN_KEYPAIR_PASSWORD to decrypt."
+                    "Keypair file is encrypted. Set LICHEN_KEYPAIR_PASSWORD to decrypt."
                 )
             })?;
 
             if password.is_empty() {
-                bail!("MOLTCHAIN_KEYPAIR_PASSWORD is empty \u{2014} cannot decrypt keypair");
+                bail!("LICHEN_KEYPAIR_PASSWORD is empty \u{2014} cannot decrypt keypair");
             }
 
             let key = derive_encryption_key(&password, salt);
@@ -284,12 +284,12 @@ impl KeypairFile {
     }
 }
 
-/// Get default keypair path (~/.moltchain/id.json)
+/// Get default keypair path (~/.lichen/id.json)
 #[allow(dead_code)]
 pub fn default_keypair_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+        .join(".lichen")
         .join("id.json")
 }
 
@@ -346,7 +346,7 @@ pub fn execute(outfile: Option<PathBuf>, force: bool, show_formats: bool) -> Res
 
         // Show compatibility info
         println!("\n🔗 Compatibility:");
-        println!("   ✓ MoltChain native format");
+        println!("   ✓ Lichen native format");
         println!("   ✓ Solana-compatible (Ed25519 + Base58)");
         println!("   ✓ Can be imported to Phantom, Solflare");
         println!("\n   Note: Ethereum uses secp256k1, not Ed25519");
@@ -386,7 +386,7 @@ pub fn load_keypair(path: Option<&Path>) -> Result<Keypair> {
 
     if !keypair_path.exists() {
         bail!(
-            "Keypair file not found at: {}\nRun 'moltchain keygen' to create one",
+            "Keypair file not found at: {}\nRun 'lichen keygen' to create one",
             keypair_path.display()
         );
     }
@@ -509,7 +509,7 @@ mod tests {
         fs::write(&path, &json).unwrap();
 
         // Load — should auto-upgrade
-        std::env::set_var("MOLTCHAIN_KEYPAIR_PASSWORD", password);
+        std::env::set_var("LICHEN_KEYPAIR_PASSWORD", password);
         let loaded = KeypairFile::load(&path).unwrap();
         let loaded_kp = loaded.to_keypair().unwrap();
         assert_eq!(
@@ -539,6 +539,6 @@ mod tests {
             keypair.pubkey(),
             "v2 re-load should work"
         );
-        std::env::remove_var("MOLTCHAIN_KEYPAIR_PASSWORD");
+        std::env::remove_var("LICHEN_KEYPAIR_PASSWORD");
     }
 }

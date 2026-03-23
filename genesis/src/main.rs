@@ -1,19 +1,19 @@
-//! MoltChain Genesis — standalone one-time genesis block creator.
+//! Lichen Genesis — standalone one-time genesis block creator.
 //!
 //! Usage:
-//!   moltchain-genesis --prepare-wallet --network testnet --output-dir ./artifacts/testnet
-//!   moltchain-genesis --network testnet --wallet-file ./artifacts/testnet/genesis-wallet.json --initial-validator <base58> --db-path /var/lib/moltchain/state-testnet
+//!   lichen-genesis --prepare-wallet --network testnet --output-dir ./artifacts/testnet
+//!   lichen-genesis --network testnet --wallet-file ./artifacts/testnet/genesis-wallet.json --initial-validator <base58> --db-path /var/lib/lichen/state-testnet
 
-use moltchain_core::consensus::{
+use lichen_core::consensus::{
     StakePool, BOOTSTRAP_GRANT_AMOUNT, FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS,
 };
-use moltchain_core::multisig::GovernedWalletConfig;
-use moltchain_core::{
+use lichen_core::multisig::GovernedWalletConfig;
+use lichen_core::{
     Account, Block, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair, Message,
     Pubkey, StateStore, Transaction, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE,
     NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
-use moltchain_genesis::{
+use lichen_genesis::{
     genesis_auto_deploy, genesis_create_trading_pairs, genesis_initialize_contracts,
     genesis_seed_analytics_prices, genesis_seed_margin_prices, genesis_seed_oracle,
 };
@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-const TREASURY_RESERVE_MOLT: u64 = 100_000_000;
+const TREASURY_RESERVE_LICN: u64 = 100_000_000;
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
@@ -143,14 +143,14 @@ fn explicit_initial_validators(
     args: &[String],
     genesis_config: &GenesisConfig,
 ) -> Result<Vec<Pubkey>, String> {
-    let bootstrap_grant_molt = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000;
+    let bootstrap_grant_licn = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000;
     let mut validators = Vec::new();
 
     for validator in &genesis_config.initial_validators {
-        if validator.stake_molt != bootstrap_grant_molt {
+        if validator.stake_licn != bootstrap_grant_licn {
             return Err(format!(
-                "Genesis validator {} requests {} MOLT, but slot-0 registration is fixed at {} MOLT",
-                validator.pubkey, validator.stake_molt, bootstrap_grant_molt
+                "Genesis validator {} requests {} LICN, but slot-0 registration is fixed at {} LICN",
+                validator.pubkey, validator.stake_licn, bootstrap_grant_licn
             ));
         }
         let pubkey = Pubkey::from_base58(&validator.pubkey).map_err(|err| {
@@ -250,7 +250,7 @@ fn main() {
             std::process::exit(1);
         }
         None => {
-            error!("Usage: moltchain-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--db-path <path>] [--config <path>]");
+            error!("Usage: lichen-genesis --network <mainnet|testnet> [--prepare-wallet --output-dir <path>] [--wallet-file <path>] [--initial-validator <base58>] [--db-path <path>] [--config <path>]");
             std::process::exit(1);
         }
     };
@@ -341,7 +341,7 @@ fn main() {
     }
 
     info!("═══════════════════════════════════════════════════════");
-    info!("  MoltChain Genesis — One-Time Chain Initialization");
+    info!("  Lichen Genesis — One-Time Chain Initialization");
     info!("═══════════════════════════════════════════════════════");
     info!("  Network:    {}", network_str);
     info!("  DB path:    {}", db_dir);
@@ -367,7 +367,7 @@ fn main() {
     }
 
     info!("Chain ID: {}", genesis_config.chain_id);
-    info!("Total supply: {} MOLT", genesis_config.total_supply_molt());
+    info!("Total supply: {} LICN", genesis_config.total_supply_licn());
     info!("Genesis time: {}", genesis_config.genesis_time);
 
     let genesis_wallet_path = db_dir_path.join("genesis-wallet.json");
@@ -399,10 +399,10 @@ fn main() {
         );
         for dw in dist {
             info!(
-                "    - {} ({}%): {} MOLT → {}",
+                "    - {} ({}%): {} LICN → {}",
                 dw.role,
                 dw.percentage,
-                dw.amount_molt,
+                dw.amount_licn,
                 dw.pubkey.to_base58()
             );
         }
@@ -466,7 +466,7 @@ fn main() {
 
     // Store rent params
     if let Err(e) = state.set_rent_params(
-        genesis_config.features.rent_rate_shells_per_kb_month,
+        genesis_config.features.rent_rate_spores_per_kb_month,
         genesis_config.features.rent_free_kb,
     ) {
         warn!("⚠️  Failed to store rent params: {}", e);
@@ -474,7 +474,7 @@ fn main() {
 
     // Store fee configuration
     let genesis_fee_config = FeeConfig {
-        base_fee: genesis_config.features.base_fee_shells,
+        base_fee: genesis_config.features.base_fee_spores,
         contract_deploy_fee: CONTRACT_DEPLOY_FEE,
         contract_upgrade_fee: CONTRACT_UPGRADE_FEE,
         nft_mint_fee: NFT_MINT_FEE,
@@ -492,7 +492,7 @@ fn main() {
     if let Err(e) = state.set_fee_config_full(&genesis_fee_config) {
         warn!("⚠️  Failed to store fee config: {}", e);
     } else {
-        info!("  ✓ Fee config persisted: base={} shells, burn={}%, producer={}%, voters={}%, treasury={}%, community={}%",
+        info!("  ✓ Fee config persisted: base={} spores, burn={}%, producer={}%, voters={}%, treasury={}%, community={}%",
             genesis_fee_config.base_fee,
             genesis_fee_config.fee_burn_percent,
             genesis_fee_config.fee_producer_percent,
@@ -511,8 +511,8 @@ fn main() {
     }
 
     // Create genesis treasury account with full supply
-    let total_supply_molt = 500_000_000u64;
-    let mut genesis_account = Account::new(total_supply_molt, genesis_pubkey);
+    let total_supply_licn = 500_000_000u64;
+    let mut genesis_account = Account::new(total_supply_licn, genesis_pubkey);
 
     if let Some(ref multisig) = wallet.multisig {
         genesis_account.owner = genesis_pubkey;
@@ -532,7 +532,7 @@ fn main() {
         error!("Failed to set genesis pubkey: {e}");
         std::process::exit(1);
     }
-    info!("  ✓ Genesis mint: {} MOLT", total_supply_molt);
+    info!("  ✓ Genesis mint: {} LICN", total_supply_licn);
     info!("  ✓ Address: {}", genesis_pubkey.to_base58());
 
     // ════════════════════════════════════════════════════════════════════
@@ -552,50 +552,50 @@ fn main() {
         };
 
         for dw in dist_wallets {
-            let amount_shells = Account::molt_to_shells(dw.amount_molt);
+            let amount_spores = Account::licn_to_spores(dw.amount_licn);
 
             let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-            acct.shells = amount_shells;
+            acct.spores = amount_spores;
 
-            if dw.role == "founding_moltys" {
+            if dw.role == "founding_symbionts" {
                 acct.spendable = 0;
-                acct.locked = amount_shells;
+                acct.locked = amount_spores;
             } else {
-                acct.spendable = amount_shells;
+                acct.spendable = amount_spores;
             }
 
             if let Err(e) = state.put_account(&dw.pubkey, &acct) {
                 error!("Failed to create {} account: {e}", dw.role);
             }
 
-            src_acct.shells = src_acct.shells.saturating_sub(amount_shells);
-            src_acct.spendable = src_acct.spendable.saturating_sub(amount_shells);
+            src_acct.spores = src_acct.spores.saturating_sub(amount_spores);
+            src_acct.spendable = src_acct.spendable.saturating_sub(amount_spores);
 
             if dw.role == "validator_rewards" {
                 if let Err(e) = state.set_treasury_pubkey(&dw.pubkey) {
                     error!("Failed to set treasury pubkey: {e}");
                 }
                 info!(
-                    "  ✓ {} ({}%): {} MOLT → {} [TREASURY]",
+                    "  ✓ {} ({}%): {} LICN → {} [TREASURY]",
                     dw.role,
                     dw.percentage,
-                    dw.amount_molt,
+                    dw.amount_licn,
                     dw.pubkey.to_base58()
                 );
-            } else if dw.role == "founding_moltys" {
+            } else if dw.role == "founding_symbionts" {
                 info!(
-                    "  ✓ {} ({}%): {} MOLT → {} [LOCKED — 6mo cliff + 18mo vest]",
+                    "  ✓ {} ({}%): {} LICN → {} [LOCKED — 6mo cliff + 18mo vest]",
                     dw.role,
                     dw.percentage,
-                    dw.amount_molt,
+                    dw.amount_licn,
                     dw.pubkey.to_base58()
                 );
             } else {
                 info!(
-                    "  ✓ {} ({}%): {} MOLT → {}",
+                    "  ✓ {} ({}%): {} LICN → {}",
                     dw.role,
                     dw.percentage,
-                    dw.amount_molt,
+                    dw.amount_licn,
                     dw.pubkey.to_base58()
                 );
             }
@@ -608,7 +608,7 @@ fn main() {
         // Store genesis accounts in state DB
         let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
             .iter()
-            .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_molt, dw.percentage))
+            .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_licn, dw.percentage))
             .collect();
         if let Err(e) = state.set_genesis_accounts(&ga_entries) {
             error!("Failed to store genesis accounts in DB: {e}");
@@ -619,7 +619,7 @@ fn main() {
             );
         }
 
-        info!("  ✓ Genesis distribution complete — 500M MOLT allocated per whitepaper");
+        info!("  ✓ Genesis distribution complete — 500M LICN allocated per whitepaper");
 
         // Governed wallet configs for multi-sig spending
         {
@@ -656,9 +656,9 @@ fn main() {
             }
         }
 
-        // Auto-fund genesis/deployer with 10K MOLT from treasury
-        let ops_fund_molt: u64 = 10_000;
-        let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
+        // Auto-fund genesis/deployer with 10K LICN from treasury
+        let ops_fund_licn: u64 = 10_000;
+        let ops_fund_spores = Account::licn_to_spores(ops_fund_licn);
         if let Some(treasury_dw) = dist_wallets
             .iter()
             .find(|dw| dw.role == "validator_rewards")
@@ -668,8 +668,8 @@ fn main() {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-            if treasury_acct.spendable >= ops_fund_shells {
-                treasury_acct.deduct_spendable(ops_fund_shells).ok();
+            if treasury_acct.spendable >= ops_fund_spores {
+                treasury_acct.deduct_spendable(ops_fund_spores).ok();
                 if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
                     error!("Failed to debit treasury for auto-fund: {e}");
                 }
@@ -679,14 +679,14 @@ fn main() {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| Account::new(0, genesis_pubkey));
-                genesis_acct.add_spendable(ops_fund_shells).ok();
+                genesis_acct.add_spendable(ops_fund_spores).ok();
                 if let Err(e) = state.put_account(&genesis_pubkey, &genesis_acct) {
                     error!("Failed to credit deployer for auto-fund: {e}");
                 }
 
                 info!(
-                    "  ✓ Auto-funded genesis/deployer with {} MOLT from treasury",
-                    ops_fund_molt
+                    "  ✓ Auto-funded genesis/deployer with {} LICN from treasury",
+                    ops_fund_licn
                 );
             } else {
                 warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
@@ -697,7 +697,7 @@ fn main() {
         for dw in dist_wallets {
             let mut data = Vec::with_capacity(9);
             data.push(4); // Genesis transfer (fee-free)
-            data.extend_from_slice(&Account::molt_to_shells(dw.amount_molt).to_le_bytes());
+            data.extend_from_slice(&Account::licn_to_spores(dw.amount_licn).to_le_bytes());
 
             let instruction = Instruction {
                 program_id: SYSTEM_PROGRAM_ID,
@@ -714,7 +714,7 @@ fn main() {
     }
     // Legacy: single treasury (backward compat)
     else if let Some(treasury_pubkey) = wallet.treasury_pubkey {
-        let reward_pool_molt = TREASURY_RESERVE_MOLT.min(1_000_000_000);
+        let reward_pool_licn = TREASURY_RESERVE_LICN.min(1_000_000_000);
         let treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
         if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
             error!("Failed to store treasury account: {e}");
@@ -726,9 +726,9 @@ fn main() {
             "  ✓ Treasury account created: {}",
             treasury_pubkey.to_base58()
         );
-        info!("  ✓ Treasury reserve pending: {} MOLT", reward_pool_molt);
+        info!("  ✓ Treasury reserve pending: {} LICN", reward_pool_licn);
 
-        let reward_shells = Account::molt_to_shells(reward_pool_molt);
+        let reward_spores = Account::licn_to_spores(reward_pool_licn);
 
         let mut src_acct = match state.get_account(&genesis_pubkey).ok().flatten() {
             Some(a) => a,
@@ -737,8 +737,8 @@ fn main() {
                 Account::new(0, genesis_pubkey)
             }
         };
-        src_acct.shells = src_acct.shells.saturating_sub(reward_shells);
-        src_acct.spendable = src_acct.spendable.saturating_sub(reward_shells);
+        src_acct.spores = src_acct.spores.saturating_sub(reward_spores);
+        src_acct.spendable = src_acct.spendable.saturating_sub(reward_spores);
         if let Err(e) = state.put_account(&genesis_pubkey, &src_acct) {
             error!("Failed to update genesis account balance: {e}");
         }
@@ -748,8 +748,8 @@ fn main() {
             .ok()
             .flatten()
             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-        trs_acct.shells = trs_acct.shells.saturating_add(reward_shells);
-        trs_acct.spendable = trs_acct.spendable.saturating_add(reward_shells);
+        trs_acct.spores = trs_acct.spores.saturating_add(reward_spores);
+        trs_acct.spendable = trs_acct.spendable.saturating_add(reward_spores);
         if let Err(e) = state.put_account(&treasury_pubkey, &trs_acct) {
             error!("Failed to update treasury account balance: {e}");
         }
@@ -759,7 +759,7 @@ fn main() {
         // Legacy treasury transaction
         let mut data = Vec::with_capacity(9);
         data.push(4); // Genesis transfer (fee-free)
-        data.extend_from_slice(&Account::molt_to_shells(reward_pool_molt).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(reward_pool_licn).to_le_bytes());
 
         let instruction = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -786,22 +786,22 @@ fn main() {
                 continue;
             }
         };
-        let account = Account::new(account_info.balance_molt, pubkey);
+        let account = Account::new(account_info.balance_licn, pubkey);
         if let Err(e) = state.put_account(&pubkey, &account) {
             error!("Failed to store initial account: {e}");
         }
         info!(
-            "  ✓ Account {}: {} MOLT",
+            "  ✓ Account {}: {} LICN",
             &account_info.address[..20.min(account_info.address.len())],
-            account_info.balance_molt
+            account_info.balance_licn
         );
     }
 
     // Mint transaction
-    let mint_shells = Account::molt_to_shells(total_supply_molt);
+    let mint_spores = Account::licn_to_spores(total_supply_licn);
     let mut mint_data = Vec::with_capacity(9);
     mint_data.push(5); // Genesis mint (synthetic, fee-free)
-    mint_data.extend_from_slice(&mint_shells.to_le_bytes());
+    mint_data.extend_from_slice(&mint_spores.to_le_bytes());
 
     let mint_instruction = Instruction {
         program_id: SYSTEM_PROGRAM_ID,
@@ -847,8 +847,8 @@ fn main() {
             .ok()
             .flatten()
             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
-        validator_account.shells = validator_account
-            .shells
+        validator_account.spores = validator_account
+            .spores
             .saturating_add(BOOTSTRAP_GRANT_AMOUNT);
         validator_account.staked = validator_account
             .staked
@@ -891,7 +891,7 @@ fn main() {
             .push(genesis_signer.sign(&message.serialize()));
         genesis_txs.push(tx);
         info!(
-            "  ✓ Initial validator registered at genesis: {} ({} MOLT)",
+            "  ✓ Initial validator registered at genesis: {} ({} LICN)",
             validator_pubkey.to_base58(),
             BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
         );
@@ -924,23 +924,23 @@ fn main() {
     info!("✓ Genesis block created and stored (slot 0)");
     info!("  Genesis hash: {}", genesis_block.hash());
 
-    // Store founding moltys vesting schedule
+    // Store founding symbionts vesting schedule
     if let Some(fm_dw) = wallet
         .distribution_wallets
         .as_ref()
-        .and_then(|ws| ws.iter().find(|dw| dw.role == "founding_moltys"))
+        .and_then(|ws| ws.iter().find(|dw| dw.role == "founding_symbionts"))
     {
         let cliff_end = genesis_timestamp + FOUNDING_CLIFF_SECONDS;
         let vest_end = genesis_timestamp + FOUNDING_VEST_TOTAL_SECONDS;
-        let total_shells = Account::molt_to_shells(fm_dw.amount_molt);
-        if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_shells) {
+        let total_spores = Account::licn_to_spores(fm_dw.amount_licn);
+        if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_spores) {
             error!("Failed to store founding vesting params: {e}");
         } else {
             info!(
-                "  ✓ Founding moltys vesting: cliff={}, vest_end={}, total={}M MOLT",
+                "  ✓ Founding symbionts vesting: cliff={}, vest_end={}, total={}M LICN",
                 cliff_end,
                 vest_end,
-                fm_dw.amount_molt / 1_000_000
+                fm_dw.amount_licn / 1_000_000
             );
         }
     }
@@ -970,7 +970,7 @@ fn main() {
     info!("═══════════════════════════════════════════════════════");
     info!("  Next: start the validator pointing at this DB:");
     info!(
-        "    moltchain-validator --network {} --db-path {}",
+        "    lichen-validator --network {} --db-path {}",
         network_str, db_dir
     );
     info!("═══════════════════════════════════════════════════════");

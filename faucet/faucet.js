@@ -1,15 +1,15 @@
-// MoltFaucet JavaScript
-// Connects to the MoltChain faucet backend (Rust/axum; default port 9100, Docker uses 9101 via PORT env)
+// Lichen Faucet JavaScript
+// Connects to the Lichen faucet backend (Rust/axum; default port 9100, Docker uses 9101 via PORT env)
 
 const FAUCET_API =
-    (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG?.faucet) ||
-    (typeof window !== 'undefined' && window.MOLT_CONFIG?.faucet) ||
+    (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG?.faucet) ||
+    (typeof window !== 'undefined' && window.LICHEN_CONFIG?.faucet) ||
     'http://localhost:9100';
 const EXPLORER_BASE =
-    (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG?.explorer) ||
-    (typeof window !== 'undefined' && window.MOLT_CONFIG?.explorer) ||
+    (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG?.explorer) ||
+    (typeof window !== 'undefined' && window.LICHEN_CONFIG?.explorer) ||
     '../explorer';
-let MOLT_PER_REQUEST = 10; // default; overwritten by /faucet/config
+let LICN_PER_REQUEST = 10; // default; overwritten by /faucet/config
 
 function formatCooldown(seconds) {
     const value = Number(seconds || 0);
@@ -45,14 +45,14 @@ function renderRecentRequests(records) {
     tbody.innerHTML = '';
     records.slice(0, 10).forEach((record) => {
         const recipient = String(record.recipient || '');
-        const amount = Number(record.amount_molt || 0);
+        const amount = Number(record.amount_licn || 0);
         const shortAddress = escapeHtml(`${recipient.slice(0, 8)}...${recipient.slice(-4)}`);
         const safeAmount = escapeHtml(String(amount));
 
         const row = document.createElement('tr');
         row.innerHTML = `
             <td><code>${shortAddress}</code></td>
-            <td>${safeAmount} MOLT</td>
+            <td>${safeAmount} LICN</td>
             <td>${formatElapsedTime(record.timestamp_ms)}</td>
             <td><span class="badge badge-success">Completed</span></td>
         `;
@@ -104,10 +104,10 @@ async function updateStats() {
         const cooldownEl = document.getElementById('statCooldown');
         const dailyLimitEl = document.getElementById('statDailyLimit');
 
-        if (data.max_per_request) MOLT_PER_REQUEST = Number(data.max_per_request);
-        if (perRequestEl) perRequestEl.textContent = `${MOLT_PER_REQUEST} MOLT`;
+        if (data.max_per_request) LICN_PER_REQUEST = Number(data.max_per_request);
+        if (perRequestEl) perRequestEl.textContent = `${LICN_PER_REQUEST} LICN`;
         if (cooldownEl) cooldownEl.textContent = formatCooldown(data.cooldown_seconds || 0);
-        if (dailyLimitEl) dailyLimitEl.textContent = `${Number(data.daily_limit_per_ip || 0)} MOLT / IP`;
+        if (dailyLimitEl) dailyLimitEl.textContent = `${Number(data.daily_limit_per_ip || 0)} LICN / IP`;
 
         const balanceEl = document.getElementById('statFaucetBalance');
         if (balanceEl) {
@@ -115,7 +115,7 @@ async function updateStats() {
                 const statusResp = await fetch(`${FAUCET_API}/faucet/status`);
                 if (statusResp.ok) {
                     const statusData = await statusResp.json();
-                    balanceEl.textContent = `${Number(statusData.balance_molt || 0)} MOLT`;
+                    balanceEl.textContent = `${Number(statusData.balance_licn || 0)} LICN`;
                 }
             } catch (_) {
                 // Keep fallback value on status fetch errors.
@@ -151,7 +151,7 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
 
     // F16.4 fix: validate address format (base58 addresses, 32-44 chars)
     if (!address || address.length < 32 || address.length > 44) {
-        showError('Invalid address. Enter a valid MoltChain base58 address (32-44 characters).');
+        showError('Invalid address. Enter a valid Lichen base58 address (32-44 characters).');
         return;
     }
     // Reject non-base58 characters
@@ -181,7 +181,7 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
             response = await fetch(`${FAUCET_API}/faucet/request`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ address, amount: MOLT_PER_REQUEST }),
+                body: JSON.stringify({ address, amount: LICN_PER_REQUEST }),
                 signal: controller.signal
             });
         } finally {
@@ -193,7 +193,7 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
         if (data.success) {
             // F16.2 fix: escape all dynamic values in success HTML
             const safeSig = escapeHtml(data.signature || '');
-            const effectiveAmount = data.amount ?? MOLT_PER_REQUEST;
+            const effectiveAmount = data.amount ?? LICN_PER_REQUEST;
             const safeAmount = escapeHtml(String(effectiveAmount));
             const explorerLink = data.signature
                 ? ` <a href="${EXPLORER_BASE}/transaction.html?sig=${encodeURIComponent(data.signature)}&to=${encodeURIComponent(address)}&amount=${encodeURIComponent(effectiveAmount)}" class="tx-link">View in Explorer</a>`
@@ -201,7 +201,7 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
 
             // Show success
             successMessage.querySelector('div').innerHTML =
-                `<strong>Success!</strong> ${safeAmount} MOLT sent to your address.` + explorerLink;
+                `<strong>Success!</strong> ${safeAmount} LICN sent to your address.` + explorerLink;
             successMessage.classList.remove('hidden');
 
             // Reset form
@@ -245,7 +245,7 @@ function addRecentRequest(address, amount, signature) {
     const row = document.createElement('tr');
     row.innerHTML = `
         <td><code>${shortAddress}</code></td>
-        <td>${safeAmount} MOLT</td>
+        <td>${safeAmount} LICN</td>
         <td>Just now</td>
         <td><span class="badge badge-success">Completed</span></td>
     `;

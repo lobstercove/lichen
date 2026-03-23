@@ -1,4 +1,4 @@
-//! MoltChain Zero-Knowledge Proof Module
+//! Lichen Zero-Knowledge Proof Module
 //!
 //! Production-grade shielded transactions using Groth16 over BN254
 //! via the arkworks library suite. Replaces the placeholder privacy module.
@@ -62,7 +62,7 @@ pub struct ShieldedPoolState {
     pub merkle_root: [u8; 32],
     /// Number of leaves (commitments) inserted
     pub commitment_count: u64,
-    /// Total shielded balance in shells
+    /// Total shielded balance in spores
     pub total_shielded: u64,
     /// Shield verification key hash (for integrity check)
     pub vk_shield_hash: [u8; 32],

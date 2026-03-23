@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::Block;
+use lichen_core::Block;
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz block deserialization — must never panic on arbitrary bytes.

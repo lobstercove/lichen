@@ -6,7 +6,7 @@
 //   - Liquidation by anyone (earns 50% of penalty)
 //   - Insurance fund from liquidation penalties
 //   - Funding rate (8-hour intervals, scaled by leverage tier)
-//   - Integration with LobsterLend for margin funding
+//   - Integration with ThallLend for margin funding
 //   - Host-level collateral locking via cross-contract calls
 //   - Insurance fund governance withdrawal
 //   - Emergency pause, reentrancy guard, admin controls
@@ -19,7 +19,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
     get_timestamp, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
@@ -36,7 +36,7 @@ const FUNDING_INTERVAL_SLOTS: u64 = 28_800; // ~8 hours
 const MAX_POSITIONS: u64 = 10_000;
 const MAX_FUNDING_RATE_BPS: u64 = 100; // 1% max per interval
                                        // AUDIT-FIX H-11: Cap total open interest to prevent system insolvency
-const MAX_TOTAL_OPEN_INTEREST: u64 = 100_000_000_000_000_000; // 100M MOLT notional
+const MAX_TOTAL_OPEN_INTEREST: u64 = 100_000_000_000_000_000; // 100M LICN notional
 
 // AUDIT-FIX M20: Mark price staleness guard — reject prices older than 30 minutes
 const MAX_PRICE_AGE_SECONDS: u64 = 1800;
@@ -61,7 +61,7 @@ const REENTRANCY_KEY: &[u8] = b"mrg_reentrancy";
 const POSITION_COUNT_KEY: &[u8] = b"mrg_pos_count";
 const INSURANCE_FUND_KEY: &[u8] = b"mrg_insurance";
 const LAST_FUNDING_KEY: &[u8] = b"mrg_last_fund";
-const MOLTCOIN_ADDRESS_KEY: &[u8] = b"mrg_molt_addr";
+const LICHENCOIN_ADDRESS_KEY: &[u8] = b"mrg_licn_addr";
 const TOTAL_VOLUME_KEY: &[u8] = b"mrg_total_volume";
 const LIQUIDATION_COUNT_KEY: &[u8] = b"mrg_liq_count";
 const TOTAL_PNL_PROFIT_KEY: &[u8] = b"mrg_pnl_profit";
@@ -713,7 +713,7 @@ pub fn apply_funding(pair_id: u64) -> u32 {
 
     save_u64(&last_funding_pair_key(pair_id), current_slot);
     log_info("Funding rates applied");
-    moltchain_sdk::set_return_data(&u64_to_bytes(applied));
+    lichen_sdk::set_return_data(&u64_to_bytes(applied));
     0 // success — count in return_data
 }
 
@@ -1048,7 +1048,7 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
         load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(close_notional),
     );
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(unlock_amount));
+    lichen_sdk::set_return_data(&u64_to_bytes(unlock_amount));
     log_info("Margin position closed");
     reentrancy_exit();
     0
@@ -1425,10 +1425,10 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let insurance_add = penalty.saturating_sub(liquidator_reward);
 
     // DEX-L03: Do not silently skip liquidator rewards when reward token is not configured.
-    // If a reward is owed, the MOLT token address must be set.
-    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if liquidator_reward > 0 && is_zero(&molt_addr) {
-        log_info("liquidate: moltcoin address not configured");
+    // If a reward is owed, the LICN token address must be set.
+    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if liquidator_reward > 0 && is_zero(&licn_addr) {
+        log_info("liquidate: lichencoin address not configured");
         reentrancy_exit();
         return 12;
     }
@@ -1476,7 +1476,7 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     if liquidator_reward > 0 {
         let contract_addr = get_contract_address();
         if call_token_transfer(
-            Address(molt_addr),
+            Address(licn_addr),
             contract_addr,
             Address(liq),
             liquidator_reward,
@@ -1506,7 +1506,7 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     // Track liquidation count
     save_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(liquidator_reward));
+    lichen_sdk::set_return_data(&u64_to_bytes(liquidator_reward));
     log_info("Position liquidated");
     reentrancy_exit();
     0
@@ -1560,8 +1560,8 @@ pub fn set_maintenance_margin(caller: *const u8, margin_bps: u64) -> u32 {
     0
 }
 
-/// Set the MoltCoin contract address (admin only, for insurance withdrawal)
-pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
+/// Set the LichenCoin contract address (admin only, for insurance withdrawal)
+pub fn set_lichencoin_address(caller: *const u8, addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut a = [0u8; 32];
     unsafe {
@@ -1581,13 +1581,13 @@ pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
     if is_zero(&a) {
         return 2;
     }
-    storage_set(MOLTCOIN_ADDRESS_KEY, &a);
+    storage_set(LICHENCOIN_ADDRESS_KEY, &a);
     0
 }
 
 /// Withdraw from the insurance fund (admin/governance only)
 /// Returns: 0=success, 1=not admin, 2=zero amount, 3=insufficient funds,
-///          4=no moltcoin address, 5=transfer failed
+///          4=no lichencoin address, 5=transfer failed
 pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut r = [0u8; 32];
@@ -1614,18 +1614,18 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
         return 3;
     }
 
-    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    if is_zero(&molt_addr) {
+    let licn_addr = load_addr(LICHENCOIN_ADDRESS_KEY);
+    if is_zero(&licn_addr) {
         return 4;
     }
 
     // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
     let contract_addr = get_contract_address();
-    match call_token_transfer(Address(molt_addr), contract_addr, Address(r), amount) {
+    match call_token_transfer(Address(licn_addr), contract_addr, Address(r), amount) {
         Ok(_) => {
             save_u64(INSURANCE_FUND_KEY, insurance - amount);
             log_info("Insurance fund withdrawal");
-            moltchain_sdk::set_return_data(&u64_to_bytes(amount));
+            lichen_sdk::set_return_data(&u64_to_bytes(amount));
             0
         }
         Err(_) => 5,
@@ -1640,7 +1640,7 @@ pub fn get_tier_info(leverage: u64) -> u64 {
     result.extend_from_slice(&u64_to_bytes(maint_bps));
     result.extend_from_slice(&u64_to_bytes(liq_bps));
     result.extend_from_slice(&u64_to_bytes(fund_mult));
-    moltchain_sdk::set_return_data(&result);
+    lichen_sdk::set_return_data(&result);
     leverage
 }
 
@@ -1694,7 +1694,7 @@ pub fn get_position_info(position_id: u64) -> u64 {
     let pk = position_key(position_id);
     match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE_V1 => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             position_id
         }
         _ => 0,
@@ -1724,7 +1724,7 @@ pub fn query_user_open_position(trader: *const u8, pair_id: u64) -> u64 {
                 let pos_status = decode_pos_status(&data);
                 if pos_pair == pair_id && pos_status == 0 {
                     // Found an open position on this pair — return data
-                    moltchain_sdk::set_return_data(&data);
+                    lichen_sdk::set_return_data(&data);
                     return pos_id;
                 }
             }
@@ -1911,7 +1911,7 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
         load_u64(TOTAL_OPEN_INTEREST_KEY).saturating_sub(closed_notional),
     );
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(unlock_amount));
+    lichen_sdk::set_return_data(&u64_to_bytes(unlock_amount));
     log_info("Margin position partially closed");
     reentrancy_exit();
     0
@@ -1999,7 +1999,7 @@ pub fn set_position_sl_tp(
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -2008,7 +2008,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 1 = set_mark_price(caller[32], pair_id[8], price[8])
@@ -2017,7 +2017,7 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let price = bytes_to_u64(&args[41..49]);
                 let r = set_mark_price(args[1..33].as_ptr(), pair_id, price);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 2 = open_position(trader[32], pair_id[8], side[1], size[8], leverage[8], margin[8], margin_mode[1]?)
@@ -2042,7 +2042,7 @@ pub extern "C" fn call() {
                     margin,
                     margin_mode,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 3 = close_position(caller[32], pos_id[8])
@@ -2050,7 +2050,7 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = close_position(args[1..33].as_ptr(), pos_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 4 = add_margin(caller[32], pos_id[8], amount[8])
@@ -2059,7 +2059,7 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let amount = bytes_to_u64(&args[41..49]);
                 let r = add_margin(args[1..33].as_ptr(), pos_id, amount);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 5 = remove_margin(caller[32], pos_id[8], amount[8])
@@ -2068,7 +2068,7 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let amount = bytes_to_u64(&args[41..49]);
                 let r = remove_margin(args[1..33].as_ptr(), pos_id, amount);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 6 = liquidate(liquidator[32], pos_id[8])
@@ -2076,7 +2076,7 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let r = liquidate(args[1..33].as_ptr(), pos_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 7 = set_max_leverage(caller[32], pair_id[8], max_lev[8])
@@ -2085,7 +2085,7 @@ pub extern "C" fn call() {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let max_lev = bytes_to_u64(&args[41..49]);
                 let r = set_max_leverage(args[1..33].as_ptr(), pair_id, max_lev);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 8 = set_maintenance_margin(caller[32], margin_bps[8])
@@ -2093,7 +2093,7 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let bps = bytes_to_u64(&args[33..41]);
                 let r = set_maintenance_margin(args[1..33].as_ptr(), bps);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 9 = withdraw_insurance(caller[32], amount[8], recipient[32])
@@ -2101,7 +2101,7 @@ pub extern "C" fn call() {
             if args.len() >= 73 {
                 let amount = bytes_to_u64(&args[33..41]);
                 let r = withdraw_insurance(args[1..33].as_ptr(), amount, args[41..73].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 10 = get_position_info(pos_id[8])
@@ -2116,7 +2116,7 @@ pub extern "C" fn call() {
             if args.len() >= 9 {
                 let pos_id = bytes_to_u64(&args[1..9]);
                 let r = get_margin_ratio(pos_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 12 = get_tier_info(leverage[8])
@@ -2130,26 +2130,26 @@ pub extern "C" fn call() {
         13 => {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 14 = emergency_unpause(caller[32])
         14 => {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        // 15 = set_moltcoin_address(caller[32], addr[32])
+        // 15 = set_lichencoin_address(caller[32], addr[32])
         15 => {
             if args.len() >= 65 {
-                let r = set_moltcoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                let r = set_lichencoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         16 => {
             // get_total_volume — cumulative notional volume of all margin positions
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         17 => {
             // get_user_positions — list all position IDs for a user
@@ -2162,7 +2162,7 @@ pub extern "C" fn call() {
                     let pid = load_u64(&user_position_key(&addr, i));
                     result.extend_from_slice(&u64_to_bytes(pid));
                 }
-                moltchain_sdk::set_return_data(&result);
+                lichen_sdk::set_return_data(&result);
             }
         }
         18 => {
@@ -2170,11 +2170,11 @@ pub extern "C" fn call() {
             let mut buf = Vec::with_capacity(16);
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_PROFIT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_LOSS_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         19 => {
             // get_liquidation_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(LIQUIDATION_COUNT_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(LIQUIDATION_COUNT_KEY)));
         }
         20 => {
             // get_margin_stats — aggregated [pos_count, total_volume, liquidations, pnl_profit, pnl_loss, insurance_fund]
@@ -2185,14 +2185,14 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_PROFIT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_LOSS_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(INSURANCE_FUND_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         // 21 = enable_margin_pair(caller[32], pair_id[8])
         21 => {
             if args.len() >= 41 {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let r = enable_margin_pair(args[1..33].as_ptr(), pair_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 22 = disable_margin_pair(caller[32], pair_id[8])
@@ -2200,14 +2200,14 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let r = disable_margin_pair(args[1..33].as_ptr(), pair_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 23 = is_margin_enabled(pair_id[8])
         23 => {
             if args.len() >= 9 {
                 let pair_id = bytes_to_u64(&args[1..9]);
-                moltchain_sdk::set_return_data(&u64_to_bytes(is_margin_enabled(pair_id)));
+                lichen_sdk::set_return_data(&u64_to_bytes(is_margin_enabled(pair_id)));
             }
         }
         // 24 = set_position_sl_tp(caller[32], position_id[8], sl_price[8], tp_price[8])
@@ -2219,7 +2219,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                     bytes_to_u64(&args[49..57]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 25 = partial_close(caller[32], position_id[8], close_amount[8])
@@ -2228,7 +2228,7 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let close_amount = bytes_to_u64(&args[41..49]);
                 let r = partial_close(args[1..33].as_ptr(), pos_id, close_amount);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 26 = query_user_open_position(trader[32], pair_id[8])
@@ -2236,7 +2236,7 @@ pub extern "C" fn call() {
             if args.len() >= 41 {
                 let pair_id = bytes_to_u64(&args[33..41]);
                 let r = query_user_open_position(args[1..33].as_ptr(), pair_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 27 = close_position_limit(caller[32], pos_id[8], limit_price[8])
@@ -2245,7 +2245,7 @@ pub extern "C" fn call() {
                 let pos_id = bytes_to_u64(&args[33..41]);
                 let limit_price = bytes_to_u64(&args[41..49]);
                 let r = close_position_limit(args[1..33].as_ptr(), pos_id, limit_price);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 28 = partial_close_limit(caller[32], pos_id[8], close_amount[8], limit_price[8])
@@ -2256,11 +2256,11 @@ pub extern "C" fn call() {
                 let limit_price = bytes_to_u64(&args[49..57]);
                 let r =
                     partial_close_limit(args[1..33].as_ptr(), pos_id, close_amount, limit_price);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -2274,7 +2274,7 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::vec;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();
@@ -2728,7 +2728,7 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
-        let molt_addr = [10u8; 32];
+        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 2x long, margin=500M, size=1B at price 1.0
         test_mock::set_caller(trader);
@@ -2736,7 +2736,7 @@ mod tests {
         // Drop mark price to 0.6 → PnL = -400M, effective = 100M, notional = 600M
         // margin_ratio = 100M / 600M * 10000 = 1666 bps < 2500 maint → liquidatable
         test_mock::set_caller(admin);
-        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 600_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -2750,7 +2750,7 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
-        let molt_addr = [10u8; 32];
+        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
         // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20M
         // maint_margin_bps=100 = 1%
@@ -2759,7 +2759,7 @@ mod tests {
         // Drop mark price to 0.985 → PnL = -15M, effective = 5M, notional = 985M
         // ratio = 5M / 985M * 10000 ≈ 50 bps < 100 bps maint → liquidatable
         test_mock::set_caller(admin);
-        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(admin.as_ptr(), 1, 985_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
@@ -2784,7 +2784,7 @@ mod tests {
         let trader_a = [2u8; 32];
         let trader_b = [3u8; 32];
         let liquidator = [4u8; 32];
-        let molt_addr = [10u8; 32];
+        let licn_addr = [10u8; 32];
         test_mock::set_slot(100);
 
         // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
@@ -2804,7 +2804,7 @@ mod tests {
         // Drop mark price to 0.85 → PnL=-150M, effective=50M, notional=850M
         // ratio = 50M/850M*10000 = 588 bps < 1000 maint → liquidatable
         test_mock::set_caller(_admin);
-        set_moltcoin_address(_admin.as_ptr(), molt_addr.as_ptr());
+        set_lichencoin_address(_admin.as_ptr(), licn_addr.as_ptr());
         set_mark_price(_admin.as_ptr(), 1, 850_000_000);
         test_mock::set_caller(liquidator);
         let liq1 = liquidate(liquidator.as_ptr(), 1);
@@ -2849,10 +2849,10 @@ mod tests {
         let admin = setup();
         let trader = [2u8; 32];
         let liq = [3u8; 32];
-        // DEX-L03: Configure moltcoin address so liquidation proceeds
-        let molt_addr = [10u8; 32];
+        // DEX-L03: Configure lichencoin address so liquidation proceeds
+        let licn_addr = [10u8; 32];
         test_mock::set_caller(admin);
-        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         test_mock::set_cross_call_response(Some(vec![1u8]));
         test_mock::set_slot(100);
         // 5x tier: required = 1B * 2000/10000 = 200M, maint=1000bps=10%
@@ -2995,7 +2995,7 @@ mod tests {
     // ---- INSURANCE FUND WITHDRAWAL TESTS ----
 
     #[test]
-    fn test_withdraw_insurance_no_moltcoin_addr() {
+    fn test_withdraw_insurance_no_lichencoin_addr() {
         let admin = setup();
         // Seed insurance fund
         save_u64(INSURANCE_FUND_KEY, 1_000_000);
@@ -3010,8 +3010,8 @@ mod tests {
     fn test_withdraw_insurance_success() {
         let admin = setup();
         save_u64(INSURANCE_FUND_KEY, 1_000_000);
-        let molt_addr = [10u8; 32];
-        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        let licn_addr = [10u8; 32];
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         let recipient = [5u8; 32];
         // In test mode, cross-contract call returns Ok(Vec::new()) → success path
         assert_eq!(
@@ -3025,8 +3025,8 @@ mod tests {
     fn test_withdraw_insurance_exceeds_balance() {
         let admin = setup();
         save_u64(INSURANCE_FUND_KEY, 100);
-        let molt_addr = [10u8; 32];
-        set_moltcoin_address(admin.as_ptr(), molt_addr.as_ptr());
+        let licn_addr = [10u8; 32];
+        set_lichencoin_address(admin.as_ptr(), licn_addr.as_ptr());
         let recipient = [5u8; 32];
         assert_eq!(
             withdraw_insurance(admin.as_ptr(), 200, recipient.as_ptr()),
@@ -3054,27 +3054,27 @@ mod tests {
     }
 
     #[test]
-    fn test_set_moltcoin_address() {
+    fn test_set_lichencoin_address() {
         let admin = setup();
-        let molt = [10u8; 32];
-        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
-        assert_eq!(load_addr(MOLTCOIN_ADDRESS_KEY), molt);
+        let licn = [10u8; 32];
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), licn.as_ptr()), 0);
+        assert_eq!(load_addr(LICHENCOIN_ADDRESS_KEY), licn);
     }
 
     #[test]
-    fn test_set_moltcoin_address_zero() {
+    fn test_set_lichencoin_address_zero() {
         let admin = setup();
         let zero = [0u8; 32];
-        assert_eq!(set_moltcoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_lichencoin_address(admin.as_ptr(), zero.as_ptr()), 2);
     }
 
     #[test]
-    fn test_set_moltcoin_address_not_admin() {
+    fn test_set_lichencoin_address_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
-        let molt = [10u8; 32];
+        let licn = [10u8; 32];
         test_mock::set_caller(rando);
-        assert_eq!(set_moltcoin_address(rando.as_ptr(), molt.as_ptr()), 1);
+        assert_eq!(set_lichencoin_address(rando.as_ptr(), licn.as_ptr()), 1);
     }
 
     #[test]

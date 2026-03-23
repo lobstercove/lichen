@@ -1,4 +1,4 @@
-// MoltChain Token Standard (MT-20)
+// Lichen Token Standard (MT-20)
 // Unified storage key format matching wrapped-token convention.
 // Balance:   {prefix}_bal_{hex64}   → u64 LE
 // Allowance: {prefix}_alw_{hex64}_{hex64} → u64 LE
@@ -29,7 +29,7 @@ pub struct Token {
 
 impl Token {
     /// Create new token with storage key prefix.
-    /// `prefix` should be lowercase symbol (e.g., "molt", "wbnb").
+    /// `prefix` should be lowercase symbol (e.g., "licn", "wbnb").
     pub const fn new(
         name: &'static str,
         symbol: &'static str,
@@ -213,11 +213,11 @@ mod tests {
 
     #[test]
     fn test_token_creation() {
-        let token = Token::new("MoltCoin", "MOLT", 9, "molt");
-        assert_eq!(token.name, "MoltCoin");
-        assert_eq!(token.symbol, "MOLT");
+        let token = Token::new("LichenCoin", "LICN", 9, "licn");
+        assert_eq!(token.name, "LichenCoin");
+        assert_eq!(token.symbol, "LICN");
         assert_eq!(token.decimals, 9);
-        assert_eq!(token.prefix, "molt");
+        assert_eq!(token.prefix, "licn");
     }
 
     #[test]
@@ -238,17 +238,17 @@ mod tests {
     #[test]
     fn test_balance_key_format() {
         let addr = Address::new([0u8; 32]);
-        let token = Token::new("MoltCoin", "MOLT", 9, "molt");
+        let token = Token::new("LichenCoin", "LICN", 9, "licn");
         let key = token.balance_key(addr);
-        // "molt_bal_" + 64 hex zeros
-        let expected = b"molt_bal_0000000000000000000000000000000000000000000000000000000000000000";
+        // "licn_bal_" + 64 hex zeros
+        let expected = b"licn_bal_0000000000000000000000000000000000000000000000000000000000000000";
         assert_eq!(&key, expected);
     }
 
     #[test]
     fn test_supply_key_format() {
-        let token = Token::new("MoltCoin", "MOLT", 9, "molt");
+        let token = Token::new("LichenCoin", "LICN", 9, "licn");
         let key = token.supply_key();
-        assert_eq!(&key, b"molt_supply");
+        assert_eq!(&key, b"licn_supply");
     }
 }

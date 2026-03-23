@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// MoltChain RPC — ClawPump Launchpad REST API Module
+// Lichen RPC — SporePump Launchpad REST API Module
 // Implements /api/v1/launchpad/* endpoints for the bonding-curve token launcher
 //
-// Reads contract storage directly from StateStore using the ClawPump
+// Reads contract storage directly from StateStore using the SporePump
 // key layout (cp_*, cpt:*, bal:*, etc.).
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -22,12 +22,12 @@ use crate::RpcState;
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CLAWPUMP_PROGRAM: &str = "CLAWPUMP";
-const SHELLS_PER_MOLT: f64 = 1_000_000_000.0;
+const SPOREPUMP_PROGRAM: &str = "SPOREPUMP";
+const SPORES_PER_LICN: f64 = 1_000_000_000.0;
 const BASE_PRICE: u64 = 1_000;
 const SLOPE: u64 = 1;
 const SLOPE_SCALE: u64 = 1_000_000;
-const CREATION_FEE_MOLT: f64 = 10.0;
+const CREATION_FEE_LICN: f64 = 10.0;
 const PLATFORM_FEE_PCT: u64 = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,11 +80,11 @@ fn api_404(msg: &str) -> Response {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn read_bytes(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
-    state.state.get_program_storage(CLAWPUMP_PROGRAM, key)
+    state.state.get_program_storage(SPOREPUMP_PROGRAM, key)
 }
 
 fn read_u64_key(state: &RpcState, key: &[u8]) -> u64 {
-    state.state.get_program_storage_u64(CLAWPUMP_PROGRAM, key)
+    state.state.get_program_storage_u64(SPOREPUMP_PROGRAM, key)
 }
 
 fn current_slot(state: &RpcState) -> u64 {
@@ -100,18 +100,18 @@ fn u64_le(data: &[u8], offset: usize) -> u64 {
 
 /// Compute bonding curve spot price at given supply
 fn spot_price(supply: u64) -> f64 {
-    let price_shells = BASE_PRICE as f64 + (supply as f64 * SLOPE as f64 / SLOPE_SCALE as f64);
-    price_shells / SHELLS_PER_MOLT
+    let price_spores = BASE_PRICE as f64 + (supply as f64 * SLOPE as f64 / SLOPE_SCALE as f64);
+    price_spores / SPORES_PER_LICN
 }
 
 /// Compute market cap: spot_price(supply) * supply / 1e9
 fn market_cap(supply: u64) -> f64 {
-    let price_shells = BASE_PRICE as u128 + (supply as u128 * SLOPE as u128 / SLOPE_SCALE as u128);
-    (price_shells * supply as u128) as f64 / (SHELLS_PER_MOLT * SHELLS_PER_MOLT)
+    let price_spores = BASE_PRICE as u128 + (supply as u128 * SLOPE as u128 / SLOPE_SCALE as u128);
+    (price_spores * supply as u128) as f64 / (SPORES_PER_LICN * SPORES_PER_LICN)
 }
 
-/// Graduation threshold in MOLT
-const GRADUATION_MCAP_MOLT: f64 = 100_000.0;
+/// Graduation threshold in LICN
+const GRADUATION_MCAP_LICN: f64 = 100_000.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Types
@@ -143,7 +143,7 @@ struct TokenJson {
     id: u64,
     creator: String,
     supply_sold: f64,
-    molt_raised: f64,
+    licn_raised: f64,
     current_price: f64,
     market_cap: f64,
     graduated: bool,
@@ -169,7 +169,7 @@ struct TokenHoldersQuery {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Decode a 65-byte token record from cpt:{hex_id} key
-/// Layout: creator(32) + supply_sold(8) + molt_raised(8) + max_supply(8) + created_at(8) + graduated(1)
+/// Layout: creator(32) + supply_sold(8) + licn_raised(8) + max_supply(8) + created_at(8) + graduated(1)
 fn decode_token(state: &RpcState, id: u64) -> Option<TokenJson> {
     let key = format!("cpt:{:016x}", id);
     let data = read_bytes(state, key.as_bytes())?;
@@ -179,20 +179,20 @@ fn decode_token(state: &RpcState, id: u64) -> Option<TokenJson> {
 
     let creator = hex::encode(&data[0..32]);
     let supply_sold = u64_le(&data, 32);
-    let molt_raised = u64_le(&data, 40);
+    let licn_raised = u64_le(&data, 40);
     // max_supply at offset 48 — we compute price from supply_sold
     let created_at = u64_le(&data, 56);
     let graduated = data[64] != 0;
 
     let price = spot_price(supply_sold);
     let mcap = market_cap(supply_sold);
-    let grad_pct = (mcap / GRADUATION_MCAP_MOLT * 100.0).min(100.0);
+    let grad_pct = (mcap / GRADUATION_MCAP_LICN * 100.0).min(100.0);
 
     Some(TokenJson {
         id,
         creator,
-        supply_sold: supply_sold as f64 / SHELLS_PER_MOLT,
-        molt_raised: molt_raised as f64 / SHELLS_PER_MOLT,
+        supply_sold: supply_sold as f64 / SPORES_PER_LICN,
+        licn_raised: licn_raised as f64 / SPORES_PER_LICN,
         current_price: price,
         market_cap: mcap,
         graduated,
@@ -228,10 +228,10 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
     ApiResponse::ok(
         PlatformStatsJson {
             token_count,
-            fees_collected: fees_raw as f64 / SHELLS_PER_MOLT,
+            fees_collected: fees_raw as f64 / SPORES_PER_LICN,
             total_graduated: graduated,
-            graduation_threshold: GRADUATION_MCAP_MOLT,
-            creation_fee: CREATION_FEE_MOLT,
+            graduation_threshold: GRADUATION_MCAP_LICN,
+            creation_fee: CREATION_FEE_LICN,
             platform_fee_pct: PLATFORM_FEE_PCT,
             current_slot: slot,
         },
@@ -244,8 +244,8 @@ async fn get_config(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
     let slot = current_slot(&state);
     ApiResponse::ok(
         LaunchpadConfigJson {
-            creation_fee: CREATION_FEE_MOLT,
-            graduation_threshold: GRADUATION_MCAP_MOLT,
+            creation_fee: CREATION_FEE_LICN,
+            graduation_threshold: GRADUATION_MCAP_LICN,
             platform_fee_pct: PLATFORM_FEE_PCT,
             base_price_raw: BASE_PRICE,
             slope: SLOPE,
@@ -285,8 +285,8 @@ async fn get_tokens(
     // Sort
     match sort_by {
         "raised" => tokens.sort_by(|a, b| {
-            b.molt_raised
-                .partial_cmp(&a.molt_raised)
+            b.licn_raised
+                .partial_cmp(&a.licn_raised)
                 .unwrap_or(std::cmp::Ordering::Equal)
         }),
         "graduation" => tokens.sort_by(|a, b| {
@@ -339,7 +339,7 @@ async fn get_token(State(state): State<Arc<RpcState>>, Path(id): Path<u64>) -> R
     }
 }
 
-/// GET /tokens/:id/quote — Get buy quote (how many tokens for X MOLT)
+/// GET /tokens/:id/quote — Get buy quote (how many tokens for X LICN)
 async fn get_buy_quote(
     State(state): State<Arc<RpcState>>,
     Path(id): Path<u64>,
@@ -357,18 +357,18 @@ async fn get_buy_quote(
     }
 
     let supply = u64_le(&data, 32);
-    let molt_amount_f = q.amount.unwrap_or(1.0);
-    let molt_shells = (molt_amount_f * SHELLS_PER_MOLT) as u128;
+    let licn_amount_f = q.amount.unwrap_or(1.0);
+    let licn_spores = (licn_amount_f * SPORES_PER_LICN) as u128;
 
     // Deduct 1% platform fee
-    let after_fee = molt_shells * 99 / 100;
+    let after_fee = licn_spores * 99 / 100;
 
     // Binary search for tokens received (matching contract logic)
     let tokens_out = match compute_buy_tokens(supply, after_fee) {
         Ok(t) => t,
         Err(e) => return api_err(e),
     };
-    let tokens_f = tokens_out as f64 / SHELLS_PER_MOLT;
+    let tokens_f = tokens_out as f64 / SPORES_PER_LICN;
     let price_after = spot_price(supply + tokens_out);
     let price_impact = if spot_price(supply) > 0.0 {
         (price_after - spot_price(supply)) / spot_price(supply) * 100.0
@@ -383,7 +383,7 @@ async fn get_buy_quote(
         price_after: f64,
         price_impact_pct: f64,
         platform_fee_pct: u64,
-        molt_input: f64,
+        licn_input: f64,
     }
 
     ApiResponse::ok(
@@ -393,7 +393,7 @@ async fn get_buy_quote(
             price_after,
             price_impact_pct: price_impact,
             platform_fee_pct: 1,
-            molt_input: molt_amount_f,
+            licn_input: licn_amount_f,
         },
         slot,
     )
@@ -402,19 +402,19 @@ async fn get_buy_quote(
 
 #[derive(Deserialize)]
 struct QuoteQuery {
-    amount: Option<f64>, // MOLT amount (human-readable, e.g. 100.0)
+    amount: Option<f64>, // LICN amount (human-readable, e.g. 100.0)
 }
 
-/// Compute how many tokens you get for `after_fee_shells` shells at current supply
+/// Compute how many tokens you get for `after_fee_spores` spores at current supply
 ///
 /// AUDIT-FIX F-8: Use u128 fixed-point arithmetic instead of f64 to avoid
-/// precision loss above ~9M MOLT.
+/// precision loss above ~9M LICN.
 /// AUDIT-FIX C8: Return Result instead of silently capping on overflow.
-fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> Result<u64, &'static str> {
+fn compute_buy_tokens(supply: u64, after_fee_spores: u128) -> Result<u64, &'static str> {
     let s = supply as u128;
     let a_coeff = SLOPE as u128;
     let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128 + 2u128 * SLOPE as u128 * s;
-    let c_val = 2u128 * SLOPE_SCALE as u128 * after_fee_shells;
+    let c_val = 2u128 * SLOPE_SCALE as u128 * after_fee_spores;
 
     // discriminant = B^2 + 4*A*C
     let discriminant = b_coeff.checked_mul(b_coeff).and_then(|b2| {
@@ -490,7 +490,7 @@ async fn get_holder_balance(
         HolderBalance {
             token_id: id,
             address: addr,
-            balance: balance as f64 / SHELLS_PER_MOLT,
+            balance: balance as f64 / SPORES_PER_LICN,
             balance_raw: balance,
         },
         slot,
@@ -525,9 +525,9 @@ mod tests {
         assert!(BASE_PRICE > 0);
         assert!(SLOPE > 0);
         assert!(SLOPE_SCALE > 0);
-        assert!(SHELLS_PER_MOLT > 0.0);
-        assert!(CREATION_FEE_MOLT > 0.0);
-        assert!(GRADUATION_MCAP_MOLT > 0.0);
+        assert!(SPORES_PER_LICN > 0.0);
+        assert!(CREATION_FEE_LICN > 0.0);
+        assert!(GRADUATION_MCAP_LICN > 0.0);
     }
 
     // ── spot_price ──
@@ -535,8 +535,8 @@ mod tests {
     #[test]
     fn spot_price_at_zero_supply() {
         let p = spot_price(0);
-        // At supply=0: price = BASE_PRICE / SHELLS_PER_MOLT
-        let expected = BASE_PRICE as f64 / SHELLS_PER_MOLT;
+        // At supply=0: price = BASE_PRICE / SPORES_PER_LICN
+        let expected = BASE_PRICE as f64 / SPORES_PER_LICN;
         assert!(
             (p - expected).abs() < 1e-15,
             "spot_price(0) = {}, expected {}",
@@ -628,16 +628,16 @@ mod tests {
 
     #[test]
     fn buy_tokens_positive_input() {
-        // With some shells, we should get tokens
-        let tokens = compute_buy_tokens(0, 1_000_000_000).unwrap(); // 1 MOLT worth
-        assert!(tokens > 0, "Should receive >0 tokens for 1 MOLT");
+        // With some spores, we should get tokens
+        let tokens = compute_buy_tokens(0, 1_000_000_000).unwrap(); // 1 LICN worth
+        assert!(tokens > 0, "Should receive >0 tokens for 1 LICN");
     }
 
     #[test]
     fn buy_tokens_more_input_more_output() {
         let t1 = compute_buy_tokens(0, 1_000_000_000).unwrap();
         let t2 = compute_buy_tokens(0, 10_000_000_000).unwrap();
-        assert!(t2 > t1, "More MOLT in should yield more tokens");
+        assert!(t2 > t1, "More LICN in should yield more tokens");
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         let t_high = compute_buy_tokens(100_000_000_000, 1_000_000_000).unwrap();
         assert!(
             t_low > t_high,
-            "Higher supply should yield fewer tokens per MOLT"
+            "Higher supply should yield fewer tokens per LICN"
         );
     }
 

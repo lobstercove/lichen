@@ -1,4 +1,4 @@
-// MoltChain Core - NFT primitives (system-level)
+// Lichen Core - NFT primitives (system-level)
 
 use crate::account::Pubkey;
 use crate::hash::Hash;
@@ -104,7 +104,7 @@ mod tests {
     fn sample_collection() -> CollectionState {
         CollectionState {
             version: NFT_COLLECTION_VERSION,
-            name: "LobsterPunks".to_string(),
+            name: "LichenPunks".to_string(),
             symbol: "LPNK".to_string(),
             creator: Pubkey([0xAAu8; 32]),
             royalty_bps: 500,

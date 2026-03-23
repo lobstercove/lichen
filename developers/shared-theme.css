@@ -1,6 +1,6 @@
 /* ========================================
-   MoltChain Design System - FROM SCRATCH
-   Orange Theme, Professional Grade
+   Lichen Design System - FROM SCRATCH
+   Teal Theme, Professional Grade
    Built for Agent-First Blockchain
    ======================================== */
 
@@ -26,10 +26,12 @@ body {
 
 /* ===== CSS Variables ===== */
 :root {
-    /* Colors - Orange Theme */
-    --orange-primary: #FF6B35;
-    --orange-dark: #E5501B;
-    --orange-accent: #F77F00;
+    /* Colors - Teal Theme */
+    --teal-primary: #00C9DB;
+    --teal-dark: #008B9E;
+    --teal-action: #0891B2;
+    --teal-action-hover: #0E7490;
+    --cyan-accent: #00E5FF;
     --blue-primary: #004E89;
     --blue-accent: #118AB2;
     --green-success: #06D6A0;
@@ -40,6 +42,8 @@ body {
     --bg-darker: #060812;
     --bg-card: #141830;
     --bg-hover: #1a1f3a;
+    --bg-primary: var(--bg-dark);
+    --bg-surface: var(--bg-card);
     
     /* Text */
     --text-primary: #FFFFFF;
@@ -70,20 +74,7 @@ body {
     --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
-    --shadow-glow: 0 0 20px rgba(255, 107, 53, 0.3);
-
-    /* Base-token aliases (shared-base-styles.css compatibility) */
-    --primary: var(--orange-primary);
-    --primary-dark: var(--orange-dark);
-    --secondary: var(--blue-primary);
-    --accent: var(--orange-accent);
-    --success: var(--green-success);
-    --warning: var(--yellow-warning);
-    --info: var(--blue-accent);
-    --gradient-1: linear-gradient(135deg, var(--orange-primary) 0%, var(--orange-accent) 100%);
-    --gradient-2: linear-gradient(135deg, var(--blue-primary) 0%, var(--blue-accent) 100%);
-    --gradient-3: linear-gradient(135deg, var(--green-success) 0%, var(--blue-accent) 100%);
-    --shadow: var(--shadow-md);
+    --shadow-glow: 0 0 20px rgba(0, 201, 219, 0.3);
 }
 
 /* ===== Typography ===== */
@@ -175,7 +166,7 @@ code {
 }
 
 .nav-menu a:hover {
-    color: var(--orange-primary);
+    color: var(--teal-primary);
 }
 
 /* ===== Buttons ===== */
@@ -194,8 +185,8 @@ code {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, var(--orange-primary), var(--orange-accent));
-    color: white;
+    background: var(--gradient-1);
+    color: #fff;
 }
 
 .btn-primary:hover {
@@ -204,14 +195,15 @@ code {
 }
 
 .btn-secondary {
-    background: transparent;
-    color: var(--orange-primary);
-    border: 2px solid var(--orange-primary);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 2px solid var(--teal-primary);
 }
 
 .btn-secondary:hover {
-    background: var(--orange-primary);
-    color: white;
+    background: var(--teal-primary);
+    color: #fff;
+    transform: translateY(-2px);
 }
 
 .btn-sm {
@@ -243,7 +235,7 @@ code {
 .card:hover {
     transform: translateY(-4px);
     box-shadow: var(--shadow-glow);
-    border-color: var(--orange-primary);
+    border-color: var(--teal-primary);
 }
 
 /* ===== Grid Layouts ===== */
@@ -261,7 +253,7 @@ code {
 .text-primary { color: var(--text-primary); }
 .text-secondary { color: var(--text-secondary); }
 .text-muted { color: var(--text-muted); }
-.text-orange { color: var(--orange-primary); }
+.text-teal { color: var(--teal-primary); }
 
 .mt-sm { margin-top: var(--space-sm); }
 .mt-md { margin-top: var(--space-md); }
@@ -274,10 +266,11 @@ code {
 .mb-xl { margin-bottom: var(--space-xl); }
 
 .gradient-text {
-    background: linear-gradient(135deg, var(--orange-primary), var(--orange-accent));
+    background: var(--gradient-1);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    filter: drop-shadow(0 0 30px rgba(0, 201, 219, 0.3));
 }
 
 /* ===== Responsive ===== */
@@ -364,6 +357,6 @@ code {
     font-size: 0.75rem;
     text-transform: uppercase;
     font-weight: 700;
-    color: var(--orange-primary);
+    color: var(--teal-primary);
     letter-spacing: 0.05em;
 }

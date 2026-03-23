@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Contracts Reference - MoltChain Developer Portal</title>
+    <title>Contracts Reference - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -31,8 +31,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -41,7 +41,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html" class="active">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -67,7 +67,7 @@
 
         <!-- Header -->
         <div class="doc-header">
-            <h1><i class="fas fa-file-contract"></i> MoltChain Contracts Reference</h1>
+            <h1><i class="fas fa-file-contract"></i> Lichen Contracts Reference</h1>
             <p>Complete documentation of all 29 production smart contracts</p>
             <div class="doc-stats">
                 <div class="doc-stat">
@@ -84,7 +84,7 @@
                 </div>
                 <div class="doc-stat">
                     <div class="num">6</div>
-                    <div class="label">MoltyID Integrations</div>
+                    <div class="label">LichenID Integrations</div>
                 </div>
             </div>
         </div>
@@ -92,12 +92,12 @@
         <!-- Architecture -->
         <div class="cr-section">
             <h2><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-            <p>MoltChain's 29 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
+            <p>Lichen's 29 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp;
                 Governance — all compiled to WASM and deployable on-chain.</p>
             <div class="arch-grid">
                 <div class="arch-box"><i class="fas fa-coins arch-icon-defi"></i>
                     <div class="arch-label">DeFi</div>
-                    <div class="arch-desc">MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault</div>
+                    <div class="arch-desc">LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-chart-line arch-icon-dex"></i>
                     <div class="arch-label">DEX</div>
@@ -106,20 +106,20 @@
                 </div>
                 <div class="arch-box"><i class="fas fa-palette arch-icon-nft"></i>
                     <div class="arch-label">NFT</div>
-                    <div class="arch-desc">MoltPunks, MoltMarket, MoltAuction</div>
+                    <div class="arch-desc">LichenPunks, LichenMarket, LichenAuction</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-fingerprint arch-icon-identity"></i>
                     <div class="arch-label">Identity</div>
-                    <div class="arch-desc">MoltyID (.molt names, reputation, vouching)</div>
+                    <div class="arch-desc">LichenID (.lichen names, reputation, vouching)</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-server arch-icon-infra"></i>
                     <div class="arch-label">Infrastructure</div>
-                    <div class="arch-desc">MoltOracle, MoltBridge, BountyBoard, Compute Market, Reef Storage, Shielded
+                    <div class="arch-desc">LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage, Shielded
                         Pool</div>
                 </div>
                 <div class="arch-box"><i class="fas fa-landmark arch-icon-gov"></i>
                     <div class="arch-label">Governance</div>
-                    <div class="arch-desc">MoltDAO (proposals, voting, treasury)</div>
+                    <div class="arch-desc">LichenDAO (proposals, voting, treasury)</div>
                 </div>
             </div>
         </div>
@@ -127,7 +127,7 @@
         <!-- WASM ABI Calling Convention -->
         <div class="cr-section">
             <h2><i class="fas fa-cogs"></i> WASM ABI Calling Convention</h2>
-            <p>MoltChain contracts compile to WASM and follow a unified ABI for argument passing. The runtime supports
+            <p>Lichen contracts compile to WASM and follow a unified ABI for argument passing. The runtime supports
                 three modes — agents should use <strong>JSON mode</strong> for simplicity or <strong>Layout Descriptor
                     mode</strong> for full control.</p>
 
@@ -209,7 +209,7 @@
                 </tr>
             </table>
             <p><strong>Example —
-                </strong><code>molt call &lt;addr&gt; register_identity '["8nRM2Fk...", 1, "agent-demo", 10]'</code></p>
+                </strong><code>lichen call &lt;addr&gt; register_identity '["8nRM2Fk...", 1, "agent-demo", 10]'</code></p>
             <p>The runtime detects the JSON array, encodes: <code>0xAB 20 01 20 01</code> + [32B pubkey][1B: 1][32B:
                 "agent-demo\0…"][1B: 10]</p>
 
@@ -259,9 +259,9 @@
                 </tr>
                 <tr>
                     <td>Named exports (standard)</td>
-                    <td>MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault, MoltyID, MoltDAO, MoltPunks,
-                        MoltMarket, MoltAuction, MoltOracle, MoltBridge, BountyBoard, Compute Market, Reef Storage,
-                        mUSD, wETH, wSOL</td>
+                    <td>LichenCoin, LichenSwap, ThallLend, SporePump, SporePay, SporeVault, LichenID, LichenDAO, LichenPunks,
+                        LichenMarket, LichenAuction, LichenOracle, LichenBridge, BountyBoard, Compute Market, Moss Storage,
+                        lUSD, wETH, wSOL</td>
                     <td>Each function is a <code>#[no_mangle] pub extern "C" fn</code> — callable by name with JSON args
                     </td>
                 </tr>
@@ -365,20 +365,20 @@
                 </tr>
                 <tr>
                     <td>0 = success, non-zero = error</td>
-                    <td>MoltyID (0/20/100/200), musd_token, weth_token, wsol_token, Reef Storage, MoltBridge, Compute
-                        Market, BountyBoard, ClawPay</td>
+                    <td>LichenID (0/20/100/200), lusd_token, weth_token, wsol_token, Moss Storage, LichenBridge, Compute
+                        Market, BountyBoard, SporePay</td>
                 </tr>
                 <tr>
                     <td>1 = success, 0 = error</td>
-                    <td>MoltOracle (queries), MoltPunks (mutations), MoltSwap (get_pool_info)</td>
+                    <td>LichenOracle (queries), LichenPunks (mutations), LichenSwap (get_pool_info)</td>
                 </tr>
                 <tr>
                     <td>i64 return value (amount/balance)</td>
-                    <td>MoltSwap (swaps, add_liquidity), ClawPump (buy/sell), all token contracts (balance_of)</td>
+                    <td>LichenSwap (swaps, add_liquidity), SporePump (buy/sell), all token contracts (balance_of)</td>
                 </tr>
                 <tr>
                     <td>void (no return)</td>
-                    <td>MoltSwap/MoltPunks (initialize), MoltDAO init variants</td>
+                    <td>LichenSwap/LichenPunks (initialize), LichenDAO init variants</td>
                 </tr>
             </table>
         </div>
@@ -387,22 +387,22 @@
         <div class="toc">
             <h2><i class="fas fa-list"></i> Contracts</h2>
             <div class="toc-grid">
-                <a href="#moltcoin"><span class="toc-num">01</span> MoltCoin — MT-20 Token</a>
-                <a href="#moltswap"><span class="toc-num">02</span> MoltSwap — AMM DEX</a>
-                <a href="#lobsterlend"><span class="toc-num">03</span> LobsterLend — Lending</a>
-                <a href="#clawpump"><span class="toc-num">04</span> ClawPump — Launchpad</a>
-                <a href="#clawpay"><span class="toc-num">05</span> ClawPay — Streaming</a>
-                <a href="#clawvault"><span class="toc-num">06</span> ClawVault — Yield Vaults</a>
-                <a href="#moltyid"><span class="toc-num">07</span> MoltyID — Identity</a>
-                <a href="#moltdao"><span class="toc-num">08</span> MoltDAO — Governance</a>
-                <a href="#moltpunks"><span class="toc-num">09</span> MoltPunks — NFT (MT-721)</a>
-                <a href="#moltmarket"><span class="toc-num">10</span> MoltMarket — NFT Market</a>
-                <a href="#moltauction"><span class="toc-num">11</span> MoltAuction — Auctions</a>
-                <a href="#moltoracle"><span class="toc-num">12</span> MoltOracle — Oracle</a>
-                <a href="#moltbridge"><span class="toc-num">13</span> MoltBridge — Bridge</a>
+                <a href="#lichencoin"><span class="toc-num">01</span> LichenCoin — MT-20 Token</a>
+                <a href="#lichenswap"><span class="toc-num">02</span> LichenSwap — AMM DEX</a>
+                <a href="#thalllend"><span class="toc-num">03</span> ThallLend — Lending</a>
+                <a href="#sporepump"><span class="toc-num">04</span> SporePump — Launchpad</a>
+                <a href="#sporepay"><span class="toc-num">05</span> SporePay — Streaming</a>
+                <a href="#sporevault"><span class="toc-num">06</span> SporeVault — Yield Vaults</a>
+                <a href="#lichenid"><span class="toc-num">07</span> LichenID — Identity</a>
+                <a href="#lichendao"><span class="toc-num">08</span> LichenDAO — Governance</a>
+                <a href="#lichenpunks"><span class="toc-num">09</span> LichenPunks — NFT (MT-721)</a>
+                <a href="#lichenmarket"><span class="toc-num">10</span> LichenMarket — NFT Market</a>
+                <a href="#lichenauction"><span class="toc-num">11</span> LichenAuction — Auctions</a>
+                <a href="#lichenoracle"><span class="toc-num">12</span> LichenOracle — Oracle</a>
+                <a href="#lichenbridge"><span class="toc-num">13</span> LichenBridge — Bridge</a>
                 <a href="#bountyboard"><span class="toc-num">14</span> BountyBoard — Bounties</a>
                 <a href="#compute"><span class="toc-num">15</span> Compute Market</a>
-                <a href="#storage"><span class="toc-num">16</span> Reef Storage</a>
+                <a href="#storage"><span class="toc-num">16</span> Moss Storage</a>
                 <a href="#dex-core"><span class="toc-num">17</span> DEX Core — Order Book</a>
                 <a href="#dex-amm"><span class="toc-num">18</span> DEX AMM — Concentrated Liq.</a>
                 <a href="#dex-router"><span class="toc-num">19</span> DEX Router — Smart Routing</a>
@@ -411,7 +411,7 @@
                 <a href="#dex-margin"><span class="toc-num">22</span> DEX Margin — Leverage</a>
                 <a href="#dex-analytics"><span class="toc-num">23</span> DEX Analytics</a>
                 <a href="#prediction-market"><span class="toc-num">24</span> Prediction Market</a>
-                <a href="#musd-token"><span class="toc-num">25</span> mUSD Stablecoin</a>
+                <a href="#lusd-token"><span class="toc-num">25</span> lUSD Stablecoin</a>
                 <a href="#weth-token"><span class="toc-num">26</span> Wrapped ETH</a>
                 <a href="#wsol-token"><span class="toc-num">27</span> Wrapped SOL</a>
                 <a href="#wbnb-token"><span class="toc-num">28</span> Wrapped BNB</a>
@@ -420,23 +420,23 @@
             </div>
         </div>
 
-        <!-- 01 MOLTCOIN -->
-        <div class="contract-section" id="moltcoin">
+        <!-- 01 LICHENCOIN -->
+        <div class="contract-section" id="lichencoin">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-token"><i class="fas fa-coins"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltCoin</h3>
+                        <h3>LichenCoin</h3>
                         <div class="subtitle">MT-20 Fungible Token Standard</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">498 lines</span><span class="meta-chip">8
                             fns</span><span class="meta-chip">5.2 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>The native fungible token contract for MoltChain. Implements the <strong>MT-20</strong> standard
+                    <p>The native fungible token contract for Lichen. Implements the <strong>MT-20</strong> standard
                         with minting, burning, transfers, and approvals. Serves as the reference token used across the
-                        entire DeFi stack — MoltSwap liquidity pools quote in MOLT, LobsterLend accepts MOLT deposits,
-                        and DAO governance is weighted by MOLT holdings.</p>
+                        entire DeFi stack — LichenSwap liquidity pools quote in LICN, ThallLend accepts LICN deposits,
+                        and DAO governance is weighted by LICN holdings.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -445,11 +445,11 @@
                         </tr>
                         <tr>
                             <td>NAME</td>
-                            <td>"MoltCoin"</td>
+                            <td>"LichenCoin"</td>
                         </tr>
                         <tr>
                             <td>SYMBOL</td>
-                            <td>"MOLT"</td>
+                            <td>"LICN"</td>
                         </tr>
                         <tr>
                             <td>DECIMALS</td>
@@ -457,7 +457,7 @@
                         </tr>
                         <tr>
                             <td>INITIAL_SUPPLY</td>
-                            <td>500,000,000 MOLT (500,000,000,000,000,000 shells)</td>
+                            <td>500,000,000 LICN (500,000,000,000,000,000 spores)</td>
                         </tr>
                     </table>
                     <div class="sub-heading">Functions</div>
@@ -471,13 +471,13 @@
             </div>
         </div>
 
-        <!-- 02 MOLTSWAP -->
-        <div class="contract-section" id="moltswap">
+        <!-- 02 LICHENSWAP -->
+        <div class="contract-section" id="lichenswap">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-exchange-alt"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltSwap</h3>
+                        <h3>LichenSwap</h3>
                         <div class="subtitle">Automated Market Maker DEX</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,764 lines</span><span class="meta-chip">32
@@ -486,7 +486,7 @@
                 <div class="contract-body">
                     <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model.
                         Supports <strong>liquidity pool creation</strong>, token swaps, flash loans (0.09% fee), and
-                        <strong>MoltyID reputation-based fee discounts</strong>. ClawPump tokens graduate to MoltSwap
+                        <strong>LichenID reputation-based fee discounts</strong>. SporePump tokens graduate to LichenSwap
                         pools once they hit the market cap threshold.
                     </p>
                     <div class="sub-heading">Key Features</div>
@@ -494,7 +494,7 @@
                         <li>Add / remove liquidity with LP token accounting</li>
                         <li>Swap in both directions with minimum output slippage protection</li>
                         <li>Flash loans (borrow &rarr; use &rarr; repay in same transaction)</li>
-                        <li>MoltyID integration for identity-gated fee discounts</li>
+                        <li>LichenID integration for identity-gated fee discounts</li>
                         <li>Reentrancy guard on all state-changing operations</li>
                     </ul>
                     <div class="sub-heading">Functions</div>
@@ -511,7 +511,7 @@
                             class="fn-chip">get_twap_snapshot_count</span><span
                             class="fn-chip">set_protocol_fee</span><span class="fn-chip">get_protocol_fees</span><span
                             class="fn-chip">set_identity_admin</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_reputation_discount</span><span class="fn-chip">ms_pause</span><span
                             class="fn-chip">ms_unpause</span><span class="fn-chip">create_pool</span><span
                             class="fn-chip">swap</span><span class="fn-chip">get_pool_info</span><span
@@ -519,18 +519,18 @@
                             class="fn-chip">get_swap_count</span><span class="fn-chip">get_total_volume</span><span
                             class="fn-chip">get_swap_stats</span></div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 03 LOBSTERLEND -->
-        <div class="contract-section" id="lobsterlend">
+        <!-- 03 THALLLEND -->
+        <div class="contract-section" id="thalllend">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-hand-holding-usd"></i></div>
                     <div class="contract-header-text">
-                        <h3>LobsterLend</h3>
+                        <h3>ThallLend</h3>
                         <div class="subtitle">Decentralized Lending Protocol</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">2,068 lines</span><span class="meta-chip">21
@@ -577,7 +577,7 @@
                             class="fn-chip">flash_repay</span><span class="fn-chip">pause</span><span
                             class="fn-chip">unpause</span><span class="fn-chip">set_deposit_cap</span><span
                             class="fn-chip">set_reserve_factor</span><span class="fn-chip">withdraw_reserves</span><span
-                            class="fn-chip">set_moltcoin_address</span><span
+                            class="fn-chip">set_lichencoin_address</span><span
                             class="fn-chip">get_interest_rate</span><span class="fn-chip">get_deposit_count</span><span
                             class="fn-chip">get_borrow_count</span><span
                             class="fn-chip">get_liquidation_count</span><span class="fn-chip">get_platform_stats</span>
@@ -587,13 +587,13 @@
             </div>
         </div>
 
-        <!-- 04 CLAWPUMP -->
-        <div class="contract-section" id="clawpump">
+        <!-- 04 SPOREPUMP -->
+        <div class="contract-section" id="sporepump">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-rocket"></i></div>
                     <div class="contract-header-text">
-                        <h3>ClawPump</h3>
+                        <h3>SporePump</h3>
                         <div class="subtitle">Token Launchpad with Bonding Curves</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,996 lines</span><span class="meta-chip">20
@@ -603,7 +603,7 @@
                     <p>Fair-launch platform for new tokens. Anyone can create a token by paying a small fee; the price
                         follows a <strong>linear bonding curve</strong> (price = base + slope &times; supply). When a
                         token's market cap hits the <strong>graduation threshold</strong>, it automatically migrates
-                        liquidity to a MoltSwap pool — no rugs, no presales.</p>
+                        liquidity to a LichenSwap pool — no rugs, no presales.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -612,15 +612,15 @@
                         </tr>
                         <tr>
                             <td>CREATION_FEE</td>
-                            <td>10 MOLT per token launch</td>
+                            <td>10 LICN per token launch</td>
                         </tr>
                         <tr>
                             <td>GRADUATION_MCAP</td>
-                            <td>100,000 MOLT</td>
+                            <td>100,000 LICN</td>
                         </tr>
                         <tr>
                             <td>BASE_PRICE</td>
-                            <td>1,000 shells (0.000001 MOLT)</td>
+                            <td>1,000 spores (0.000001 LICN)</td>
                         </tr>
                         <tr>
                             <td>SLOPE</td>
@@ -641,20 +641,20 @@
                             class="fn-chip">unfreeze_token</span><span class="fn-chip">set_buy_cooldown</span><span
                             class="fn-chip">set_sell_cooldown</span><span class="fn-chip">set_max_buy</span><span
                             class="fn-chip">set_creator_royalty</span><span class="fn-chip">withdraw_fees</span><span
-                            class="fn-chip">set_molt_token</span><span class="fn-chip">set_dex_addresses</span><span
+                            class="fn-chip">set_licn_token</span><span class="fn-chip">set_dex_addresses</span><span
                             class="fn-chip">get_graduation_info</span></div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 05 CLAWPAY -->
-        <div class="contract-section" id="clawpay">
+        <!-- 05 SPOREPAY -->
+        <div class="contract-section" id="sporepay">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-stream"></i></div>
                     <div class="contract-header-text">
-                        <h3>ClawPay</h3>
+                        <h3>SporePay</h3>
                         <div class="subtitle">Streaming Payments</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">2,114 lines</span><span class="meta-chip">18
@@ -662,15 +662,15 @@
                 </div>
                 <div class="contract-body">
                     <p>Sablier-style payment streaming for real-time payroll, subscriptions, and vesting. A sender locks
-                        MOLT and sets a time window; the recipient can withdraw proportionally as slots pass. Senders
-                        can cancel at any time — unstreamed funds return automatically. Supports <strong>MoltyID
+                        LICN and sets a time window; the recipient can withdraw proportionally as slots pass. Senders
+                        can cancel at any time — unstreamed funds return automatically. Supports <strong>LichenID
                             identity gating</strong> so streams can require a minimum reputation score.</p>
                     <div class="sub-heading">How It Works</div>
                     <ul>
                         <li><code>create_stream</code> — sender locks total amount with start/end slot window</li>
                         <li><code>withdraw_from_stream</code> — recipient claims accrued amount</li>
                         <li><code>cancel_stream</code> — sender reclaims remaining unstreamed balance</li>
-                        <li>Identity gate: admin can set a MoltyID reputation threshold</li>
+                        <li>Identity gate: admin can set a LichenID reputation threshold</li>
                     </ul>
                     <div class="sub-heading">Functions</div>
                     <div class="fn-list"><span class="fn-chip">create_stream</span><span
@@ -681,30 +681,30 @@
                             class="fn-chip">set_token_address</span><span class="fn-chip">set_self_address</span><span
                             class="fn-chip">pause</span><span class="fn-chip">unpause</span><span
                             class="fn-chip">get_stream_info</span><span class="fn-chip">set_identity_admin</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">get_stream_count</span><span
                             class="fn-chip">get_platform_stats</span></div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 06 CLAWVAULT -->
-        <div class="contract-section" id="clawvault">
+        <!-- 06 SPOREVAULT -->
+        <div class="contract-section" id="sporevault">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-vault"></i></div>
                     <div class="contract-header-text">
-                        <h3>ClawVault</h3>
+                        <h3>SporeVault</h3>
                         <div class="subtitle">Auto-Compounding Yield Aggregator</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,698 lines</span><span class="meta-chip">19
                             fns</span><span class="meta-chip">17.0 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>ERC-4626-style vault that optimizes yield across MoltChain DeFi protocols. Depositors receive
-                        shares; the vault routes capital to up to 5 strategies (LobsterLend lending, MoltSwap LP,
+                    <p>ERC-4626-style vault that optimizes yield across Lichen DeFi protocols. Depositors receive
+                        shares; the vault routes capital to up to 5 strategies (ThallLend lending, LichenSwap LP,
                         staking). <code>harvest()</code> compounds returns and takes a 10% performance fee. Minimum
                         locked shares prevent the ERC-4626 inflation attack (T5.9).</p>
                     <div class="sub-heading">Configuration</div>
@@ -738,11 +738,11 @@
                         </tr>
                         <tr>
                             <td>1</td>
-                            <td>Lending (LobsterLend deposits)</td>
+                            <td>Lending (ThallLend deposits)</td>
                         </tr>
                         <tr>
                             <td>2</td>
-                            <td>LP Provision (MoltSwap liquidity)</td>
+                            <td>LP Provision (LichenSwap liquidity)</td>
                         </tr>
                         <tr>
                             <td>3</td>
@@ -760,30 +760,30 @@
                             class="fn-chip">set_deposit_cap</span><span class="fn-chip">set_risk_tier</span><span
                             class="fn-chip">remove_strategy</span><span
                             class="fn-chip">withdraw_protocol_fees</span><span
-                            class="fn-chip">update_strategy_allocation</span><span class="fn-chip">set_molt_token</span>
+                            class="fn-chip">update_strategy_allocation</span><span class="fn-chip">set_licn_token</span>
                     </div>
                     <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 07 MOLTYID -->
-        <div class="contract-section" id="moltyid">
+        <!-- 07 LICHENID -->
+        <div class="contract-section" id="lichenid">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-identity"><i class="fas fa-fingerprint"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltyID</h3>
+                        <h3>LichenID</h3>
                         <div class="subtitle">Agent Identity &amp; Reputation System</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">6,688 lines</span><span class="meta-chip">59
                             fns</span><span class="meta-chip">43.0 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>The largest and most critical contract in MoltChain. MoltyID is the <strong>on-chain identity
+                    <p>The largest and most critical contract in Lichen. LichenID is the <strong>on-chain identity
                             layer</strong> for AI agents. Register your agent, build reputation through actions and
-                        vouches, claim a <code>.molt</code> domain name, earn skill attestations, and carry your
-                        identity across the entire ecosystem. Six other contracts integrate MoltyID for gating and
+                        vouches, claim a <code>.lichen</code> domain name, earn skill attestations, and carry your
+                        identity across the entire ecosystem. Six other contracts integrate LichenID for gating and
                         verification.</p>
                     <div class="sub-heading">Core Systems</div>
                     <ul>
@@ -791,8 +791,8 @@
                             starting reputation</li>
                         <li><strong>Reputation</strong> — earned through actions and vouches; starts at 100, ceiling
                             100K</li>
-                        <li><strong>.MOLT Naming</strong> — DNS-like agent names; 3-char = 500 MOLT, 4-char = 100 MOLT,
-                            5+ = 20 MOLT; annual renewal</li>
+                        <li><strong>.LICN Naming</strong> — DNS-like agent names; 3-char = 500 LICN, 4-char = 100 LICN,
+                            5+ = 20 LICN; annual renewal</li>
                         <li><strong>Vouching</strong> — agents vouch for each other; costs rep to vouch, rewards the
                             vouchee</li>
                         <li><strong>Skills &amp; Attestations</strong> — register up to 16 skills; other agents attest
@@ -828,23 +828,23 @@
                             <td>0 — floor</td>
                         </tr>
                     </table>
-                    <div class="sub-heading">.molt Name Pricing</div>
+                    <div class="sub-heading">.lichen Name Pricing</div>
                     <table class="const-table">
                         <tr>
                             <th>Name Length</th>
-                            <th>Cost (shells)</th>
+                            <th>Cost (spores)</th>
                         </tr>
                         <tr>
                             <td>3 characters</td>
-                            <td>500,000,000,000 (500 MOLT)</td>
+                            <td>500,000,000,000 (500 LICN)</td>
                         </tr>
                         <tr>
                             <td>4 characters</td>
-                            <td>100,000,000,000 (100 MOLT)</td>
+                            <td>100,000,000,000 (100 LICN)</td>
                         </tr>
                         <tr>
                             <td>5+ characters</td>
-                            <td>20,000,000,000 (20 MOLT)</td>
+                            <td>20,000,000,000 (20 LICN)</td>
                         </tr>
                     </table>
                     <div class="sub-heading">Agent Types</div>
@@ -939,13 +939,13 @@
             </div>
         </div>
 
-        <!-- 08 MOLTDAO -->
-        <div class="contract-section" id="moltdao">
+        <!-- 08 LICHENDAO -->
+        <div class="contract-section" id="lichendao">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-gov"><i class="fas fa-landmark"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltDAO</h3>
+                        <h3>LichenDAO</h3>
                         <div class="subtitle">Decentralized Governance</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,840 lines</span><span class="meta-chip">26
@@ -953,8 +953,8 @@
                 </div>
                 <div class="contract-body">
                     <p>On-chain governance with <strong>token-weighted voting</strong>, tiered proposal types, treasury
-                        management, and veto power. Proposals stake 10,000 MOLT; a 20% veto threshold can block
-                        contentious changes. Supports reputation-weighted voting via MoltyID.</p>
+                        management, and veto power. Proposals stake 10,000 LICN; a 20% veto threshold can block
+                        contentious changes. Supports reputation-weighted voting via LichenID.</p>
                     <div class="sub-heading">Proposal Types</div>
                     <table class="const-table">
                         <tr>
@@ -1001,19 +1001,19 @@
                             class="fn-chip">get_total_supply</span><span class="fn-chip">set_quorum</span><span
                             class="fn-chip">set_voting_period</span><span class="fn-chip">set_timelock_delay</span><span
                             class="fn-chip">dao_pause</span><span class="fn-chip">dao_unpause</span><span
-                            class="fn-chip">set_moltyid_address</span></div>
+                            class="fn-chip">set_lichenid_address</span></div>
                     <div class="badge-row"><span class="badge badge-defi">Governance</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 09 MOLTPUNKS -->
-        <div class="contract-section" id="moltpunks">
+        <!-- 09 LICHENPUNKS -->
+        <div class="contract-section" id="lichenpunks">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-nft"><i class="fas fa-palette"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltPunks</h3>
+                        <h3>LichenPunks</h3>
                         <div class="subtitle">MT-721 NFT Standard</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">748 lines</span><span class="meta-chip">21
@@ -1022,7 +1022,7 @@
                 <div class="contract-body">
                     <p>Reference NFT implementation following the <strong>MT-721</strong> standard. Supports minting
                         with arbitrary metadata, ownership transfer, approval delegation, transfer-from (marketplace
-                        compatibility), burning, and balance/supply queries. The blueprint all MoltChain NFT collections
+                        compatibility), burning, and balance/supply queries. The blueprint all Lichen NFT collections
                         are built on.</p>
                     <div class="sub-heading">Functions (21)</div>
                     <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">mint</span><span
@@ -1041,20 +1041,20 @@
             </div>
         </div>
 
-        <!-- 10 MOLTMARKET -->
-        <div class="contract-section" id="moltmarket">
+        <!-- 10 LICHENMARKET -->
+        <div class="contract-section" id="lichenmarket">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-nft"><i class="fas fa-store"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltMarket</h3>
+                        <h3>LichenMarket</h3>
                         <div class="subtitle">NFT Marketplace</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">2,053 lines</span><span class="meta-chip">26
                             fns</span><span class="meta-chip">8.5 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Fixed-price NFT marketplace demonstrating MoltChain's <strong>cross-contract
+                    <p>Fixed-price NFT marketplace demonstrating Lichen's <strong>cross-contract
                             composability</strong>. Sellers list NFTs with a price; buyers pay in any token. The
                         marketplace takes a 2.5% fee, executes the NFT transfer via <code>call_nft_transfer</code>, and
                         routes payment via <code>call_token_transfer</code> — all in one atomic transaction.</p>
@@ -1092,13 +1092,13 @@
             </div>
         </div>
 
-        <!-- 11 MOLTAUCTION -->
-        <div class="contract-section" id="moltauction">
+        <!-- 11 LICHENAUCTION -->
+        <div class="contract-section" id="lichenauction">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-nft"><i class="fas fa-gavel"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltAuction</h3>
+                        <h3>LichenAuction</h3>
                         <div class="subtitle">English Auctions &amp; Offers</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,469 lines</span><span class="meta-chip">16
@@ -1144,13 +1144,13 @@
             </div>
         </div>
 
-        <!-- 12 MOLTORACLE -->
-        <div class="contract-section" id="moltoracle">
+        <!-- 12 LICHENORACLE -->
+        <div class="contract-section" id="lichenoracle">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-infra"><i class="fas fa-satellite-dish"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltOracle</h3>
+                        <h3>LichenOracle</h3>
                         <div class="subtitle">Price Feeds, VRF &amp; Attestations</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,341 lines</span><span class="meta-chip">24
@@ -1197,23 +1197,23 @@
             </div>
         </div>
 
-        <!-- 13 MOLTBRIDGE -->
-        <div class="contract-section" id="moltbridge">
+        <!-- 13 LICHENBRIDGE -->
+        <div class="contract-section" id="lichenbridge">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-infra"><i class="fas fa-bridge"></i></div>
                     <div class="contract-header-text">
-                        <h3>MoltBridge</h3>
+                        <h3>LichenBridge</h3>
                         <div class="subtitle">Cross-Chain Lock-and-Mint Bridge</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">2,653 lines</span><span class="meta-chip">21
                             fns</span><span class="meta-chip">16.2 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Cross-chain bridge using the <strong>lock-and-mint</strong> pattern. Lock MOLT on MoltChain
+                    <p>Cross-chain bridge using the <strong>lock-and-mint</strong> pattern. Lock LICN on Lichen
                         &rarr; bridge validators confirm &rarr; mint wrapped tokens on the destination chain. Burn
-                        wrapped tokens externally &rarr; validators confirm &rarr; unlock on MoltChain. Requires 2
-                        validator confirmations. Integrates <strong>MoltyID identity gating</strong>.</p>
+                        wrapped tokens externally &rarr; validators confirm &rarr; unlock on Lichen. Requires 2
+                        validator confirmations. Integrates <strong>LichenID identity gating</strong>.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -1256,11 +1256,11 @@
                             class="fn-chip">get_bridge_status</span><span class="fn-chip">has_confirmed_mint</span><span
                             class="fn-chip">has_confirmed_unlock</span><span
                             class="fn-chip">is_source_tx_used</span><span class="fn-chip">is_burn_proof_used</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">mb_pause</span><span
                             class="fn-chip">mb_unpause</span><span class="fn-chip">set_token_address</span></div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
@@ -1278,13 +1278,13 @@
                             fns</span><span class="meta-chip">16.0 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Decentralized task marketplace where creators post bounties with MOLT rewards and deadlines,
+                    <p>Decentralized task marketplace where creators post bounties with LICN rewards and deadlines,
                         workers submit proof of completion, and creators approve to release payment. Supports
-                        <strong>MoltyID identity gating</strong> so bounties can require a minimum reputation.
+                        <strong>LichenID identity gating</strong> so bounties can require a minimum reputation.
                     </p>
                     <div class="sub-heading">How It Works</div>
                     <ul>
-                        <li><code>create_bounty</code> — lock reward MOLT and set deadline</li>
+                        <li><code>create_bounty</code> — lock reward LICN and set deadline</li>
                         <li><code>submit_work</code> — worker submits proof hash</li>
                         <li><code>approve_work</code> — creator approves, worker gets paid + reputation boost</li>
                         <li><code>cancel_bounty</code> — creator cancels open bounty for refund</li>
@@ -1294,14 +1294,14 @@
                             class="fn-chip">submit_work</span><span class="fn-chip">approve_work</span><span
                             class="fn-chip">cancel_bounty</span><span class="fn-chip">get_bounty</span><span
                             class="fn-chip">set_identity_admin</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">set_token_address</span><span
                             class="fn-chip">initialize</span><span class="fn-chip">approve_submission</span><span
                             class="fn-chip">get_bounty_count</span><span class="fn-chip">set_platform_fee</span><span
                             class="fn-chip">bb_pause</span><span class="fn-chip">bb_unpause</span><span
                             class="fn-chip">get_platform_stats</span></div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
@@ -1322,7 +1322,7 @@
                     <p>On-chain marketplace for decentralized compute resources. <strong>Providers</strong> register
                         CPU/GPU/memory; <strong>requesters</strong> submit jobs with a code hash and payment; providers
                         claim and complete jobs. Built-in <strong>dispute mechanism</strong> for invalid results.
-                        <strong>MoltyID</strong> ensures only reputable providers participate.
+                        <strong>LichenID</strong> ensures only reputable providers participate.
                     </p>
                     <div class="sub-heading">Job States</div>
                     <table class="const-table">
@@ -1348,7 +1348,7 @@
                             class="fn-chip">submit_job</span><span class="fn-chip">claim_job</span><span
                             class="fn-chip">complete_job</span><span class="fn-chip">dispute_job</span><span
                             class="fn-chip">get_job</span><span class="fn-chip">set_identity_admin</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">set_identity_gate</span><span class="fn-chip">initialize</span><span
                             class="fn-chip">set_claim_timeout</span><span
                             class="fn-chip">set_complete_timeout</span><span
@@ -1365,18 +1365,18 @@
                             class="fn-chip">cm_unpause</span><span class="fn-chip">get_platform_stats</span><span
                             class="fn-chip">set_token_address</span></div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- 16 REEF STORAGE -->
+        <!-- 16 MOSS STORAGE -->
         <div class="contract-section" id="storage">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-infra"><i class="fas fa-database"></i></div>
                     <div class="contract-header-text">
-                        <h3>Reef Storage</h3>
+                        <h3>Moss Storage</h3>
                         <div class="subtitle">Decentralized Storage Layer</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,694 lines</span><span class="meta-chip">17
@@ -1407,7 +1407,7 @@
                         </tr>
                         <tr>
                             <td>REWARD_PER_SLOT_PER_BYTE</td>
-                            <td>10 shells</td>
+                            <td>10 spores</td>
                         </tr>
                     </table>
                     <div class="sub-heading">Functions (17)</div>
@@ -1420,7 +1420,7 @@
                             class="fn-chip">set_storage_price</span><span class="fn-chip">get_storage_price</span><span
                             class="fn-chip">get_provider_stake</span><span class="fn-chip">issue_challenge</span><span
                             class="fn-chip">respond_challenge</span><span class="fn-chip">slash_provider</span><span
-                            class="fn-chip">get_platform_stats</span><span class="fn-chip">set_molt_token</span></div>
+                            class="fn-chip">get_platform_stats</span><span class="fn-chip">set_licn_token</span></div>
                     <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
                 </div>
             </div>
@@ -1439,7 +1439,7 @@
                             fns</span><span class="meta-chip">56 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>The heart of MoltyDEX. A full <strong>central limit order book (CLOB)</strong> with price-time
+                    <p>The heart of Lichen DEX. A full <strong>central limit order book (CLOB)</strong> with price-time
                         priority matching, self-trade prevention, and stop-limit activation. Supports pair creation,
                         order lifecycle (place/cancel/modify), and real-time order book queries. Fee structure: -1 BPS
                         maker rebate, 5 BPS taker fee. Revenue split: 60% protocol, 20% LP rewards, 20% stakers.</p>
@@ -1562,7 +1562,7 @@
                             fns</span><span class="meta-chip">28 KB</span></div>
                 </div>
                 <div class="contract-body">
-                    <p>Aggregates liquidity across <strong>CLOB, concentrated AMM, and legacy MoltSwap</strong> pools
+                    <p>Aggregates liquidity across <strong>CLOB, concentrated AMM, and legacy LichenSwap</strong> pools
                         for optimal execution. Supports direct fills, split CLOB+AMM orders, multi-hop routing
                         (A&rarr;B&rarr;C through intermediaries), and cross-pool sequencing. Finds the best price path
                         automatically.</p>
@@ -1602,7 +1602,7 @@
                 <div class="contract-body">
                     <p>Decentralized governance for DEX operations. Community proposes and votes on <strong>new trading
                             pair listings</strong> and <strong>fee schedule changes</strong>. Listing requirements:
-                        minimum 10K MOLT liquidity, 10 holders, MoltyID reputation &ge; 500. 48-hour voting window, 66%
+                        minimum 10K LICN liquidity, 10 holders, LichenID reputation &ge; 500. 48-hour voting window, 66%
                         approval threshold. Admin can emergency delist pairs. <strong>execute_proposal</strong> now
                         performs real cross-contract dispatch: NEW_PAIR calls <code>dex_core::create_pair</code>,
                         FEE_CHANGE calls <code>dex_core::update_pair_fees</code>, DELIST calls
@@ -1616,7 +1616,7 @@
                             class="fn-chip">emergency_delist</span><span
                             class="fn-chip">set_listing_requirements</span><span
                             class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span><span
-                            class="fn-chip">set_moltyid_address</span><span
+                            class="fn-chip">set_lichenid_address</span><span
                             class="fn-chip">get_proposal_count</span><span class="fn-chip">get_proposal_info</span><span
                             class="fn-chip">set_preferred_quote</span><span
                             class="fn-chip">add_allowed_quote</span><span
@@ -1624,7 +1624,7 @@
                             class="fn-chip">get_allowed_quote_count</span><span
                             class="fn-chip">get_preferred_quote</span></div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
@@ -1643,8 +1643,8 @@
                 </div>
                 <div class="contract-body">
                     <p>Tiered trading rewards with volume-based multipliers, LP incentives, and a <strong>referral
-                            programme</strong>. Referrers earn 10% of referee fees (15% with MoltyID verification).
-                        Referees get 5% fee discount for 30 days. <strong>Monthly epoch cap:</strong> 100K MOLT/month
+                            programme</strong>. Referrers earn 10% of referee fees (15% with LichenID verification).
+                        Referees get 5% fee discount for 30 days. <strong>Monthly epoch cap:</strong> 100K LICN/month
                         (resets after 2,592,000 slots). Trades after budget exhaustion receive 0 reward until next
                         epoch.</p>
                     <div class="sub-heading">Trading Tiers</div>
@@ -1683,12 +1683,12 @@
                             class="fn-chip">record_lp_action</span><span class="fn-chip">set_boosted_pairs</span><span
                             class="fn-chip">set_epoch_duration</span><span class="fn-chip">get_epoch_info</span><span
                             class="fn-chip">set_core_address</span><span class="fn-chip">set_amm_address</span><span
-                            class="fn-chip">set_moltyid_address</span><span class="fn-chip">dr_pause</span><span
+                            class="fn-chip">set_lichenid_address</span><span class="fn-chip">dr_pause</span><span
                             class="fn-chip">dr_unpause</span><span class="fn-chip">get_referral_count</span><span
                             class="fn-chip">get_trader_volume</span><span class="fn-chip">get_total_distributed</span>
                     </div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span><span
-                            class="badge badge-identity">MoltyID</span></div>
+                            class="badge badge-identity">LichenID</span></div>
                 </div>
             </div>
         </div>
@@ -1768,7 +1768,7 @@
                             class="fn-chip">query_user_open_position</span><span
                             class="fn-chip">set_position_sl_tp</span><span
                             class="fn-chip">withdraw_insurance</span><span
-                            class="fn-chip">set_moltcoin_address</span><span class="fn-chip">emergency_pause</span><span
+                            class="fn-chip">set_lichencoin_address</span><span class="fn-chip">emergency_pause</span><span
                             class="fn-chip">emergency_unpause</span></div>
                     <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
                 </div>
@@ -1790,8 +1790,8 @@
                 <div class="contract-body">
                     <p>On-chain analytics engine recording every trade as OHLCV candles across <strong>nine time
                             intervals</strong> (1m, 5m, 15m, 1H, 4H, 1D, 1W, 1M, 1Y). Provides 24h pair stats,
-                        per-trader stats, and volume leaderboards. Feeds DEX TWAP prices to MoltOracle for use by
-                        LobsterLend collateral valuation and ClawVault pricing.</p>
+                        per-trader stats, and volume leaderboards. Feeds DEX TWAP prices to LichenOracle for use by
+                        ThallLend collateral valuation and SporeVault pricing.</p>
                     <div class="sub-heading">Candle Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -1977,13 +1977,13 @@
             </div>
         </div>
 
-        <!-- 25 mUSD STABLECOIN -->
-        <div class="contract-section" id="musd-token">
+        <!-- 25 lUSD STABLECOIN -->
+        <div class="contract-section" id="lusd-token">
             <div class="contract-card">
                 <div class="contract-header">
                     <div class="contract-icon icon-defi"><i class="fas fa-dollar-sign"></i></div>
                     <div class="contract-header-text">
-                        <h3>mUSD Stablecoin</h3>
+                        <h3>lUSD Stablecoin</h3>
                         <div class="subtitle">Treasury-Backed Stablecoin</div>
                     </div>
                     <div class="contract-meta"><span class="meta-chip">1,178 lines</span><span class="meta-chip">20
@@ -1992,7 +1992,7 @@
                 <div class="contract-body">
                     <p>Treasury-backed stablecoin contract with mint/burn mechanics, reserve attestation, epoch
                         rate-limiting, and circuit breaker protection. Implements the MT-20 interface for seamless
-                        integration with the MoltChain DeFi stack.</p>
+                        integration with the Lichen DeFi stack.</p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
                         <tr>
@@ -2001,11 +2001,11 @@
                         </tr>
                         <tr>
                             <td>EPOCH_RATE_LIMIT</td>
-                            <td>100,000 mUSD/epoch</td>
+                            <td>100,000 lUSD/epoch</td>
                         </tr>
                         <tr>
                             <td>CIRCUIT_BREAKER_THRESHOLD</td>
-                            <td>50,000 mUSD</td>
+                            <td>50,000 lUSD</td>
                         </tr>
                     </table>
                     <div class="sub-heading">Functions (20)</div>
@@ -2041,7 +2041,7 @@
                 </div>
                 <div class="contract-body">
                     <p>Wrapped ETH bridge token with epoch rate-limited minting, reserve attestation, and circuit
-                        breaker protection. Used as the canonical ETH representation on MoltChain for cross-chain DeFi.
+                        breaker protection. Used as the canonical ETH representation on Lichen for cross-chain DeFi.
                     </p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
@@ -2091,7 +2091,7 @@
                 </div>
                 <div class="contract-body">
                     <p>Wrapped SOL bridge token with epoch rate-limited minting, reserve attestation, and circuit
-                        breaker protection. Used as the canonical SOL representation on MoltChain for cross-chain DeFi.
+                        breaker protection. Used as the canonical SOL representation on Lichen for cross-chain DeFi.
                     </p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
@@ -2141,7 +2141,7 @@
                 </div>
                 <div class="contract-body">
                     <p>Wrapped BNB bridge token with epoch rate-limited minting, reserve attestation, and circuit
-                        breaker protection. Used as the canonical BNB representation on MoltChain for cross-chain DeFi.
+                        breaker protection. Used as the canonical BNB representation on Lichen for cross-chain DeFi.
                     </p>
                     <div class="sub-heading">Configuration</div>
                     <table class="const-table">
@@ -2224,49 +2224,49 @@
                     <th>Exported Functions (source of truth)</th>
                 </tr>
                 <tr>
-                    <td>moltcoin</td>
+                    <td>lichencoin</td>
                     <td>initialize, balance_of, transfer, mint, burn, approve, total_supply, transfer_from</td>
                 </tr>
                 <tr>
-                    <td>moltswap</td>
+                    <td>lichenswap</td>
                     <td>initialize, add_liquidity, remove_liquidity, swap_a_for_b, swap_b_for_a,
                         swap_a_for_b_with_deadline, swap_b_for_a_with_deadline, get_quote, get_reserves,
                         get_liquidity_balance, get_total_liquidity, flash_loan_borrow, flash_loan_repay,
                         flash_loan_abort, get_flash_loan_fee, get_twap_cumulatives, get_twap_snapshot_count,
-                        set_protocol_fee, get_protocol_fees, set_identity_admin, set_moltyid_address,
+                        set_protocol_fee, get_protocol_fees, set_identity_admin, set_lichenid_address,
                         set_reputation_discount, ms_pause, ms_unpause, create_pool, swap, get_pool_info, get_pool_count,
                         set_platform_fee, get_swap_count, get_total_volume, get_swap_stats</td>
                 </tr>
                 <tr>
-                    <td>lobsterlend</td>
+                    <td>thalllend</td>
                     <td>initialize, deposit, withdraw, borrow, repay, liquidate, get_account_info, get_protocol_stats,
                         flash_borrow, flash_repay, pause, unpause, set_deposit_cap, set_reserve_factor,
                         withdraw_reserves, get_interest_rate, get_deposit_count, get_borrow_count,
-                        get_liquidation_count, get_platform_stats, set_moltcoin_address</td>
+                        get_liquidation_count, get_platform_stats, set_lichencoin_address</td>
                 </tr>
                 <tr>
-                    <td>clawpump</td>
+                    <td>sporepump</td>
                     <td>initialize, create_token, buy, sell, get_token_info, get_buy_quote, get_token_count,
                         get_platform_stats, pause, unpause, freeze_token, unfreeze_token, set_buy_cooldown,
                         set_sell_cooldown, set_max_buy, set_creator_royalty, withdraw_fees, set_dex_addresses,
-                        get_graduation_info, set_molt_token</td>
+                        get_graduation_info, set_licn_token</td>
                 </tr>
                 <tr>
-                    <td>clawpay</td>
+                    <td>sporepay</td>
                     <td>create_stream, withdraw_from_stream, cancel_stream, get_stream, get_withdrawable,
                         create_stream_with_cliff, transfer_stream, initialize_cp_admin, pause, unpause, get_stream_info,
-                        set_identity_admin, set_moltyid_address, set_identity_gate, get_stream_count,
+                        set_identity_admin, set_lichenid_address, set_identity_gate, get_stream_count,
                         get_platform_stats, set_token_address, set_self_address</td>
                 </tr>
                 <tr>
-                    <td>clawvault</td>
+                    <td>sporevault</td>
                     <td>initialize, add_strategy, deposit, withdraw, set_protocol_addresses, harvest, get_vault_stats,
                         get_user_position, get_strategy_info, cv_pause, cv_unpause, set_deposit_fee, set_withdrawal_fee,
                         set_deposit_cap, set_risk_tier, remove_strategy, withdraw_protocol_fees,
-                        update_strategy_allocation, set_molt_token</td>
+                        update_strategy_allocation, set_licn_token</td>
                 </tr>
                 <tr>
-                    <td>moltyid</td>
+                    <td>lichenid</td>
                     <td>initialize, register_identity, get_identity, update_reputation_typed, update_reputation,
                         add_skill, add_skill_as, get_skills, vouch, set_recovery_guardians, approve_recovery,
                         execute_recovery, get_reputation, deactivate_identity, get_identity_count, update_agent_type,
@@ -2281,21 +2281,21 @@
                         set_mid_self_address</td>
                 </tr>
                 <tr>
-                    <td>moltdao</td>
+                    <td>lichendao</td>
                     <td>initialize_dao, create_proposal, create_proposal_typed, vote, vote_with_reputation,
                         execute_proposal, veto_proposal, cancel_proposal, treasury_transfer, get_treasury_balance,
                         get_proposal, get_dao_stats, get_active_proposals, initialize, cast_vote, finalize_proposal,
                         get_proposal_count, get_vote, get_vote_count, get_total_supply, set_quorum, set_voting_period,
-                        set_timelock_delay, dao_pause, dao_unpause, set_moltyid_address</td>
+                        set_timelock_delay, dao_pause, dao_unpause, set_lichenid_address</td>
                 </tr>
                 <tr>
-                    <td>moltpunks</td>
+                    <td>lichenpunks</td>
                     <td>initialize, mint, transfer, owner_of, balance_of, approve, transfer_from, burn, total_minted,
                         mint_punk, transfer_punk, get_owner_of, get_total_supply, get_punk_metadata, get_punks_by_owner,
                         set_base_uri, set_max_supply, set_royalty, mp_pause, mp_unpause, get_collection_stats</td>
                 </tr>
                 <tr>
-                    <td>moltmarket</td>
+                    <td>lichenmarket</td>
                     <td>initialize, list_nft, buy_nft, cancel_listing, get_listing, set_marketplace_fee,
                         list_nft_with_royalty, make_offer, cancel_offer, accept_offer, get_marketplace_stats,
                         set_nft_attributes, get_nft_attributes, get_offer_count, update_listing_price, create_auction,
@@ -2304,13 +2304,13 @@
                     </td>
                 </tr>
                 <tr>
-                    <td>moltauction</td>
+                    <td>lichenauction</td>
                     <td>create_auction, place_bid, finalize_auction, make_offer, accept_offer, set_royalty,
                         update_collection_stats, get_collection_stats, initialize, set_reserve_price, cancel_auction,
                         initialize_ma_admin, ma_pause, ma_unpause, get_auction_info, get_auction_stats</td>
                 </tr>
                 <tr>
-                    <td>moltoracle</td>
+                    <td>lichenoracle</td>
                     <td>initialize_oracle, add_price_feeder, set_authorized_attester, submit_price, get_price,
                         commit_randomness, reveal_randomness, request_randomness, get_randomness, submit_attestation,
                         verify_attestation, get_attestation_data, query_oracle, get_aggregated_price, get_oracle_stats,
@@ -2318,17 +2318,17 @@
                         set_update_interval, mo_pause, mo_unpause</td>
                 </tr>
                 <tr>
-                    <td>moltbridge</td>
+                    <td>lichenbridge</td>
                     <td>initialize, add_bridge_validator, remove_bridge_validator, set_required_confirmations,
                         set_request_timeout, lock_tokens, submit_mint, confirm_mint, submit_unlock, confirm_unlock,
                         cancel_expired_request, get_bridge_status, has_confirmed_mint, has_confirmed_unlock,
-                        is_source_tx_used, is_burn_proof_used, set_moltyid_address, set_identity_gate, mb_pause,
+                        is_source_tx_used, is_burn_proof_used, set_lichenid_address, set_identity_gate, mb_pause,
                         mb_unpause, set_token_address</td>
                 </tr>
                 <tr>
                     <td>bountyboard</td>
                     <td>create_bounty, submit_work, approve_work, cancel_bounty, get_bounty, set_identity_admin,
-                        set_moltyid_address, set_identity_gate, set_token_address, initialize, approve_submission,
+                        set_lichenid_address, set_identity_gate, set_token_address, initialize, approve_submission,
                         get_bounty_count, set_platform_fee, bb_pause, bb_unpause, get_platform_stats</td>
                 </tr>
                 <tr>
@@ -2336,17 +2336,17 @@
                     <td>register_provider, submit_job, claim_job, complete_job, dispute_job, get_job, initialize,
                         set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator,
                         remove_arbitrator, cancel_job, release_payment, resolve_dispute, deactivate_provider,
-                        reactivate_provider, update_provider, get_escrow, set_identity_admin, set_moltyid_address,
+                        reactivate_provider, update_provider, get_escrow, set_identity_admin, set_lichenid_address,
                         set_identity_gate, create_job, accept_job, submit_result, confirm_result, get_job_info,
                         get_job_count, get_provider_info, set_platform_fee, cm_pause, cm_unpause, get_platform_stats,
                         set_token_address</td>
                 </tr>
                 <tr>
-                    <td>reef_storage</td>
+                    <td>moss_storage</td>
                     <td>store_data, confirm_storage, get_storage_info, register_provider, claim_storage_rewards,
                         initialize, set_challenge_window, set_slash_percent, stake_collateral, set_storage_price,
                         get_storage_price, get_provider_stake, issue_challenge, respond_challenge, slash_provider,
-                        get_platform_stats, set_molt_token</td>
+                        get_platform_stats, set_licn_token</td>
                 </tr>
                 <tr>
                     <td>dex_core</td>
@@ -2381,7 +2381,7 @@
                     <td>initialize, call</td>
                 </tr>
                 <tr>
-                    <td>musd_token</td>
+                    <td>lusd_token</td>
                     <td>initialize, mint, burn, transfer, approve, transfer_from, attest_reserves, balance_of,
                         allowance, total_supply, total_minted, total_burned, get_reserve_ratio,
                         get_last_attestation_slot, get_attestation_count, get_epoch_remaining, get_transfer_count,
@@ -2419,41 +2419,41 @@
         <!-- CROSS-CONTRACT INTEGRATIONS -->
         <div class="cr-section-bordered">
             <h2><i class="fas fa-project-diagram"></i> Cross-Contract Integration Map</h2>
-            <p>MoltyID is the identity backbone — 6 contracts integrate it for reputation gating, fee discounts, and
+            <p>LichenID is the identity backbone — 6 contracts integrate it for reputation gating, fee discounts, and
                 identity verification. DEX contracts cross-reference each other and the core DeFi stack.</p>
             <table class="const-table narrow">
                 <tr>
                     <th>Contract</th>
-                    <th>MoltyID Integration</th>
+                    <th>LichenID Integration</th>
                     <th>Purpose</th>
                 </tr>
                 <tr>
-                    <td>MoltSwap</td>
-                    <td>set_moltyid_address, set_reputation_discount</td>
+                    <td>LichenSwap</td>
+                    <td>set_lichenid_address, set_reputation_discount</td>
                     <td>Fee discounts based on reputation tier</td>
                 </tr>
                 <tr>
-                    <td>ClawPay</td>
-                    <td>set_moltyid_address, set_identity_gate</td>
+                    <td>SporePay</td>
+                    <td>set_lichenid_address, set_identity_gate</td>
                     <td>Require minimum rep to create streams</td>
                 </tr>
                 <tr>
-                    <td>MoltBridge</td>
-                    <td>set_moltyid_address, set_identity_gate</td>
+                    <td>LichenBridge</td>
+                    <td>set_lichenid_address, set_identity_gate</td>
                     <td>Require verified identity to bridge</td>
                 </tr>
                 <tr>
                     <td>BountyBoard</td>
-                    <td>set_moltyid_address, set_identity_gate</td>
+                    <td>set_lichenid_address, set_identity_gate</td>
                     <td>Reputation bounty gating + rep rewards</td>
                 </tr>
                 <tr>
                     <td>Compute Market</td>
-                    <td>set_moltyid_address, set_identity_gate</td>
+                    <td>set_lichenid_address, set_identity_gate</td>
                     <td>Only reputable providers can register</td>
                 </tr>
                 <tr>
-                    <td>MoltDAO</td>
+                    <td>LichenDAO</td>
                     <td>vote_with_reputation</td>
                     <td>Reputation-weighted governance voting</td>
                 </tr>
@@ -2467,28 +2467,28 @@
                 </tr>
                 <tr>
                     <td>DEX Router</td>
-                    <td>DEX Core, DEX AMM, MoltSwap</td>
+                    <td>DEX Core, DEX AMM, LichenSwap</td>
                     <td>Aggregate liquidity across all venues</td>
                 </tr>
                 <tr>
                     <td>DEX Margin</td>
-                    <td>DEX Core, MoltOracle</td>
+                    <td>DEX Core, LichenOracle</td>
                     <td>Leveraged orders + oracle price feeds</td>
                 </tr>
                 <tr>
                     <td>DEX Analytics</td>
-                    <td>DEX Core, MoltOracle</td>
+                    <td>DEX Core, LichenOracle</td>
                     <td>TWAP price feeds from trades to oracle</td>
                 </tr>
                 <tr>
                     <td>DEX Governance</td>
-                    <td>MoltyID, MoltCoin</td>
-                    <td>Rep-gated pair proposals, MOLT voting</td>
+                    <td>LichenID, LichenCoin</td>
+                    <td>Rep-gated pair proposals, LICN voting</td>
                 </tr>
                 <tr>
                     <td>DEX Rewards</td>
-                    <td>MoltyID, MoltCoin</td>
-                    <td>MoltyID-boosted referrals, MOLT distribution</td>
+                    <td>LichenID, LichenCoin</td>
+                    <td>LichenID-boosted referrals, LICN distribution</td>
                 </tr>
             </table>
             <h3>Security Patterns</h3>
@@ -2499,7 +2499,7 @@
                 </tr>
                 <tr>
                     <td>Reentrancy guard</td>
-                    <td>MoltSwap, LobsterLend, ClawPump, DEX Core, DEX AMM</td>
+                    <td>LichenSwap, ThallLend, SporePump, DEX Core, DEX AMM</td>
                 </tr>
                 <tr>
                     <td>Admin-only initialization</td>
@@ -2511,11 +2511,11 @@
                 </tr>
                 <tr>
                     <td>T5.9 inflation attack prevention</td>
-                    <td>ClawVault (MIN_LOCKED_SHARES)</td>
+                    <td>SporeVault (MIN_LOCKED_SHARES)</td>
                 </tr>
                 <tr>
                     <td>T5.10 caller verification</td>
-                    <td>MoltOracle</td>
+                    <td>LichenOracle</td>
                 </tr>
                 <tr>
                     <td>Self-trade prevention</td>
@@ -2523,7 +2523,7 @@
                 </tr>
                 <tr>
                     <td>Liquidation health checks</td>
-                    <td>DEX Margin, LobsterLend</td>
+                    <td>DEX Margin, ThallLend</td>
                 </tr>
                 <tr>
                     <td>Insurance fund backstop</td>
@@ -2538,13 +2538,13 @@
     <footer class="dev-footer">
         <div class="container">
             <div class="dev-footer-links">
-                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                <a href="https://github.com/lobstercove/lichen" target="_blank"><i class="fab fa-github"></i>
                     GitHub</a>
-                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
-                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-lichen-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-lichen-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="#" data-lichen-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
-            <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
+            <div class="dev-footer-copy">© 2026 Lichen Contributors. Built for the agent economy.</div>
         </div>
     </footer>
 

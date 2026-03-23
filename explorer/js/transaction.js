@@ -1,9 +1,9 @@
-// Transaction Detail Page - Molt Explorer
+// Transaction Detail Page - Lichen Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
-// NOTE: formatHash, formatAddress, formatNumber, formatMolt, copyToClipboard,
-//       escapeHtml, safeCopy, formatTimeFull, formatShells are provided
+// NOTE: formatHash, formatAddress, formatNumber, formatLicn, copyToClipboard,
+//       escapeHtml, safeCopy, formatTimeFull, formatSpores are provided
 //       by shared/utils.js (loaded before this file)
-// Protocol constants (SHELLS_PER_MOLT, BASE_FEE_SHELLS, FEE_SPLIT, ZK_COMPUTE_FEE)
+// Protocol constants (SPORES_PER_LICN, BASE_FEE_SPORES, FEE_SPLIT, ZK_COMPUTE_FEE)
 // are defined in shared/utils.js
 
 function bytesToHex(bytes) {
@@ -31,12 +31,12 @@ function decodeShieldedInstruction(inst) {
 
     const opcode = inst.data[0];
     if (opcode === 23 && inst.data.length >= 169) {
-        const amountShells = readU64LE(inst.data, 1);
+        const amountSpores = readU64LE(inst.data, 1);
         return {
             label: 'Shield',
             rows: [
                 ['Opcode', '23 (Shield)'],
-                ['Amount', amountShells != null ? `${formatMolt(amountShells)} (${formatShells(amountShells)})` : 'Unknown'],
+                ['Amount', amountSpores != null ? `${formatLicn(amountSpores)} (${formatSpores(amountSpores)})` : 'Unknown'],
                 ['Commitment', `<code>0x${bytesToHex(inst.data.slice(9, 41))}</code>`],
                 ['Proof', `${inst.data.length - 41} bytes`],
             ],
@@ -44,12 +44,12 @@ function decodeShieldedInstruction(inst) {
     }
 
     if (opcode === 24 && inst.data.length >= 233) {
-        const amountShells = readU64LE(inst.data, 1);
+        const amountSpores = readU64LE(inst.data, 1);
         return {
             label: 'Unshield',
             rows: [
                 ['Opcode', '24 (Unshield)'],
-                ['Amount', amountShells != null ? `${formatMolt(amountShells)} (${formatShells(amountShells)})` : 'Unknown'],
+                ['Amount', amountSpores != null ? `${formatLicn(amountSpores)} (${formatSpores(amountSpores)})` : 'Unknown'],
                 ['Nullifier', `<code>0x${bytesToHex(inst.data.slice(9, 41))}</code>`],
                 ['Merkle Root', `<code>0x${bytesToHex(inst.data.slice(41, 73))}</code>`],
                 ['Recipient Input (Fr)', `<code>0x${bytesToHex(inst.data.slice(73, 105))}</code>`],
@@ -166,14 +166,14 @@ function upsertParticipants(from, to, nameMap = {}, opts = {}) {
         fromRow.insertAdjacentElement('afterend', toRow);
     }
 
-    const fromLabel = (typeof formatAddressWithMoltName === 'function' && from)
-        ? formatAddressWithMoltName(from, nameMap[from], { includeAddressInLabel: true })
+    const fromLabel = (typeof formatAddressWithLichenName === 'function' && from)
+        ? formatAddressWithLichenName(from, nameMap[from], { includeAddressInLabel: true })
         : (from || 'N/A');
-    const toLabel = (typeof formatAddressWithMoltName === 'function' && to)
-        ? formatAddressWithMoltName(to, nameMap[to], { includeAddressInLabel: true })
+    const toLabel = (typeof formatAddressWithLichenName === 'function' && to)
+        ? formatAddressWithLichenName(to, nameMap[to], { includeAddressInLabel: true })
         : (to || 'N/A');
-    const fromIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(from) : false;
-    const toIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(to) : false;
+    const fromIsAddress = typeof isLikelyLicnAddress === 'function' ? isLikelyLicnAddress(from) : false;
+    const toIsAddress = typeof isLikelyLicnAddress === 'function' ? isLikelyLicnAddress(to) : false;
 
     const fromValue = fromOverride ?? (from ? (fromIsAddress ? `<a href="address.html?address=${from}" class="detail-link">${fromLabel}</a>` : fromLabel) : 'N/A');
     const toValue = toOverride ?? (to ? (toIsAddress ? `<a href="address.html?address=${to}" class="detail-link">${toLabel}</a>` : toLabel) : 'N/A');
@@ -195,8 +195,8 @@ function upsertParticipants(from, to, nameMap = {}, opts = {}) {
             feePayerRow.id = 'detailFeePayerRow';
             toRow.insertAdjacentElement('afterend', feePayerRow);
         }
-        const feePayerLabel = (typeof formatAddressWithMoltName === 'function')
-            ? formatAddressWithMoltName(feePayer, nameMap[feePayer], { includeAddressInLabel: true })
+        const feePayerLabel = (typeof formatAddressWithLichenName === 'function')
+            ? formatAddressWithLichenName(feePayer, nameMap[feePayer], { includeAddressInLabel: true })
             : feePayer;
         feePayerRow.innerHTML = `
             <div class="detail-label">Fee Payer</div>
@@ -211,28 +211,28 @@ function upsertParticipants(from, to, nameMap = {}, opts = {}) {
 async function displayAirdrop(txHash) {
     const params = new URLSearchParams(window.location.search);
     let recipient = params.get('to') || null;
-    let amountMolt = parseFloat(params.get('amount')) || null;
+    let amountLicn = parseFloat(params.get('amount')) || null;
 
     // Try fetching from faucet backend API (has airdrop history)
-    if (!recipient || !amountMolt) {
+    if (!recipient || !amountLicn) {
         try {
-            const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : 'http://localhost:9100';
+            const faucetUrl = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.faucet) ? LICHEN_CONFIG.faucet : 'http://localhost:9100';
             const resp = await fetch(`${faucetUrl}/faucet/airdrop/${encodeURIComponent(txHash)}`);
             if (resp.ok) {
                 const record = await resp.json();
                 if (!recipient && record.recipient) recipient = record.recipient;
-                if (!amountMolt && record.amount_molt) amountMolt = record.amount_molt;
+                if (!amountLicn && record.amount_licn) amountLicn = record.amount_licn;
             }
         } catch (e) { /* faucet API unavailable */ }
     }
 
     if (!recipient) recipient = 'Unknown';
-    if (!amountMolt) amountMolt = null;
+    if (!amountLicn) amountLicn = null;
 
     const timestampMs = parseInt(txHash.replace('airdrop-', ''), 10);
     const timestampSec = Math.floor(timestampMs / 1000);
-    const amountDisplay = amountMolt
-        ? formatMolt(Math.round(amountMolt * SHELLS_PER_MOLT))
+    const amountDisplay = amountLicn
+        ? formatLicn(Math.round(amountLicn * SPORES_PER_LICN))
         : 'Unknown';
 
     // Header
@@ -260,9 +260,9 @@ async function displayAirdrop(txHash) {
 
     let nameMap = {};
     try {
-        if (typeof batchResolveMoltNames === 'function') {
+        if (typeof batchResolveLichenNames === 'function') {
             nameMap = await Promise.race([
-                batchResolveMoltNames([recipient]),
+                batchResolveLichenNames([recipient]),
                 new Promise(r => setTimeout(() => r({}), 3000))
             ]);
         }
@@ -270,26 +270,26 @@ async function displayAirdrop(txHash) {
     upsertParticipants('Treasury', recipient, nameMap);
 
     // Fee — airdrops are fee-free
-    document.getElementById('txFee').textContent = '0 MOLT';
-    document.getElementById('totalFee').textContent = '0 MOLT (fee-free airdrop)';
-    document.getElementById('baseFee').textContent = '0 MOLT (airdrop — no fee)';
-    document.getElementById('priorityFee').textContent = '0 MOLT (no priority fee)';
+    document.getElementById('txFee').textContent = '0 LICN';
+    document.getElementById('totalFee').textContent = '0 LICN (fee-free airdrop)';
+    document.getElementById('baseFee').textContent = '0 LICN (airdrop — no fee)';
+    document.getElementById('priorityFee').textContent = '0 LICN (no priority fee)';
     document.getElementById('computeBudget').textContent = 'N/A';
     document.getElementById('computeUnitPrice').textContent = 'N/A';
     document.getElementById('computeUnits').textContent = 'N/A';
     document.getElementById('feeNote').textContent = 'Airdrops are direct treasury operations with no transaction fees';
-    document.getElementById('feeBurned').textContent = '0 MOLT';
-    document.getElementById('feeProducer').textContent = '0 MOLT';
-    document.getElementById('feeVoters').textContent = '0 MOLT';
-    document.getElementById('feeCommunity').textContent = '0 MOLT';
+    document.getElementById('feeBurned').textContent = '0 LICN';
+    document.getElementById('feeProducer').textContent = '0 LICN';
+    document.getElementById('feeVoters').textContent = '0 LICN';
+    document.getElementById('feeCommunity').textContent = '0 LICN';
 
     // Recent blockhash
     document.getElementById('recentBlockhash').textContent = 'N/A';
 
     // Instructions — show airdrop details instead
     document.getElementById('instructionCount').textContent = '1';
-    const recipientDisplay = (typeof formatAddressWithMoltName === 'function' && recipient !== 'Unknown')
-        ? formatAddressWithMoltName(recipient, nameMap[recipient], { includeAddressInLabel: true })
+    const recipientDisplay = (typeof formatAddressWithLichenName === 'function' && recipient !== 'Unknown')
+        ? formatAddressWithLichenName(recipient, nameMap[recipient], { includeAddressInLabel: true })
         : recipient;
     const recipientLink = recipient !== 'Unknown'
         ? `<a href="address.html?address=${recipient}" class="detail-link">${recipientDisplay}</a>`
@@ -314,7 +314,7 @@ async function displayAirdrop(txHash) {
                 </div>
                 <div class="detail-row">
                     <div class="detail-label">Amount</div>
-                    <div class="detail-value">${amountMolt} MOLT</div>
+                    <div class="detail-value">${amountLicn} LICN</div>
                 </div>
                 <div class="detail-row">
                     <div class="detail-label">Note</div>
@@ -333,8 +333,8 @@ async function displayAirdrop(txHash) {
         type: 'Airdrop',
         signature: txHash,
         recipient: recipient,
-        amount_molt: amountMolt,
-        amount_shells: amountMolt ? Math.round(amountMolt * 1_000_000_000) : null,
+        amount_licn: amountLicn,
+        amount_spores: amountLicn ? Math.round(amountLicn * 1_000_000_000) : null,
         timestamp: timestampMs,
         source: 'Treasury',
         fee: 0,
@@ -348,10 +348,10 @@ async function displayTransaction(tx) {
     const typeRaw = tx.type === 'DebtRepay' ? 'GrantRepay' : (tx.type || 'Unknown');
     // Display-friendly type names
     const typeDisplayMap = {
-        'ReefStakeDeposit': 'ReefStake Deposit',
-        'ReefStakeUnstake': 'ReefStake Unstake',
-        'ReefStakeClaim': 'ReefStake Claim',
-        'ReefStakeTransfer': 'ReefStake Transfer',
+        'MossStakeDeposit': 'MossStake Deposit',
+        'MossStakeUnstake': 'MossStake Unstake',
+        'MossStakeClaim': 'MossStake Claim',
+        'MossStakeTransfer': 'MossStake Transfer',
         'Shield': 'Shield',
         'Unshield': 'Unshield',
         'ShieldedTransfer': 'Shielded Transfer',
@@ -373,16 +373,16 @@ async function displayTransaction(tx) {
     const shieldedTx = isShieldedType(typeRaw);
     const slot = tx.slot;
     const timestamp = tx.block_time || Math.floor(Date.now() / 1000);
-    const fee = tx.fee_shells !== undefined ? tx.fee_shells : (tx.fee ?? BASE_FEE_SHELLS);
-    const amountShells = tx.amount_shells !== undefined
-        ? tx.amount_shells
-        : Math.round((tx.amount || 0) * SHELLS_PER_MOLT);
+    const fee = tx.fee_spores !== undefined ? tx.fee_spores : (tx.fee ?? BASE_FEE_SPORES);
+    const amountSpores = tx.amount_spores !== undefined
+        ? tx.amount_spores
+        : Math.round((tx.amount || 0) * SPORES_PER_LICN);
     const amountDisplay = typeRaw === 'ShieldedTransfer'
         ? 'Hidden'
         : tx.token_symbol
             ? formatNumber(tx.token_amount || 0) + ' ' + tx.token_symbol
-            : amountShells > 0
-                ? formatMolt(amountShells)
+            : amountSpores > 0
+                ? formatLicn(amountSpores)
                 : '-';
     const recentBlockhash = tx.message.recent_blockhash;
     const instructions = tx.message.instructions || [];
@@ -403,8 +403,8 @@ async function displayTransaction(tx) {
     }
 
     const instructionAccounts = instructions.flatMap(inst => inst.accounts || []);
-    const nameMap = typeof batchResolveMoltNames === 'function'
-        ? await batchResolveMoltNames([fromAddress, toAddress, ...instructionAccounts].filter(Boolean))
+    const nameMap = typeof batchResolveLichenNames === 'function'
+        ? await batchResolveLichenNames([fromAddress, toAddress, ...instructionAccounts].filter(Boolean))
         : {};
 
     // Header
@@ -457,44 +457,44 @@ async function displayTransaction(tx) {
     }
 
     // Fee details
-    const baseFeeShells = tx.base_fee_shells || fee;
-    const priorityFeeShells = tx.priority_fee_shells || 0;
+    const baseFeeSpores = tx.base_fee_spores || fee;
+    const priorityFeeSpores = tx.priority_fee_spores || 0;
     const computeBudget = tx.compute_budget || 200000;
     const computeUnitPrice = tx.compute_unit_price || 0;
 
-    document.getElementById('txFee').textContent = formatMolt(fee);
-    document.getElementById('totalFee').textContent = formatMolt(fee) + ' (' + formatShells(fee) + ')';
+    document.getElementById('txFee').textContent = formatLicn(fee);
+    document.getElementById('totalFee').textContent = formatLicn(fee) + ' (' + formatSpores(fee) + ')';
     document.getElementById('computeUnits').textContent = formatNumber(tx.compute_units || 0) + ' CU';
     document.getElementById('baseFee').textContent = isFeeFree
-        ? '0.000000000 MOLT (fee-free system tx)'
-        : formatMolt(baseFeeShells) + ' (' + formatShells(baseFeeShells) + ')';
-    document.getElementById('priorityFee').textContent = priorityFeeShells > 0
-        ? formatMolt(priorityFeeShells) + ' (' + formatShells(priorityFeeShells) + ')'
-        : '0 MOLT (no priority fee)';
+        ? '0.000000000 LICN (fee-free system tx)'
+        : formatLicn(baseFeeSpores) + ' (' + formatSpores(baseFeeSpores) + ')';
+    document.getElementById('priorityFee').textContent = priorityFeeSpores > 0
+        ? formatLicn(priorityFeeSpores) + ' (' + formatSpores(priorityFeeSpores) + ')'
+        : '0 LICN (no priority fee)';
     document.getElementById('computeBudget').textContent = formatNumber(computeBudget) + ' CU';
     document.getElementById('computeUnitPrice').textContent = computeUnitPrice > 0
-        ? formatNumber(computeUnitPrice) + ' μshells/CU'
-        : '0 μshells/CU (default)';
+        ? formatNumber(computeUnitPrice) + ' μspores/CU'
+        : '0 μspores/CU (default)';
     const zkTypeMap = { 'Shield': 'shield', 'Unshield': 'unshield', 'ShieldedTransfer': 'transfer' };
     const zkComputeFee = zkTypeMap[typeRaw] ? (ZK_COMPUTE_FEE[zkTypeMap[typeRaw]] || 0) : 0;
     document.getElementById('feeNote').textContent = isFeeFree
         ? (typeRaw === 'FaucetAirdrop'
             ? 'Faucet airdrops are fee-free treasury operations'
             : 'System transactions are fee-free')
-        : priorityFeeShells > 0
-            ? `Base fee ${formatShells(baseFeeShells)} + priority fee ${formatShells(priorityFeeShells)} (${formatNumber(computeUnitPrice)} μshells/CU × ${formatNumber(computeBudget)} CU)`
+        : priorityFeeSpores > 0
+            ? `Base fee ${formatSpores(baseFeeSpores)} + priority fee ${formatSpores(priorityFeeSpores)} (${formatNumber(computeUnitPrice)} μspores/CU × ${formatNumber(computeBudget)} CU)`
             : zkComputeFee > 0
-                ? `Fee includes base fee (${formatShells(BASE_FEE_SHELLS)}) + shielded verification compute (${formatShells(zkComputeFee)}).`
+                ? `Fee includes base fee (${formatSpores(BASE_FEE_SPORES)}) + shielded verification compute (${formatSpores(zkComputeFee)}).`
                 : 'Fee split is applied to this transaction';
 
     // Fee split: base portion uses standard 40/30/10/10/10, priority portion uses 50/50 burn/producer
-    const baseBurned = Math.floor(baseFeeShells * FEE_SPLIT.burned);
-    const baseProducer = Math.floor(baseFeeShells * FEE_SPLIT.producer);
-    const baseVoters = Math.floor(baseFeeShells * FEE_SPLIT.voters);
-    const baseValidatorPool = Math.floor(baseFeeShells * FEE_SPLIT.treasury);
-    const baseCommunity = baseFeeShells - baseBurned - baseProducer - baseVoters - baseValidatorPool;
-    const priorityBurned = Math.floor(priorityFeeShells / 2);
-    const priorityProducer = priorityFeeShells - priorityBurned;
+    const baseBurned = Math.floor(baseFeeSpores * FEE_SPLIT.burned);
+    const baseProducer = Math.floor(baseFeeSpores * FEE_SPLIT.producer);
+    const baseVoters = Math.floor(baseFeeSpores * FEE_SPLIT.voters);
+    const baseValidatorPool = Math.floor(baseFeeSpores * FEE_SPLIT.treasury);
+    const baseCommunity = baseFeeSpores - baseBurned - baseProducer - baseVoters - baseValidatorPool;
+    const priorityBurned = Math.floor(priorityFeeSpores / 2);
+    const priorityProducer = priorityFeeSpores - priorityBurned;
 
     const feeBurned = baseBurned + priorityBurned;
     const feeProducer = baseProducer + priorityProducer;
@@ -509,11 +509,11 @@ async function displayTransaction(tx) {
     document.getElementById('feeValidatorPoolLabel').textContent = 'Fee to Validator Pool (' + pct(FEE_SPLIT.treasury) + ')';
     document.getElementById('feeCommunityLabel').textContent = 'Fee to Community (' + pct(FEE_SPLIT.community) + ')';
 
-    document.getElementById('feeBurned').textContent = formatMolt(feeBurned) + ' (' + pct(FEE_SPLIT.burned) + ')';
-    document.getElementById('feeProducer').textContent = formatMolt(feeProducer) + ' (' + pct(FEE_SPLIT.producer) + ')';
-    document.getElementById('feeVoters').textContent = formatMolt(feeVoters) + ' (' + pct(FEE_SPLIT.voters) + ')';
-    document.getElementById('feeValidatorPool').textContent = formatMolt(feeValidatorPool) + ' (' + pct(FEE_SPLIT.treasury) + ')';
-    document.getElementById('feeCommunity').textContent = formatMolt(feeCommunity) + ' (' + pct(FEE_SPLIT.community) + ')';
+    document.getElementById('feeBurned').textContent = formatLicn(feeBurned) + ' (' + pct(FEE_SPLIT.burned) + ')';
+    document.getElementById('feeProducer').textContent = formatLicn(feeProducer) + ' (' + pct(FEE_SPLIT.producer) + ')';
+    document.getElementById('feeVoters').textContent = formatLicn(feeVoters) + ' (' + pct(FEE_SPLIT.voters) + ')';
+    document.getElementById('feeValidatorPool').textContent = formatLicn(feeValidatorPool) + ' (' + pct(FEE_SPLIT.treasury) + ')';
+    document.getElementById('feeCommunity').textContent = formatLicn(feeCommunity) + ' (' + pct(FEE_SPLIT.community) + ')';
 
     // Recent blockhash
     document.getElementById('recentBlockhash').textContent = formatHash(recentBlockhash);
@@ -558,8 +558,8 @@ async function displayTransaction(tx) {
                             ${shieldedTx
                     ? '<div><code>Redacted for shielded transaction privacy</code></div>'
                     : inst.accounts.map(acc => {
-                        const accountDisplay = (typeof formatAddressWithMoltName === 'function')
-                            ? formatAddressWithMoltName(acc, nameMap[acc], { includeAddressInLabel: true })
+                        const accountDisplay = (typeof formatAddressWithLichenName === 'function')
+                            ? formatAddressWithLichenName(acc, nameMap[acc], { includeAddressInLabel: true })
                             : acc;
                         return `
                                     <div>

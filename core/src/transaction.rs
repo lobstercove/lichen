@@ -1,4 +1,4 @@
-// MoltChain Core - Transaction Model
+// Lichen Core - Transaction Model
 
 use crate::account::Pubkey;
 use crate::hash::Hash;
@@ -43,7 +43,7 @@ pub struct Message {
     #[serde(default)]
     pub compute_budget: Option<u64>,
 
-    /// Price per compute unit in micro-shells (μshells).
+    /// Price per compute unit in micro-spores (μspores).
     /// Priority fee = `effective_compute_budget × compute_unit_price`.
     /// Set to `0` (default) for no priority fee. Validators order
     /// transactions by effective CU price for block inclusion.
@@ -69,7 +69,7 @@ impl Message {
         }
     }
 
-    /// Effective compute unit price in micro-shells.
+    /// Effective compute unit price in micro-spores.
     pub fn effective_compute_unit_price(&self) -> u64 {
         self.compute_unit_price.unwrap_or(0)
     }
@@ -101,7 +101,7 @@ impl Message {
 
 /// Transaction type discriminator — replaces sentinel-based detection.
 ///
-/// - `Native`: Standard MoltChain transaction (Ed25519 signed, blockhash replay protection)
+/// - `Native`: Standard Lichen transaction (Ed25519 signed, blockhash replay protection)
 /// - `Evm`: EVM-wrapped transaction (ECDSA signed, EVM nonce replay protection)
 /// - `SolanaCompat`: Submitted via Solana-format RPC (same as Native but tagged for metrics)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -112,8 +112,8 @@ pub enum TransactionType {
     SolanaCompat,
 }
 
-/// Wire-format magic bytes identifying a MoltChain transaction envelope.
-/// "MT" = MoltTransaction. The pair `[0x4D, 0x54]` cannot appear as the first
+/// Wire-format magic bytes identifying a Lichen transaction envelope.
+/// "MT" = historical magic prefix (kept for wire compatibility). The pair `[0x4D, 0x54]` cannot appear as the first
 /// two bytes of a legacy bincode Transaction (that would imply 0x544D = 21,581
 /// signatures, which is impossible).
 pub const TX_WIRE_MAGIC: [u8; 2] = [0x4D, 0x54];

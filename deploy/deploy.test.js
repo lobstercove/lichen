@@ -135,7 +135,7 @@ assert(setup.includes('chmod 600'),
 
 console.log('\n── F20.5: Systemd service hardening ──');
 
-const service = fs.readFileSync(path.join(root, 'deploy', 'moltchain-validator.service'), 'utf-8');
+const service = fs.readFileSync(path.join(root, 'deploy', 'lichen-validator.service'), 'utf-8');
 
 // Security directives
 assert(service.includes('NoNewPrivileges=true'),
@@ -163,11 +163,11 @@ assert(service.includes('Restart=on-failure'),
 assert(service.includes('RestartSec=10'),
     'systemd: 10s restart delay');
 
-// Runs as moltchain user
-assert(service.includes('User=moltchain'),
-    'systemd: runs as moltchain user');
-assert(service.includes('Group=moltchain'),
-    'systemd: runs in moltchain group');
+// Runs as lichen user
+assert(service.includes('User=lichen'),
+    'systemd: runs as lichen user');
+assert(service.includes('Group=lichen'),
+    'systemd: runs in lichen group');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Docker-compose structure validation
@@ -193,7 +193,7 @@ assert(compose.includes('nginx:alpine'),
     'docker-compose: explorer uses nginx:alpine');
 
 // Verify named volume
-assert(compose.includes('moltchain-data:'),
+assert(compose.includes('lichen-data:'),
     'docker-compose: named volume for validator state');
 
 // Verify bridge network
@@ -212,19 +212,19 @@ assert(dockerfile.includes('AS builder'), 'Dockerfile: builder stage named');
 assert(dockerfile.includes('FROM debian:bookworm-slim'), 'Dockerfile: slim runtime image');
 
 // Non-root user
-assert(dockerfile.includes('USER moltchain'), 'Dockerfile: runs as non-root moltchain user');
+assert(dockerfile.includes('USER lichen'), 'Dockerfile: runs as non-root lichen user');
 
 // Dependency caching
 assert(dockerfile.includes('Cargo.toml Cargo.lock'),
     'Dockerfile: copies manifests for dependency caching');
 
 // Binary copies
-assert(dockerfile.includes('moltchain-validator'), 'Dockerfile: copies validator binary');
-assert(dockerfile.includes('molt /usr/local/bin'), 'Dockerfile: copies CLI binary');
-assert(dockerfile.includes('moltchain-faucet'), 'Dockerfile: copies faucet binary');
+assert(dockerfile.includes('lichen-validator'), 'Dockerfile: copies validator binary');
+assert(dockerfile.includes('lichen /usr/local/bin'), 'Dockerfile: copies CLI binary');
+assert(dockerfile.includes('lichen-faucet'), 'Dockerfile: copies faucet binary');
 
 // Volume
-assert(dockerfile.includes('VOLUME ["/var/lib/moltchain"]'),
+assert(dockerfile.includes('VOLUME ["/var/lib/lichen"]'),
     'Dockerfile: data volume declared');
 
 // ═══════════════════════════════════════════════════════════════════════════

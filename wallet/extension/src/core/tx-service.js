@@ -1,5 +1,5 @@
 import { base58Decode, hexToBytes, signTransaction, generateEVMAddress } from './crypto-service.js';
-import { MoltChainRPC, getRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getRpcEndpoint } from './rpc-service.js';
 
 /**
  * Serialize a transaction message using Bincode format (matches Rust bincode::serialize)
@@ -71,12 +71,12 @@ export function encodeTransactionBase64(transaction) {
   return btoa(String.fromCharCode(...txBytes));
 }
 
-export function buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountMolt, blockhash) {
+export function buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountLicn, blockhash) {
   const fromPubkey = hexToBytes(fromPublicKeyHex);
   const toPubkey = base58Decode(toAddress);
-  const shells = Math.floor(Number(amountMolt) * 1_000_000_000);
+  const spores = Math.floor(Number(amountLicn) * 1_000_000_000);
 
-  if (!Number.isFinite(shells) || shells <= 0) {
+  if (!Number.isFinite(spores) || spores <= 0) {
     throw new Error('Invalid transfer amount');
   }
 
@@ -84,7 +84,7 @@ export function buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountMo
   const instructionData = new Uint8Array(9);
   instructionData[0] = 0;
   const view = new DataView(instructionData.buffer);
-  view.setBigUint64(1, BigInt(shells), true);
+  view.setBigUint64(1, BigInt(spores), true);
 
   return {
     instructions: [
@@ -102,10 +102,10 @@ export async function buildSignedNativeTransferTransaction({
   privateKeyHex,
   fromPublicKeyHex,
   toAddress,
-  amountMolt,
+  amountLicn,
   blockhash
 }) {
-  const message = buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountMolt, blockhash);
+  const message = buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountLicn, blockhash);
   const messageBytes = serializeMessageForSigning(message);
   const signature = await signTransaction(privateKeyHex, messageBytes);
 
@@ -115,9 +115,9 @@ export async function buildSignedNativeTransferTransaction({
   };
 }
 
-export function buildAmountInstructionData(opcode, amountMolt, extraByte) {
-  const shells = Math.floor(Number(amountMolt) * 1_000_000_000);
-  if (!Number.isFinite(shells) || shells <= 0) {
+export function buildAmountInstructionData(opcode, amountLicn, extraByte) {
+  const spores = Math.floor(Number(amountLicn) * 1_000_000_000);
+  if (!Number.isFinite(spores) || spores <= 0) {
     throw new Error('Invalid amount');
   }
 
@@ -125,7 +125,7 @@ export function buildAmountInstructionData(opcode, amountMolt, extraByte) {
   const instructionData = new Uint8Array(hasExtra ? 10 : 9);
   instructionData[0] = opcode;
   const view = new DataView(instructionData.buffer);
-  view.setBigUint64(1, BigInt(shells), true);
+  view.setBigUint64(1, BigInt(spores), true);
   if (hasExtra) instructionData[9] = extraByte & 0xff;
   return instructionData;
 }
@@ -169,14 +169,14 @@ export async function buildSignedSingleInstructionTransaction({
  */
 export async function registerEvmAddress({ wallet, privateKeyHex, network, settings }) {
   try {
-    const cacheKey = `moltEvmRegistered:${wallet.address}`;
+    const cacheKey = `licnEvmRegistered:${wallet.address}`;
     // 1) localStorage cache hit — skip entirely
     if (typeof localStorage !== 'undefined') {
       try { if (localStorage.getItem(cacheKey) === '1') return; } catch (_) { }
     }
 
     const rpcUrl = getRpcEndpoint(network, settings);
-    const rpc = new MoltChainRPC(rpcUrl);
+    const rpc = new LichenRPC(rpcUrl);
 
     // 2) On-chain check via RPC
     try {
@@ -191,7 +191,7 @@ export async function registerEvmAddress({ wallet, privateKeyHex, network, setti
     // 3) Skip if account not funded
     try {
       const bal = await rpc.getBalance(wallet.address);
-      if (!bal || (bal.shells === 0 && !bal.spendable)) return;
+      if (!bal || (bal.spores === 0 && !bal.spendable)) return;
     } catch (_) { return; }
 
     // 4) Derive EVM address

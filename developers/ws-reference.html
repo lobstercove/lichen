@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebSocket Reference - MoltChain Developer Portal</title>
+    <title>WebSocket Reference - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -113,7 +113,7 @@
             </div>
 
             <h1>WebSocket Reference</h1>
-            <p>MoltChain provides a WebSocket server for real-time event streaming. Subscribe to chain events — slots,
+            <p>Lichen provides a WebSocket server for real-time event streaming. Subscribe to chain events — slots,
                 blocks, transactions, account changes, contract logs, NFT activity, and marketplace events — and receive
                 push notifications as they happen.</p>
 
@@ -121,7 +121,7 @@
             <section id="connection">
                 <h2>Connection</h2>
                 <div class="callout callout-info">
-                    <p><strong>Production endpoint:</strong> <code>wss://ws.moltchain.network</code></p>
+                    <p><strong>Production endpoint:</strong> <code>wss://ws.lichen.network</code></p>
                     <p><strong>Local development:</strong> <code>ws://localhost:8900</code></p>
                     <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0
                         format.</p>
@@ -137,7 +137,7 @@
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
-                        <pre><code>import { Connection } from '@moltchain/sdk';
+                        <pre><code>import { Connection } from '@lichen/sdk';
 
 const conn = new Connection(
   'http://localhost:8899',  // RPC
@@ -159,7 +159,7 @@ await conn.offSlot(subId);</code></pre>
                         <div class="code-block-header"><span class="code-lang">Python</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>import asyncio
-from moltchain import Connection
+from lichen import Connection
 
 async def main():
     conn = Connection(
@@ -373,7 +373,7 @@ await conn.offTransaction(subId);</code></pre>
                         <pre><code>{
   "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
   "balance": 5000000000,
-  "molt": 5
+  "licn": 5
 }</code></pre>
                     </div>
                 </div>
@@ -384,7 +384,7 @@ await conn.offTransaction(subId);</code></pre>
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const pubkey = new PublicKey('7xKXtg2CW87d...');
 const subId = await conn.onAccountChange(pubkey, (account) => {
-  console.log('New balance:', account.molt, 'MOLT');
+  console.log('New balance:', account.licn, 'LICN');
 });
 await conn.offAccountChange(subId);</code></pre>
                     </div>
@@ -423,7 +423,7 @@ await conn.offAccountChange(subId);</code></pre>
                         <div class="code-block-header"><span class="code-lang">JSON</span></div>
                         <pre><code>{
   "contract": "ContractPubkey...",
-  "message": "Transfer completed: 100 MOLT"
+  "message": "Transfer completed: 100 LICN"
 }</code></pre>
                     </div>
                 </div>
@@ -587,7 +587,7 @@ const subId2 = await conn.onLogs((log) => {
   "collection": "CollectionPub...",
   "token_id": 42,
   "price": 5000000000,
-  "price_molt": 5.0,
+  "price_licn": 5.0,
   "seller": "SellerPub...",
   "tx_signature": "abc123..."
 }</code></pre>
@@ -599,7 +599,7 @@ const subId2 = await conn.onLogs((log) => {
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onMarketListings((event) => {
-  console.log(`Listed: token #${event.token_id} for ${event.price_molt} MOLT`);
+  console.log(`Listed: token #${event.token_id} for ${event.price_licn} LICN`);
 });
 await conn.offMarketListings(subId);</code></pre>
                     </div>
@@ -627,7 +627,7 @@ await conn.offMarketListings(subId);</code></pre>
   "collection": "CollectionPub...",
   "token_id": 42,
   "price": 5000000000,
-  "price_molt": 5.0,
+  "price_licn": 5.0,
   "seller": "SellerPub...",
   "buyer": "BuyerPub...",
   "tx_signature": "def456..."
@@ -640,7 +640,7 @@ await conn.offMarketListings(subId);</code></pre>
                         <div class="code-block-header"><span class="code-lang">JavaScript</span><button
                                 class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
                         <pre><code>const subId = await conn.onMarketSales((event) => {
-  console.log(`Sold: token #${event.token_id} for ${event.price_molt} MOLT`);
+  console.log(`Sold: token #${event.token_id} for ${event.price_licn} LICN`);
 });
 await conn.offMarketSales(subId);</code></pre>
                     </div>
@@ -664,7 +664,7 @@ await conn.offMarketSales(subId);</code></pre>
                         <pre><code>{
   "event": "BridgeLock",
   "chain": "ethereum",
-  "asset": "MOLT",
+  "asset": "LICN",
   "amount": 250000000,
   "amount_display": 250.0,
   "sender": "0xabc...",
@@ -677,7 +677,7 @@ await conn.offMarketSales(subId);</code></pre>
             <!-- subscribeBridgeMints -->
             <div class="method-card" id="subscribeBridgeMints">
                 <h3 class="method-name">subscribeBridgeMints / unsubscribeBridgeMints</h3>
-                <p class="method-desc">Receive bridge mint events when bridged assets are minted on MoltChain.</p>
+                <p class="method-desc">Receive bridge mint events when bridged assets are minted on Lichen.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <p>None</p>
@@ -689,7 +689,7 @@ await conn.offMarketSales(subId);</code></pre>
                         <pre><code>{
   "event": "BridgeMint",
   "chain": "ethereum",
-  "asset": "MOLT",
+  "asset": "LICN",
   "amount": 250000000,
   "amount_display": 250.0,
   "recipient": "RecipientPub...",
@@ -913,7 +913,7 @@ await conn.offSignatureStatus(subId);</code></pre>
                     <pre><code>{
   "pubkey": "7xKXtg2CW87d...",
   "balance": 5000000000,
-  "molt": 5
+  "licn": 5
 }</code></pre>
                 </div>
             </div>
@@ -925,7 +925,7 @@ await conn.offSignatureStatus(subId);</code></pre>
                     <div class="code-block-header"><span class="code-lang">JSON</span></div>
                     <pre><code>{
   "contract": "ContractPubkey...",
-  "message": "Transfer completed: 100 MOLT"
+  "message": "Transfer completed: 100 LICN"
 }</code></pre>
                 </div>
             </div>
@@ -947,7 +947,7 @@ await conn.offSignatureStatus(subId);</code></pre>
   "token": "TokenPub...",
   "token_id": 42,
   "price": 5000000000,
-  "price_molt": 5.0,
+  "price_licn": 5.0,
   "seller": "SellerPub...",
   "buyer": "BuyerPub...",
   "function": "buyNow",
@@ -1038,7 +1038,7 @@ await conn.offSignatureStatus(subId);</code></pre>
                 </ul>
                 <div class="callout callout-warning">
                     <p><strong>Important:</strong> Unlike some WebSocket servers that tolerate multiple missed pongs,
-                        MoltChain uses strict single-pong timeout. If your client's pong response is delayed beyond 30
+                        Lichen uses strict single-pong timeout. If your client's pong response is delayed beyond 30
                         seconds, the connection will be terminated. Ensure your client library has pong auto-response
                         enabled (this is the default for most libraries).</p>
                 </div>
@@ -1124,13 +1124,13 @@ await conn.offSignatureStatus(subId);</code></pre>
     <footer class="dev-footer">
         <div class="container">
             <div class="dev-footer-links">
-                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                <a href="https://github.com/lobstercove/lichen" target="_blank"><i class="fab fa-github"></i>
                     GitHub</a>
-                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
-                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-lichen-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-lichen-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="#" data-lichen-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
-            <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
+            <div class="dev-footer-copy">&copy; 2026 Lichen Contributors. Built for the agent economy.</div>
         </div>
     </footer>
 

@@ -4,7 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Developer Hub - MoltChain Developer Portal</title>
+    <title>Lichen Developers — Developer Portal</title>
+    <meta name="description"
+        content="Build on Lichen. SDKs, CLI tools, smart contract guides, RPC reference, and everything you need to build agent-first applications.">
+    <meta property="og:title" content="Lichen Developers — Developer Portal">
+    <meta property="og:description"
+        content="Build on Lichen. SDKs, CLI tools, smart contract guides, RPC reference, and everything you need.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://developers.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -34,8 +41,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html" class="active">Hub</a></li>
@@ -44,7 +51,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -73,7 +80,7 @@
     <section class="dev-hero">
         <div class="dev-hero-bg"></div>
         <div class="container dev-hero-content">
-            <h1><span class="gradient-text">Build on MoltChain</span></h1>
+            <h1><span class="gradient-text">Build on Lichen</span></h1>
             <p>The developer portal for the agent-first blockchain. Everything you need to build, deploy, and scale.</p>
             <div class="dev-hero-cta">
                 <a href="getting-started.html" class="btn btn-primary btn-large">Get Started →</a>
@@ -144,7 +151,7 @@
                     <div class="hub-card-icon green"><i class="fab fa-python"></i></div>
                     <div class="hub-card-title">Python SDK</div>
                     <div class="hub-card-desc">Pythonic client for data analysis, automation, and backend integration
-                        with MoltChain.</div>
+                        with Lichen.</div>
                 </a>
 
                 <a href="sdk-rust.html" class="hub-card">
@@ -161,9 +168,9 @@
                         and best practices.</div>
                 </a>
 
-                <a href="moltyid.html" class="hub-card">
+                <a href="lichenid.html" class="hub-card">
                     <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
-                    <div class="hub-card-title">MoltyID Identity</div>
+                    <div class="hub-card-title">LichenID Identity</div>
                     <div class="hub-card-desc">On-chain reputation and identity layer. Trust tiers, fee discounts, and
                         priority transaction lanes.</div>
                 </a>
@@ -189,10 +196,10 @@
                         Proof of Contribution scoring.</div>
                 </a>
 
-                <a href="#" data-molt-app="programs" class="hub-card">
+                <a href="#" data-lichen-app="programs" class="hub-card">
                     <div class="hub-card-icon primary"><i class="fas fa-code"></i></div>
                     <div class="hub-card-title">Programs IDE</div>
-                    <div class="hub-card-desc">Browser-based IDE for writing, compiling, and deploying MoltChain smart
+                    <div class="hub-card-desc">Browser-based IDE for writing, compiling, and deploying Lichen smart
                         contracts instantly.</div>
                 </a>
 
@@ -220,17 +227,17 @@
                         <span class="code-lang">JavaScript</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>import { Connection, PublicKey } from '@moltchain/sdk';
+                    <pre><code>import { Connection, PublicKey } from '@lichen/sdk';
 
 // Connect to mainnet
-const connection = new Connection('https://rpc.moltchain.network');
+const connection = new Connection('https://rpc.lichen.network');
 
 // Get balance for an address
 const pubkey = new PublicKey('Mo1t...YourAddress');
 const balance = await connection.getBalance(pubkey);
 
-console.log(`Balance: ${balance / 1e9} MOLT`);
-// → Balance: 42.500000000 MOLT</code></pre>
+console.log(`Balance: ${balance / 1e9} LICN`);
+// → Balance: 42.500000000 LICN</code></pre>
                 </div>
             </div>
 
@@ -241,17 +248,17 @@ console.log(`Balance: ${balance / 1e9} MOLT`);
                         <span class="code-lang">Python</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>from moltchain import Client, PublicKey
+                    <pre><code>from lichen import Client, PublicKey
 
 # Connect to mainnet
-client = Client("https://rpc.moltchain.network")
+client = Client("https://rpc.lichen.network")
 
 # Get balance for an address
 pubkey = PublicKey("Mo1t...YourAddress")
 balance = client.get_balance(pubkey)
 
-print(f"Balance: {balance / 1e9:.9f} MOLT")
-# → Balance: 42.500000000 MOLT</code></pre>
+print(f"Balance: {balance / 1e9:.9f} LICN")
+# → Balance: 42.500000000 LICN</code></pre>
                 </div>
             </div>
 
@@ -262,19 +269,19 @@ print(f"Balance: {balance / 1e9:.9f} MOLT")
                         <span class="code-lang">Rust</span>
                         <button class="code-copy-btn">Copy</button>
                     </div>
-                    <pre><code>use moltchain_client_sdk::{Client, Pubkey};
+                    <pre><code>use lichen_client_sdk::{Client, Pubkey};
 use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     // Connect to mainnet
-    let client = Client::new("https://rpc.moltchain.network");
+    let client = Client::new("https://rpc.lichen.network");
 
     // Get balance for an address
     let pubkey = Pubkey::from_str("Mo1t...YourAddress")?;
     let balance = client.get_balance(&amp;pubkey).await?;
 
-    println!("Balance: {:.9} MOLT", balance as f64 / 1e9);
+    println!("Balance: {:.9} LICN", balance as f64 / 1e9);
     Ok(())
 }</code></pre>
                 </div>
@@ -288,16 +295,16 @@ async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
                         <button class="code-copy-btn">Copy</button>
                     </div>
                     <pre><code># Check balance of the current wallet
-$ molt balance
-42.500000000 MOLT
+$ lichen balance
+42.500000000 LICN
 
 # Check balance of a specific address
-$ molt balance Mo1t...YourAddress
-42.500000000 MOLT
+$ lichen balance Mo1t...YourAddress
+42.500000000 LICN
 
 # Use a specific RPC endpoint
-$ molt balance --url https://testnet-rpc.moltchain.network Mo1t...YourAddress
-42.500000000 MOLT</code></pre>
+$ lichen balance --url https://testnet-rpc.lichen.network Mo1t...YourAddress
+42.500000000 LICN</code></pre>
                 </div>
             </div>
         </div>
@@ -307,13 +314,13 @@ $ molt balance --url https://testnet-rpc.moltchain.network Mo1t...YourAddress
     <footer class="dev-footer">
         <div class="container">
             <div class="dev-footer-links">
-                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                <a href="https://github.com/lobstercove/lichen" target="_blank"><i class="fab fa-github"></i>
                     GitHub</a>
-                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
-                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-lichen-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-lichen-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="#" data-lichen-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
-            <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
+            <div class="dev-footer-copy">© 2026 Lichen Contributors. Built for the agent economy.</div>
         </div>
     </footer>
 
@@ -323,13 +330,13 @@ $ molt balance --url https://testnet-rpc.moltchain.network Mo1t...YourAddress
     <script src="js/developers.js"></script>
     <script>
         (function () {
-            // Use MOLT_CONFIG for network endpoints (shared-config.js)
+            // Use LICHEN_CONFIG for network endpoints (shared-config.js)
             function getNetwork() {
                 const sel = document.getElementById('devNetworkSelect');
-                return sel ? sel.value : MOLT_CONFIG.defaultNetwork;
+                return sel ? sel.value : LICHEN_CONFIG.defaultNetwork;
             }
-            function getEndpoint() { return MOLT_CONFIG.rpc(getNetwork()); }
-            function getWsEndpoint() { return MOLT_CONFIG.ws(getNetwork()); }
+            function getEndpoint() { return LICHEN_CONFIG.rpc(getNetwork()); }
+            function getWsEndpoint() { return LICHEN_CONFIG.ws(getNetwork()); }
 
             function fmt(n) {
                 if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';

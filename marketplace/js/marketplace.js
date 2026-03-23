@@ -1,10 +1,10 @@
-// Molt Market — Home Page
+// Lichen Market — Home Page
 // Wallet-gated: Create CTA hidden when no wallet, Buy buttons require wallet
 
 (function () {
     'use strict';
 
-    var RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
 
@@ -140,7 +140,7 @@
                 '<div class="nft-collection">' + escapeHtml(nft.collection) + '</div>' +
                 '<div class="nft-name">' + escapeHtml(nft.name) + '</div>' +
                 '<div class="nft-footer">' +
-                '<div class="nft-price">Price <span class="nft-price-value">' + escapeHtml(nft.price) + ' MOLT</span></div>' +
+                '<div class="nft-price">Price <span class="nft-price-value">' + escapeHtml(nft.price) + ' LICN</span></div>' +
                 buyBtnHtml +
                 '</div></div></div>';
         }).join('');
@@ -195,7 +195,7 @@
             return '<tr onclick="window.location.href=\'item.html?id=' + encodeURIComponent(saleId) + '\'" style="cursor:pointer;">' +
                 '<td><div class="sale-nft"><div class="sale-nft-image" style="background: ' + escapeHtml(sale.image) + '"></div><div><div class="sale-nft-name">' + escapeHtml(sale.nft) + '</div><div class="sale-nft-collection">' + escapeHtml(sale.collection) + '</div></div></div></td>' +
                 '<td>' + escapeHtml(sale.collection) + '</td>' +
-                '<td class="sale-price">' + escapeHtml(sale.price) + ' MOLT</td>' +
+                '<td class="sale-price">' + escapeHtml(sale.price) + ' LICN</td>' +
                 '<td><span class="sale-address" data-from="' + escapeHtml(sale.from) + '">' + formatHash(sale.from, 8) + '</span></td>' +
                 '<td><span class="sale-address" data-to="' + escapeHtml(sale.to) + '">' + formatHash(sale.to, 8) + '</span></td>' +
                 '<td class="sale-time">' + timeAgo(sale.timestamp) + '</td>' +
@@ -219,17 +219,17 @@
 
     // ===== Connect Wallet =====
     function setupConnectWallet() {
-        if (window.MoltWallet) {
-            window.moltWallet = window.moltWallet || new MoltWallet({ rpcUrl: RPC_URL, storageKey: 'marketWallets' });
-            window.moltWallet.bindConnectButton('#connectWallet');
-            window.moltWallet.onConnect(function (info) {
+        if (window.LichenWallet) {
+            window.lichenWallet = window.lichenWallet || new LichenWallet({ rpcUrl: RPC_URL, storageKey: 'marketWallets' });
+            window.lichenWallet.bindConnectButton('#connectWallet');
+            window.lichenWallet.onConnect(function (info) {
                 currentWallet = info;
                 updateNavForWallet();
                 updateHeroCTA();
                 // Reload trending to show/hide buy buttons
                 loadTrendingNFTs('24h');
             });
-            window.moltWallet.onDisconnect(function () {
+            window.lichenWallet.onDisconnect(function () {
                 currentWallet = null;
                 updateNavForWallet();
                 updateHeroCTA();
@@ -237,7 +237,7 @@
             });
             return;
         }
-        console.warn('MoltWallet not loaded');
+        console.warn('LichenWallet not loaded');
     }
 
     // ===== Search =====

@@ -1,4 +1,4 @@
-// Privacy Layer Page - Molt Explorer
+// Privacy Layer Page - Lichen Explorer
 // Displays shielded pool statistics, ZK transaction history, and nullifier lookup
 // Uses `rpc` instance from explorer.js
 
@@ -58,7 +58,7 @@ async function loadPoolStats() {
             merkleRoot: '0'.repeat(64),
             commitmentCount: 0,
             totalShielded: 0,
-            pool_balance_molt: 0,
+            pool_balance_licn: 0,
             nullifierCount: 0,
             nullifier_count: 0,
             shieldCount: 0,
@@ -101,20 +101,20 @@ function updatePoolStatsUI(stats) {
 
     // Shielded balance
     const totalShielded = pick(stats.totalShielded, stats.pool_balance, 0);
-    const balanceMolt = pick(
-        stats.totalShieldedMolt,
-        stats.pool_balance_molt,
-        (totalShielded / SHELLS_PER_MOLT)
+    const balanceLicn = pick(
+        stats.totalShieldedLicn,
+        stats.pool_balance_licn,
+        (totalShielded / SPORES_PER_LICN)
     );
     const el = (id) => document.getElementById(id);
 
     const shieldedBalanceEl = el('shieldedBalance');
-    const shieldedShellsEl = el('shieldedBalanceShells');
+    const shieldedSporesEl = el('shieldedBalanceSpores');
     if (shieldedBalanceEl) {
-        const balanceShells = Math.round(Number(balanceMolt || 0) * SHELLS_PER_MOLT);
-        shieldedBalanceEl.textContent = formatMolt(balanceShells);
+        const balanceSpores = Math.round(Number(balanceLicn || 0) * SPORES_PER_LICN);
+        shieldedBalanceEl.textContent = formatLicn(balanceSpores);
     }
-    if (shieldedShellsEl) shieldedShellsEl.textContent = formatNumber(totalShielded) + ' shells';
+    if (shieldedSporesEl) shieldedSporesEl.textContent = formatNumber(totalShielded) + ' spores';
 
     // Commitment count
     const commitmentCount = pick(stats.commitmentCount, stats.commitment_count, 0);
@@ -192,7 +192,7 @@ function renderShieldedTxs(txs) {
             : hashDisplay;
 
         const amountDisplay = tx.amount != null
-            ? formatMolt(tx.amount)
+            ? formatLicn(tx.amount)
             : '<span style="color: var(--text-muted);">Hidden</span>';
 
         const proofStatus = tx.proof_valid !== false

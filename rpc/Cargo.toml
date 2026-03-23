@@ -1,12 +1,12 @@
 [package]
-name = "moltchain-rpc"
+name = "lichen-rpc"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
-description = "MoltChain JSON-RPC server"
+authors = ["Lichen Labs <hello@lichen.network>"]
+description = "Lichen JSON-RPC server"
 
 [dependencies]
-moltchain-core = { path = "../core", features = ["zk"] }
+lichen-core = { path = "../core", features = ["zk"] }
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -1,4 +1,4 @@
-// MoltChain SDK - Connection Class
+// Lichen SDK - Connection Class
 
 import WebSocket from 'ws';
 import { PublicKey } from './publickey';
@@ -10,25 +10,25 @@ import { encodeTransaction } from './bincode';
  * Balance information
  */
 export interface Balance {
-  shells: number;
-  molt: number;
+  spores: number;
+  licn: number;
   spendable?: number;
-  spendable_molt?: string;
+  spendable_licn?: string;
   staked?: number;
-  staked_molt?: string;
+  staked_licn?: string;
   locked?: number;
-  locked_molt?: string;
-  reef_staked?: number;
-  reef_staked_molt?: string;
-  reef_value?: number;
-  reef_value_molt?: string;
+  locked_licn?: string;
+  moss_staked?: number;
+  moss_staked_licn?: string;
+  moss_value?: number;
+  moss_value_licn?: string;
 }
 
 /**
  * Account information
  */
 export interface Account {
-  shells: number;
+  spores: number;
   owner: string;
   executable: boolean;
   data: string;
@@ -95,7 +95,7 @@ export interface Metrics {
 }
 
 /**
- * RPC/WebSocket connection to MoltChain
+ * RPC/WebSocket connection to Lichen
  */
 export class Connection {
   private rpcUrl: string;
@@ -204,7 +204,7 @@ export class Connection {
   }
 
   /**
-   * Get total burned MOLT
+   * Get total burned LICN
    */
   async getTotalBurned(): Promise<Balance> {
     return this.rpc('getTotalBurned');
@@ -471,7 +471,7 @@ export class Connection {
         try {
           msg = JSON.parse(data.toString());
         } catch {
-          console.warn('MoltChain WS: ignoring non-JSON message');
+          console.warn('Lichen WS: ignoring non-JSON message');
           return;
         }
         

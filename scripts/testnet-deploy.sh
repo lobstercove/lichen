@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# MoltChain Testnet Deploy Script
+# Lichen Testnet Deploy Script
 # Deploys all 26 contracts + creates initial DEX pairs/pools on testnet
 #
 # Usage: ./testnet-deploy.sh [--rpc URL] [--skip-build] [--seed-pairs] [--seed-pools]
@@ -11,11 +11,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Defaults
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
+RPC_URL="${LICHEN_RPC_URL:-http://localhost:8899}"
 SKIP_BUILD=false
 SEED_PAIRS=false
 SEED_POOLS=false
-ADMIN_PUBKEY="${MOLTCHAIN_ADMIN_PUBKEY:-}"
+ADMIN_PUBKEY="${LICHEN_ADMIN_PUBKEY:-}"
 MANIFEST="$ROOT_DIR/deploy/deploy-manifest.json"
 DEPLOY_LOG="$ROOT_DIR/deploy/testnet-deploy-$(date +%Y%m%d-%H%M%S).log"
 
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "  --admin PUBKEY   Multisig admin address for all contracts"
             echo "                   (defaults to deployer keypair for testnet)"
-            echo "                   Set MOLTCHAIN_ADMIN_PUBKEY env var as alternative"
+            echo "                   Set LICHEN_ADMIN_PUBKEY env var as alternative"
             exit 0 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -111,7 +111,7 @@ log ""
 log "═══ Phase 3: Deploying contracts to testnet ═══"
 
 # Deploy DEX + token contracts (10)
-DEX_CONTRACTS=(musd_token wsol_token weth_token dex_core dex_amm dex_router dex_governance dex_rewards dex_margin dex_analytics)
+DEX_CONTRACTS=(lusd_token wsol_token weth_token dex_core dex_amm dex_router dex_governance dex_rewards dex_margin dex_analytics)
 for contract in "${DEX_CONTRACTS[@]}"; do
     WASM_PATH="$ROOT_DIR/contracts/$contract/target/wasm32-unknown-unknown/release/${contract}.wasm"
     if [[ -f "$WASM_PATH" ]]; then
@@ -123,7 +123,7 @@ for contract in "${DEX_CONTRACTS[@]}"; do
 done
 
 # Deploy core contracts (16)
-CORE_CONTRACTS=(moltcoin moltswap reef_storage compute_market lobsterlend clawpump moltmarket clawpay moltauction clawvault moltyid moltbridge moltdao moltoracle moltpunks molt_staking)
+CORE_CONTRACTS=(lichencoin lichenswap moss_storage compute_market thalllend sporepump lichenmarket sporepay lichenauction sporevault lichenid lichenbridge lichendao lichenoracle lichenpunks mossstake)
 for contract in "${CORE_CONTRACTS[@]}"; do
     WASM_PATH="$ROOT_DIR/contracts/$contract/target/wasm32-unknown-unknown/release/${contract}.wasm"
     if [[ -f "$WASM_PATH" ]]; then
@@ -144,13 +144,13 @@ if [[ "$SEED_PAIRS" == "true" ]]; then
     # Pairs are now created by deploy_dex.py during phase_initialize_dex.
     # This phase ensures they exist by calling dex_core::create_pair for each.
     PAIRS=(
-        "MOLT:mUSD"
-        "wSOL:mUSD"
-        "wETH:mUSD"
-        "REEF:mUSD"
-        "wSOL:MOLT"
-        "wETH:MOLT"
-        "REEF:MOLT"
+        "LICN:lUSD"
+        "wSOL:lUSD"
+        "wETH:lUSD"
+        "MOSS:lUSD"
+        "wSOL:LICN"
+        "wETH:LICN"
+        "MOSS:LICN"
     )
     for pair_spec in "${PAIRS[@]}"; do
         IFS=':' read -r base quote <<< "$pair_spec"
@@ -159,7 +159,7 @@ if [[ "$SEED_PAIRS" == "true" ]]; then
 import asyncio, sys
 sys.path.insert(0, '$ROOT_DIR/tools')
 from deploy_dex import load_or_create_deployer, call_contract
-from moltchain_sdk_py import Connection
+from lichen_sdk_py import Connection
 async def go():
     conn = Connection('$RPC_URL')
     deployer = load_or_create_deployer()
@@ -189,14 +189,14 @@ if [[ "$SEED_POOLS" == "true" ]]; then
     log "═══ Phase 5: Creating initial AMM pools + Insurance fund ═══"
 
     # Create fee-tier pools for the main pairs and seed insurance fund
-    CUSTODY_MOLT_RPC_URL="$RPC_URL" python3 "$ROOT_DIR/scripts/seed_pools.py" 2>&1 | tee -a "$DEPLOY_LOG" || true
+    CUSTODY_LICHEN_RPC_URL="$RPC_URL" python3 "$ROOT_DIR/scripts/seed_pools.py" 2>&1 | tee -a "$DEPLOY_LOG" || true
 
     # Seed insurance fund
     python3 -c "
 import asyncio, sys, json, os
 sys.path.insert(0, '$ROOT_DIR/tools')
 from deploy_dex import load_or_create_deployer, call_contract
-from moltchain_sdk_py import Connection
+from lichen_sdk_py import Connection
 
 async def go():
     conn = Connection('$RPC_URL')

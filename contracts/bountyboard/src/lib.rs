@@ -1,4 +1,4 @@
-// BountyBoard — Bounty/Task Management Contract for MoltChain
+// BountyBoard — Bounty/Task Management Contract for Lichen
 //
 // On-chain bounty system for task management:
 //   - Creators post bounties with rewards and deadlines
@@ -17,7 +17,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_caller, get_contract_address, get_slot,
     get_value, log_info, storage_get, storage_set, u64_to_bytes, Address, CrossCall,
 };
@@ -157,7 +157,7 @@ fn encode_submission(worker: &[u8; 32], proof_hash: &[u8; 32], submitted_slot: u
 /// Parameters:
 ///   - creator_ptr: 32-byte creator address
 ///   - title_hash_ptr: 32-byte hash of the bounty title/description
-///   - reward_amount: reward in shells
+///   - reward_amount: reward in spores
 ///   - deadline_slot: deadline for submissions
 ///
 /// Returns 0 on success, bounty_id in return data.
@@ -207,9 +207,9 @@ pub extern "C" fn create_bounty(
         return 11;
     }
 
-    // MoltyID reputation gate
+    // LichenID reputation gate
     if !check_identity_gate(&creator_arr) {
-        log_info("Insufficient MoltyID reputation for bounty creation");
+        log_info("Insufficient LichenID reputation for bounty creation");
         reentrancy_exit();
         return 10;
     }
@@ -240,7 +240,7 @@ pub extern "C" fn create_bounty(
     let bk = bounty_key(bounty_id);
     storage_set(&bk, &data);
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(bounty_id));
+    lichen_sdk::set_return_data(&u64_to_bytes(bounty_id));
     log_info("Bounty created");
     reentrancy_exit();
     0
@@ -311,9 +311,9 @@ pub extern "C" fn submit_work(
         return 3;
     }
 
-    // MoltyID identity gate (any reputation level)
+    // LichenID identity gate (any reputation level)
     if !check_identity_gate(&worker_arr) {
-        log_info("MoltyID identity required to submit work");
+        log_info("LichenID identity required to submit work");
         reentrancy_exit();
         return 10;
     }
@@ -343,7 +343,7 @@ pub extern "C" fn submit_work(
     bounty_data[81] = sub_count + 1;
     storage_set(&bk, &bounty_data);
 
-    moltchain_sdk::set_return_data(&[sub_count]); // return submission index
+    lichen_sdk::set_return_data(&[sub_count]); // return submission index
     log_info("Work submitted");
     reentrancy_exit();
     0
@@ -596,7 +596,7 @@ pub extern "C" fn cancel_bounty(caller_ptr: *const u8, bounty_id: u64) -> u32 {
         }
     }
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(reward));
+    lichen_sdk::set_return_data(&u64_to_bytes(reward));
 
     let canc = storage_get(BB_CANCEL_COUNT_KEY)
         .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
@@ -623,7 +623,7 @@ pub extern "C" fn get_bounty(bounty_id: u64) -> u32 {
     let bk = bounty_key(bounty_id);
     match storage_get(&bk) {
         Some(data) => {
-            moltchain_sdk::set_return_data(&data);
+            lichen_sdk::set_return_data(&data);
             0
         }
         None => {
@@ -634,15 +634,15 @@ pub extern "C" fn get_bounty(bounty_id: u64) -> u32 {
 }
 
 // ============================================================================
-// MOLTYID IDENTITY INTEGRATION
+// LICHENID IDENTITY INTEGRATION
 // ============================================================================
 
 /// Storage key for identity admin
 const IDENTITY_ADMIN_KEY: &[u8] = b"identity_admin";
 /// Storage key for minimum reputation threshold
-const MOLTYID_MIN_REP_KEY: &[u8] = b"moltyid_min_rep";
-/// Storage key for MoltyID contract address (32 bytes)
-const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
+const LICHENID_MIN_REP_KEY: &[u8] = b"lichenid_min_rep";
+/// Storage key for LichenID contract address (32 bytes)
+const LICHENID_ADDR_KEY: &[u8] = b"lichenid_address";
 /// Storage key for the reward token contract address (32 bytes)
 const TOKEN_ADDRESS_KEY: &[u8] = b"bounty_token_addr";
 
@@ -677,10 +677,10 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     0
 }
 
-/// Set MoltyID contract address for cross-contract reputation lookups.
+/// Set LichenID contract address for cross-contract reputation lookups.
 /// Only callable by the identity admin.
 #[no_mangle]
-pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
+pub extern "C" fn set_lichenid_address(caller_ptr: *const u8, lichenid_addr_ptr: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 100;
     }
@@ -688,9 +688,9 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
     }
-    let mut moltyid_addr = [0u8; 32];
+    let mut lichenid_addr = [0u8; 32];
     unsafe {
-        core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(lichenid_addr_ptr, lichenid_addr.as_mut_ptr(), 32);
     }
 
     // AUDIT-FIX: verify caller matches transaction signer
@@ -712,13 +712,13 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
         return 2;
     }
 
-    storage_set(MOLTYID_ADDR_KEY, &moltyid_addr);
-    log_info("MoltyID address configured");
+    storage_set(LICHENID_ADDR_KEY, &lichenid_addr);
+    log_info("LichenID address configured");
     reentrancy_exit();
     0
 }
 
-/// Set minimum MoltyID reputation required for gated functions.
+/// Set minimum LichenID reputation required for gated functions.
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
@@ -749,7 +749,7 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
         return 2;
     }
 
-    storage_set(MOLTYID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
+    storage_set(LICHENID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
     log_info("Identity gate configured");
     reentrancy_exit();
     0
@@ -800,10 +800,10 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
     0
 }
 
-/// Check if caller meets the MoltyID reputation threshold.
+/// Check if caller meets the LichenID reputation threshold.
 /// Returns true if no gate is set or caller meets threshold.
 fn check_identity_gate(caller: &[u8]) -> bool {
-    let min_rep = match storage_get(MOLTYID_MIN_REP_KEY) {
+    let min_rep = match storage_get(LICHENID_MIN_REP_KEY) {
         Some(data) if data.len() >= 8 => bytes_to_u64(&data),
         _ => return true,
     };
@@ -811,13 +811,13 @@ fn check_identity_gate(caller: &[u8]) -> bool {
         return true;
     }
 
-    let moltyid_addr = match storage_get(MOLTYID_ADDR_KEY) {
+    let lichenid_addr = match storage_get(LICHENID_ADDR_KEY) {
         Some(data) if data.len() >= 32 => data,
         _ => return true,
     };
 
     let mut addr = [0u8; 32];
-    addr.copy_from_slice(&moltyid_addr[..32]);
+    addr.copy_from_slice(&lichenid_addr[..32]);
     let target = Address::new(addr);
     let mut args = Vec::with_capacity(32);
     args.extend_from_slice(caller);
@@ -971,7 +971,7 @@ pub extern "C" fn get_platform_stats() -> u32 {
             .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
             .unwrap_or(0),
     ));
-    moltchain_sdk::set_return_data(&buf);
+    lichen_sdk::set_return_data(&buf);
     0
 }
 
@@ -983,7 +983,7 @@ pub extern "C" fn get_platform_stats() -> u32 {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -1123,9 +1123,9 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
-        let moltyid_addr = [0x42u8; 32];
+        let lichenid_addr = [0x42u8; 32];
         assert_eq!(
-            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
             0
         );
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
@@ -1157,9 +1157,9 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
-        let moltyid_addr = [0x42u8; 32];
+        let lichenid_addr = [0x42u8; 32];
         assert_eq!(
-            set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()),
+            set_lichenid_address(admin.as_ptr(), lichenid_addr.as_ptr()),
             0
         );
         assert_eq!(set_identity_gate(admin.as_ptr(), 1), 0); // any reputation

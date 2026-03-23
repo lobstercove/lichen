@@ -2,7 +2,7 @@
 const { Connection, PublicKey } = require('./dist/index');
 
 async function test() {
-  console.log('🦞 Testing MoltChain SDK Subscriptions\n');
+  console.log('🦞 Testing Lichen SDK Subscriptions\n');
   
   const connection = new Connection(
     'http://localhost:8899',
@@ -34,7 +34,7 @@ async function test() {
   console.log('📡 Subscribing to account changes...');
   const pubkey = new PublicKey('6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H');
   const accountSub = await connection.onAccountChange(pubkey, (account) => {
-    console.log(`👤 Account balance updated: ${account.molt || account.balance / 1e9} MOLT`);
+    console.log(`👤 Account balance updated: ${account.lichen || account.balance / 1e9} LICN`);
   });
   console.log(`✅ Subscribed to account changes (ID: ${accountSub})\n`);
 

@@ -1,4 +1,4 @@
-// MoltChain Core - Marketplace activity tracking
+// Lichen Core - Marketplace activity tracking
 
 use crate::account::Pubkey;
 use crate::hash::Hash;

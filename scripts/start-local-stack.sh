@@ -26,13 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 cd "$REPO_ROOT" || exit 1
 
-LOG_DIR="/tmp/moltchain-local-${NETWORK}"
+LOG_DIR="/tmp/lichen-local-${NETWORK}"
 mkdir -p "$LOG_DIR"
 
-CHAIN_ID="moltchain-${NETWORK}-1"
+CHAIN_ID="lichen-${NETWORK}-1"
 TREASURY_KEYPAIR="./data/state-${NETWORK}-${BASE_P2P}/genesis-keys/treasury-${CHAIN_ID}.json"
 
-export CUSTODY_MOLT_RPC_URL="http://127.0.0.1:${BASE_RPC}"
+export CUSTODY_LICHEN_RPC_URL="http://127.0.0.1:${BASE_RPC}"
 export CUSTODY_TREASURY_KEYPAIR="$TREASURY_KEYPAIR"
 if [ -n "$SOLANA_RPC_URL" ]; then
   export CUSTODY_SOLANA_RPC_URL="$SOLANA_RPC_URL"
@@ -41,7 +41,7 @@ if [ -n "$EVM_RPC_URL" ]; then
   export CUSTODY_EVM_RPC_URL="$EVM_RPC_URL"
 fi
 
-if [ ! -x "./target/release/moltchain-validator" ]; then
+if [ ! -x "./target/release/lichen-validator" ]; then
   cargo build --release
 fi
 
@@ -67,7 +67,7 @@ CUSTODY_PID=$!
 FAUCET_PORT=9101
 PORT=$FAUCET_PORT RPC_URL="http://127.0.0.1:${BASE_RPC}" NETWORK="$NETWORK" \
   FAUCET_KEYPAIR="$TREASURY_KEYPAIR" \
-  ./target/release/moltchain-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
+  ./target/release/lichen-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
 FAUCET_PID=$!
 
 # ── First-boot contract deployment ──
@@ -77,7 +77,7 @@ sleep 5
 "${SCRIPT_DIR}/first-boot-deploy.sh" --rpc "http://127.0.0.1:${BASE_RPC}" --skip-build >"${LOG_DIR}/first-boot-deploy.log" 2>&1 &
 DEPLOY_PID=$!
 
-echo "🦞 MoltChain local stack started"
+echo "🦞 Lichen local stack started"
 echo "Network: $NETWORK"
 echo "Validator PIDs: $V1_PID $V2_PID $V3_PID"
 echo "Custody PID: $CUSTODY_PID"

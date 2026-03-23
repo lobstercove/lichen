@@ -48,7 +48,7 @@ async function testMethodOptional(
 }
 
 async function main() {
-  console.log('🦞 MoltChain TypeScript SDK - Comprehensive Test\n');
+  console.log('🦞 Lichen TypeScript SDK - Comprehensive Test\n');
   console.log('=' .repeat(60));
   
   const connection = new Connection('http://localhost:8899');

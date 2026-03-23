@@ -1,9 +1,9 @@
 [package]
-name = "moltchain-custody"
+name = "lichen-custody"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
-description = "MoltChain custody service"
+authors = ["Lichen Labs <hello@lichen.network>"]
+description = "Lichen custody service"
 
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
@@ -32,4 +32,4 @@ uuid = { version = "1.7", features = ["v4"] }
 ed25519-dalek = "2.1"
 zeroize = { version = "1.7", features = ["derive"] }
 subtle = "2"
-moltchain-core = { path = "../core" }
+lichen-core = { path = "../core" }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MoltChain Production Readiness Audit
+Lichen Production Readiness Audit
 =====================================
 Tests every RPC endpoint, explorer data wiring, symbol registry integrity,
 wrapped tokens, NFT data, validator/staking data, and data consistency.
@@ -73,7 +73,7 @@ def test(test_name, condition, detail="", warn_only=False):
 
 # =====================================================================
 print("=" * 70)
-print("  MoltChain Production Readiness Audit")
+print("  Lichen Production Readiness Audit")
 print("=" * 70)
 
 # ── 1. Core RPC Endpoints ───────────────────────────────────────────
@@ -109,7 +109,7 @@ if metrics:
     test("getMetrics.total_accounts", metrics.get("total_accounts", 0) > 0, f"{metrics.get('total_accounts')}")
 
 burned, err = rpc("getTotalBurned")
-test("getTotalBurned", burned is not None, f"molt={burned.get('molt') if isinstance(burned, dict) else burned}")
+test("getTotalBurned", burned is not None, f"licn={burned.get('licn') if isinstance(burned, dict) else burned}")
 
 # getRecentTransactions returns {"transactions": [], ...}
 recent_res, err = rpc("getRecentTransactions", [{"limit": 10}])
@@ -149,10 +149,10 @@ if not treasury:
 
 print(f"  [INFO] Treasury: {treasury[:16]}...")
 
-# getBalance returns {"shells": N, "molt": "...", ...}
+# getBalance returns {"spores": N, "licn": "...", ...}
 bal_res, err = rpc("getBalance", [treasury])
-bal_shells = bal_res.get("shells", 0) if isinstance(bal_res, dict) else (bal_res if isinstance(bal_res, (int, float)) else 0)
-test("getBalance(treasury)", bal_res is not None and bal_shells > 0, f"shells={bal_shells}")
+bal_spores = bal_res.get("spores", 0) if isinstance(bal_res, dict) else (bal_res if isinstance(bal_res, (int, float)) else 0)
+test("getBalance(treasury)", bal_res is not None and bal_spores > 0, f"spores={bal_spores}")
 
 acct, err = rpc("getAccount", [treasury])
 test("getAccount(treasury)", acct is not None and isinstance(acct, dict) and acct.get("pubkey"),
@@ -208,8 +208,8 @@ if val_list:
     sp, err = rpc("getStakingPosition", [v1_pubkey])
     test("getStakingPosition", err is None, str(sp)[:50] if sp else str(err), warn_only=True)
 
-    pool, err = rpc("getReefStakePoolInfo")
-    test("getReefStakePoolInfo", pool is not None, str(pool)[:50] if pool else str(err))
+    pool, err = rpc("getMossStakePoolInfo")
+    test("getMossStakePoolInfo", pool is not None, str(pool)[:50] if pool else str(err))
 
     uq, err = rpc("getUnstakingQueue", [v1_pubkey])
     test("getUnstakingQueue", err is None, str(uq)[:50] if uq else str(err), warn_only=True)
@@ -310,15 +310,15 @@ if all_symbols:
     test("no lookup errors", len(missing) == 0, f"{len(missing)} errors: {missing[:3]}" if missing else "")
 
     # Wrapped tokens
-    for w in ["MUSD", "WSOL", "WETH"]:
+    for w in ["LUSD", "WSOL", "WETH"]:
         found = any(isinstance(e, dict) and e.get("symbol", "").upper() == w for e in all_symbols)
         tmpl_ok = any(isinstance(e, dict) and e.get("symbol", "").upper() == w and e.get("template") == "wrapped" for e in all_symbols)
         test(f"wrapped {w} exists", found)
         test(f"wrapped {w} template=wrapped", tmpl_ok)
     test("wrapped count >= 3", len(wrapped_tokens) >= 3, f"wrapped={wrapped_tokens}")
 
-    # Genesis spot-check (actual MoltChain genesis tokens)
-    for tok in ["MOLT", "REEF", "DEX", "DAO", "ORACLE", "MARKET", "BRIDGE", "BOUNTY", "PUNKS", "LEND"]:
+    # Genesis spot-check (actual Lichen genesis tokens)
+    for tok in ["LICN", "MOSS", "DEX", "DAO", "ORACLE", "MARKET", "BRIDGE", "BOUNTY", "PUNKS", "LEND"]:
         found = any(isinstance(e, dict) and e.get("symbol", "").upper() == tok for e in all_symbols)
         test(f"genesis {tok}", found)
 
@@ -432,9 +432,9 @@ if metrics:
 if all_contracts and all_symbols:
     test("symbols >= contracts", len(all_symbols) >= len(all_contracts), f"sym={len(all_symbols)}, ctr={len(all_contracts)}")
 
-if metrics and bal_shells > 0:
+if metrics and bal_spores > 0:
     ts = metrics.get("total_supply", 0)
-    test("treasury < total_supply", bal_shells < ts)
+    test("treasury < total_supply", bal_spores < ts)
 
 # Fetch individual txs
 if hist_list:

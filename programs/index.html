@@ -4,9 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltChain Programs - Build, Deploy & Scale Smart Contracts</title>
+    <title>Lichen Programs — Build, Deploy & Scale Smart Contracts</title>
     <meta name="description"
         content="The fastest, cheapest, and most agent-friendly blockchain for developers. Deploy programs in seconds with 1000x lower fees than Ethereum.">
+    <meta property="og:title" content="Lichen Programs — Build, Deploy & Scale Smart Contracts">
+    <meta property="og:description"
+        content="The fastest, cheapest, and most agent-friendly blockchain for developers. Deploy programs in seconds.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://programs.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/programs.css">
@@ -23,11 +28,11 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltPrograms_Logo_256.png" class="logo-icon" alt="MoltChain Programs">
-                <span class="logo-text">MoltChain Programs</span>
+                <img src="LichenPrograms_Logo_256.png" class="logo-icon" alt="Lichen Programs">
+                <span class="logo-text">Lichen Programs</span>
             </div>
             <ul class="nav-menu">
-                <li><a href="#why">Why MoltChain</a></li>
+                <li><a href="#why">Why Lichen</a></li>
                 <li><a href="#quickstart">Quick Start</a></li>
                 <li><a href="#examples">Examples</a></li>
                 <li><a href="#languages">Languages</a></li>
@@ -99,11 +104,11 @@
         </div>
     </section>
 
-    <!-- Why MoltChain Section -->
+    <!-- Why Lichen Section -->
     <section class="section" id="why">
         <div class="container">
             <div class="section-header">
-                <h2 class="section-title">Why Build on MoltChain?</h2>
+                <h2 class="section-title">Why Build on Lichen?</h2>
                 <p class="section-subtitle">1000x cheaper. 100x faster. Built for agents from day one.</p>
             </div>
 
@@ -161,8 +166,8 @@
                 <div class="comparison-card comparison-card-highlight">
                     <div class="comparison-badge">Best Choice</div>
                     <div class="comparison-header">
-                        <img src="MoltPrograms_Logo_256.png" class="comparison-icon" alt="MoltChain">
-                        <h3>MoltChain</h3>
+                        <img src="LichenPrograms_Logo_256.png" class="comparison-icon" alt="Lichen">
+                        <h3>Lichen</h3>
                     </div>
                     <div class="comparison-metrics">
                         <div class="metric metric-excellent">
@@ -231,7 +236,7 @@
                             </button>
                         </div>
                         <div class="code-content">
-                            <pre><code>curl -fsSL https://molt.sh/install.sh | sh</code></pre>
+                            <pre><code>curl -fsSL https://lichen.network/install.sh | sh</code></pre>
                         </div>
                     </div>
                 </div>
@@ -246,7 +251,7 @@
                             </button>
                         </div>
                         <div class="code-content">
-                            <pre><code>molt init hello-world
+                            <pre><code>lichen init hello-world
 cd hello-world</code></pre>
                         </div>
                     </div>
@@ -264,7 +269,7 @@ cd hello-world</code></pre>
                         <div class="code-content">
                             <pre><code class="language-rust">#[no_mangle]
 pub extern "C" fn hello() {
-    msg!("Hello MoltChain!");
+    msg!("Hello Lichen!");
 }</code></pre>
                         </div>
                     </div>
@@ -280,7 +285,7 @@ pub extern "C" fn hello() {
                             </button>
                         </div>
                         <div class="code-content">
-                            <pre><code>molt build --release</code></pre>
+                            <pre><code>lichen build --release</code></pre>
                         </div>
                     </div>
                 </div>
@@ -295,7 +300,7 @@ pub extern "C" fn hello() {
                             </button>
                         </div>
                         <div class="code-content">
-                            <pre><code>molt deploy --program target/hello.wasm</code></pre>
+                            <pre><code>lichen deploy --program target/hello.wasm</code></pre>
                         </div>
                     </div>
                 </div>
@@ -321,13 +326,13 @@ pub extern "C" fn hello() {
             </div>
 
             <div class="examples-grid">
-                <!-- MoltCoin -->
+                <!-- LichenCoin -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-coins"></i></div>
                         <div class="example-badge">18.2 KB</div>
                     </div>
-                    <h3>MoltCoin (MT-20)</h3>
+                    <h3>LichenCoin (MT-20)</h3>
                     <p class="example-description">Fungible token standard with mint, burn, transfer, and allowance
                         features</p>
                     <div class="example-features">
@@ -340,22 +345,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-code"></i> 450 lines</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltcoin" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichencoin" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltcoin')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichencoin')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltSwap -->
+                <!-- LichenSwap -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-exchange-alt"></i></div>
                         <div class="example-badge">24.1 KB</div>
                     </div>
-                    <h3>MoltSwap (DEX)</h3>
+                    <h3>LichenSwap (DEX)</h3>
                     <p class="example-description">AMM with TWAP oracle, price impact guards, flash loans, and protocol
                         fees</p>
                     <div class="example-features">
@@ -368,22 +373,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-code"></i> 680 lines</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltswap" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichenswap" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltswap')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenswap')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltPunks -->
+                <!-- LichenPunks -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-image"></i></div>
                         <div class="example-badge">16.7 KB</div>
                     </div>
-                    <h3>MoltPunks (NFT)</h3>
+                    <h3>LichenPunks (NFT)</h3>
                     <p class="example-description">Non-fungible token standard with metadata, royalties, and marketplace
                         support</p>
                     <div class="example-features">
@@ -396,22 +401,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-code"></i> 520 lines</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltpunks" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichenpunks" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltpunks')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenpunks')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltDAO -->
+                <!-- LichenDAO -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-landmark"></i></div>
                         <div class="example-badge">15.3 KB</div>
                     </div>
-                    <h3>MoltDAO (Governance)</h3>
+                    <h3>LichenDAO (Governance)</h3>
                     <p class="example-description">Decentralized governance with proposals, voting, and execution</p>
                     <div class="example-features">
                         <span class="feature-tag">Proposals</span>
@@ -424,22 +429,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-download"></i> 312 uses</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltdao" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichendao" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltdao')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichendao')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltOracle -->
+                <!-- LichenOracle -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-eye"></i></div>
                         <div class="example-badge">12.8 KB</div>
                     </div>
-                    <h3>MoltOracle (Price Feeds)</h3>
+                    <h3>LichenOracle (Price Feeds)</h3>
                     <p class="example-description">Decentralized price oracle with aggregation and verification</p>
                     <div class="example-features">
                         <span class="feature-tag">Feeds</span>
@@ -452,22 +457,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-download"></i> 234 uses</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltoracle" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichenoracle" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltoracle')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenoracle')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- Molt Market -->
+                <!-- Lichen Market -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-shopping-cart"></i></div>
                         <div class="example-badge">19.4 KB</div>
                     </div>
-                    <h3>MoltMarket (NFT Marketplace)</h3>
+                    <h3>LichenMarket (NFT Marketplace)</h3>
                     <p class="example-description">NFT marketplace with listings, offers/bids, royalties, and
                         marketplace stats</p>
                     <div class="example-features">
@@ -481,22 +486,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-download"></i> 421 uses</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltmarket" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichenmarket" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltmarket')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenmarket')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltAuction -->
+                <!-- LichenAuction -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-gavel"></i></div>
                         <div class="example-badge">14.6 KB</div>
                     </div>
-                    <h3>MoltAuction (Auction System)</h3>
+                    <h3>LichenAuction (Auction System)</h3>
                     <p class="example-description">Auctions with anti-sniping, reserve prices, cancellation, and admin
                         controls</p>
                     <div class="example-features">
@@ -510,22 +515,22 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-download"></i> 178 uses</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=moltauction" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lichenauction" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('moltauction')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lichenauction')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
                 </div>
 
-                <!-- MoltBridge -->
+                <!-- LichenBridge -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-bridge"></i></div>
                         <div class="example-badge">22.4 KB</div>
                     </div>
-                    <h3>MoltBridge (Cross-Chain)</h3>
+                    <h3>LichenBridge (Cross-Chain)</h3>
                     <p class="example-description">Multi-call lock-and-mint bridge with validator confirmations and
                         expiry protection</p>
                     <div class="example-features">
@@ -547,13 +552,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- LobsterLend -->
+                <!-- ThallLend -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-hand-holding-usd"></i></div>
                         <div class="example-badge">26.8 KB</div>
                     </div>
-                    <h3>LobsterLend (Lending)</h3>
+                    <h3>ThallLend (Lending)</h3>
                     <p class="example-description">DeFi lending protocol with flash loans, liquidations, and reentrancy
                         guards</p>
                     <div class="example-features">
@@ -575,13 +580,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ClawPump -->
+                <!-- SporePump -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-rocket"></i></div>
                         <div class="example-badge">21.3 KB</div>
                     </div>
-                    <h3>ClawPump (Launchpad)</h3>
+                    <h3>SporePump (Launchpad)</h3>
                     <p class="example-description">Bonding curve token launches with anti-manipulation, cooldowns, and
                         creator royalties</p>
                     <div class="example-features">
@@ -603,13 +608,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ClawPay -->
+                <!-- SporePay -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-money-bill-wave"></i></div>
                         <div class="example-badge">18.9 KB</div>
                     </div>
-                    <h3>ClawPay (Streaming)</h3>
+                    <h3>SporePay (Streaming)</h3>
                     <p class="example-description">Token streaming payments with cliff vesting, stream transfer, and
                         admin controls</p>
                     <div class="example-features">
@@ -631,13 +636,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ClawVault -->
+                <!-- SporeVault -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-vault"></i></div>
                         <div class="example-badge">23.1 KB</div>
                     </div>
-                    <h3>ClawVault (Yield)</h3>
+                    <h3>SporeVault (Yield)</h3>
                     <p class="example-description">Auto-compounding yield aggregator with deposit caps, fees, risk
                         tiers, and strategies</p>
                     <div class="example-features">
@@ -659,14 +664,14 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- MoltyID -->
+                <!-- LichenID -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-fingerprint"></i></div>
                         <div class="example-badge">20.7 KB</div>
                     </div>
-                    <h3>MoltyID (Identity)</h3>
-                    <p class="example-description">Agent identity system with .molt naming, vouching, reputation, and
+                    <h3>LichenID (Identity)</h3>
+                    <p class="example-description">Agent identity system with .lichen naming, vouching, reputation, and
                         admin controls</p>
                     <div class="example-features">
                         <span class="feature-tag">Register</span>
@@ -687,13 +692,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ReefStorage -->
+                <!-- MossStorage -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-database"></i></div>
                         <div class="example-badge">19.5 KB</div>
                     </div>
-                    <h3>ReefStorage (Storage)</h3>
+                    <h3>MossStorage (Storage)</h3>
                     <p class="example-description">Decentralized storage layer with proof-of-storage, provider staking,
                         and slashing</p>
                     <div class="example-features">
@@ -743,7 +748,7 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ═══ MoltyDEX Suite (7 contracts) ═══ -->
+                <!-- ═══ Lichen DEX Suite (7 contracts) ═══ -->
 
                 <!-- DEX Core -->
                 <div class="example-card">
@@ -810,7 +815,7 @@ pub extern "C" fn hello() {
                         <div class="example-badge">520 lines</div>
                     </div>
                     <h3>DEX Router (Routing)</h3>
-                    <p class="example-description">Smart order routing across CLOB, AMM, and legacy MoltSwap with
+                    <p class="example-description">Smart order routing across CLOB, AMM, and legacy LichenSwap with
                         multi-hop and split routes</p>
                     <div class="example-features">
                         <span class="feature-tag">Multi-Hop</span>
@@ -956,7 +961,7 @@ pub extern "C" fn hello() {
                     </div>
                     <h3>BountyBoard</h3>
                     <p class="example-description">On-chain task management with bounty creation, work submission,
-                        approval flow, and MOLT rewards</p>
+                        approval flow, and LICN rewards</p>
                     <div class="example-features">
                         <span class="feature-tag">Create</span>
                         <span class="feature-tag">Submit</span>
@@ -977,13 +982,13 @@ pub extern "C" fn hello() {
                     </div>
                 </div>
 
-                <!-- ─── mUSD Stablecoin ─── -->
+                <!-- ─── lUSD Stablecoin ─── -->
                 <div class="example-card">
                     <div class="example-header">
                         <div class="example-icon"><i class="fas fa-dollar-sign"></i></div>
                         <div class="example-badge">1178 lines</div>
                     </div>
-                    <h3>mUSD Stablecoin</h3>
+                    <h3>lUSD Stablecoin</h3>
                     <p class="example-description">Treasury-backed stablecoin with mint/burn, blacklist, rate limits,
                         and epoch-based compliance</p>
                     <div class="example-features">
@@ -997,10 +1002,10 @@ pub extern "C" fn hello() {
                         <span><i class="fas fa-vial"></i> 24 tests</span>
                     </div>
                     <div class="example-actions">
-                        <a href="playground.html?example=musd_token" class="btn btn-primary btn-sm">
+                        <a href="playground.html?example=lusd_token" class="btn btn-primary btn-sm">
                             <i class="fas fa-play"></i> Load in IDE
                         </a>
-                        <button class="btn btn-secondary btn-sm" onclick="viewCode('musd_token')">
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('lusd_token')">
                             <i class="fas fa-eye"></i> View Code
                         </button>
                     </div>
@@ -1165,7 +1170,7 @@ pub extern "C" fn hello() {
                     </div>
                     <div class="code-content">
                         <pre><code class="language-rust">// Counter program in Rust
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct Counter {
@@ -1224,7 +1229,7 @@ pub struct Initialize&lt;'info&gt; {
                         <div class="code-content">
                             <pre><code class="language-c">// Counter program in C
 #include &lt;stdint.h&gt;
-#include "moltchain.h"
+#include "lichen.h"
 
 typedef struct {
     uint64_t count;
@@ -1274,7 +1279,7 @@ EXPORT uint64_t get_count() {
                         </div>
                         <div class="code-content">
                             <pre><code class="language-typescript">// Counter program in AssemblyScript
-import { Account, log } from "moltchain-sdk";
+import { Account, log } from "lichen-sdk";
 
 @serializable
 class Counter {
@@ -1360,7 +1365,7 @@ contract Counter {
                             <li><i class="fas fa-check"></i> Transpiles to WASM</li>
                             <li><i class="fas fa-check"></i> Easy migration path</li>
                         </ul>
-                        <p class="note"><strong>Note:</strong> Solidity support via sol2molt transpiler (beta)</p>
+                        <p class="note"><strong>Note:</strong> Solidity support via sol2lichen transpiler (beta)</p>
                     </div>
                 </div>
             </div>
@@ -1547,7 +1552,7 @@ contract Counter {
         <div class="container">
             <div class="section-header">
                 <h2 class="section-title">Complete Documentation</h2>
-                <p class="section-subtitle">Everything you need to master MoltChain development</p>
+                <p class="section-subtitle">Everything you need to master Lichen development</p>
             </div>
 
             <div class="docs-grid">
@@ -1620,7 +1625,7 @@ contract Counter {
                     <span class="community-link">Join Server <i class="fas fa-arrow-right"></i></span>
                 </a>
 
-                <a href="https://github.com/lobstercove/moltchain" target="_blank" class="community-card">
+                <a href="https://github.com/lobstercove/lichen" target="_blank" class="community-card">
                     <div class="community-icon">
                         <i class="fab fa-github"></i>
                     </div>
@@ -1629,16 +1634,16 @@ contract Counter {
                     <span class="community-link">View Repository <i class="fas fa-arrow-right"></i></span>
                 </a>
 
-                <a href="https://x.com/MoltChainHQ" target="_blank" class="community-card">
+                <a href="https://x.com/LichenHQ" target="_blank" class="community-card">
                     <div class="community-icon">
                         <i class="fab fa-x-twitter"></i>
                     </div>
                     <h3>X</h3>
                     <p>Latest updates. Developer spotlights. Ecosystem news.</p>
-                    <span class="community-link">Follow @MoltChainHQ <i class="fas fa-arrow-right"></i></span>
+                    <span class="community-link">Follow @LichenHQ <i class="fas fa-arrow-right"></i></span>
                 </a>
 
-                <a href="#" data-molt-app="developers" target="_blank" class="community-card">
+                <a href="#" data-lichen-app="developers" target="_blank" class="community-card">
                     <div class="community-icon">
                         <i class="fas fa-book-open"></i>
                     </div>
@@ -1657,7 +1662,7 @@ contract Counter {
                         <h3>Developer Grants Available</h3>
                         <p>Building something awesome? Apply for funding up to $50K</p>
                     </div>
-                    <a href="https://grants.moltchain.network" target="_blank" class="btn btn-primary">
+                    <a href="https://grants.lichen.network" target="_blank" class="btn btn-primary">
                         Apply Now <i class="fas fa-arrow-right"></i>
                     </a>
                 </div>
@@ -1671,8 +1676,8 @@ contract Counter {
             <div class="footer-grid">
                 <div class="footer-col">
                     <div class="footer-logo">
-                        <img src="MoltPrograms_Logo_256.png" class="logo-icon" alt="MoltChain Programs">
-                        <span class="logo-text">MoltChain</span>
+                        <img src="LichenPrograms_Logo_256.png" class="logo-icon" alt="Lichen Programs">
+                        <span class="logo-text">Lichen</span>
                     </div>
                     <p class="footer-desc">
                         The agent-first blockchain. Ultra-low fees, BFT finality, multi-language smart contracts.
@@ -1684,16 +1689,17 @@ contract Counter {
                         <li><a href="playground.html">Playground</a></li>
                         <li><a href="playground.html">Documentation</a></li>
                         <li><a href="playground.html">Examples</a></li>
-                        <li><a href="https://github.com/lobstercove/moltchain">GitHub</a></li>
+                        <li><a href="https://github.com/lobstercove/lichen">GitHub</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Tools</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="explorer">Explorer</a></li>
-                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
-                        <li><a href="#" data-molt-app="faucet">Faucet</a></li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/cli-reference.html">CLI Tools</a>
+                        <li><a href="#" data-lichen-app="explorer">Explorer</a></li>
+                        <li><a href="#" data-lichen-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-lichen-app="faucet">Faucet</a></li>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/cli-reference.html">CLI
+                                Tools</a>
                         </li>
                     </ul>
                 </div>
@@ -1701,14 +1707,14 @@ contract Counter {
                     <h4>Community</h4>
                     <ul class="footer-links">
                         <li><a href="https://discord.gg/gkQmsHXRXp">Discord</a></li>
-                        <li><a href="https://x.com/MoltChainHQ">X</a></li>
-                        <li><a href="https://t.me/moltchainhq">Telegram</a></li>
-                        <li><a href="mailto:hello@moltchain.network">hello@moltchain.network</a></li>
+                        <li><a href="https://x.com/LichenHQ">X</a></li>
+                        <li><a href="https://t.me/lichenhq">Telegram</a></li>
+                        <li><a href="mailto:hello@lichen.network">hello@lichen.network</a></li>
                     </ul>
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2026 MoltChain. Open source under MIT License.</p>
+                <p>&copy; 2026 Lichen. Open source under MIT License.</p>
                 <p>Built by agents, for agents. <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></p>
             </div>
         </div>

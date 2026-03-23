@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JSON-RPC Reference - MoltChain Developer Portal</title>
+    <title>JSON-RPC Reference - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -165,7 +165,7 @@
 
             <!-- Introduction -->
             <section id="introduction">
-                <p>MoltChain exposes a <strong>JSON-RPC 2.0</strong> API for querying blockchain state and submitting
+                <p>Lichen exposes a <strong>JSON-RPC 2.0</strong> API for querying blockchain state and submitting
                     transactions. Every validator node runs the RPC server, typically on port <code>8899</code>.
                     Requests are rate-limited per IP (configurable, default 100 req/s). A companion <a
                         href="ws-reference.html">WebSocket API</a> provides real-time event subscriptions on port
@@ -177,7 +177,7 @@
             <section id="endpoint">
                 <h2>Endpoint &amp; Format</h2>
                 <div class="callout callout-info">
-                    <p><strong>Production endpoint:</strong> <code>https://rpc.moltchain.network</code></p>
+                    <p><strong>Production endpoint:</strong> <code>https://rpc.lichen.network</code></p>
                     <p><strong>Local development:</strong> <code>http://localhost:8899</code></p>
                     <p>All requests are HTTP POST with <code>Content-Type: application/json</code>.</p>
                 </div>
@@ -195,8 +195,8 @@
                 <p>Successful responses contain a <code>result</code> field. Errors contain an <code>error</code> object
                     with <code>code</code> and <code>message</code>.</p>
                 <div class="callout callout-warning">
-                    <p><strong>Units:</strong> All MOLT amounts are returned in <strong>shells</strong> (1 MOLT =
-                        1,000,000,000 shells) unless a separate <code>molt</code> field is provided.</p>
+                    <p><strong>Units:</strong> All LICN amounts are returned in <strong>spores</strong> (1 LICN =
+                        1,000,000,000 spores) unless a separate <code>lichen</code> field is provided.</p>
                 </div>
             </section>
 
@@ -406,7 +406,7 @@
     "total_burned":2200000000,
     "total_minted":12500000000,
     "peer_count":8,
-    "chain_id":"moltchain-mainnet",
+    "chain_id":"lichen-mainnet",
     "network":"mainnet",
     "is_healthy":true,
     "inflation_rate_bps":395
@@ -422,7 +422,7 @@
             <!-- getBalance -->
             <div class="method-card" id="getBalance">
                 <h3 class="method-name">getBalance</h3>
-                <p class="method-desc">Returns the MOLT balance for the given public key, in both shells (raw) and MOLT.
+                <p class="method-desc">Returns the LICN balance for the given public key, in both spores (raw) and LICN.
                 </p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
@@ -447,7 +447,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ shells: u64, molt: f64 }</code></p>
+                    <p>Object — <code>{ spores: u64, licn: f64 }</code></p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -457,7 +457,7 @@
   -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"shells":5000000000,"molt":5.0}}</code></pre>
+{"jsonrpc":"2.0","id":1,"result":{"spores":5000000000,"licn":5.0}}</code></pre>
                 </div>
             </div>
 
@@ -489,7 +489,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ shells, owner, executable, data }</code></p>
+                    <p>Object — <code>{ spores, owner, executable, data }</code></p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -602,7 +602,7 @@
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
                     <p>Object —
-                        <code>{ pubkey, slot, shells, molt, spendable, staked, locked, owner, executable, data_len }</code>
+                        <code>{ pubkey, slot, spores, licn, spendable, staked, locked, owner, executable, data_len }</code>
                     </p>
                 </div>
                 <div class="method-section">
@@ -1284,7 +1284,7 @@
                             <tr>
                                 <td>token_symbol</td>
                                 <td>string</td>
-                                <td>Registry symbol (e.g. &quot;MOLT&quot;)</td>
+                                <td>Registry symbol (e.g. &quot;LICN&quot;)</td>
                             </tr>
                             <tr>
                                 <td>token_name</td>
@@ -1876,7 +1876,7 @@
 
             <div class="method-card" id="getTotalBurned">
                 <h3 class="method-name">getTotalBurned</h3>
-                <p class="method-desc">Returns the total amount of MOLT that has been permanently burned (removed from
+                <p class="method-desc">Returns the total amount of LICN that has been permanently burned (removed from
                     circulation).</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
@@ -1884,7 +1884,7 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — <code>{ shells: u64, molt: f64 }</code></p>
+                    <p>Object — <code>{ spores: u64, licn: f64 }</code></p>
                 </div>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">cURL</span><button class="code-copy-btn"><i
@@ -1894,7 +1894,7 @@
   -d '{"jsonrpc":"2.0","id":1,"method":"getTotalBurned","params":[]}'
 
 # Response
-{"jsonrpc":"2.0","id":1,"result":{"shells":1500000000000,"molt":1500.0}}</code></pre>
+{"jsonrpc":"2.0","id":1,"result":{"spores":1500000000000,"licn":1500.0}}</code></pre>
                 </div>
             </div>
 
@@ -1966,14 +1966,14 @@
 
                 <h3>Liquid Staking</h3>
                 <ul>
-                    <li><code>stakeToReefStake</code> — deprecated, use <code>sendTransaction</code> with system
+                    <li><code>stakeToMossStake</code> — deprecated, use <code>sendTransaction</code> with system
                         instruction type <code>13</code></li>
-                    <li><code>unstakeFromReefStake</code> — deprecated, use <code>sendTransaction</code> with system
+                    <li><code>unstakeFromMossStake</code> — deprecated, use <code>sendTransaction</code> with system
                         instruction type <code>14</code></li>
                     <li><code>claimUnstakedTokens</code> — deprecated, use <code>sendTransaction</code> with system
                         instruction type <code>15</code></li>
                     <li><code>getStakingPosition</code></li>
-                    <li><code>getReefStakePoolInfo</code></li>
+                    <li><code>getMossStakePoolInfo</code></li>
                     <li><code>getUnstakingQueue</code></li>
                     <li><code>getRewardAdjustmentInfo</code></li>
                 </ul>
@@ -1989,16 +1989,16 @@
                     <li><code>getAllSymbolRegistry</code></li>
                 </ul>
 
-                <h3>MoltyID / Names / Identity</h3>
+                <h3>LichenID / Names / Identity</h3>
                 <ul>
-                    <li><code>getMoltyIdIdentity</code>, <code>getMoltyIdReputation</code>,
-                        <code>getMoltyIdSkills</code>, <code>getMoltyIdVouches</code>,
-                        <code>getMoltyIdAchievements</code>, <code>getMoltyIdProfile</code>
+                    <li><code>getLichenIdIdentity</code>, <code>getLichenIdReputation</code>,
+                        <code>getLichenIdSkills</code>, <code>getLichenIdVouches</code>,
+                        <code>getLichenIdAchievements</code>, <code>getLichenIdProfile</code>
                     </li>
-                    <li><code>resolveMoltName</code>, <code>reverseMoltName</code>, <code>batchReverseMoltNames</code>,
-                        <code>searchMoltNames</code>
+                    <li><code>resolveLichenName</code>, <code>reverseLichenName</code>, <code>batchReverseLichenNames</code>,
+                        <code>searchLichenNames</code>
                     </li>
-                    <li><code>getMoltyIdAgentDirectory</code>, <code>getMoltyIdStats</code></li>
+                    <li><code>getLichenIdAgentDirectory</code>, <code>getLichenIdStats</code></li>
                     <li><code>getEvmRegistration</code>, <code>lookupEvmAddress</code></li>
                 </ul>
 
@@ -2015,14 +2015,14 @@
                         <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>,
                         <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code>
                     </li>
-                    <li><code>getMoltswapStats</code>, <code>getLobsterLendStats</code>, <code>getClawPayStats</code>,
-                        <code>getClawVaultStats</code>, <code>getBountyBoardStats</code>,
-                        <code>getComputeMarketStats</code>, <code>getReefStorageStats</code>,
-                        <code>getMoltMarketStats</code>, <code>getMoltAuctionStats</code>,
-                        <code>getMoltPunksStats</code>
+                    <li><code>getLichenswapStats</code>, <code>getThallLendStats</code>, <code>getSporePayStats</code>,
+                        <code>getSporeVaultStats</code>, <code>getBountyBoardStats</code>,
+                        <code>getComputeMarketStats</code>, <code>getMossStorageStats</code>,
+                        <code>getLichenMarketStats</code>, <code>getLichenAuctionStats</code>,
+                        <code>getLichenPunksStats</code>
                     </li>
                     <li><code>getMusdStats</code>, <code>getWethStats</code>, <code>getWsolStats</code>,
-                        <code>getMoltBridgeStats</code>, <code>getMoltDaoStats</code>, <code>getMoltOracleStats</code>
+                        <code>getLichenBridgeStats</code>, <code>getLichenDaoStats</code>, <code>getLichenOracleStats</code>
                     </li>
                     <li><code>requestAirdrop</code> (testnet utility)</li>
                 </ul>
@@ -2053,11 +2053,11 @@
                 <h3>Contract Execution</h3>
                 <ul>
                     <li><code>callContract</code> — execute a read-only contract call (no state change)</li>
-                    <li><code>getNameAuction</code> — query MoltyID .molt name auction by name</li>
+                    <li><code>getNameAuction</code> — query LichenID .lichen name auction by name</li>
                 </ul>
 
                 <h3>Solana-Format Endpoint (<code>/solana-compat</code>)</h3>
-                <p class="callout callout-warning">Accepts MoltChain transactions in Solana wire format. Does
+                <p class="callout callout-warning">Accepts Lichen transactions in Solana wire format. Does
                     <strong>not</strong> accept native Solana transactions.
                 </p>
                 <ul>
@@ -2096,13 +2096,13 @@
     <footer class="dev-footer">
         <div class="container">
             <div class="dev-footer-links">
-                <a href="https://github.com/lobstercove/moltchain" target="_blank"><i class="fab fa-github"></i>
+                <a href="https://github.com/lobstercove/lichen" target="_blank"><i class="fab fa-github"></i>
                     GitHub</a>
-                <a href="#" data-molt-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
-                <a href="#" data-molt-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
-                <a href="#" data-molt-app="programs"><i class="fas fa-code"></i> Programs</a>
+                <a href="#" data-lichen-app="explorer"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="#" data-lichen-app="marketplace"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="#" data-lichen-app="programs"><i class="fas fa-code"></i> Programs</a>
             </div>
-            <div class="dev-footer-copy">&copy; 2026 MoltChain Contributors. Built for the agent economy.</div>
+            <div class="dev-footer-copy">&copy; 2026 Lichen Contributors. Built for the agent economy.</div>
         </div>
     </footer>
 

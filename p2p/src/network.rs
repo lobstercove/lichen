@@ -7,7 +7,7 @@ use crate::message::{
 };
 use crate::peer::{PeerManager, NON_CONSENSUS_FANOUT};
 use crate::peer_store::PeerStore;
-use moltchain_core::{
+use lichen_core::{
     Block, BlockHeader, CommitSignature, Precommit, Prevote, Proposal, Pubkey, StakePool,
     Transaction, ValidatorSet, Vote,
 };
@@ -150,8 +150,8 @@ pub struct StatusResponseMsg {
 #[derive(Debug, Clone)]
 pub struct ConsistencyReportMsg {
     pub requester: SocketAddr,
-    pub validator_set_hash: moltchain_core::Hash,
-    pub stake_pool_hash: moltchain_core::Hash,
+    pub validator_set_hash: lichen_core::Hash,
+    pub stake_pool_hash: lichen_core::Hash,
 }
 
 /// Snapshot request from peer
@@ -199,7 +199,7 @@ pub struct CompactBlockMsg {
 #[derive(Debug, Clone)]
 pub struct GetBlockTxsMsg {
     pub slot: u64,
-    pub missing_hashes: Vec<moltchain_core::Hash>,
+    pub missing_hashes: Vec<lichen_core::Hash>,
     pub requester: SocketAddr,
 }
 
@@ -272,7 +272,7 @@ pub struct P2PNetwork {
     snapshot_response_tx: mpsc::Sender<SnapshotResponseMsg>,
 
     /// Outgoing slashing evidence channel
-    slashing_evidence_tx: mpsc::Sender<moltchain_core::SlashingEvidence>,
+    slashing_evidence_tx: mpsc::Sender<lichen_core::SlashingEvidence>,
 
     /// P3-3: Outgoing compact block channel
     compact_block_tx: mpsc::Sender<CompactBlockMsg>,
@@ -319,7 +319,7 @@ impl P2PNetwork {
         consistency_report_tx: mpsc::Sender<ConsistencyReportMsg>,
         snapshot_request_tx: mpsc::Sender<SnapshotRequestMsg>,
         snapshot_response_tx: mpsc::Sender<SnapshotResponseMsg>,
-        slashing_evidence_tx: mpsc::Sender<moltchain_core::SlashingEvidence>,
+        slashing_evidence_tx: mpsc::Sender<lichen_core::SlashingEvidence>,
         compact_block_tx: mpsc::Sender<CompactBlockMsg>,
         get_block_txs_tx: mpsc::Sender<GetBlockTxsMsg>,
         erasure_shard_request_tx: mpsc::Sender<ErasureShardRequestMsg>,
@@ -977,7 +977,7 @@ impl P2PNetwork {
                 )
                 .ok()
                 .map(|message| {
-                    moltchain_core::account::Keypair::verify(&pubkey, &message, &signature)
+                    lichen_core::account::Keypair::verify(&pubkey, &message, &signature)
                 })
                 .unwrap_or(false)
                     || validator_announcement_signing_message(
@@ -989,7 +989,7 @@ impl P2PNetwork {
                     )
                     .ok()
                     .map(|message| {
-                        moltchain_core::account::Keypair::verify(&pubkey, &message, &signature)
+                        lichen_core::account::Keypair::verify(&pubkey, &message, &signature)
                     })
                     .unwrap_or(false);
 

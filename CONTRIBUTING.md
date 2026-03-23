@@ -1,6 +1,6 @@
-# Contributing to MoltChain
+# Contributing to Lichen
 
-Welcome! We're glad you're interested in contributing to MoltChain. This guide
+Welcome! We're glad you're interested in contributing to Lichen. This guide
 will help you get started.
 
 ## Development Environment
@@ -19,8 +19,8 @@ will help you get started.
 ### Clone & Build
 
 ```bash
-git clone https://github.com/lobstercove/moltchain.git
-cd moltchain
+git clone https://github.com/lobstercove/lichen.git
+cd lichen
 cargo build --workspace
 ```
 
@@ -43,8 +43,8 @@ cargo bench --bench processor_bench
 Start the validator, then run:
 
 ```bash
-cargo build --release --bin moltchain-validator
-./target/release/moltchain-validator &
+cargo build --release --bin lichen-validator
+./target/release/lichen-validator &
 bash test-rpc-comprehensive.sh
 bash test-cli-comprehensive.sh
 ```
@@ -85,11 +85,11 @@ cargo clippy --workspace -- -D warnings
 
 ## Building WASM Contracts
 
-MoltChain ships 29 on-chain contracts under `contracts/`. Each is its own crate:
+Lichen ships 29 on-chain contracts under `contracts/`. Each is its own crate:
 
 ```bash
 # Build a single contract
-cargo build --target wasm32-unknown-unknown --release -p moltcoin
+cargo build --target wasm32-unknown-unknown --release -p lichencoin
 
 # Build all contracts
 for dir in contracts/*/; do
@@ -156,7 +156,7 @@ Feature requests are welcome — label them `enhancement`.
 
 ## License
 
-MoltChain uses a dual-license model:
+Lichen uses a dual-license model:
 
 - **Apache 2.0** — core blockchain (`core/`, `validator/`, `p2p/`, `rpc/`)
 - **MIT** — SDK, tools, explorer, wallet, and contracts
@@ -168,4 +168,4 @@ applicable license for the component you are modifying.
 
 ---
 
-Thank you for helping build MoltChain! 🦞
+Thank you for helping build Lichen! 🦞

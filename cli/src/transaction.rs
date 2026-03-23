@@ -1,23 +1,23 @@
 // Transaction creation and signing
 
 use anyhow::{Context, Result, bail};
-use moltchain_core::{Transaction, Message, Instruction, Pubkey, Hash, SYSTEM_PROGRAM_ID};
+use lichen_core::{Transaction, Message, Instruction, Pubkey, Hash, SYSTEM_PROGRAM_ID};
 use std::path::PathBuf;
 use std::io::{self, Write};
 
 use crate::config::CliConfig;
 use crate::keygen;
 
-/// Convert MOLT (f64) to shells (u64) with precise integer arithmetic.
-fn molt_to_shells(molt: f64) -> u64 {
-    if molt <= 0.0 {
+/// Convert LICN (f64) to spores (u64) with precise integer arithmetic.
+fn licn_to_spores(lichen: f64) -> u64 {
+    if lichen <= 0.0 {
         return 0;
     }
-    if molt >= (u64::MAX / 1_000_000_000) as f64 {
+    if lichen >= (u64::MAX / 1_000_000_000) as f64 {
         return u64::MAX;
     }
-    let whole = molt.trunc() as u64;
-    let frac = ((molt.fract() * 1_000_000_000.0).round()) as u64;
+    let whole = lichen.trunc() as u64;
+    let frac = ((lichen.fract() * 1_000_000_000.0).round()) as u64;
     whole.saturating_mul(1_000_000_000).saturating_add(frac)
 }
 
@@ -37,14 +37,14 @@ pub async fn transfer(
     let recipient = Pubkey::from_base58(&to_address)
         .context("Invalid recipient address")?;
     
-    // Convert MOLT to shells using precise integer arithmetic
-    let shells = molt_to_shells(amount);
+    // Convert LICN to spores using precise integer arithmetic
+    let spores = licn_to_spores(amount);
     
     // Display transaction details
     println!("📤 Transfer Transaction");
     println!("\n   From:   {}", sender_pubkey.to_base58());
     println!("   To:     {}", to_address);
-    println!("   Amount: {} MOLT ({} shells)", amount, shells);
+    println!("   Amount: {} LICN ({} spores)", amount, spores);
     
     // Get confirmation
     if !skip_confirm {
@@ -89,7 +89,7 @@ pub async fn transfer(
     
     // Create transfer instruction
     let mut transfer_data = vec![0u8];
-    transfer_data.extend_from_slice(&shells.to_le_bytes());
+    transfer_data.extend_from_slice(&spores.to_le_bytes());
     
     let instruction = Instruction {
         program_id: SYSTEM_PROGRAM_ID,

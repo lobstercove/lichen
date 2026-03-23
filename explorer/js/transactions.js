@@ -1,4 +1,4 @@
-// MoltChain Explorer – Transactions Page (server-side pagination)
+// Lichen Explorer – Transactions Page (server-side pagination)
 // Uses getRecentTransactions RPC with cursor-based prev/next.
 
 const TXS_PER_PAGE = 50;
@@ -73,7 +73,7 @@ async function renderTransactions() {
 
     if (currentFilter.status) {
         txs = txs.filter(tx => {
-            const errored = isErrorStatus(tx.status);
+            const errored = tx.success === false || isErrorStatus(tx.status);
             return currentFilter.status === 'error' ? errored : !errored;
         });
     }
@@ -93,8 +93,8 @@ async function renderTransactions() {
         if (from) addresses.push(from);
         if (to) addresses.push(to);
     });
-    const nameMap = typeof batchResolveMoltNames === 'function'
-        ? await batchResolveMoltNames(addresses)
+    const nameMap = typeof batchResolveLichenNames === 'function'
+        ? await batchResolveLichenNames(addresses)
         : {};
 
     table.innerHTML = txs.map(tx => {
@@ -104,33 +104,33 @@ async function renderTransactions() {
         const shieldedTx = isShieldedType(type);
         const fromAddress = shieldedTx ? null : (tx.from || instruction?.accounts?.[0] || null);
         const toAddress = shieldedTx ? null : (tx.to || instruction?.accounts?.[1] || null);
-        const amountShells = tx.amount_shells !== undefined
-            ? tx.amount_shells
-            : (tx.amount !== undefined ? Math.round(tx.amount * SHELLS_PER_MOLT) : null);
+        const amountSpores = tx.amount_spores !== undefined
+            ? tx.amount_spores
+            : (tx.amount !== undefined ? Math.round(tx.amount * SPORES_PER_LICN) : null);
         const amount = tx.token_symbol
             ? formatNumber(tx.token_amount || 0) + ' ' + tx.token_symbol
-            : (amountShells !== null ? formatMolt(amountShells) : '-');
-        const feeShells = tx.fee_shells !== undefined
-            ? tx.fee_shells
+            : (amountSpores !== null ? formatLicn(amountSpores) : '-');
+        const feeSpores = tx.fee_spores !== undefined
+            ? tx.fee_spores
             : (tx.fee !== undefined ? tx.fee : null);
-        const fee = feeShells !== null ? formatMolt(feeShells) : '-';
+        const fee = feeSpores !== null ? formatLicn(feeSpores) : '-';
         const slot = tx.slot;
         const timestamp = tx.timestamp;
-        const statusRaw = tx.status || 'Success';
-        const isError = isErrorStatus(statusRaw);
+        const statusRaw = tx.status || (tx.success === false ? 'Error' : 'Success');
+        const isError = tx.success === false || isErrorStatus(statusRaw);
         const statusLabel = isError ? 'Error' : 'Success';
         const statusIcon = isError ? 'times' : 'check';
         const statusClass = isError ? 'error' : 'success';
 
         const fromDisplay = shieldedTx
             ? 'Shielded Note(s) (private)'
-            : (typeof formatAddressWithMoltName === 'function'
-                ? formatAddressWithMoltName(fromAddress, nameMap[fromAddress])
+            : (typeof formatAddressWithLichenName === 'function'
+                ? formatAddressWithLichenName(fromAddress, nameMap[fromAddress])
                 : formatAddress(fromAddress));
         const toDisplay = shieldedTx
             ? 'Shielded Note(s) (private)'
-            : (typeof formatAddressWithMoltName === 'function'
-                ? formatAddressWithMoltName(toAddress, nameMap[toAddress])
+            : (typeof formatAddressWithLichenName === 'function'
+                ? formatAddressWithLichenName(toAddress, nameMap[toAddress])
                 : formatAddress(toAddress));
 
         const fromCell = shieldedTx

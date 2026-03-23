@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'moltWalletState';
+const STORAGE_KEY = 'lichenWalletState';
 
 const DEFAULT_STATE = {
   schemaVersion: 1,

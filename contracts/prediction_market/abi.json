@@ -20,7 +20,7 @@
     {"name": "withdraw_liquidity", "opcode": 15, "params": [{"name": "provider", "type": "Pubkey"}, {"name": "market_id", "type": "u64"}, {"name": "amount", "type": "u64"}]},
     {"name": "emergency_pause", "opcode": 16, "params": [{"name": "caller", "type": "Pubkey"}]},
     {"name": "emergency_unpause", "opcode": 17, "params": [{"name": "caller", "type": "Pubkey"}]},
-    {"name": "set_moltyid_address", "opcode": 18, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
+    {"name": "set_lichenid_address", "opcode": 18, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
     {"name": "set_oracle_address", "opcode": 19, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
     {"name": "set_musd_address", "opcode": 20, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},
     {"name": "set_dex_gov_address", "opcode": 21, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "address", "type": "Pubkey"}]},

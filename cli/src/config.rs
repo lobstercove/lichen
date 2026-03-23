@@ -55,11 +55,11 @@ impl CliConfig {
         serde_json::from_str(&content).context("Failed to parse config file")
     }
 
-    /// Get default config path (~/.moltchain/config.json)
+    /// Get default config path (~/.lichen/config.json)
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".moltchain")
+            .join(".lichen")
             .join("config.json")
     }
 
@@ -80,7 +80,7 @@ impl CliConfig {
 
     /// Display current configuration
     pub fn display(&self) {
-        println!("🔧 MoltChain CLI Configuration");
+        println!("🔧 Lichen CLI Configuration");
         println!("\n📡 RPC Endpoint:  {}", self.rpc_url);
         if let Some(ws) = &self.ws_url {
             println!("🔌 WebSocket:     {}", ws);

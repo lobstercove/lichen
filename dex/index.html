@@ -1,31 +1,41 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltyDEX — The Agent-First Decentralized Exchange</title>
-    <meta name="description" content="MoltyDEX: Trade on MoltChain's native DEX. Central Limit Order Book, concentrated liquidity AMM, margin trading, and smart order routing. Zero-slippage. Agent-fast.">
+    <title>Lichen DEX — Agent-First Decentralized Exchange</title>
+    <meta name="description"
+        content="Trade on Lichen's native DEX. Central Limit Order Book, concentrated liquidity AMM, margin trading, and smart order routing. Zero-slippage. Agent-fast.">
+    <meta property="og:title" content="Lichen DEX — Agent-First Decentralized Exchange">
+    <meta property="og:description"
+        content="Trade on Lichen's native DEX. Central Limit Order Book, concentrated liquidity AMM, margin trading, and smart order routing.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://dex.lichen.network">
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="dex.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <script src="shared/utils.js"></script>
     <script src="shared/wallet-connect.js"></script>
     <script src="shared/env.js"></script>
     <script src="shared-config.js?v=20260307"></script>
 </head>
+
 <body>
 
     <!-- ═══════════════════ NAVIGATION ═══════════════════ -->
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltyDEX">
-                <span class="logo-text">Molty<span class="accent">DEX</span></span>
+                <img src="LichenDex_Logo_256.png" class="logo-icon" alt="Lichen DEX">
+                <span class="logo-text">Lichen<span class="accent">DEX</span></span>
             </div>
             <ul class="nav-menu">
                 <li><a href="#" class="nav-link active" data-view="trade">Trade</a></li>
@@ -37,7 +47,7 @@
             </ul>
             <div class="nav-actions">
                 <div class="price-ticker" id="priceTicker">
-                    <span class="ticker-pair">MOLT/mUSD</span>
+                    <span class="ticker-pair">LICN/lUSD</span>
                     <span class="ticker-price" id="tickerPrice">—</span>
                     <span class="ticker-change" id="tickerChange">—</span>
                 </div>
@@ -58,41 +68,41 @@
         <!-- Pair Bar — full width above grid -->
         <div class="trade-top-bar">
             <div class="pair-bar">
-                    <div class="pair-selector" id="pairSelector">
-                        <div class="pair-active">
-                            <span class="pair-name">MOLT / mUSD</span>
-                            <i class="fas fa-chevron-down"></i>
-                        </div>
-                        <div class="pair-dropdown" id="pairDropdown">
-                            <input type="text" placeholder="Search pairs..." class="pair-search" id="pairSearch">
-                            <div class="pair-list" id="pairList">
-                                <!-- Populated from RPC -->
-                            </div>
-                        </div>
+                <div class="pair-selector" id="pairSelector">
+                    <div class="pair-active">
+                        <span class="pair-name">LICN / lUSD</span>
+                        <i class="fas fa-chevron-down"></i>
                     </div>
-                    <div class="pair-stats">
-                        <div class="stat-item">
-                            <span class="stat-label">24h Change</span>
-                            <span class="stat-value" id="change24h">—</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">24h High</span>
-                            <span class="stat-value" id="high24h">—</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">24h Low</span>
-                            <span class="stat-value" id="low24h">—</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">24h Volume</span>
-                            <span class="stat-value" id="vol24h">—</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">24h Trades</span>
-                            <span class="stat-value" id="trades24h">—</span>
+                    <div class="pair-dropdown" id="pairDropdown">
+                        <input type="text" placeholder="Search pairs..." class="pair-search" id="pairSearch">
+                        <div class="pair-list" id="pairList">
+                            <!-- Populated from RPC -->
                         </div>
                     </div>
                 </div>
+                <div class="pair-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">24h Change</span>
+                        <span class="stat-value" id="change24h">—</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">24h High</span>
+                        <span class="stat-value" id="high24h">—</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">24h Low</span>
+                        <span class="stat-value" id="low24h">—</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">24h Volume</span>
+                        <span class="stat-value" id="vol24h">—</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">24h Trades</span>
+                        <span class="stat-value" id="trades24h">—</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="trade-layout">
@@ -110,9 +120,12 @@
                         <div class="panel-header">
                             <h3>Order Book</h3>
                             <div class="book-layout-btns">
-                                <button class="book-layout active" data-layout="both" title="Both"><i class="fas fa-align-justify"></i></button>
-                                <button class="book-layout" data-layout="bids" title="Bids only"><i class="fas fa-arrow-up"></i></button>
-                                <button class="book-layout" data-layout="asks" title="Asks only"><i class="fas fa-arrow-down"></i></button>
+                                <button class="book-layout active" data-layout="both" title="Both"><i
+                                        class="fas fa-align-justify"></i></button>
+                                <button class="book-layout" data-layout="bids" title="Bids only"><i
+                                        class="fas fa-arrow-up"></i></button>
+                                <button class="book-layout" data-layout="asks" title="Asks only"><i
+                                        class="fas fa-arrow-down"></i></button>
                             </div>
                         </div>
                         <div class="book-header-row">
@@ -162,31 +175,39 @@
                                 <button class="margin-inline-type" data-mtype="cross">Cross</button>
                             </div>
                             <div class="margin-inline-leverage">
-                                <input type="range" id="inlineLeverage" min="2" max="100" step="1" value="2" class="leverage-slider">
+                                <input type="range" id="inlineLeverage" min="2" max="100" step="1" value="2"
+                                    class="leverage-slider">
                                 <span class="leverage-tag" id="inlineLeverageTag">2x</span>
                             </div>
                         </div>
-                        <div class="margin-inline-info" style="font-size:0.75rem;color:var(--text-muted);padding:4px 0;">
-                            <div style="display:flex;justify-content:space-between;"><span>Entry</span><span id="marginEntry">—</span></div>
-                            <div style="display:flex;justify-content:space-between;"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">—</span></div>
-                            <div style="display:flex;justify-content:space-between;"><span>Margin Ratio</span><span id="marginRatio">—</span></div>
+                        <div class="margin-inline-info"
+                            style="font-size:0.75rem;color:var(--text-muted);padding:4px 0;">
+                            <div style="display:flex;justify-content:space-between;"><span>Entry</span><span
+                                    id="marginEntry">—</span></div>
+                            <div style="display:flex;justify-content:space-between;"><span>Liq. Price</span><span
+                                    class="text-warning" id="marginLiqPrice">—</span></div>
+                            <div style="display:flex;justify-content:space-between;"><span>Margin Ratio</span><span
+                                    id="marginRatio">—</span></div>
                         </div>
-                        <div id="marginPairWarning" class="hidden" style="font-size:0.75rem;color:var(--yellow-warning);padding:4px 0;text-align:center;">
+                        <div id="marginPairWarning" class="hidden"
+                            style="font-size:0.75rem;color:var(--yellow-warning);padding:4px 0;text-align:center;">
                             <i class="fas fa-exclamation-triangle"></i> This pair is not enabled for margin trading
                         </div>
                         <div class="margin-sltp-row" style="display:flex;gap:8px;padding:4px 0;">
                             <div class="form-group" style="flex:1;margin:0;">
                                 <label style="font-size:0.72rem;">Stop-Loss</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="marginSL" placeholder="0.00" step="any" min="0" style="font-size:0.8rem;">
-                                    <span class="input-unit" style="font-size:0.7rem;">mUSD</span>
+                                    <input type="number" id="marginSL" placeholder="0.00" step="any" min="0"
+                                        style="font-size:0.8rem;">
+                                    <span class="input-unit" style="font-size:0.7rem;">lUSD</span>
                                 </div>
                             </div>
                             <div class="form-group" style="flex:1;margin:0;">
                                 <label style="font-size:0.72rem;">Take-Profit</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="marginTP" placeholder="0.00" step="any" min="0" style="font-size:0.8rem;">
-                                    <span class="input-unit" style="font-size:0.7rem;">mUSD</span>
+                                    <input type="number" id="marginTP" placeholder="0.00" step="any" min="0"
+                                        style="font-size:0.8rem;">
+                                    <span class="input-unit" style="font-size:0.7rem;">lUSD</span>
                                 </div>
                             </div>
                         </div>
@@ -207,21 +228,21 @@
                             <label>Price</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderPrice" placeholder="0.0000" step="any" min="0">
-                                <span class="input-unit">mUSD</span>
+                                <span class="input-unit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group stop-price-group" id="stopPriceGroup" style="display: none;">
                             <label>Stop Price</label>
                             <div class="input-with-unit">
                                 <input type="number" id="stopPrice" placeholder="0.0000" step="any" min="0">
-                                <span class="input-unit">mUSD</span>
+                                <span class="input-unit">lUSD</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <label>Amount</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderAmount" placeholder="0.00" step="any" min="0">
-                                <span class="input-unit">MOLT</span>
+                                <span class="input-unit">LICN</span>
                             </div>
                         </div>
                         <div class="amount-presets">
@@ -234,7 +255,7 @@
                             <label>Total</label>
                             <div class="input-with-unit">
                                 <input type="number" id="orderTotal" placeholder="0.00" readonly>
-                                <span class="input-unit">mUSD</span>
+                                <span class="input-unit">lUSD</span>
                             </div>
                         </div>
 
@@ -245,14 +266,16 @@
                             <label class="checkbox-label">
                                 <input type="checkbox" id="reduceOnly"> Reduce Only
                             </label>
-                            <button class="settings-gear-btn" id="settingsGearBtn" title="Order settings"><i class="fas fa-cog"></i></button>
+                            <button class="settings-gear-btn" id="settingsGearBtn" title="Order settings"><i
+                                    class="fas fa-cog"></i></button>
                         </div>
 
                         <!-- Task 5.1/5.2: Settings Popover -->
                         <div class="settings-popover hidden" id="settingsPopover">
                             <div class="settings-popover-header">
                                 <span>Order Settings</span>
-                                <button class="settings-close-btn" id="settingsCloseBtn"><i class="fas fa-times"></i></button>
+                                <button class="settings-close-btn" id="settingsCloseBtn"><i
+                                        class="fas fa-times"></i></button>
                             </div>
                             <div class="settings-section">
                                 <label class="settings-label">Slippage Tolerance</label>
@@ -261,7 +284,8 @@
                                     <button class="slippage-btn active" data-slip="0.5">0.5%</button>
                                     <button class="slippage-btn" data-slip="1.0">1.0%</button>
                                     <div class="slippage-custom">
-                                        <input type="number" id="slippageCustom" placeholder="Custom" step="0.01" min="0.01" max="50" class="form-input">
+                                        <input type="number" id="slippageCustom" placeholder="Custom" step="0.01"
+                                            min="0.01" max="50" class="form-input">
                                         <span>%</span>
                                     </div>
                                 </div>
@@ -297,7 +321,7 @@
                         </div>
 
                         <button class="btn btn-full btn-buy" id="submitOrder">
-                            Buy MOLT
+                            Buy LICN
                         </button>
                     </div>
                 </div>
@@ -317,9 +341,11 @@
         <div class="bottom-panel hidden" id="tradeBottomPanel">
             <div class="positions-panel">
                 <div class="positions-tabs">
-                    <button class="pos-tab active" data-target="content-orders">Spot Orders <span class="badge orders-badge"></span></button>
+                    <button class="pos-tab active" data-target="content-orders">Spot Orders <span
+                            class="badge orders-badge"></span></button>
                     <button class="pos-tab" data-target="content-history">Spot History</button>
-                    <button class="pos-tab" data-target="content-positions">Margin Positions <span class="badge margin-badge"></span></button>
+                    <button class="pos-tab" data-target="content-positions">Margin Positions <span
+                            class="badge margin-badge"></span></button>
                     <button class="pos-tab" data-target="content-margin-history">Margin History</button>
                 </div>
                 <div class="positions-content" id="content-orders">
@@ -334,37 +360,52 @@
                                 <th>Filled</th>
                                 <th>Time</th>
                                 <th></th>
-                                <th><button class="btn btn-tiny btn-secondary" id="cancelAllOrdersBtn" style="display:none;font-size:0.65rem;padding:2px 8px;" title="Cancel all orders on this pair">Cancel All</button></th>
+                                <th><button class="btn btn-tiny btn-secondary" id="cancelAllOrdersBtn"
+                                        style="display:none;font-size:0.65rem;padding:2px 8px;"
+                                        title="Cancel all orders on this pair">Cancel All</button></th>
                             </tr>
                         </thead>
                         <tbody id="openOrdersBody">
-                            <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>
+                            <tr>
+                                <td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i
+                                        class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view
+                                    orders</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="positions-content hidden" id="content-history">
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        <i class="fas fa-wallet"
+                            style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                         Connect wallet to view trade history
                     </div>
                 </div>
                 <div class="positions-content hidden" id="content-positions">
-                    <div class="margin-positions-stats" id="marginStatsStrip" style="display:flex;gap:16px;padding:8px 12px;font-size:0.8rem;border-bottom:1px solid var(--border);margin-bottom:8px;flex-wrap:wrap;">
+                    <div class="margin-positions-stats" id="marginStatsStrip"
+                        style="display:flex;gap:16px;padding:8px 12px;font-size:0.8rem;border-bottom:1px solid var(--border);margin-bottom:8px;flex-wrap:wrap;">
                         <span>Equity: <strong id="marginEquity">—</strong></span>
                         <span>Used: <strong id="marginUsed">—</strong></span>
                         <span>Available: <strong id="marginAvailable">—</strong></span>
                         <span>Insurance: <strong id="marginInsurance">—</strong></span>
-                        <span class="funding-rate-badge" style="background:var(--bg-secondary);border-radius:4px;padding:1px 6px;">Funding: <strong id="marginFundingRate">—</strong></span>
-                        <button class="btn btn-tiny btn-secondary" id="marginLiquidateBtn" title="Liquidate by position ID" style="font-size:0.7rem;padding:2px 8px;">Liquidate</button>
+                        <span class="funding-rate-badge"
+                            style="background:var(--bg-secondary);border-radius:4px;padding:1px 6px;">Funding: <strong
+                                id="marginFundingRate">—</strong></span>
+                        <button class="btn btn-tiny btn-secondary" id="marginLiquidateBtn"
+                            title="Liquidate by position ID"
+                            style="font-size:0.7rem;padding:2px 8px;">Liquidate</button>
                     </div>
-                    <div id="marginPositionsList" style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
-                        <i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                    <div id="marginPositionsList"
+                        style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
+                        <i class="fas fa-chart-line"
+                            style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                         No open positions
                     </div>
                 </div>
                 <div class="positions-content hidden" id="content-margin-history">
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        <i class="fas fa-wallet"
+                            style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                         Connect wallet to view margin history
                     </div>
                 </div>
@@ -379,12 +420,14 @@
             <div class="page-top-bar">
                 <div class="page-header-bar">
                     <div class="page-header-left">
-                        <h2><i class="fas fa-chart-pie"></i> PredictionReef</h2>
-                        <span class="page-subtitle">Trade outcomes · mUSD collateral · MoltOracle resolution · 24h dispute period</span>
+                        <h2><i class="fas fa-chart-pie"></i> Prediction Market</h2>
+                        <span class="page-subtitle">Trade outcomes · lUSD collateral · LichenOracle resolution · 24h
+                            dispute period</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill" id="pmRepPill"><i class="fas fa-id-badge"></i> 500+ MoltyID rep to create</span>
-                        <span class="info-pill"><i class="fas fa-shield-alt"></i> Full mUSD collateralization</span>
+                        <span class="info-pill" id="pmRepPill"><i class="fas fa-id-badge"></i> 500+ LichenID rep to
+                            create</span>
+                        <span class="info-pill"><i class="fas fa-shield-alt"></i> Full lUSD collateralization</span>
                         <span class="info-pill"><i class="fas fa-robot"></i> Agent-first API</span>
                     </div>
                 </div>
@@ -408,7 +451,7 @@
                     <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Collateral Locked</div>
                     <div class="pool-stat-value" id="pmTotalCollateral">—</div>
-                    <div class="stat-sub">mUSD</div>
+                    <div class="stat-sub">lUSD</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
@@ -429,13 +472,18 @@
                 <div class="predict-categories">
                     <button class="predict-cat-btn active" data-cat="all"><i class="fas fa-globe"></i> All</button>
                     <button class="predict-cat-btn" data-cat="crypto"><i class="fab fa-bitcoin"></i> Crypto</button>
-                    <button class="predict-cat-btn" data-cat="politics"><i class="fas fa-landmark"></i> Politics</button>
-                    <button class="predict-cat-btn" data-cat="sports"><i class="fas fa-football-ball"></i> Sports</button>
+                    <button class="predict-cat-btn" data-cat="politics"><i class="fas fa-landmark"></i>
+                        Politics</button>
+                    <button class="predict-cat-btn" data-cat="sports"><i class="fas fa-football-ball"></i>
+                        Sports</button>
                     <button class="predict-cat-btn" data-cat="tech"><i class="fas fa-microchip"></i> Tech</button>
                     <button class="predict-cat-btn" data-cat="science"><i class="fas fa-flask"></i> Science</button>
-                    <button class="predict-cat-btn" data-cat="entertainment"><i class="fas fa-film"></i> Entertainment</button>
-                    <button class="predict-cat-btn" data-cat="economics"><i class="fas fa-chart-bar"></i> Economics</button>
-                    <button class="predict-cat-btn" data-cat="custom"><i class="fas fa-puzzle-piece"></i> Custom</button>
+                    <button class="predict-cat-btn" data-cat="entertainment"><i class="fas fa-film"></i>
+                        Entertainment</button>
+                    <button class="predict-cat-btn" data-cat="economics"><i class="fas fa-chart-bar"></i>
+                        Economics</button>
+                    <button class="predict-cat-btn" data-cat="custom"><i class="fas fa-puzzle-piece"></i>
+                        Custom</button>
                 </div>
                 <div class="predict-sort">
                     <select class="network-select" id="predictSort">
@@ -472,7 +520,8 @@
                         <div class="predict-trade-form">
                             <div class="predict-selected-market">
                                 <span class="predict-selected-label">Selected Market</span>
-                                <span class="predict-selected-question" id="predictSelectedQ">Select a market to trade</span>
+                                <span class="predict-selected-question" id="predictSelectedQ">Select a market to
+                                    trade</span>
                             </div>
 
                             <div class="predict-outcome-toggle">
@@ -487,10 +536,10 @@
                             </div>
 
                             <div class="form-group">
-                                <label>Amount (mUSD)</label>
+                                <label>Amount (lUSD)</label>
                                 <div class="input-with-unit">
                                     <input type="number" id="predictAmount" placeholder="0.00" step="1" min="1">
-                                    <span class="input-unit">mUSD</span>
+                                    <span class="input-unit">lUSD</span>
                                 </div>
                                 <div class="predict-preset-row">
                                     <button class="preset-btn" data-amt="10">$10</button>
@@ -501,14 +550,20 @@
                             </div>
 
                             <div class="predict-summary">
-                                <div class="summary-row"><span>Available</span><span class="mono-value" id="predictMusdBalance">Connect wallet</span></div>
-                                <div class="summary-row"><span>Shares received</span><span class="mono-value" id="predictShares">0.00</span></div>
-                                <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">—</span></div>
-                                <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text" id="predictPayout">$0.00</span></div>
-                                <div class="summary-row"><span id="predictFeeLabel">Fee (2%)</span><span class="mono-value" id="predictFee">$0.00</span></div>
+                                <div class="summary-row"><span>Available</span><span class="mono-value"
+                                        id="predictMusdBalance">Connect wallet</span></div>
+                                <div class="summary-row"><span>Shares received</span><span class="mono-value"
+                                        id="predictShares">0.00</span></div>
+                                <div class="summary-row"><span>Avg price</span><span class="mono-value"
+                                        id="predictAvgPrice">—</span></div>
+                                <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text"
+                                        id="predictPayout">$0.00</span></div>
+                                <div class="summary-row"><span id="predictFeeLabel">Fee (2%)</span><span
+                                        class="mono-value" id="predictFee">$0.00</span></div>
                             </div>
 
-                            <button class="btn btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy YES Shares</button>
+                            <button class="btn btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy
+                                YES Shares</button>
                         </div>
                     </div>
 
@@ -520,7 +575,8 @@
                         <div class="predict-create-form">
                             <div class="form-group">
                                 <label>Question</label>
-                                <textarea id="predictQuestion" class="form-textarea" placeholder="Will [event] happen by [date]?" rows="2"></textarea>
+                                <textarea id="predictQuestion" class="form-textarea"
+                                    placeholder="Will [event] happen by [date]?" rows="2"></textarea>
                             </div>
 
                             <div class="form-group">
@@ -540,19 +596,28 @@
                             <div class="form-group">
                                 <label>Market Type</label>
                                 <div class="predict-type-selector">
-                                    <button class="predict-type-btn active" data-type="binary"><i class="fas fa-arrows-alt-h"></i> Binary (YES/NO)</button>
-                                    <button class="predict-type-btn" data-type="multi"><i class="fas fa-list"></i> Multi-Outcome</button>
+                                    <button class="predict-type-btn active" data-type="binary"><i
+                                            class="fas fa-arrows-alt-h"></i> Binary (YES/NO)</button>
+                                    <button class="predict-type-btn" data-type="multi"><i class="fas fa-list"></i>
+                                        Multi-Outcome</button>
                                 </div>
                             </div>
 
                             <!-- Multi-Outcome: dynamic outcome name inputs (hidden for binary) -->
                             <div class="form-group hidden" id="multiOutcomeSection">
-                                <label>Outcome Names <span style="font-weight:400;color:var(--text-muted);font-size:0.8rem;">(2-8 choices)</span></label>
+                                <label>Outcome Names <span
+                                        style="font-weight:400;color:var(--text-muted);font-size:0.8rem;">(2-8
+                                        choices)</span></label>
                                 <div id="outcomeInputs">
-                                    <div class="outcome-input-row"><span class="outcome-dot multi-1"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 1" maxlength="64"></div>
-                                    <div class="outcome-input-row"><span class="outcome-dot multi-2"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 2" maxlength="64"></div>
+                                    <div class="outcome-input-row"><span class="outcome-dot multi-1"></span><input
+                                            type="text" class="form-input outcome-name" placeholder="Outcome 1"
+                                            maxlength="64"></div>
+                                    <div class="outcome-input-row"><span class="outcome-dot multi-2"></span><input
+                                            type="text" class="form-input outcome-name" placeholder="Outcome 2"
+                                            maxlength="64"></div>
                                 </div>
-                                <button type="button" class="btn btn-small btn-secondary" id="addOutcomeBtn" style="margin-top:6px;"><i class="fas fa-plus"></i> Add Outcome</button>
+                                <button type="button" class="btn btn-small btn-secondary" id="addOutcomeBtn"
+                                    style="margin-top:6px;"><i class="fas fa-plus"></i> Add Outcome</button>
                             </div>
 
                             <div class="form-group">
@@ -561,22 +626,27 @@
                             </div>
 
                             <div class="form-group">
-                                <label>Initial Liquidity (mUSD)</label>
+                                <label>Initial Liquidity (lUSD)</label>
                                 <div class="input-with-unit">
                                     <input type="number" id="predictInitLiq" placeholder="1000" step="100" min="100">
-                                    <span class="input-unit">mUSD</span>
+                                    <span class="input-unit">lUSD</span>
                                 </div>
                             </div>
 
                             <div class="predict-create-requirements">
                                 <h4><i class="fas fa-exclamation-circle"></i> Requirements</h4>
-                                <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value" id="pmReqReputation">&ge; 500</span></div>
-                                <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value" id="pmReqMinLiq">100 mUSD</span></div>
-                                <div class="req-row"><span>Resolution Oracle</span><span class="mono-value">MoltOracle</span></div>
-                                <div class="req-row"><span>Dispute Period</span><span class="mono-value" id="pmReqDisputePeriod">48 hours</span></div>
+                                <div class="req-row"><span>LichenID Reputation</span><span class="mono-value"
+                                        id="pmReqReputation">&ge; 500</span></div>
+                                <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value"
+                                        id="pmReqMinLiq">100 lUSD</span></div>
+                                <div class="req-row"><span>Resolution Oracle</span><span
+                                        class="mono-value">LichenOracle</span></div>
+                                <div class="req-row"><span>Dispute Period</span><span class="mono-value"
+                                        id="pmReqDisputePeriod">48 hours</span></div>
                             </div>
 
-                            <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i> Create Market</button>
+                            <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i>
+                                Create Market</button>
                         </div>
                     </div>
                 </div>
@@ -593,26 +663,51 @@
                     <div class="positions-content" id="predict-positions">
                         <table class="orders-table">
                             <thead>
-                                <tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Avg Price</th><th>Current</th><th>P&L</th><th>Value</th><th></th></tr>
+                                <tr>
+                                    <th>Market</th>
+                                    <th>Outcome</th>
+                                    <th>Shares</th>
+                                    <th>Avg Price</th>
+                                    <th>Current</th>
+                                    <th>P&L</th>
+                                    <th>Value</th>
+                                    <th></th>
+                                </tr>
                             </thead>
                             <tbody id="predictPositionsBody">
-                                <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view positions</td></tr>
+                                <tr>
+                                    <td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i
+                                            class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view
+                                        positions</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
                     <div class="positions-content hidden" id="predict-history">
                         <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            <i class="fas fa-wallet"
+                                style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                             Connect wallet to view trade history
                         </div>
                     </div>
                     <div class="positions-content hidden" id="predict-created">
                         <table class="orders-table predict-created-table" style="width:100%;border-collapse:collapse;">
-                            <thead><tr>
-                                <th>Market</th><th>Category</th><th>Status</th><th>Volume</th><th>Traders</th><th>Close Date</th>
-                            </tr></thead>
+                            <thead>
+                                <tr>
+                                    <th>Market</th>
+                                    <th>Category</th>
+                                    <th>Status</th>
+                                    <th>Volume</th>
+                                    <th>Traders</th>
+                                    <th>Close Date</th>
+                                </tr>
+                            </thead>
                             <tbody id="predictCreatedBody">
-                                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view your markets</td></tr>
+                                <tr>
+                                    <td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i
+                                            class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view
+                                        your markets</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
@@ -629,11 +724,14 @@
                 <div class="page-header-bar">
                     <div class="page-header-left">
                         <h2><i class="fas fa-water"></i> Liquidity Pools</h2>
-                        <span class="page-subtitle">Concentrated liquidity · 4 fee tiers · Earn trading fees + MOLT rewards</span>
+                        <span class="page-subtitle">Concentrated liquidity · 4 fee tiers · Earn trading fees + LICN
+                            rewards</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill" id="poolFeeSplitPill"><i class="fas fa-chart-pie"></i> Fee Split: 40% Treasury · 30% LPs · 30% Stakers</span>
-                        <span class="info-pill" id="poolMaxPoolsPill"><i class="fas fa-layer-group"></i> Max 100 Pools</span>
+                        <span class="info-pill" id="poolFeeSplitPill"><i class="fas fa-chart-pie"></i> Fee Split: 40%
+                            Treasury · 30% LPs · 30% Stakers</span>
+                        <span class="info-pill" id="poolMaxPoolsPill"><i class="fas fa-layer-group"></i> Max 100
+                            Pools</span>
                     </div>
                 </div>
             </div>
@@ -690,7 +788,12 @@
                                 </tr>
                             </thead>
                             <tbody id="poolTableBody">
-                                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px;"><i class="fas fa-water" style="font-size:1.5rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Loading pools from RPC...</td></tr>
+                                <tr>
+                                    <td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px;"><i
+                                            class="fas fa-water"
+                                            style="font-size:1.5rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Loading
+                                        pools from RPC...</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
@@ -712,25 +815,30 @@
                         <div class="form-group">
                             <label>Fee Tier</label>
                             <div class="fee-tier-selector">
-                                <button class="fee-tier-btn" data-fee="1"><span class="fee-val">0.01%</span><span class="fee-label">Stable</span></button>
-                                <button class="fee-tier-btn" data-fee="5"><span class="fee-val">0.05%</span><span class="fee-label">Low</span></button>
-                                <button class="fee-tier-btn active" data-fee="30"><span class="fee-val">0.30%</span><span class="fee-label">Medium</span></button>
-                                <button class="fee-tier-btn" data-fee="100"><span class="fee-val">1.00%</span><span class="fee-label">Volatile</span></button>
+                                <button class="fee-tier-btn" data-fee="1"><span class="fee-val">0.01%</span><span
+                                        class="fee-label">Stable</span></button>
+                                <button class="fee-tier-btn" data-fee="5"><span class="fee-val">0.05%</span><span
+                                        class="fee-label">Low</span></button>
+                                <button class="fee-tier-btn active" data-fee="30"><span
+                                        class="fee-val">0.30%</span><span class="fee-label">Medium</span></button>
+                                <button class="fee-tier-btn" data-fee="100"><span class="fee-val">1.00%</span><span
+                                        class="fee-label">Volatile</span></button>
                             </div>
                         </div>
 
                         <div class="form-group">
-                            <label>Price Range <span class="range-toggle"><input type="checkbox" id="fullRangeToggle"> Full Range</span></label>
+                            <label>Price Range <span class="range-toggle"><input type="checkbox" id="fullRangeToggle">
+                                    Full Range</span></label>
                             <div class="price-range-inputs">
                                 <div class="range-input-box">
                                     <span class="range-label">Min Price</span>
                                     <input type="number" id="liqMinPrice" placeholder="0.0000" step="0.0001">
-                                    <span class="range-unit">mUSD per MOLT</span>
+                                    <span class="range-unit">lUSD per LICN</span>
                                 </div>
                                 <div class="range-input-box">
                                     <span class="range-label">Max Price</span>
                                     <input type="number" id="liqMaxPrice" placeholder="0.0000" step="0.0001">
-                                    <span class="range-unit">mUSD per MOLT</span>
+                                    <span class="range-unit">lUSD per LICN</span>
                                 </div>
                             </div>
                         </div>
@@ -739,13 +847,13 @@
                             <label>Deposit Amounts</label>
                             <div class="input-with-unit">
                                 <input type="number" id="liqAmountA" placeholder="0.00" step="0.01">
-                                <span class="input-unit">MOLT</span>
+                                <span class="input-unit">LICN</span>
                             </div>
                         </div>
                         <div class="form-group">
                             <div class="input-with-unit">
                                 <input type="number" id="liqAmountB" placeholder="0.00" step="0.01">
-                                <span class="input-unit">mUSD</span>
+                                <span class="input-unit">lUSD</span>
                             </div>
                         </div>
 
@@ -769,12 +877,15 @@
                     </div>
                     <div class="positions-content" id="pool-positions">
                         <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            <i class="fas fa-wallet"
+                                style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                             Connect wallet to view LP positions
                         </div>
                     </div>
                     <div class="positions-content hidden" id="pool-history">
-                        <div class="empty-state"><i class="fas fa-history"></i><p>No pool transactions yet</p></div>
+                        <div class="empty-state"><i class="fas fa-history"></i>
+                            <p>No pool transactions yet</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -789,11 +900,12 @@
                 <div class="page-header-bar">
                     <div class="page-header-left">
                         <h2><i class="fas fa-gift"></i> DEX Rewards</h2>
-                        <span class="page-subtitle">Fee mining · LP rewards · Referral program · 100K MOLT/month emission</span>
+                        <span class="page-subtitle">Fee mining · LP rewards · Referral program · 100K LICN/month
+                            emission</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill"><i class="fas fa-fire"></i> Monthly Pool: 100,000 MOLT</span>
-                        <span class="info-pill"><i class="fas fa-id-badge"></i> MoltyID Verified: +50% referral</span>
+                        <span class="info-pill"><i class="fas fa-fire"></i> Monthly Pool: 100,000 LICN</span>
+                        <span class="info-pill"><i class="fas fa-id-badge"></i> LichenID Verified: +50% referral</span>
                     </div>
                 </div>
             </div>
@@ -803,7 +915,7 @@
                 <div class="pool-stat-card highlight-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">Pending Rewards</div>
-                    <div class="pool-stat-value accent-text" id="rewardsPending">0 MOLT</div>
+                    <div class="pool-stat-value accent-text" id="rewardsPending">0 LICN</div>
                     <div class="stat-sub" id="rewardsPendingUsd">≈ $0.00</div>
                     <button class="btn btn-small btn-primary claim-btn" id="claimAllBtn">Claim All</button>
                 </div>
@@ -811,7 +923,9 @@
                     <div class="stat-icon-wrap"><i class="fas fa-medal"></i></div>
                     <div class="pool-stat-label">Your Tier</div>
                     <div class="pool-stat-value" id="rewardsTier"><span class="tier-badge bronze">Bronze</span></div>
-                    <div class="tier-progress"><div class="tier-bar" style="width: 0%"></div></div>
+                    <div class="tier-progress">
+                        <div class="tier-bar" style="width: 0%"></div>
+                    </div>
                     <div class="stat-sub">Connect wallet to view tier</div>
                 </div>
                 <div class="pool-stat-card">
@@ -834,23 +948,26 @@
                 <div class="rewards-sources">
                     <div class="reward-card panel-card">
                         <div class="panel-header">
-                            <h3><div class="reward-icon-sm"><i class="fas fa-exchange-alt"></i></div> Trading Rewards</h3>
+                            <h3>
+                                <div class="reward-icon-sm"><i class="fas fa-exchange-alt"></i></div> Trading Rewards
+                            </h3>
                             <button class="btn btn-small btn-primary claim-btn" id="claimTradingBtn">Claim</button>
                         </div>
                         <div class="reward-body">
-                            <p class="text-secondary">Fee mining: earn MOLT proportional to fees paid, scaled by tier multiplier.</p>
+                            <p class="text-secondary">Fee mining: earn LICN proportional to fees paid, scaled by tier
+                                multiplier.</p>
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text" id="rewardTradePending">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardTradePending">0 LICN</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">This Month</span>
-                                    <span class="metric-value" id="rewardTradeMonth">0 MOLT</span>
+                                    <span class="metric-value" id="rewardTradeMonth">0 LICN</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">All Time</span>
-                                    <span class="metric-value" id="rewardTradeAll">0 MOLT</span>
+                                    <span class="metric-value" id="rewardTradeAll">0 LICN</span>
                                 </div>
                             </div>
                         </div>
@@ -858,15 +975,18 @@
 
                     <div class="reward-card panel-card">
                         <div class="panel-header">
-                            <h3><div class="reward-icon-sm"><i class="fas fa-water"></i></div> LP Mining</h3>
+                            <h3>
+                                <div class="reward-icon-sm"><i class="fas fa-water"></i></div> LP Mining
+                            </h3>
                             <button class="btn btn-small btn-primary claim-btn" id="claimLpBtn">Claim</button>
                         </div>
                         <div class="reward-body">
-                            <p class="text-secondary">Earn MOLT proportional to your in-range concentrated liquidity position.</p>
+                            <p class="text-secondary">Earn LICN proportional to your in-range concentrated liquidity
+                                position.</p>
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text" id="rewardLpPending">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardLpPending">0 LICN</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Active Positions</span>
@@ -882,10 +1002,13 @@
 
                     <div class="reward-card panel-card">
                         <div class="panel-header">
-                            <h3><div class="reward-icon-sm"><i class="fas fa-user-plus"></i></div> Referral Program</h3>
+                            <h3>
+                                <div class="reward-icon-sm"><i class="fas fa-user-plus"></i></div> Referral Program
+                            </h3>
                         </div>
                         <div class="reward-body">
-                            <p class="text-secondary">Earn 10% of your referrals' trading fees (15% with MoltyID verified). Referees get 5% fee discount for 30 days.</p>
+                            <p class="text-secondary">Earn 10% of your referrals' trading fees (15% with LichenID
+                                verified). Referees get 5% fee discount for 30 days.</p>
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Referrals</span>
@@ -893,7 +1016,7 @@
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Referral Earnings</span>
-                                    <span class="metric-value accent-text" id="rewardRefEarnings">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardRefEarnings">0 LICN</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Rate</span>
@@ -922,7 +1045,7 @@
                             </div>
                             <div class="tier-table-row active-tier">
                                 <span class="tier-name bronze"><i class="fas fa-circle"></i> Bronze</span>
-                                <span class="mono-value">&lt; 100K MOLT</span>
+                                <span class="mono-value">&lt; 100K LICN</span>
                                 <span class="mono-value">1.0x</span>
                             </div>
                             <div class="tier-table-row">
@@ -937,7 +1060,7 @@
                             </div>
                             <div class="tier-table-row">
                                 <span class="tier-name diamond"><i class="fas fa-circle"></i> Diamond</span>
-                                <span class="mono-value">&gt; 10M MOLT</span>
+                                <span class="mono-value">&gt; 10M LICN</span>
                                 <span class="mono-value">3.0x</span>
                             </div>
                         </div>
@@ -952,7 +1075,9 @@
                                 <span>Next Tier</span>
                                 <span class="mono-value">Connect wallet</span>
                             </div>
-                            <div class="tier-progress lg"><div class="tier-bar" style="width: 0%"></div></div>
+                            <div class="tier-progress lg">
+                                <div class="tier-bar" style="width: 0%"></div>
+                            </div>
                         </div>
 
                         <div class="referral-info-box">
@@ -962,7 +1087,7 @@
                                 <span class="mono-value">10% of fees</span>
                             </div>
                             <div class="progress-stat">
-                                <span>MoltyID Verified</span>
+                                <span>LichenID Verified</span>
                                 <span class="mono-value accent-text">15% of fees</span>
                             </div>
                             <div class="progress-stat">
@@ -983,12 +1108,15 @@
                     </div>
                     <div class="positions-content" id="reward-claims">
                         <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            <i class="fas fa-wallet"
+                                style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                             Connect wallet to view claim history
                         </div>
                     </div>
                     <div class="positions-content hidden" id="reward-activity">
-                        <div class="empty-state"><i class="fas fa-chart-line"></i><p>Reward accrual activity will appear here</p></div>
+                        <div class="empty-state"><i class="fas fa-chart-line"></i>
+                            <p>Reward accrual activity will appear here</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1003,10 +1131,11 @@
                 <div class="page-header-bar">
                     <div class="page-header-left">
                         <h2><i class="fas fa-landmark"></i> Governance</h2>
-                        <span class="page-subtitle">Community-driven · 66% supermajority · 48h voting · 1h timelock</span>
+                        <span class="page-subtitle">Community-driven · 66% supermajority · 48h voting · 1h
+                            timelock</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill"><i class="fas fa-id-badge"></i> Min 500 MoltyID rep to propose</span>
+                        <span class="info-pill"><i class="fas fa-id-badge"></i> Min 500 LichenID rep to propose</span>
                         <span class="info-pill"><i class="fas fa-shield-alt"></i> Admin veto for emergencies</span>
                     </div>
                 </div>
@@ -1052,7 +1181,8 @@
                         </div>
                         <div class="proposals-list-inner" id="proposalsList">
                             <div style="text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;">
-                                <i class="fas fa-landmark" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
+                                <i class="fas fa-landmark"
+                                    style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
                                 <p>No proposals yet</p>
                                 <p style="font-size:0.8rem;margin-top:8px;">Submit a proposal to get started</p>
                             </div>
@@ -1069,10 +1199,14 @@
                         <div class="form-group">
                             <label>Proposal Type</label>
                             <div class="proposal-type-selector">
-                                <button class="proposal-type-btn active" data-ptype="pair"><i class="fas fa-plus-circle"></i> New Pair</button>
-                                <button class="proposal-type-btn" data-ptype="fee"><i class="fas fa-percentage"></i> Fee Change</button>
-                                <button class="proposal-type-btn" data-ptype="delist"><i class="fas fa-ban"></i> Delist Pair</button>
-                                <button class="proposal-type-btn" data-ptype="param"><i class="fas fa-sliders-h"></i> Parameters</button>
+                                <button class="proposal-type-btn active" data-ptype="pair"><i
+                                        class="fas fa-plus-circle"></i> New Pair</button>
+                                <button class="proposal-type-btn" data-ptype="fee"><i class="fas fa-percentage"></i> Fee
+                                    Change</button>
+                                <button class="proposal-type-btn" data-ptype="delist"><i class="fas fa-ban"></i> Delist
+                                    Pair</button>
+                                <button class="proposal-type-btn" data-ptype="param"><i class="fas fa-sliders-h"></i>
+                                    Parameters</button>
                             </div>
                         </div>
 
@@ -1088,7 +1222,7 @@
                             <div class="form-group">
                                 <label>Quote Token</label>
                                 <div class="input-with-unit">
-                                    <input type="text" id="propQuoteToken" placeholder="e.g. mUSD, MOLT">
+                                    <input type="text" id="propQuoteToken" placeholder="e.g. lUSD, LICN">
                                     <span class="input-unit">QUOTE</span>
                                 </div>
                             </div>
@@ -1128,10 +1262,14 @@
                             </div>
                             <div class="form-group">
                                 <label>Reason</label>
-                                <textarea id="propDelistReason" class="form-textarea" placeholder="Describe why this pair should be delisted (e.g. low liquidity, rug pull risk, abandoned project)" rows="3"></textarea>
+                                <textarea id="propDelistReason" class="form-textarea"
+                                    placeholder="Describe why this pair should be delisted (e.g. low liquidity, rug pull risk, abandoned project)"
+                                    rows="3"></textarea>
                             </div>
-                            <div class="delist-info-box" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
-                                <h4 style="color:#ef4444;margin:0 0 6px;font-size:0.85rem;"><i class="fas fa-exclamation-triangle"></i> Delist Impact</h4>
+                            <div class="delist-info-box"
+                                style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
+                                <h4 style="color:#ef4444;margin:0 0 6px;font-size:0.85rem;"><i
+                                        class="fas fa-exclamation-triangle"></i> Delist Impact</h4>
                                 <ul style="margin:0;padding-left:16px;line-height:1.6;">
                                     <li>All open orders on this pair will be cancelled</li>
                                     <li>LP positions will be auto-withdrawn at current price</li>
@@ -1146,17 +1284,39 @@
                             <div class="form-group">
                                 <label>Protocol Parameter</label>
                                 <select class="form-select" id="propParamName">
-                                    <option value="max_leverage" data-current="5" data-unit="x" data-desc="Maximum leverage multiplier for margin trading positions.">Max Leverage</option>
-                                    <option value="min_liquidity" data-current="10000" data-unit="MOLT" data-desc="Minimum initial liquidity required when listing a new trading pair.">Min Listing Liquidity</option>
-                                    <option value="fee_split_treasury" data-current="40" data-unit="%" data-desc="Percentage of trading fees allocated to the protocol treasury.">Fee Split — Treasury</option>
-                                    <option value="fee_split_lps" data-current="30" data-unit="%" data-desc="Percentage of trading fees distributed to liquidity providers.">Fee Split — LPs</option>
-                                    <option value="fee_split_stakers" data-current="30" data-unit="%" data-desc="Percentage of trading fees distributed to MOLT stakers.">Fee Split — Stakers</option>
-                                    <option value="max_pools" data-current="100" data-unit="pools" data-desc="Maximum number of active liquidity pools allowed on the DEX.">Max Pools</option>
-                                    <option value="voting_period" data-current="48" data-unit="hours" data-desc="Duration of the governance voting window for proposals.">Voting Period</option>
-                                    <option value="approval_threshold" data-current="66" data-unit="%" data-desc="Supermajority percentage required for a proposal to pass.">Approval Threshold</option>
-                                    <option value="execution_timelock" data-current="1" data-unit="hours" data-desc="Delay between proposal approval and on-chain execution.">Execution Timelock</option>
-                                    <option value="prediction_fee" data-current="2" data-unit="%" data-desc="Fee charged on prediction market share purchases.">Prediction Market Fee</option>
-                                    <option value="margin_maintenance" data-current="10" data-unit="%" data-desc="Minimum margin maintenance ratio before liquidation.">Margin Maintenance Ratio</option>
+                                    <option value="max_leverage" data-current="5" data-unit="x"
+                                        data-desc="Maximum leverage multiplier for margin trading positions.">Max
+                                        Leverage</option>
+                                    <option value="min_liquidity" data-current="10000" data-unit="LICN"
+                                        data-desc="Minimum initial liquidity required when listing a new trading pair.">
+                                        Min Listing Liquidity</option>
+                                    <option value="fee_split_treasury" data-current="40" data-unit="%"
+                                        data-desc="Percentage of trading fees allocated to the protocol treasury.">Fee
+                                        Split — Treasury</option>
+                                    <option value="fee_split_lps" data-current="30" data-unit="%"
+                                        data-desc="Percentage of trading fees distributed to liquidity providers.">Fee
+                                        Split — LPs</option>
+                                    <option value="fee_split_stakers" data-current="30" data-unit="%"
+                                        data-desc="Percentage of trading fees distributed to LICN stakers.">Fee Split —
+                                        Stakers</option>
+                                    <option value="max_pools" data-current="100" data-unit="pools"
+                                        data-desc="Maximum number of active liquidity pools allowed on the DEX.">Max
+                                        Pools</option>
+                                    <option value="voting_period" data-current="48" data-unit="hours"
+                                        data-desc="Duration of the governance voting window for proposals.">Voting
+                                        Period</option>
+                                    <option value="approval_threshold" data-current="66" data-unit="%"
+                                        data-desc="Supermajority percentage required for a proposal to pass.">Approval
+                                        Threshold</option>
+                                    <option value="execution_timelock" data-current="1" data-unit="hours"
+                                        data-desc="Delay between proposal approval and on-chain execution.">Execution
+                                        Timelock</option>
+                                    <option value="prediction_fee" data-current="2" data-unit="%"
+                                        data-desc="Fee charged on prediction market share purchases.">Prediction Market
+                                        Fee</option>
+                                    <option value="margin_maintenance" data-current="10" data-unit="%"
+                                        data-desc="Minimum margin maintenance ratio before liquidation.">Margin
+                                        Maintenance Ratio</option>
                                 </select>
                             </div>
                             <div class="param-current-value">
@@ -1170,22 +1330,31 @@
                                     <span class="input-unit" id="propParamUnit">x</span>
                                 </div>
                             </div>
-                            <div class="param-info-box" style="background:rgba(78,168,222,0.08);border:1px solid rgba(78,168,222,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
-                                <h4 style="color:var(--accent);margin:0 0 6px;font-size:0.85rem;"><i class="fas fa-info-circle"></i> Parameter Info</h4>
-                                <p id="propParamDesc" style="margin:0;line-height:1.5;">Maximum leverage multiplier for margin trading positions.</p>
+                            <div class="param-info-box"
+                                style="background:rgba(78,168,222,0.08);border:1px solid rgba(78,168,222,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
+                                <h4 style="color:var(--accent);margin:0 0 6px;font-size:0.85rem;"><i
+                                        class="fas fa-info-circle"></i> Parameter Info</h4>
+                                <p id="propParamDesc" style="margin:0;line-height:1.5;">Maximum leverage multiplier for
+                                    margin trading positions.</p>
                             </div>
                         </div>
 
                         <div class="proposal-requirements">
                             <h4><i class="fas fa-exclamation-circle"></i> Requirements</h4>
-                            <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value" id="govReqReputation">≥ 500</span></div>
-                            <div class="req-row"><span>Min Listing Liquidity</span><span class="mono-value" id="govReqMinLiq">100,000 MOLT</span></div>
-                            <div class="req-row"><span>Min Token Holders</span><span class="mono-value" id="govReqMinHolders">10</span></div>
-                            <div class="req-row"><span>Voting Period</span><span class="mono-value" id="govReqVotePeriod">48 hours</span></div>
-                            <div class="req-row"><span>Execution Timelock</span><span class="mono-value" id="govReqTimelock">1 hour</span></div>
+                            <div class="req-row"><span>LichenID Reputation</span><span class="mono-value"
+                                    id="govReqReputation">≥ 500</span></div>
+                            <div class="req-row"><span>Min Listing Liquidity</span><span class="mono-value"
+                                    id="govReqMinLiq">100,000 LICN</span></div>
+                            <div class="req-row"><span>Min Token Holders</span><span class="mono-value"
+                                    id="govReqMinHolders">10</span></div>
+                            <div class="req-row"><span>Voting Period</span><span class="mono-value"
+                                    id="govReqVotePeriod">48 hours</span></div>
+                            <div class="req-row"><span>Execution Timelock</span><span class="mono-value"
+                                    id="govReqTimelock">1 hour</span></div>
                         </div>
 
-                        <button class="btn btn-full btn-primary" id="submitProposalBtn"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
+                        <button class="btn btn-full btn-primary" id="submitProposalBtn"><i
+                                class="fas fa-paper-plane"></i> Submit Proposal</button>
                     </div>
                 </div>
             </div>
@@ -1199,13 +1368,15 @@
             <div class="page-top-bar">
                 <div class="page-header-bar">
                     <div class="page-header-left">
-                        <h2><i class="fas fa-rocket"></i> ClawPump Launchpad</h2>
-                        <span class="page-subtitle">Bonding curve token launches · Auto-graduation to DEX · 1% platform fee</span>
+                        <h2><i class="fas fa-rocket"></i> SporePump Launchpad</h2>
+                        <span class="page-subtitle">Bonding curve token launches · Auto-graduation to DEX · 1% platform
+                            fee</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill" id="launchFeePill"><i class="fas fa-coins"></i> 10 MOLT to launch</span>
+                        <span class="info-pill" id="launchFeePill"><i class="fas fa-coins"></i> 10 LICN to launch</span>
                         <span class="info-pill"><i class="fas fa-chart-line"></i> Linear bonding curve</span>
-                        <span class="info-pill" id="launchGradPill"><i class="fas fa-trophy"></i> Graduates at 100K MOLT mcap</span>
+                        <span class="info-pill" id="launchGradPill"><i class="fas fa-trophy"></i> Graduates at 100K LICN
+                            mcap</span>
                     </div>
                 </div>
             </div>
@@ -1231,7 +1402,7 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-percentage"></i></div>
                     <div class="pool-stat-label">Platform Fees</div>
-                    <div class="pool-stat-value" id="launchFees">0 MOLT</div>
+                    <div class="pool-stat-value" id="launchFees">0 LICN</div>
                 </div>
             </div>
 
@@ -1255,9 +1426,11 @@
                             </div>
                         </div>
                         <div class="launch-token-grid" id="launchTokenGrid">
-                            <div style="display:flex;align-items:center;justify-content:center;min-height:220px;width:100%;text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;">
+                            <div
+                                style="display:flex;align-items:center;justify-content:center;min-height:220px;width:100%;text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;">
                                 <div>
-                                    <i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
+                                    <i class="fas fa-rocket"
+                                        style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
                                     <p>No tokens launched yet</p>
                                     <p style="font-size:0.8rem;margin-top:8px;">Be the first to launch a token!</p>
                                 </div>
@@ -1286,8 +1459,8 @@
                                 <span class="mono-value" id="launchMarketCap">—</span>
                             </div>
                             <div class="launch-stat-row">
-                                <span>MOLT Raised</span>
-                                <span class="mono-value" id="launchMoltRaised">—</span>
+                                <span>LICN Raised</span>
+                                <span class="mono-value" id="launchLicnRaised">—</span>
                             </div>
                             <div class="launch-stat-row">
                                 <span>Supply Sold</span>
@@ -1319,10 +1492,10 @@
                                 <i class="fas fa-info-circle"></i> Select a token from the list
                             </div>
                             <div class="form-group">
-                                <label id="launchAmountLabel">Amount (MOLT)</label>
+                                <label id="launchAmountLabel">Amount (LICN)</label>
                                 <div class="input-with-unit">
                                     <input type="number" id="launchAmountInput" placeholder="0.00" min="0" step="any">
-                                    <span class="input-unit" id="launchAmountUnit">MOLT</span>
+                                    <span class="input-unit" id="launchAmountUnit">LICN</span>
                                 </div>
                                 <div class="launch-presets">
                                     <button class="btn btn-small launch-preset" data-lamount="1">1</button>
@@ -1357,14 +1530,16 @@
                             <h3><i class="fas fa-plus-circle"></i> Launch New Token</h3>
                         </div>
                         <div class="launch-create-info">
-                            <p>Create your own bonding-curve token on MoltChain. Price starts near zero and increases with each buy. At 100K MOLT market cap, the token automatically graduates to the DEX with full liquidity.</p>
+                            <p>Create your own bonding-curve token on Lichen. Price starts near zero and increases with
+                                each buy. At 100K LICN market cap, the token automatically graduates to the DEX with
+                                full liquidity.</p>
                             <div class="launch-create-cost">
                                 <span>Creation Fee</span>
-                                <span class="mono-value">10 MOLT</span>
+                                <span class="mono-value">10 LICN</span>
                             </div>
                         </div>
                         <button class="btn btn-full btn-primary" id="launchCreateBtn">
-                            <i class="fas fa-rocket"></i> Launch Token (10 MOLT)
+                            <i class="fas fa-rocket"></i> Launch Token (10 LICN)
                         </button>
                     </div>
 
@@ -1375,7 +1550,8 @@
                         </div>
                         <div class="launch-holdings-list" id="launchHoldingsList">
                             <div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
-                                <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                                <i class="fas fa-wallet"
+                                    style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                                 Connect wallet to view holdings
                             </div>
                         </div>
@@ -1404,7 +1580,8 @@
                     <div class="wm-empty">
                         <i class="fas fa-wallet"></i>
                         <p>No wallets connected</p>
-                        <button class="btn btn-primary btn-small" onclick="document.querySelector('[data-wm-tab=import]').click()">Import Wallet</button>
+                        <button class="btn btn-primary btn-small"
+                            onclick="document.querySelector('[data-wm-tab=import]').click()">Import Wallet</button>
                     </div>
                 </div>
             </div>
@@ -1417,7 +1594,8 @@
                 <div class="wm-import-key" id="wmImportKey">
                     <div class="form-group">
                         <label>Private Key</label>
-                        <input type="password" id="wmPrivateKey" placeholder="Enter your private key (hex or base58)" class="form-input">
+                        <input type="password" id="wmPrivateKey" placeholder="Enter your private key (hex or base58)"
+                            class="form-input">
                     </div>
                 </div>
                 <div class="wm-import-mnemonic hidden" id="wmImportMnemonic">
@@ -1427,32 +1605,38 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local storage)</span></label>
+                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local
+                            storage)</span></label>
                     <input type="password" id="wmPassword" placeholder="Enter wallet password" class="form-input">
                 </div>
-                <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect Wallet</button>
+                <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect
+                    Wallet</button>
             </div>
             <!-- Extension Tab — wallet extension -->
             <div class="wm-tab-content hidden" id="wmTabExtension">
                 <div class="wm-create-info">
                     <i class="fas fa-plug"></i>
                     <h4>Connect Wallet Extension</h4>
-                    <p>Connect your MoltChain Wallet browser extension to trade securely. Your private keys never leave the extension.</p>
+                    <p>Connect your Lichen Wallet browser extension to trade securely. Your private keys never leave the
+                        extension.</p>
                 </div>
-                <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect Extension</button>
+                <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect
+                    Extension</button>
             </div>
             <!-- Create Tab — generate new keypair -->
             <div class="wm-tab-content hidden" id="wmTabCreate">
                 <div class="wm-create-info">
                     <i class="fas fa-shield-alt"></i>
                     <h4>Generate New Wallet</h4>
-                    <p>Create a fresh MoltChain wallet. Save the private key securely — it will not be shown again.</p>
+                    <p>Create a fresh Lichen wallet. Save the private key securely — it will not be shown again.</p>
                 </div>
                 <div class="form-group">
-                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local storage)</span></label>
+                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local
+                            storage)</span></label>
                     <input type="password" id="wmCreatePassword" placeholder="Enter wallet password" class="form-input">
                 </div>
-                <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create Wallet</button>
+                <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create
+                    Wallet</button>
                 <div class="wm-created-wallet hidden" id="wmCreatedWallet">
                     <div class="wm-generated-row">
                         <span class="wm-label">Address</span>
@@ -1461,7 +1645,8 @@
                     <div class="wm-generated-row">
                         <span class="wm-label">Private Key</span>
                         <span class="wm-value wm-secret" id="wmNewKey"></span>
-                        <button class="btn btn-small btn-secondary wm-copy-btn" data-copy="wmNewKey"><i class="fas fa-copy"></i></button>
+                        <button class="btn btn-small btn-secondary wm-copy-btn" data-copy="wmNewKey"><i
+                                class="fas fa-copy"></i></button>
                     </div>
                     <div class="wm-warning">
                         <i class="fas fa-exclamation-triangle"></i>
@@ -1476,17 +1661,18 @@
     <footer class="dex-footer">
         <div class="footer-container">
             <div class="footer-left">
-                <img src="MoltChain_Logo_256.png" class="footer-logo" alt="MoltChain">
-                <span>MoltyDEX — Powered by MoltChain</span>
+                <img src="LichenDex_Logo_256.png" class="footer-logo" alt="Lichen">
+                <span>Lichen DEX — Powered by Lichen</span>
             </div>
             <div class="footer-links">
-                <a href="#" data-molt-app="website">MoltChain</a>
-                <a href="#" data-molt-app="explorer">Explorer</a>
-                <a href="#" data-molt-app="developers">Docs</a>
-                <a href="https://github.com/lobstercove/moltchain" target="_blank">GitHub</a>
+                <a href="#" data-lichen-app="website">Lichen</a>
+                <a href="#" data-lichen-app="explorer">Explorer</a>
+                <a href="#" data-lichen-app="developers">Docs</a>
+                <a href="https://github.com/lobstercove/lichen" target="_blank">GitHub</a>
             </div>
             <div class="footer-right">
-                <span class="chain-status"><span class="status-dot green"></span> <span id="footerBlock">Connecting...</span></span>
+                <span class="chain-status"><span class="status-dot green"></span> <span
+                        id="footerBlock">Connecting...</span></span>
             </div>
         </div>
     </footer>
@@ -1519,4 +1705,5 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
     <script src="dex.js?v=20260309"></script>
 </body>
+
 </html>

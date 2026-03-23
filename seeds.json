@@ -1,94 +1,94 @@
 {
   "testnet": {
-    "network_id": "moltchain-testnet-1",
-    "chain_id": "moltchain-testnet-1",
+    "network_id": "lichen-testnet-1",
+    "chain_id": "lichen-testnet-1",
     "seeds": [
       {
         "id": "seed-01",
-        "address": "seed-01.moltchain.network:7001",
+        "address": "seed-01.lichen.network:7001",
         "region": "us-east",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-02",
-        "address": "seed-02.moltchain.network:7001",
+        "address": "seed-02.lichen.network:7001",
         "region": "eu-west",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-03",
-        "address": "seed-03.moltchain.network:7001",
+        "address": "seed-03.lichen.network:7001",
         "region": "ap-southeast",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       }
     ],
     "bootstrap_peers": [
-      "seed-01.moltchain.network:7001",
-      "seed-02.moltchain.network:7001",
-      "seed-03.moltchain.network:7001"
+      "seed-01.lichen.network:7001",
+      "seed-02.lichen.network:7001",
+      "seed-03.lichen.network:7001"
     ],
     "rpc_endpoints": [
-      "https://rpc.moltchain.network",
-      "https://testnet-rpc.moltchain.network"
+      "https://rpc.lichen.network",
+      "https://testnet-rpc.lichen.network"
     ],
     "explorers": [
-      "https://explorer.moltchain.network"
+      "https://explorer.lichen.network"
     ],
     "faucets": [
-      "https://faucet.moltchain.network"
+      "https://faucet.lichen.network"
     ]
   },
   "mainnet": {
-    "network_id": "moltchain-mainnet-1",
-    "chain_id": "moltchain-mainnet-1",
+    "network_id": "lichen-mainnet-1",
+    "chain_id": "lichen-mainnet-1",
     "seeds": [
       {
         "id": "seed-01",
-        "address": "seed-01.moltchain.network:8001",
+        "address": "seed-01.lichen.network:8001",
         "region": "us-east",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-02",
-        "address": "seed-02.moltchain.network:8001",
+        "address": "seed-02.lichen.network:8001",
         "region": "eu-west",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       },
       {
         "id": "seed-03",
-        "address": "seed-03.moltchain.network:8001",
+        "address": "seed-03.lichen.network:8001",
         "region": "ap-southeast",
-        "operator": "MoltChain Foundation",
-        "rpc": "https://rpc.moltchain.network",
+        "operator": "Lichen Foundation",
+        "rpc": "https://rpc.lichen.network",
         "role": "seed"
       }
     ],
     "bootstrap_peers": [
-      "seed-01.moltchain.network:8001",
-      "seed-02.moltchain.network:8001",
-      "seed-03.moltchain.network:8001"
+      "seed-01.lichen.network:8001",
+      "seed-02.lichen.network:8001",
+      "seed-03.lichen.network:8001"
     ],
     "rpc_endpoints": [
-      "https://rpc.moltchain.network"
+      "https://rpc.lichen.network"
     ],
     "explorers": [
-      "https://explorer.moltchain.network"
+      "https://explorer.lichen.network"
     ],
     "faucets": []
   },
   "devnet": {
-    "network_id": "moltchain-devnet-1",
-    "chain_id": "moltchain-devnet-1",
+    "network_id": "lichen-devnet-1",
+    "chain_id": "lichen-devnet-1",
     "seeds": [],
     "bootstrap_peers": [
       "127.0.0.1:8000"

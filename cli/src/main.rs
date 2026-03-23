@@ -1,9 +1,9 @@
-// MoltChain CLI - Command-line interface for agents
-// "Every crab, lobster, and shrimp can access the reef!"
+// Lichen CLI - Command-line interface for agents
+// "Every crab, lobster, and shrimp can access the moss!"
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use moltchain_core::{Keypair, Pubkey};
+use lichen_core::{Keypair, Pubkey};
 use std::path::PathBuf;
 
 mod client;
@@ -16,45 +16,45 @@ use client::RpcClient;
 use keypair_manager::KeypairManager;
 use wallet::WalletManager;
 
-/// MoltChain CLI - Blockchain for autonomous agents
+/// Lichen CLI - Blockchain for autonomous agents
 #[derive(Parser)]
-#[command(name = "molt")]
+#[command(name = "lichen")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "MoltChain CLI - Economic freedom for agents 🦞⚡")]
+#[command(about = "Lichen CLI - Economic freedom for agents 🦞⚡")]
 #[command(
-    long_about = "MoltChain CLI — command-line interface for MoltChain, a Layer 1 blockchain\n\
+    long_about = "Lichen CLI — command-line interface for Lichen, a Layer 1 blockchain\n\
     built by agents, for agents. Tendermint BFT consensus, ~800ms blocks,\n\
     WASM smart contracts, Ed25519 signing, ZK privacy (Groth16/BN254).\n\n\
-    Native token: MOLT (1 MOLT = 1,000,000,000 shells)\n\
-    Fee: 0.001 MOLT base | 25 MOLT deploy | 10 MOLT upgrade | 0.5 MOLT NFT mint\n\
+    Native token: LICN (1 LICN = 1,000,000,000 spores)\n\
+    Fee: 0.001 LICN base | 25 LICN deploy | 10 LICN upgrade | 0.5 LICN NFT mint\n\
     Fee split: 40% burn, 30% producer, 10% voters, 10% treasury, 10% community\n\n\
-    Mainnet RPC: https://rpc.moltchain.network\n\
-    Testnet RPC: https://testnet-rpc.moltchain.network\n\
-    Explorer:    https://explorer.moltchain.network\n\
-    Docs:        https://developers.moltchain.network"
+    Mainnet RPC: https://rpc.lichen.network\n\
+    Testnet RPC: https://testnet-rpc.lichen.network\n\
+    Explorer:    https://explorer.lichen.network\n\
+    Docs:        https://developers.lichen.network"
 )]
 #[command(after_help = "EXAMPLES:\n\
-    molt identity new                              Create a new keypair\n\
-    molt airdrop 100                               Get 100 testnet MOLT\n\
-    molt balance                                   Check your balance\n\
-    molt transfer <ADDRESS> 10.5                   Send 10.5 MOLT\n\
-    molt deploy token.wasm --symbol TKN            Deploy a contract\n\
-    molt call <ADDR> get_info                      Call a contract\n\
-    molt status                                    Chain status dashboard\n\
-    molt --output json status                      JSON output (agent-friendly)\n\
-    molt --rpc-url https://rpc.moltchain.network balance")]
+    lichen identity new                              Create a new keypair\n\
+    lichen airdrop 100                               Get 100 testnet LICN\n\
+    lichen balance                                   Check your balance\n\
+    lichen transfer <ADDRESS> 10.5                   Send 10.5 LICN\n\
+    lichen deploy token.wasm --symbol TKN            Deploy a contract\n\
+    lichen call <ADDR> get_info                      Call a contract\n\
+    lichen status                                    Chain status dashboard\n\
+    lichen --output json status                      JSON output (agent-friendly)\n\
+    lichen --rpc-url https://rpc.lichen.network balance")]
 struct Cli {
     /// RPC server URL
     #[arg(
         long,
         global = true,
         default_value = "http://localhost:8899",
-        env = "MOLT_RPC_URL"
+        env = "LICHEN_RPC_URL"
     )]
     rpc_url: String,
 
     /// Output format: human (default) or json (machine-readable for AI agents)
-    #[arg(long, global = true, default_value = "human", env = "MOLT_OUTPUT")]
+    #[arg(long, global = true, default_value = "human", env = "LICHEN_OUTPUT")]
     output: OutputFormat,
 
     #[command(subcommand)]
@@ -112,27 +112,27 @@ enum Commands {
         /// Account address (Base58 or hex)
         address: Option<String>,
 
-        /// Keypair file to check balance for (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file to check balance for (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
 
-    /// Transfer MOLT to another account
+    /// Transfer LICN to another account
     Transfer {
         /// Destination address (Base58)
         to: String,
 
-        /// Amount in MOLT
+        /// Amount in LICN
         amount: f64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
 
     /// Request test tokens from faucet
     Airdrop {
-        /// Amount in MOLT to request (default: 100)
+        /// Amount in LICN to request (default: 100)
         #[arg(default_value = "100.0")]
         amount: f64,
 
@@ -140,7 +140,7 @@ enum Commands {
         #[arg(short, long)]
         pubkey: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -150,7 +150,7 @@ enum Commands {
         /// WASM contract file path
         contract: PathBuf,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
 
@@ -166,7 +166,7 @@ enum Commands {
         #[arg(long)]
         template: Option<String>,
 
-        /// Token decimals (e.g. 9 for MOLT-style tokens)
+        /// Token decimals (e.g. 9 for LICN-style tokens)
         #[arg(long)]
         decimals: Option<u8>,
 
@@ -187,7 +187,7 @@ enum Commands {
         /// New WASM contract file path
         contract: PathBuf,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -204,7 +204,7 @@ enum Commands {
         #[arg(short, long, default_value = "[]")]
         args: String,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -224,7 +224,7 @@ enum Commands {
     /// Get recent blockhash
     Blockhash,
 
-    /// Get total burned MOLT
+    /// Get total burned LICN
     Burned,
 
     /// List all validators
@@ -334,22 +334,22 @@ enum ValidatorCommands {
 
 #[derive(Subcommand)]
 enum StakeCommands {
-    /// Stake MOLT to become a validator
+    /// Stake LICN to become a validator
     Add {
-        /// Amount in shells to stake
+        /// Amount in spores to stake
         amount: u64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
 
-    /// Unstake MOLT
+    /// Unstake LICN
     Remove {
-        /// Amount in shells to unstake
+        /// Amount in spores to unstake
         amount: u64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -360,7 +360,7 @@ enum StakeCommands {
         #[arg(short, long)]
         address: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -371,7 +371,7 @@ enum StakeCommands {
         #[arg(short, long)]
         address: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -478,7 +478,7 @@ enum ContractCommands {
         #[arg(long)]
         decimals: Option<u8>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -488,14 +488,14 @@ enum ContractCommands {
 enum IdentityCommands {
     /// Create a new identity
     New {
-        /// Output file path (default: ~/.moltchain/keypairs/id.json)
+        /// Output file path (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long, id = "identity_output_path")]
         output: Option<PathBuf>,
     },
 
     /// Show your identity
     Show {
-        /// Keypair file path (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file path (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -519,7 +519,7 @@ enum TokenCommands {
         #[arg(short, long, default_value = "9")]
         decimals: u8,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -542,7 +542,7 @@ enum TokenCommands {
         #[arg(short, long)]
         to: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -558,7 +558,7 @@ enum TokenCommands {
         /// Amount to send (in whole tokens)
         amount: u64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -572,7 +572,7 @@ enum TokenCommands {
         #[arg(short, long)]
         address: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -595,7 +595,7 @@ enum GovCommands {
         #[arg(short = 't', long, default_value = "standard")]
         proposal_type: String,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -608,7 +608,7 @@ enum GovCommands {
         /// Vote: yes/no/abstain
         vote: String,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -631,7 +631,7 @@ enum GovCommands {
         /// Proposal ID
         proposal_id: u64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -641,7 +641,7 @@ enum GovCommands {
         /// Proposal ID
         proposal_id: u64,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -667,7 +667,7 @@ enum ConfigCommands {
 
 #[derive(Subcommand)]
 enum SymbolCommands {
-    /// Look up a symbol in the registry (e.g. MOLT, DEX, DAO)
+    /// Look up a symbol in the registry (e.g. LICN, DEX, DAO)
     Lookup {
         /// Symbol to look up (case-insensitive)
         symbol: String,
@@ -691,7 +691,7 @@ enum NftCommands {
         #[arg(short, long)]
         owner: Option<String>,
 
-        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        /// Keypair file (default: ~/.lichen/keypairs/id.json)
         #[arg(short, long)]
         keypair: Option<PathBuf>,
     },
@@ -712,33 +712,33 @@ enum NftCommands {
 
 #[derive(Subcommand)]
 enum DefiCommands {
-    /// Show DEX overview (ClawSwap core stats)
+    /// Show DEX overview (SporeSwap core stats)
     Dex,
 
     /// Show AMM pool stats
     Amm,
 
-    /// Show lending protocol stats (LobsterLend)
+    /// Show lending protocol stats (ThallLend)
     Lending,
 
     /// Show all DeFi protocol stats
     Overview,
 }
 
-/// Convert MOLT (f64) to shells (u64) with precise integer arithmetic.
+/// Convert LICN (f64) to spores (u64) with precise integer arithmetic.
 /// Avoids floating-point precision loss for amounts near the f64 precision boundary
 /// by splitting into whole and fractional parts and computing with integers.
-fn molt_to_shells(molt: f64) -> u64 {
-    if molt <= 0.0 {
+fn licn_to_spores(lichen: f64) -> u64 {
+    if lichen <= 0.0 {
         return 0;
     }
-    // Clamp to max safe value representable in u64 shells
-    if molt >= (u64::MAX / 1_000_000_000) as f64 {
+    // Clamp to max safe value representable in u64 spores
+    if lichen >= (u64::MAX / 1_000_000_000) as f64 {
         return u64::MAX;
     }
-    let whole = molt.trunc() as u64;
+    let whole = lichen.trunc() as u64;
     // Extract fractional part, round to 9 decimal places to avoid float noise
-    let frac = ((molt.fract() * 1_000_000_000.0).round()) as u64;
+    let frac = ((lichen.fract() * 1_000_000_000.0).round()) as u64;
     whole.saturating_mul(1_000_000_000).saturating_add(frac)
 }
 
@@ -750,8 +750,8 @@ fn print_json(value: &serde_json::Value) {
     );
 }
 
-fn to_molt(shells: u64) -> f64 {
-    shells as f64 / 1_000_000_000.0
+fn to_licn(spores: u64) -> f64 {
+    spores as f64 / 1_000_000_000.0
 }
 
 #[tokio::main]
@@ -775,7 +775,7 @@ async fn main() -> Result<()> {
                 println!("🔐 EVM Address: {}", pubkey.to_evm());
                 println!("💾 Saved to: {}", path.display());
                 println!();
-                println!("💡 Get test tokens: molt airdrop 100");
+                println!("💡 Get test tokens: lichen airdrop 100");
             }
 
             IdentityCommands::Show { keypair } => {
@@ -783,7 +783,7 @@ async fn main() -> Result<()> {
                 let kp = keypair_mgr.load_keypair(&path)?;
                 let pubkey = kp.pubkey();
 
-                println!("🦞 Your MoltChain Identity");
+                println!("🦞 Your Lichen Identity");
                 println!("📍 Pubkey: {}", pubkey.to_base58());
                 println!("🔐 EVM Address: {}", pubkey.to_evm());
                 println!("📄 Keypair: {}", path.display());
@@ -819,15 +819,15 @@ async fn main() -> Result<()> {
                     let pubkey = Pubkey::from_base58(&wallet.address)
                         .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
                     let balance = client.get_balance(&pubkey).await?;
-                    let to_molt = |shells: u64| shells as f64 / 1_000_000_000.0;
+                    let to_licn = |spores: u64| spores as f64 / 1_000_000_000.0;
 
                     println!("\n🦞 Wallet: {}", wallet.name);
                     println!("📍 Address: {}", wallet.address);
                     println!("─────────────────────────────────────────────────────────");
-                    println!("💰 Total:     {:>12.4} MOLT", to_molt(balance.shells));
-                    println!("   Spendable: {:>12.4} MOLT", to_molt(balance.spendable));
-                    println!("   Staked:    {:>12.4} MOLT", to_molt(balance.staked));
-                    println!("   Locked:    {:>12.4} MOLT", to_molt(balance.locked));
+                    println!("💰 Total:     {:>12.4} LICN", to_licn(balance.spores));
+                    println!("   Spendable: {:>12.4} LICN", to_licn(balance.spendable));
+                    println!("   Staked:    {:>12.4} LICN", to_licn(balance.staked));
+                    println!("   Locked:    {:>12.4} LICN", to_licn(balance.locked));
                     println!("─────────────────────────────────────────────────────────\n");
                 }
             }
@@ -869,27 +869,27 @@ async fn main() -> Result<()> {
             };
 
             let balance = client.get_balance(&pubkey).await?;
-            let to_molt = |shells: u64| shells as f64 / 1_000_000_000.0;
+            let to_licn = |spores: u64| spores as f64 / 1_000_000_000.0;
 
             println!("\n🦞 Balance for {}", pubkey.to_base58());
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             println!(
-                "💰 Total:     {:>12.4} MOLT ({} shells)",
-                to_molt(balance.shells),
-                balance.shells
+                "💰 Total:     {:>12.4} LICN ({} spores)",
+                to_licn(balance.spores),
+                balance.spores
             );
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             println!(
-                "   Spendable: {:>12.4} MOLT (available for transfers)",
-                to_molt(balance.spendable)
+                "   Spendable: {:>12.4} LICN (available for transfers)",
+                to_licn(balance.spendable)
             );
             println!(
-                "   Staked:    {:>12.4} MOLT (locked in validation)",
-                to_molt(balance.staked)
+                "   Staked:    {:>12.4} LICN (locked in validation)",
+                to_licn(balance.staked)
             );
             println!(
-                "   Locked:    {:>12.4} MOLT (locked in contracts)",
-                to_molt(balance.locked)
+                "   Locked:    {:>12.4} LICN (locked in contracts)",
+                to_licn(balance.locked)
             );
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         }
@@ -905,13 +905,13 @@ async fn main() -> Result<()> {
 
             let to_pubkey = Pubkey::from_base58(&to)
                 .map_err(|e| anyhow::anyhow!("Invalid destination address: {}", e))?;
-            let shells = molt_to_shells(amount);
+            let spores = licn_to_spores(amount);
 
-            println!("🦞 Transferring {} MOLT ({} shells)", amount, shells);
+            println!("🦞 Transferring {} LICN ({} spores)", amount, spores);
             println!("📤 From: {}", from_pubkey.to_base58());
             println!("📥 To: {}", to_pubkey.to_base58());
 
-            let signature = client.transfer(&from_keypair, &to_pubkey, shells).await?;
+            let signature = client.transfer(&from_keypair, &to_pubkey, spores).await?;
 
             println!("✅ Transaction sent!");
             println!("📝 Signature: {}", signature);
@@ -953,9 +953,9 @@ async fn main() -> Result<()> {
 
         Commands::Burned => {
             let burned = client.get_total_burned().await?;
-            let molt = burned.shells as f64 / 1_000_000_000.0;
-            println!("🔥 Total MOLT Burned");
-            println!("💰 {} MOLT ({} shells)", molt, burned.shells);
+            let lichen = burned.spores as f64 / 1_000_000_000.0;
+            println!("🔥 Total LICN Burned");
+            println!("💰 {} LICN ({} spores)", lichen, burned.spores);
             println!();
             println!(
                 "Deflationary mechanism: 50% of all transaction fees are burned forever! 🦞⚡"
@@ -975,7 +975,7 @@ async fn main() -> Result<()> {
             } else {
                 for (i, v) in validators.iter().enumerate() {
                     println!("#{} {}", i + 1, v.pubkey);
-                    println!("   Stake: {} MOLT", v.stake as f64 / 1_000_000_000.0);
+                    println!("   Stake: {} LICN", v.stake as f64 / 1_000_000_000.0);
                     println!("   Reputation: {}", v.reputation);
                     println!();
                 }
@@ -983,7 +983,7 @@ async fn main() -> Result<()> {
                 let total_stake: u64 = validators.iter().map(|v| v.stake).sum();
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!(
-                    "Total: {} validators, {} MOLT staked",
+                    "Total: {} validators, {} LICN staked",
                     validators.len(),
                     total_stake as f64 / 1_000_000_000.0
                 );
@@ -1085,7 +1085,7 @@ async fn main() -> Result<()> {
                 match client.get_validator_info(&address).await {
                     Ok(info) => {
                         println!("📍 Pubkey: {}", info.pubkey);
-                        println!("💰 Stake: {} MOLT", info.stake as f64 / 1_000_000_000.0);
+                        println!("💰 Stake: {} LICN", info.stake as f64 / 1_000_000_000.0);
                         println!("⭐ Reputation: {}", info.reputation);
                         println!(
                             "📊 Status: {}",
@@ -1141,7 +1141,7 @@ async fn main() -> Result<()> {
                 } else {
                     for (i, v) in validators.iter().enumerate() {
                         println!("#{} {}", i + 1, v.pubkey);
-                        println!("   Stake: {} MOLT", v.stake as f64 / 1_000_000_000.0);
+                        println!("   Stake: {} LICN", v.stake as f64 / 1_000_000_000.0);
                         println!("   Reputation: {}", v.reputation);
                         println!();
                     }
@@ -1149,7 +1149,7 @@ async fn main() -> Result<()> {
                     let total_stake: u64 = validators.iter().map(|v| v.stake).sum();
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     println!(
-                        "Total: {} validators, {} MOLT staked",
+                        "Total: {} validators, {} LICN staked",
                         validators.len(),
                         total_stake as f64 / 1_000_000_000.0
                     );
@@ -1162,10 +1162,10 @@ async fn main() -> Result<()> {
                 let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
                 let kp = keypair_mgr.load_keypair(&path)?;
 
-                println!("🦞 Staking MOLT");
+                println!("🦞 Staking LICN");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!();
-                println!("💰 Amount: {} MOLT", amount as f64 / 1_000_000_000.0);
+                println!("💰 Amount: {} LICN", amount as f64 / 1_000_000_000.0);
                 println!("👤 Validator: {}", kp.pubkey().to_base58());
                 println!();
 
@@ -1186,10 +1186,10 @@ async fn main() -> Result<()> {
                 let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
                 let kp = keypair_mgr.load_keypair(&path)?;
 
-                println!("🦞 Unstaking MOLT");
+                println!("🦞 Unstaking LICN");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!();
-                println!("💰 Amount: {} MOLT", amount as f64 / 1_000_000_000.0);
+                println!("💰 Amount: {} LICN", amount as f64 / 1_000_000_000.0);
                 println!("👤 Validator: {}", kp.pubkey().to_base58());
                 println!();
 
@@ -1222,7 +1222,7 @@ async fn main() -> Result<()> {
                 match client.get_staking_status(&addr_str).await {
                     Ok(status) => {
                         println!("👤 Account: {}", status.address);
-                        println!("💰 Staked: {} MOLT", status.staked as f64 / 1_000_000_000.0);
+                        println!("💰 Staked: {} LICN", status.staked as f64 / 1_000_000_000.0);
                         println!(
                             "📊 Status: {}",
                             if status.is_validator {
@@ -1255,11 +1255,11 @@ async fn main() -> Result<()> {
                     Ok(rewards) => {
                         println!("👤 Account: {}", rewards.address);
                         println!(
-                            "💰 Total rewards: {} MOLT",
+                            "💰 Total rewards: {} LICN",
                             rewards.total_rewards as f64 / 1_000_000_000.0
                         );
                         println!(
-                            "⏳ Pending rewards: {} MOLT",
+                            "⏳ Pending rewards: {} LICN",
                             rewards.pending_rewards as f64 / 1_000_000_000.0
                         );
                     }
@@ -1279,7 +1279,7 @@ async fn main() -> Result<()> {
                 match client.get_account_info(&address).await {
                     Ok(info) => {
                         println!("📍 Address: {}", info.pubkey);
-                        println!("💰 Balance: {} MOLT ({} shells)", info.molt, info.balance);
+                        println!("💰 Balance: {} LICN ({} spores)", info.lichen, info.balance);
                         println!("📦 Exists: {}", if info.exists { "Yes" } else { "No" });
                         println!(
                             "⚙️  Executable: {}",
@@ -1318,7 +1318,7 @@ async fn main() -> Result<()> {
                                 println!("   Signature: {}", tx.signature);
                                 println!("   From: {}", tx.from);
                                 println!("   To: {}", tx.to);
-                                println!("   Amount: {} MOLT", tx.amount as f64 / 1_000_000_000.0);
+                                println!("   Amount: {} LICN", tx.amount as f64 / 1_000_000_000.0);
                                 println!();
                             }
                         }
@@ -1409,7 +1409,7 @@ async fn main() -> Result<()> {
             } => {
                 let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
                 let owner = keypair_mgr.load_keypair(&path)?;
-                let contract_pubkey = moltchain_core::Pubkey::from_base58(&address)
+                let contract_pubkey = lichen_core::Pubkey::from_base58(&address)
                     .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
 
                 println!("🏷️  Registering contract in symbol registry");
@@ -1444,7 +1444,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Status => {
-            println!("🦞 MoltChain Status");
+            println!("🦞 Lichen Status");
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             println!();
 
@@ -1474,15 +1474,15 @@ async fn main() -> Result<()> {
 
                     println!("💰 Economics:");
                     println!(
-                        "   Total supply: {} MOLT",
+                        "   Total supply: {} LICN",
                         status.total_supply as f64 / 1_000_000_000.0
                     );
                     println!(
-                        "   Total burned: {} MOLT",
+                        "   Total burned: {} LICN",
                         status.total_burned as f64 / 1_000_000_000.0
                     );
                     println!(
-                        "   Total staked: {} MOLT",
+                        "   Total staked: {} LICN",
                         status.total_staked as f64 / 1_000_000_000.0
                     );
                     println!();
@@ -1520,11 +1520,11 @@ async fn main() -> Result<()> {
 
                     println!("💰 Economics:");
                     println!(
-                        "   Total supply: {} MOLT",
+                        "   Total supply: {} LICN",
                         metrics.total_supply as f64 / 1_000_000_000.0
                     );
                     println!(
-                        "   Circulating: {} MOLT",
+                        "   Circulating: {} LICN",
                         metrics.circulating_supply as f64 / 1_000_000_000.0
                     );
                     let burn_pct = if metrics.total_supply > 0 {
@@ -1538,12 +1538,12 @@ async fn main() -> Result<()> {
                         0.0
                     };
                     println!(
-                        "   Burned: {} MOLT ({:.2}%)",
+                        "   Burned: {} LICN ({:.2}%)",
                         metrics.total_burned as f64 / 1_000_000_000.0,
                         burn_pct
                     );
                     println!(
-                        "   Staked: {} MOLT ({:.2}%)",
+                        "   Staked: {} LICN ({:.2}%)",
                         metrics.total_staked as f64 / 1_000_000_000.0,
                         stake_pct
                     );
@@ -1568,7 +1568,7 @@ async fn main() -> Result<()> {
                 kp.pubkey()
             };
 
-            println!("🦞 Requesting {} MOLT airdrop...", amount);
+            println!("🦞 Requesting {} LICN airdrop...", amount);
             println!("📥 To: {}", recipient.to_base58());
             println!();
 
@@ -1629,7 +1629,7 @@ async fn main() -> Result<()> {
 
             // Generate contract address (deterministic from deployer + code hash + slot nonce)
             // Include current slot so retries after a failed deploy produce a fresh address.
-            use moltchain_core::Hash;
+            use lichen_core::Hash;
             let slot_nonce = client.get_slot().await.unwrap_or(0);
             let code_hash = Hash::hash(&wasm_code);
             let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
@@ -1639,7 +1639,7 @@ async fn main() -> Result<()> {
             let result = sha2::Digest::finalize(hasher);
             let mut addr_bytes = [0u8; 32];
             addr_bytes.copy_from_slice(&result[..32]);
-            let contract_addr = moltchain_core::Pubkey(addr_bytes);
+            let contract_addr = lichen_core::Pubkey(addr_bytes);
 
             // Build init_data for symbol registry if any metadata flags provided
             let init_data = if symbol.is_some()
@@ -1675,10 +1675,10 @@ async fn main() -> Result<()> {
                 };
                 if let Some(s) = supply {
                     let decs = decimals.unwrap_or(9) as u32;
-                    let total_shells = (s as u128) * 10u128.pow(decs);
+                    let total_spores = (s as u128) * 10u128.pow(decs);
                     meta.insert(
                         "total_supply".to_string(),
-                        serde_json::json!(total_shells.to_string()),
+                        serde_json::json!(total_spores.to_string()),
                     );
                 }
                 if !meta.is_empty() {
@@ -1707,7 +1707,7 @@ async fn main() -> Result<()> {
                     decimals.unwrap_or(9)
                 );
             }
-            println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
+            println!("💰 Deploy fee: 25.001 LICN (25 LICN deploy + 0.001 LICN base fee)");
             println!();
 
             let signature = client
@@ -1742,20 +1742,20 @@ async fn main() -> Result<()> {
             if let Some(ref err) = tx_error {
                 if err.contains("Transaction failed on-chain") {
                     println!("❌ Deploy transaction FAILED on-chain: {}", err);
-                    println!("   The deploy fee premium (25 MOLT) is refunded.");
-                    println!("   Only the base fee (0.001 MOLT) is kept.");
+                    println!("   The deploy fee premium (25 LICN) is refunded.");
+                    println!("   Only the base fee (0.001 LICN) is kept.");
                 } else {
                     println!("⚠️  Could not verify deploy transaction status: {}", err);
                     println!("   The transaction may have succeeded. Check the explorer:");
                     println!(
-                        "   Explorer: https://explorer.moltchain.network/contract/{}",
+                        "   Explorer: https://explorer.lichen.network/contract/{}",
                         contract_addr.to_base58()
                     );
                     println!("   Signature: {}", signature);
                     println!("   If the contract exists, no action is needed.");
-                    println!("   If it does not exist, the 25 MOLT premium is refunded.");
+                    println!("   If it does not exist, the 25 LICN premium is refunded.");
                 }
-                println!("   Check your balance: molt balance --keypair <keypair>");
+                println!("   Check your balance: lichen balance --keypair <keypair>");
             } else if tx_confirmed {
                 // Phase 2: Verify contract account exists (up to 10 attempts, 1s apart)
                 let mut verified = false;
@@ -1830,7 +1830,7 @@ async fn main() -> Result<()> {
                                         }
                                         _ => {
                                             println!(
-                                                "⚠️  Symbol '{}' fallback registration sent (sig: {}) — verify with: molt contract info {}",
+                                                "⚠️  Symbol '{}' fallback registration sent (sig: {}) — verify with: lichen contract info {}",
                                                 s, reg_sig, contract_addr.to_base58()
                                             );
                                         }
@@ -1838,7 +1838,7 @@ async fn main() -> Result<()> {
                                 }
                                 Err(e) => {
                                     println!(
-                                        "⚠️  Auto-register failed: {}. Register manually:\n   molt contract register --address {} --symbol {} {}{}{}",
+                                        "⚠️  Auto-register failed: {}. Register manually:\n   lichen contract register --address {} --symbol {} {}{}{}",
                                         e,
                                         contract_addr.to_base58(),
                                         s,
@@ -1861,9 +1861,9 @@ async fn main() -> Result<()> {
             } else {
                 println!("⚠️  Transaction not confirmed after 15 seconds.");
                 println!("   The transaction may still be processing. Check:");
-                println!("   molt balance --keypair <keypair>");
+                println!("   lichen balance --keypair <keypair>");
                 println!(
-                    "   Explorer: https://explorer.moltchain.network/address/{}",
+                    "   Explorer: https://explorer.lichen.network/address/{}",
                     contract_addr.to_base58()
                 );
             }
@@ -1877,7 +1877,7 @@ async fn main() -> Result<()> {
             let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
             let owner = keypair_mgr.load_keypair(&path)?;
 
-            let contract_pubkey = moltchain_core::Pubkey::from_base58(&address)
+            let contract_pubkey = lichen_core::Pubkey::from_base58(&address)
                 .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
 
             let wasm_code = std::fs::read(&contract)
@@ -1905,7 +1905,7 @@ async fn main() -> Result<()> {
         } => {
             let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
             let caller = keypair_mgr.load_keypair(&path)?;
-            let contract_addr = moltchain_core::Pubkey::from_base58(&contract)
+            let contract_addr = lichen_core::Pubkey::from_base58(&contract)
                 .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
 
             // Parse JSON args
@@ -1969,12 +1969,12 @@ async fn main() -> Result<()> {
                 }
 
                 // Generate contract address
-                use moltchain_core::Hash;
+                use lichen_core::Hash;
                 let code_hash = Hash::hash(&wasm_code);
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes[..16].copy_from_slice(&deployer.pubkey().0[..16]);
                 addr_bytes[16..].copy_from_slice(&code_hash.0[..16]);
-                let contract_addr = moltchain_core::Pubkey(addr_bytes);
+                let contract_addr = lichen_core::Pubkey(addr_bytes);
 
                 // Build init_data with token template metadata
                 let init_data = serde_json::json!({
@@ -1994,7 +1994,7 @@ async fn main() -> Result<()> {
                 println!("📍 Contract address: {}", contract_addr.to_base58());
                 println!("👤 Creator: {}", deployer.pubkey().to_base58());
                 println!("🔢 Decimals: {}", decimals);
-                println!("💰 Deploy fee: 25.001 MOLT (25 MOLT deploy + 0.001 MOLT base fee)");
+                println!("💰 Deploy fee: 25.001 LICN (25 LICN deploy + 0.001 LICN base fee)");
                 println!();
 
                 let signature = client
@@ -2010,7 +2010,7 @@ async fn main() -> Result<()> {
                 println!("🪙 Token Info: {}", token);
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-                let _contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                let _contract_addr = lichen_core::Pubkey::from_base58(&token)
                     .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
 
                 match client.get_contract_info(&token).await {
@@ -2020,7 +2020,10 @@ async fn main() -> Result<()> {
                         println!("📏 Code size: {} bytes", info.code_size);
                         println!("📅 Deployed at slot: {}", info.deployed_at);
                         println!();
-                        println!("💡 Query token metadata: molt call {} get_info '[]'", token);
+                        println!(
+                            "💡 Query token metadata: lichen call {} get_info '[]'",
+                            token
+                        );
                     }
                     Err(e) => {
                         println!("⚠️  Token contract not found: {}", e);
@@ -2039,7 +2042,7 @@ async fn main() -> Result<()> {
                 let recipient = to.unwrap_or_else(|| minter.pubkey().to_base58());
                 println!("🪙 Minting {} tokens to {}", amount, recipient);
 
-                let contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                let contract_addr = lichen_core::Pubkey::from_base58(&token)
                     .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
 
                 let mut data = Vec::new();
@@ -2061,7 +2064,7 @@ async fn main() -> Result<()> {
                 let sender = keypair_mgr.load_keypair(&path)?;
                 println!("📤 Sending {} tokens to {}", amount, to);
 
-                let contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                let contract_addr = lichen_core::Pubkey::from_base58(&token)
                     .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
 
                 let mut data = Vec::new();
@@ -2086,7 +2089,7 @@ async fn main() -> Result<()> {
                     kp.pubkey().to_base58()
                 };
 
-                let contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                let contract_addr = lichen_core::Pubkey::from_base58(&token)
                     .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
 
                 println!("🪙 Token Balance");
@@ -2100,7 +2103,7 @@ async fn main() -> Result<()> {
                 let query_kp = keypair_mgr
                     .load_keypair(&keypair_mgr.default_keypair_path())
                     .map_err(|_| {
-                        anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                        anyhow::anyhow!("No wallet configured. Run `lichen wallet create` first.")
                     })?;
                 match client
                     .call_contract(&query_kp, &contract_addr, "balance_of".to_string(), data, 0)
@@ -2133,7 +2136,7 @@ async fn main() -> Result<()> {
                             }
                             println!("Total: {} contracts", contracts.len());
                             println!();
-                            println!("💡 Get token details: molt token info <address>");
+                            println!("💡 Get token details: licn token info <address>");
                         }
                     }
                     Err(e) => {
@@ -2155,7 +2158,7 @@ async fn main() -> Result<()> {
                     eprintln!(
                         "⚠️  DAO contract not found in symbol registry, using well-known address"
                     );
-                    moltchain_core::Pubkey([0xDA; 32])
+                    lichen_core::Pubkey([0xDA; 32])
                 }
             };
 
@@ -2192,7 +2195,7 @@ async fn main() -> Result<()> {
                         }
                     );
                     println!("   Proposer: {}", proposer.pubkey().to_base58());
-                    println!("   Stake: 1000 MOLT required");
+                    println!("   Stake: 1000 LICN required");
                     println!();
 
                     // Build governance proposal instruction
@@ -2203,7 +2206,7 @@ async fn main() -> Result<()> {
                     data.extend_from_slice(&(description.len() as u32).to_le_bytes());
                     data.extend_from_slice(description.as_bytes());
 
-                    // MoltyDAO contract address should be well-known
+                    // LichenDAO contract address should be well-known
 
                     let signature = client
                         .call_contract(
@@ -2261,7 +2264,9 @@ async fn main() -> Result<()> {
                     let query_kp = keypair_mgr
                         .load_keypair(&keypair_mgr.default_keypair_path())
                         .map_err(|_| {
-                            anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                            anyhow::anyhow!(
+                                "No wallet configured. Run `lichen wallet create` first."
+                            )
                         })?;
                     match client
                         .call_contract(&query_kp, &dao_addr, "get_proposals".to_string(), data, 0)
@@ -2273,7 +2278,7 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             println!("⚠️  Could not query proposals: {}", e);
-                            println!("💡 Ensure the MoltyDAO contract is deployed at the well-known address");
+                            println!("💡 Ensure the LichenDAO contract is deployed at the well-known address");
                         }
                     }
                 }
@@ -2288,7 +2293,9 @@ async fn main() -> Result<()> {
                     let query_kp = keypair_mgr
                         .load_keypair(&keypair_mgr.default_keypair_path())
                         .map_err(|_| {
-                            anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                            anyhow::anyhow!(
+                                "No wallet configured. Run `lichen wallet create` first."
+                            )
                         })?;
                     match client
                         .call_contract(&query_kp, &dao_addr, "get_proposal".to_string(), data, 0)
@@ -2300,7 +2307,7 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             println!("⚠️  Could not query proposal: {}", e);
-                            println!("💡 Ensure the MoltyDAO contract is deployed at the well-known address");
+                            println!("💡 Ensure the LichenDAO contract is deployed at the well-known address");
                         }
                     }
                 }
@@ -2355,55 +2362,55 @@ async fn main() -> Result<()> {
         Commands::Version => {
             let version_info = serde_json::json!({
                 "cli_version": env!("CARGO_PKG_VERSION"),
-                "binary": "molt",
-                "chain": "MoltChain",
+                "binary": "lichen",
+                "chain": "Lichen",
                 "consensus": "Tendermint BFT",
                 "signing": "Ed25519",
                 "contracts": "WASM (Rust → wasm32-unknown-unknown)",
                 "zk": "Groth16 over BN254",
-                "native_token": "MOLT",
-                "shells_per_molt": 1_000_000_000u64,
+                "native_token": "LICN",
+                "spores_per_licn": 1_000_000_000u64,
                 "rpc_url": cli.rpc_url,
                 "system_program": "0000000000000000000000000000000000000000000000000000000000000000",
                 "contract_program": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                 "instruction_types": 28,
                 "fee_structure": {
-                    "base_fee": "0.001 MOLT (1,000,000 shells)",
-                    "deploy_premium": "25 MOLT",
-                    "upgrade_premium": "10 MOLT",
-                    "nft_mint_premium": "0.5 MOLT",
+                    "base_fee": "0.001 LICN (1,000,000 spores)",
+                    "deploy_premium": "25 LICN",
+                    "upgrade_premium": "10 LICN",
+                    "nft_mint_premium": "0.5 LICN",
                     "fee_split": "40% burn, 30% block producer, 10% voters, 10% treasury, 10% community"
                 },
                 "wasm_host_functions": 16,
                 "rpc_endpoints": {
-                    "mainnet": "https://rpc.moltchain.network",
-                    "mainnet_ws": "wss://ws.moltchain.network",
-                    "testnet": "https://testnet-rpc.moltchain.network"
+                    "mainnet": "https://rpc.lichen.network",
+                    "mainnet_ws": "wss://ws.lichen.network",
+                    "testnet": "https://testnet-rpc.lichen.network"
                 }
             });
 
             if json_output {
                 print_json(&version_info);
             } else {
-                println!("🦞 MoltChain CLI v{}", env!("CARGO_PKG_VERSION"));
+                println!("🦞 Lichen CLI v{}", env!("CARGO_PKG_VERSION"));
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!();
-                println!("Chain:       MoltChain (custom L1)");
+                println!("Chain:       Lichen (custom L1)");
                 println!("Consensus:   Tendermint BFT (~800ms blocks)");
                 println!("Signing:     Ed25519");
                 println!("Contracts:   WASM (Rust → wasm32-unknown-unknown)");
                 println!("ZK Proofs:   Groth16 over BN254");
-                println!("Token:       MOLT (1 MOLT = 1,000,000,000 shells)");
+                println!("Token:       LICN (1 LICN = 1,000,000,000 spores)");
                 println!();
                 println!("RPC (current): {}", cli.rpc_url);
-                println!("Mainnet RPC:   https://rpc.moltchain.network");
-                println!("Testnet RPC:   https://testnet-rpc.moltchain.network");
-                println!("Explorer:      https://explorer.moltchain.network");
-                println!("Docs:          https://developers.moltchain.network");
+                println!("Mainnet RPC:   https://rpc.lichen.network");
+                println!("Testnet RPC:   https://testnet-rpc.lichen.network");
+                println!("Explorer:      https://explorer.lichen.network");
+                println!("Docs:          https://developers.lichen.network");
                 println!();
                 println!("Fees:");
-                println!("  Base:    0.001 MOLT    Deploy: 25 MOLT");
-                println!("  Upgrade: 10 MOLT       NFT Mint: 0.5 MOLT");
+                println!("  Base:    0.001 LICN    Deploy: 25 LICN");
+                println!("  Upgrade: 10 LICN       NFT Mint: 0.5 LICN");
                 println!(
                     "  Split: 40% burn / 30% producer / 10% voters / 10% treasury / 10% community"
                 );
@@ -2583,7 +2590,7 @@ async fn main() -> Result<()> {
                         println!("Status: {}", status);
                     }
                     if let Some(fee) = tx.get("fee").and_then(|v| v.as_u64()) {
-                        println!("Fee:    {} MOLT", to_molt(fee));
+                        println!("Fee:    {} LICN", to_licn(fee));
                     }
                     if let Some(from) = tx.get("from").and_then(|v| v.as_str()) {
                         println!("From:   {}", from);
@@ -2593,7 +2600,7 @@ async fn main() -> Result<()> {
                     }
                     if let Some(amount) = tx.get("amount").and_then(|v| v.as_u64()) {
                         if amount > 0 {
-                            println!("Amount: {} MOLT", to_molt(amount));
+                            println!("Amount: {} LICN", to_licn(amount));
                         }
                     }
                     if let Some(err) = tx.get("error").and_then(|v| v.as_str()) {
@@ -2727,10 +2734,10 @@ async fn main() -> Result<()> {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("-");
                                     println!(
-                                        "#{} {} — {} MOLT (Seller: {})",
+                                        "#{} {} — {} LICN (Seller: {})",
                                         i + 1,
                                         name,
-                                        to_molt(price),
+                                        to_licn(price),
                                         seller
                                     );
                                 }
@@ -2758,7 +2765,7 @@ async fn main() -> Result<()> {
                     if json_output {
                         print_json(&stats);
                     } else {
-                        println!("📊 ClawSwap DEX Stats");
+                        println!("📊 SporeSwap DEX Stats");
                         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         print_defi_stats(&stats);
                     }
@@ -2777,12 +2784,12 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => println!("Could not fetch AMM stats: {}", e),
             },
-            DefiCommands::Lending => match client.get_defi_stats("getLobsterLendStats").await {
+            DefiCommands::Lending => match client.get_defi_stats("getThallLendStats").await {
                 Ok(stats) => {
                     if json_output {
                         print_json(&stats);
                     } else {
-                        println!("📊 LobsterLend Stats");
+                        println!("📊 ThallLend Stats");
                         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         print_defi_stats(&stats);
                     }
@@ -2791,18 +2798,18 @@ async fn main() -> Result<()> {
             },
             DefiCommands::Overview => {
                 let labels = [
-                    "ClawSwap DEX",
+                    "SporeSwap DEX",
                     "AMM Pools",
-                    "LobsterLend",
-                    "ClawPay",
-                    "MoltSwap",
+                    "ThallLend",
+                    "SporePay",
+                    "LichenSwap",
                 ];
                 let methods = [
                     "getDexCoreStats",
                     "getDexAmmStats",
-                    "getLobsterLendStats",
-                    "getClawPayStats",
-                    "getMoltswapStats",
+                    "getThallLendStats",
+                    "getSporePayStats",
+                    "getLichenSwapStats",
                 ];
 
                 if json_output {
@@ -2839,34 +2846,34 @@ async fn main() -> Result<()> {
             Ok(metrics) => {
                 if json_output {
                     print_json(&serde_json::json!({
-                        "total_supply_shells": metrics.total_supply,
-                        "total_supply_molt": to_molt(metrics.total_supply),
-                        "circulating_supply_shells": metrics.circulating_supply,
-                        "circulating_supply_molt": to_molt(metrics.circulating_supply),
-                        "total_burned_shells": metrics.total_burned,
-                        "total_burned_molt": to_molt(metrics.total_burned),
-                        "total_staked_shells": metrics.total_staked,
-                        "total_staked_molt": to_molt(metrics.total_staked),
+                        "total_supply_spores": metrics.total_supply,
+                        "total_supply_licn": to_licn(metrics.total_supply),
+                        "circulating_supply_spores": metrics.circulating_supply,
+                        "circulating_supply_licn": to_licn(metrics.circulating_supply),
+                        "total_burned_spores": metrics.total_burned,
+                        "total_burned_licn": to_licn(metrics.total_burned),
+                        "total_staked_spores": metrics.total_staked,
+                        "total_staked_licn": to_licn(metrics.total_staked),
                         "burn_percentage": if metrics.total_supply > 0 { (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
                         "staked_percentage": if metrics.total_supply > 0 { (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0 } else { 0.0 },
                         "total_accounts": metrics.total_accounts,
                         "total_contracts": metrics.total_contracts,
                     }));
                 } else {
-                    println!("💰 MOLT Supply & Economics");
+                    println!("💰 LICN Supply & Economics");
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     println!();
                     println!(
-                        "Total Supply:       {:>14.4} MOLT",
-                        to_molt(metrics.total_supply)
+                        "Total Supply:       {:>14.4} LICN",
+                        to_licn(metrics.total_supply)
                     );
                     println!(
-                        "Circulating:        {:>14.4} MOLT",
-                        to_molt(metrics.circulating_supply)
+                        "Circulating:        {:>14.4} LICN",
+                        to_licn(metrics.circulating_supply)
                     );
                     println!(
-                        "Burned:             {:>14.4} MOLT ({:.2}%)",
-                        to_molt(metrics.total_burned),
+                        "Burned:             {:>14.4} LICN ({:.2}%)",
+                        to_licn(metrics.total_burned),
                         if metrics.total_supply > 0 {
                             (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0
                         } else {
@@ -2874,8 +2881,8 @@ async fn main() -> Result<()> {
                         }
                     );
                     println!(
-                        "Staked:             {:>14.4} MOLT ({:.2}%)",
-                        to_molt(metrics.total_staked),
+                        "Staked:             {:>14.4} LICN ({:.2}%)",
+                        to_licn(metrics.total_staked),
                         if metrics.total_supply > 0 {
                             (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0
                         } else {
@@ -2897,14 +2904,14 @@ async fn main() -> Result<()> {
         // ====================================================================
         Commands::Fees => {
             let fees = serde_json::json!({
-                "base_fee_shells": 1_000_000u64,
-                "base_fee_molt": 0.001,
-                "deploy_premium_shells": 25_000_000_000u64,
-                "deploy_premium_molt": 25.0,
-                "upgrade_premium_shells": 10_000_000_000u64,
-                "upgrade_premium_molt": 10.0,
-                "nft_mint_premium_shells": 500_000_000u64,
-                "nft_mint_premium_molt": 0.5,
+                "base_fee_spores": 1_000_000u64,
+                "base_fee_licn": 0.001,
+                "deploy_premium_spores": 25_000_000_000u64,
+                "deploy_premium_licn": 25.0,
+                "upgrade_premium_spores": 10_000_000_000u64,
+                "upgrade_premium_licn": 10.0,
+                "nft_mint_premium_spores": 500_000_000u64,
+                "nft_mint_premium_licn": 0.5,
                 "fee_split": {
                     "burn_pct": 40,
                     "block_producer_pct": 30,
@@ -2918,7 +2925,7 @@ async fn main() -> Result<()> {
                     "1000+": "10% off"
                 },
                 "notes": [
-                    "All fees paid in MOLT (1 MOLT = 1,000,000,000 shells)",
+                    "All fees paid in LICN (1 LICN = 1,000,000,000 spores)",
                     "Deploy premium refunded on failure (only base fee kept)",
                     "40% of fees burned permanently (deflationary)",
                     "Reputation discounts apply to base fee only"
@@ -2928,15 +2935,15 @@ async fn main() -> Result<()> {
             if json_output {
                 print_json(&fees);
             } else {
-                println!("💸 MoltChain Fee Schedule");
+                println!("💸 Lichen Fee Schedule");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!();
                 println!("Transaction Type          Fee");
                 println!("─────────────────────────────────────────────");
-                println!("Transfer / Call            0.001 MOLT (base)");
-                println!("Deploy Contract           25.001 MOLT (25 + base)");
-                println!("Upgrade Contract          10.001 MOLT (10 + base)");
-                println!("Mint NFT                   0.501 MOLT (0.5 + base)");
+                println!("Transfer / Call            0.001 LICN (base)");
+                println!("Deploy Contract           25.001 LICN (25 + base)");
+                println!("Upgrade Contract          10.001 LICN (10 + base)");
+                println!("Mint NFT                   0.501 LICN (0.5 + base)");
                 println!();
                 println!("Fee Split:");
                 println!("  40% burned forever (deflationary)");
@@ -2965,7 +2972,7 @@ async fn main() -> Result<()> {
                     .map(|info| info.slots_per_epoch)
                     .ok()
                     .filter(|slots| *slots > 0)
-                    .unwrap_or(moltchain_core::consensus::SLOTS_PER_EPOCH);
+                    .unwrap_or(lichen_core::consensus::SLOTS_PER_EPOCH);
                 let epoch = status._epoch;
                 let epoch_start_slot = epoch.saturating_mul(slots_per_epoch);
                 let slot_in_epoch = status.current_slot.saturating_sub(epoch_start_slot);
@@ -2983,7 +2990,7 @@ async fn main() -> Result<()> {
                         "slots_per_epoch": slots_per_epoch,
                         "epoch_progress_pct": epoch_progress_pct,
                         "validators": status.validator_count,
-                        "total_staked_molt": to_molt(status.total_staked),
+                        "total_staked_licn": to_licn(status.total_staked),
                     }));
                 } else {
                     println!("📅 Epoch Information");
@@ -2996,7 +3003,7 @@ async fn main() -> Result<()> {
                     );
                     println!("Progress:      {:.1}%", epoch_progress_pct);
                     println!("Validators:    {}", status.validator_count);
-                    println!("Total Staked:  {:.4} MOLT", to_molt(status.total_staked));
+                    println!("Total Staked:  {:.4} LICN", to_licn(status.total_staked));
                 }
             }
             Err(e) => println!("Could not fetch epoch info: {}", e),
@@ -3017,7 +3024,7 @@ async fn main() -> Result<()> {
                     {"name": "get_timestamp", "signature": "() -> u64", "category": "chain", "description": "Get the current block timestamp (Unix seconds)."},
                     {"name": "get_caller", "signature": "(buf_ptr: u32) -> u32", "category": "chain", "description": "Get the caller's 32-byte public key."},
                     {"name": "get_contract_address", "signature": "(buf_ptr: u32) -> u32", "category": "chain", "description": "Get this contract's own 32-byte address."},
-                    {"name": "get_value", "signature": "() -> u64", "category": "chain", "description": "Get the MOLT value (shells) attached to this call."},
+                    {"name": "get_value", "signature": "() -> u64", "category": "chain", "description": "Get the LICN value (spores) attached to this call."},
                     {"name": "get_slot", "signature": "() -> u64", "category": "chain", "description": "Get the current block slot number."},
                     {"name": "get_args_len", "signature": "() -> u32", "category": "arguments", "description": "Get the length of the call arguments in bytes."},
                     {"name": "get_args", "signature": "(buf_ptr: u32, buf_len: u32) -> u32", "category": "arguments", "description": "Copy call arguments into a buffer."},
@@ -3025,7 +3032,7 @@ async fn main() -> Result<()> {
                     {"name": "cross_contract_call", "signature": "(addr_ptr: u32, fn_ptr: u32, fn_len: u32, args_ptr: u32, args_len: u32, value: u64) -> i32", "category": "interop", "description": "Call another contract. Returns 0 on success, -1 on error."},
                     {"name": "host_poseidon_hash", "signature": "(left_ptr: u32, right_ptr: u32, out_ptr: u32) -> u32", "category": "crypto", "description": "Compute Poseidon hash (BN254 Fr) of two 32-byte field elements. ZK-friendly."}
                 ],
-                "sdk_crate": "moltchain-contract-sdk",
+                "sdk_crate": "lichen-contract-sdk",
                 "compile_target": "wasm32-unknown-unknown",
                 "build_command": "cargo build --target wasm32-unknown-unknown --release"
             });
@@ -3035,7 +3042,7 @@ async fn main() -> Result<()> {
             } else {
                 println!("🔧 WASM Host Functions (available in contracts)");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("SDK: moltchain-contract-sdk | Target: wasm32-unknown-unknown");
+                println!("SDK: lichen-contract-sdk | Target: wasm32-unknown-unknown");
                 println!();
                 println!("  Storage (4):");
                 println!("    storage_read(key_ptr, key_len) -> u32");
@@ -3077,7 +3084,7 @@ fn print_defi_stats(stats: &serde_json::Value) {
             let label = key.replace('_', " ");
             if let Some(n) = value.as_u64() {
                 if n > 1_000_000_000 {
-                    println!("  {}: {:.4} MOLT", label, to_molt(n));
+                    println!("  {}: {:.4} LICN", label, to_licn(n));
                 } else {
                     println!("  {}: {}", label, n);
                 }
@@ -3095,40 +3102,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_molt_to_shells_basic() {
-        assert_eq!(molt_to_shells(1.0), 1_000_000_000);
-        assert_eq!(molt_to_shells(0.5), 500_000_000);
-        assert_eq!(molt_to_shells(100.0), 100_000_000_000);
+    fn test_licn_to_spores_basic() {
+        assert_eq!(licn_to_spores(1.0), 1_000_000_000);
+        assert_eq!(licn_to_spores(0.5), 500_000_000);
+        assert_eq!(licn_to_spores(100.0), 100_000_000_000);
     }
 
     #[test]
-    fn test_molt_to_shells_zero_and_negative() {
-        assert_eq!(molt_to_shells(0.0), 0);
-        assert_eq!(molt_to_shells(-1.0), 0);
-        assert_eq!(molt_to_shells(-0.001), 0);
+    fn test_licn_to_spores_zero_and_negative() {
+        assert_eq!(licn_to_spores(0.0), 0);
+        assert_eq!(licn_to_spores(-1.0), 0);
+        assert_eq!(licn_to_spores(-0.001), 0);
     }
 
     #[test]
-    fn test_molt_to_shells_fractional_precision() {
+    fn test_licn_to_spores_fractional_precision() {
         // Exact fractional values
-        assert_eq!(molt_to_shells(0.000000001), 1); // 1 shell
-        assert_eq!(molt_to_shells(1.123456789), 1_123_456_789);
-        assert_eq!(molt_to_shells(0.1), 100_000_000);
-        assert_eq!(molt_to_shells(0.01), 10_000_000);
+        assert_eq!(licn_to_spores(0.000000001), 1); // 1 spore
+        assert_eq!(licn_to_spores(1.123456789), 1_123_456_789);
+        assert_eq!(licn_to_spores(0.1), 100_000_000);
+        assert_eq!(licn_to_spores(0.01), 10_000_000);
     }
 
     #[test]
-    fn test_molt_to_shells_large_values() {
+    fn test_licn_to_spores_large_values() {
         // Large values that could cause float precision loss with naive (amount * 1e9) as u64
-        assert_eq!(molt_to_shells(1_000_000.0), 1_000_000_000_000_000);
+        assert_eq!(licn_to_spores(1_000_000.0), 1_000_000_000_000_000);
         // Near the u64 overflow boundary → saturates
-        assert_eq!(molt_to_shells(f64::MAX), u64::MAX);
+        assert_eq!(licn_to_spores(f64::MAX), u64::MAX);
     }
 
     #[test]
-    fn test_molt_to_shells_saturating() {
+    fn test_licn_to_spores_saturating() {
         // Values near the u64 limit should saturate, not overflow
         let huge = (u64::MAX / 1_000_000_000) as f64 + 1.0;
-        assert_eq!(molt_to_shells(huge), u64::MAX);
+        assert_eq!(licn_to_spores(huge), u64::MAX);
     }
 }

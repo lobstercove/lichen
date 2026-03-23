@@ -1,4 +1,4 @@
-// Block Detail Page - Molt Explorer
+// Block Detail Page - Lichen Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
 // NOTE: formatHash, formatAddress, formatNumber, formatBytes, copyToClipboard,
 //       escapeHtml, safeCopy, formatTimeShort, formatTimeFull are provided
@@ -124,16 +124,16 @@ async function displayBlock(block) {
     const nonShieldedParticipants = transactions
         .filter(tx => !isShieldedType(tx?.type || tx?.tx_type || tx?.transaction_type || 'Transfer'))
         .flatMap(tx => [tx.from, tx.to]);
-    const addressNames = typeof batchResolveMoltNames === 'function'
-        ? await batchResolveMoltNames([
+    const addressNames = typeof batchResolveLichenNames === 'function'
+        ? await batchResolveLichenNames([
             validator,
             ...nonShieldedParticipants,
             reward?.recipient
         ])
         : {};
 
-    const validatorDisplay = addressNames[validator] && typeof formatAddressWithMoltName === 'function'
-        ? formatAddressWithMoltName(validator, addressNames[validator])
+    const validatorDisplay = addressNames[validator] && typeof formatAddressWithLichenName === 'function'
+        ? formatAddressWithLichenName(validator, addressNames[validator])
         : formatAddress(validator);
     document.getElementById('validator').innerHTML = validatorDisplay;
     document.getElementById('detailTxCount').textContent = formatNumber(txCount);
@@ -177,11 +177,11 @@ async function displayBlock(block) {
             const safeTo = typeof escapeHtml === 'function' ? escapeHtml(tx.to) : tx.to;
             const safeType = typeof escapeHtml === 'function' ? escapeHtml(typeRaw) : typeRaw;
             const safeStatus = typeof escapeHtml === 'function' ? escapeHtml(tx.status || 'Success') : (tx.status || 'Success');
-            const fromDisplay = addressNames[tx.from] && typeof formatAddressWithMoltName === 'function'
-                ? formatAddressWithMoltName(tx.from, addressNames[tx.from])
+            const fromDisplay = addressNames[tx.from] && typeof formatAddressWithLichenName === 'function'
+                ? formatAddressWithLichenName(tx.from, addressNames[tx.from])
                 : formatAddress(tx.from);
-            const toDisplay = addressNames[tx.to] && typeof formatAddressWithMoltName === 'function'
-                ? formatAddressWithMoltName(tx.to, addressNames[tx.to])
+            const toDisplay = addressNames[tx.to] && typeof formatAddressWithLichenName === 'function'
+                ? formatAddressWithLichenName(tx.to, addressNames[tx.to])
                 : formatAddress(tx.to);
             return `
             <tr>
@@ -221,18 +221,18 @@ async function displayBlock(block) {
     const rewardCard = document.getElementById('rewardCard');
     if (reward && rewardCard && slot > 0) {
         const projectedPerSlot = reward.projected_per_slot || reward.amount || 0;
-        const projectedMolt = reward.projected_per_slot_molt || reward.amount_molt || 0;
+        const projectedLicn = reward.projected_per_slot_licn || reward.amount_licn || 0;
         if (projectedPerSlot > 0) {
             rewardCard.style.display = '';
             document.getElementById('rewardAmount').textContent =
-                projectedMolt.toFixed(6) + ' MOLT/slot estimate';
+                projectedLicn.toFixed(6) + ' LICN/slot estimate';
             const typeLabel = reward.type === 'heartbeat' ? 'Heartbeat slot' : 'Transaction slot';
             const epochLabel = reward.epoch !== undefined ? ' · Epoch ' + reward.epoch : '';
             document.getElementById('rewardType').innerHTML =
                 '<span class="badge badge-info">' + typeLabel + '</span>' +
                 '<span class="badge badge-secondary" style="margin-left:4px;">settles ' + (reward.distribution || 'epoch') + epochLabel + '</span>';
-            const rewardDisplay = addressNames[reward.recipient] && typeof formatAddressWithMoltName === 'function'
-                ? formatAddressWithMoltName(reward.recipient, addressNames[reward.recipient])
+            const rewardDisplay = addressNames[reward.recipient] && typeof formatAddressWithLichenName === 'function'
+                ? formatAddressWithLichenName(reward.recipient, addressNames[reward.recipient])
                 : formatAddress(reward.recipient);
             document.getElementById('rewardRecipient').innerHTML = rewardDisplay;
             document.getElementById('rewardRecipientLink').href = 'address.html?address=' + reward.recipient;
@@ -245,7 +245,7 @@ async function displayBlock(block) {
         // Sum up all tx fees in this block
         let totalFee = 0;
         for (const tx of transactions) {
-            const fee = tx.fee_shells !== undefined ? tx.fee_shells : (tx.fee || 0);
+            const fee = tx.fee_spores !== undefined ? tx.fee_spores : (tx.fee || 0);
             totalFee += fee;
         }
         if (totalFee > 0) {
@@ -255,12 +255,12 @@ async function displayBlock(block) {
             const voters = Math.floor(totalFee * FEE_SPLIT.voters);
             const treasury = Math.floor(totalFee * FEE_SPLIT.treasury);
             const community = totalFee - burned - producer - voters - treasury;
-            const fmt = (shells) => {
-                const molt = shells / SHELLS_PER_MOLT;
-                return molt.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 9 }) + ' MOLT';
+            const fmt = (spores) => {
+                const licn = spores / SPORES_PER_LICN;
+                return licn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 9 }) + ' LICN';
             };
             const pct = (v) => Math.round(v * 100) + '%';
-            document.getElementById('feeTotalDisplay').textContent = fmt(totalFee) + ' (' + formatNumber(totalFee) + ' shells)';
+            document.getElementById('feeTotalDisplay').textContent = fmt(totalFee) + ' (' + formatNumber(totalFee) + ' spores)';
             document.getElementById('feeBurnedBlockLabel').textContent = 'Fee Burned (' + pct(FEE_SPLIT.burned) + ')';
             document.getElementById('feeProducerBlockLabel').textContent = 'Fee to Producer (' + pct(FEE_SPLIT.producer) + ')';
             document.getElementById('feeVotersBlockLabel').textContent = 'Fee to Voters (' + pct(FEE_SPLIT.voters) + ')';

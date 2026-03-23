@@ -9,7 +9,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 
 [profile.release]
 opt-level = "z"

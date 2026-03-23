@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// MoltChain RPC — Prediction Market REST API Module
-// Implements /api/v1/prediction-market/* endpoints for PredictionReef
+// Lichen RPC — Prediction Market REST API Module
+// Implements /api/v1/prediction-market/* endpoints for Prediction Market
 //
 // Reads contract storage directly from StateStore using the prediction_market
 // key layout (pm_* keys).
@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::RpcState;
-use moltchain_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
+use lichen_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -28,15 +28,15 @@ use moltchain_core::{Instruction, Pubkey, CONTRACT_PROGRAM_ID};
 
 const PREDICT_PROGRAM: &str = "PREDICT";
 const DEFAULT_PREDICT_PROGRAM_B58: &str = "J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD";
-// F12.10 FIX: Prediction market uses MUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
+// F12.10 FIX: Prediction market uses LUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
 const PRICE_SCALE: u64 = 1_000_000;
 const DEFAULT_CLOSE_SLOTS: u64 = 1_512_000; // ~7 days at 400ms/slot
-const MIN_COLLATERAL: u64 = 1_000_000; // 1 mUSD (6 decimals)
+const MIN_COLLATERAL: u64 = 1_000_000; // 1 lUSD (6 decimals)
 const TRADING_FEE_BPS: u64 = 200; // 2%
 const MIN_REPUTATION_CREATE: u64 = 500;
 const MIN_REPUTATION_RESOLVE: u64 = 1_000;
-const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 mUSD
-const DISPUTE_BOND: u64 = 100_000_000; // 100 mUSD
+const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 lUSD
+const DISPUTE_BOND: u64 = 100_000_000; // 100 lUSD
 const DISPUTE_PERIOD_SLOTS: u64 = 172_800; // 48h at 400ms/slot
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,12 +91,7 @@ fn api_404(msg: &str) -> Response {
 /// Read raw bytes from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
 /// Avoids deserializing the entire ContractAccount + WASM bytecode.
 fn resolve_predict_program(state: &RpcState) -> Option<Pubkey> {
-    for symbol in [
-        PREDICT_PROGRAM,
-        "PREDICTION",
-        "PREDICTION_MARKET",
-        "PREDICTIONREEF",
-    ] {
+    for symbol in [PREDICT_PROGRAM, "PREDICTION", "PREDICTION_MARKET"] {
         if let Ok(Some(entry)) = state.state.get_symbol_registry(symbol) {
             if state
                 .state
@@ -180,7 +175,7 @@ fn map_category(category: &str) -> Option<u8> {
 }
 
 fn build_create_market_args(
-    creator: &moltchain_core::Pubkey,
+    creator: &lichen_core::Pubkey,
     category: u8,
     close_slot: u64,
     outcome_count: u8,
@@ -867,7 +862,7 @@ async fn get_price_history(
                 let snap_slot = u64_le(&data, 0);
                 let price_raw = u64_le(&data, 8);
                 let volume_raw = u64_le(&data, 16);
-                // Price is in mUSD units (6 decimals) → normalize to 0.0–1.0
+                // Price is in lUSD units (6 decimals) → normalize to 0.0–1.0
                 let price = price_raw as f64 / 1_000_000.0;
                 let volume = volume_raw as f64 / PRICE_SCALE as f64;
                 // Approximate timestamp
@@ -1005,7 +1000,7 @@ async fn post_create_template(
     State(state): State<Arc<RpcState>>,
     Json(req): Json<CreateMarketRequest>,
 ) -> Response {
-    let creator = match moltchain_core::Pubkey::from_base58(req.creator.trim()) {
+    let creator = match lichen_core::Pubkey::from_base58(req.creator.trim()) {
         Ok(pk) => pk,
         Err(_) => return api_err("creator must be a valid base58 pubkey"),
     };
@@ -1064,7 +1059,7 @@ async fn post_create_template(
     );
 
     let contract_call =
-        match moltchain_core::ContractInstruction::call("call".to_string(), args, 0).serialize() {
+        match lichen_core::ContractInstruction::call("call".to_string(), args, 0).serialize() {
             Ok(data) => data,
             Err(e) => return api_err(&format!("failed to build contract call: {}", e)),
         };
@@ -1074,7 +1069,7 @@ async fn post_create_template(
         "message": {
             "instructions": [
                 {
-                    "program_id": moltchain_core::CONTRACT_PROGRAM_ID.to_base58(),
+                    "program_id": lichen_core::CONTRACT_PROGRAM_ID.to_base58(),
                     "accounts": [creator.to_base58(), prediction_program.to_base58()],
                     "data": contract_call,
                 }
@@ -1584,7 +1579,7 @@ mod tests {
 
     #[test]
     fn build_create_market_args_structure() {
-        let creator = moltchain_core::Pubkey([0xAAu8; 32]);
+        let creator = lichen_core::Pubkey([0xAAu8; 32]);
         let args = build_create_market_args(&creator, 2, 10000, 2, "Will BTC hit 100k?");
         // byte 0: opcode (1)
         assert_eq!(args[0], 1);
@@ -1607,7 +1602,7 @@ mod tests {
 
     #[test]
     fn build_create_market_args_empty_question() {
-        let creator = moltchain_core::Pubkey([0u8; 32]);
+        let creator = lichen_core::Pubkey([0u8; 32]);
         let args = build_create_market_args(&creator, 0, 0, 2, "");
         let q_len = u32::from_le_bytes(args[75..79].try_into().unwrap());
         assert_eq!(q_len, 0);
@@ -1621,7 +1616,7 @@ mod tests {
     fn constants_sane() {
         assert_eq!(
             PRICE_SCALE, 1_000_000,
-            "Prediction uses 1e6 (MUSD), not 1e9"
+            "Prediction uses 1e6 (LUSD), not 1e9"
         );
         assert!(MIN_COLLATERAL > 0);
         assert!(TRADING_FEE_BPS > 0 && TRADING_FEE_BPS < 10_000);

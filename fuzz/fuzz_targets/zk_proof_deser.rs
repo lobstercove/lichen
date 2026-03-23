@@ -5,7 +5,7 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::Pubkey;
+use lichen_core::Pubkey;
 
 fuzz_target!(|data: &[u8]| {
     // ── 1. Try decoding as a Groth16 proof (192 bytes expected) ─────
@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
         let mut nullifier = [0u8; 32];
         nullifier.copy_from_slice(&data[..32]);
         // Hash the nullifier just like the shielded pool would
-        let _hash = moltchain_core::Hash::digest(&nullifier);
+        let _hash = lichen_core::Hash::digest(&nullifier);
     }
 
     // ── 3. Try decoding as a shielded transfer instruction ──────────

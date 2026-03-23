@@ -1,4 +1,4 @@
-// Molt Market data adapter — RPC-backed, zero mock data
+// Lichen Market data adapter — RPC-backed, zero mock data
 // All functions return real chain data or empty results (never fake/generated)
 
 (function () {
@@ -7,7 +7,7 @@
     var EMOJIS = ['\u{1F99E}', '\u{1F980}', '\u{1F990}', '\u{1F419}', '\u{1F991}', '\u{1F41A}', '\u{1F988}', '\u{1F421}'];
     var CREATOR_EMOJIS = ['\u{1F3A8}', '\u2728', '\u{1F680}', '\u{1F48E}', '\u{1F525}', '\u26A1', '\u{1F31F}', '\u{1F3AF}', '\u{1F3C6}', '\u{1F451}'];
     var collectionNameCache = {};
-    var SHELLS_PER_MOLT = 1000000000;
+    var SPORES_PER_LICN = 1000000000;
 
     // ===== Utility Helpers =====
 
@@ -36,14 +36,14 @@
         return ts < 1000000000000 ? ts * 1000 : ts;
     }
 
-    function priceToMolt(shells) {
-        if (!shells) return '0.00';
-        var molt = shells / SHELLS_PER_MOLT;
-        if (molt >= 1) return molt.toFixed(2);
-        if (molt >= 0.01) return molt.toFixed(4);
-        if (molt >= 0.0001) return molt.toFixed(6);
-        if (molt >= 0.0000001) return molt.toFixed(9);
-        if (molt > 0) return '< 0.000000001';
+    function priceToLicn(spores) {
+        if (!spores) return '0.00';
+        var licn = spores / SPORES_PER_LICN;
+        if (licn >= 1) return licn.toFixed(2);
+        if (licn >= 0.01) return licn.toFixed(4);
+        if (licn >= 0.0001) return licn.toFixed(6);
+        if (licn >= 0.0000001) return licn.toFixed(9);
+        if (licn > 0) return '< 0.000000001';
         return '0.00';
     }
 
@@ -77,8 +77,8 @@
                     banner: gradientFromHash(c.id || 'col'),
                     image: gradientFromHash(c.id || 'col'),
                     items: c.token_count || 0,
-                    floor: c.floor_price ? priceToMolt(c.floor_price) : '0.00',
-                    volume: c.total_volume ? priceToMolt(c.total_volume) : '0.00',
+                    floor: c.floor_price ? priceToLicn(c.floor_price) : '0.00',
+                    volume: c.total_volume ? priceToLicn(c.total_volume) : '0.00',
                 };
             });
         } catch (err) { console.warn("marketplace-data:", err.message || err);
@@ -104,10 +104,10 @@
                     creator: item.creator || item.owner || '-',
                     seller: item.seller || item.owner || '-',
                     image: item.metadata_uri || item.image || gradientFromHash(item.id || item.token || 'nft-' + i),
-                    price: item.price_molt !== undefined ? formatMoltPrice(item.price_molt, true) : priceToMolt(item.price || 0),
+                    price: item.price_licn !== undefined ? formatLicnPrice(item.price_licn, true) : priceToLicn(item.price || 0),
                     rarity: item.rarity || null,
                     period: period || null,
-                    lastSale: item.last_sale ? priceToMolt(item.last_sale) : null,
+                    lastSale: item.last_sale ? priceToLicn(item.last_sale) : null,
                 });
             }
             return results;
@@ -127,7 +127,7 @@
                 var creator = s.seller || s.creator;
                 if (!creator) return;
                 if (!creatorMap[creator]) creatorMap[creator] = { address: creator, volume: 0, sales: 0 };
-                creatorMap[creator].volume += s.price_molt !== undefined ? Number(s.price_molt) : (s.price ? s.price / SHELLS_PER_MOLT : 0);
+                creatorMap[creator].volume += s.price_licn !== undefined ? Number(s.price_licn) : (s.price ? s.price / SPORES_PER_LICN : 0);
                 creatorMap[creator].sales += 1;
             });
             var sorted = Object.values(creatorMap).sort(function (a, b) { return b.volume - a.volume; });
@@ -138,7 +138,7 @@
                     address: c.address,
                     name: formatHash(c.address, 10),
                     avatar: CREATOR_EMOJIS[h % CREATOR_EMOJIS.length],
-                    volume: formatMoltPrice(c.volume, true),
+                    volume: formatLicnPrice(c.volume, true),
                     sales: c.sales,
                     rank: i + 1,
                 };
@@ -163,7 +163,7 @@
                     nft: s.name || (s.token_id !== undefined ? '#' + s.token_id : 'Sale #' + (i + 1)),
                     collection: colName,
                     image: s.metadata_uri || s.image || gradientFromHash(s.id || s.token || 'sale-' + i),
-                    price: s.price_molt !== undefined ? formatMoltPrice(s.price_molt, true) : priceToMolt(s.price || 0),
+                    price: s.price_licn !== undefined ? formatLicnPrice(s.price_licn, true) : priceToLicn(s.price || 0),
                     from: s.seller || '-',
                     to: s.buyer || '-',
                     timestamp: normalizeTimestamp(s.timestamp),
@@ -184,10 +184,10 @@
             }
         } catch (err) { console.warn("marketplace-data:", err.message || err); }
         try {
-            var marketStats = await rpcCall('getMoltMarketStats', []);
+            var marketStats = await rpcCall('getLichenMarketStats', []);
             if (marketStats && typeof marketStats === 'object') {
                 stats.totalNFTs = Number(marketStats.listing_count || 0);
-                stats.totalVolume = Number(marketStats.sale_volume || 0) / SHELLS_PER_MOLT;
+                stats.totalVolume = Number(marketStats.sale_volume || 0) / SPORES_PER_LICN;
                 if (marketStats.creator_count !== undefined) {
                     stats.totalCreators = Number(marketStats.creator_count || 0);
                 }
@@ -203,9 +203,9 @@
         try {
             var result = await rpcCall('getBalance', [address]);
             if (result && typeof result === 'object') {
-                return (result.balance || result.value || 0) / SHELLS_PER_MOLT;
+                return (result.balance || result.value || 0) / SPORES_PER_LICN;
             }
-            return (Number(result) || 0) / SHELLS_PER_MOLT;
+            return (Number(result) || 0) / SPORES_PER_LICN;
         } catch (err) { console.warn("marketplace-data:", err.message || err); }
         return 0;
     }
@@ -224,8 +224,8 @@
                     name: c.name || c.symbol || formatHash(c.id || '', 12),
                     symbol: c.symbol || '',
                     items: c.token_count || 0,
-                    floor: c.floor_price ? priceToMolt(c.floor_price) : '0.00',
-                    volume: c.total_volume ? priceToMolt(c.total_volume) : '0.00',
+                    floor: c.floor_price ? priceToLicn(c.floor_price) : '0.00',
+                    volume: c.total_volume ? priceToLicn(c.total_volume) : '0.00',
                 };
             });
         } catch (err) { console.warn("marketplace-data:", err.message || err);
@@ -299,7 +299,7 @@
 
     async function resolveMarketplaceProgram() {
         try {
-            var entry = await rpcCall('getSymbolRegistry', ['MOLTMARKET']);
+            var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
             return entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
         } catch (err) { console.warn("marketplace-data:", err.message || err);
             return null;
@@ -324,15 +324,15 @@
         resolveMarketplaceProgram: resolveMarketplaceProgram,
     };
 
-    // Smart price formatting — always displays in MOLT (matches explorer)
-    function formatMoltPrice(value, isMolt) {
-        var molt = isMolt ? Number(value || 0) : (Number(value || 0) / SHELLS_PER_MOLT);
-        if (molt === 0) return '0.00';
-        if (molt >= 1) return molt.toFixed(2);
-        if (molt >= 0.01) return molt.toFixed(4);
-        if (molt >= 0.0001) return molt.toFixed(6);
-        if (molt >= 0.0000001) return molt.toFixed(9);
-        if (molt > 0) return '< 0.000000001';
+    // Smart price formatting — always displays in LICN (matches explorer)
+    function formatLicnPrice(value, isLicn) {
+        var licn = isLicn ? Number(value || 0) : (Number(value || 0) / SPORES_PER_LICN);
+        if (licn === 0) return '0.00';
+        if (licn >= 1) return licn.toFixed(2);
+        if (licn >= 0.01) return licn.toFixed(4);
+        if (licn >= 0.0001) return licn.toFixed(6);
+        if (licn >= 0.0000001) return licn.toFixed(9);
+        if (licn > 0) return '< 0.000000001';
         return '0.00';
     }
 
@@ -340,12 +340,12 @@
         hashString: hashString,
         gradientFromHash: gradientFromHash,
         normalizeTimestamp: normalizeTimestamp,
-        priceToMolt: priceToMolt,
-        formatMoltPrice: formatMoltPrice,
+        priceToLicn: priceToLicn,
+        formatLicnPrice: formatLicnPrice,
         EMOJIS: EMOJIS,
         CREATOR_EMOJIS: CREATOR_EMOJIS,
-        SHELLS_PER_MOLT: SHELLS_PER_MOLT,
+        SPORES_PER_LICN: SPORES_PER_LICN,
     };
 
-    console.log('Molt Market data source initialized (RPC-backed, zero mock data)');
+    console.log('Lichen Market data source initialized (RPC-backed, zero mock data)');
 })();

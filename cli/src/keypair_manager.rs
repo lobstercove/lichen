@@ -1,7 +1,7 @@
 // Keypair file management for CLI
 
 use anyhow::{Context, Result};
-use moltchain_core::Keypair;
+use lichen_core::Keypair;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,14 +26,14 @@ impl KeypairManager {
         KeypairManager
     }
 
-    /// Get default keypair directory (~/.moltchain/keypairs/)
+    /// Get default keypair directory (~/.lichen/keypairs/)
     #[allow(dead_code)]
     pub fn default_keypair_dir(&self) -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".moltchain").join("keypairs")
+        home.join(".lichen").join("keypairs")
     }
 
-    /// Get default keypair path (~/.moltchain/keypairs/id.json)
+    /// Get default keypair path (~/.lichen/keypairs/id.json)
     #[allow(dead_code)]
     pub fn default_keypair_path(&self) -> PathBuf {
         self.default_keypair_dir().join("id.json")

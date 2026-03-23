@@ -40,7 +40,7 @@ mod tests {
             .expect("load VK");
 
         // 3. Create circuit
-        let amount = 1_000_000_000u64; // 1 MOLT
+        let amount = 1_000_000_000u64; // 1 LICN
         let blinding = Fr::rand(&mut OsRng);
         let commitment = poseidon_hash_fr(Fr::from(amount), blinding);
 

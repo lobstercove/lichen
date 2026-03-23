@@ -8,11 +8,11 @@ test_cross_sdk_message_golden_vector and test_cross_sdk_transaction_golden_vecto
 import sys
 import os
 
-# Add parent directory so we can import moltchain package
+# Add parent directory so we can import lichen package
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from moltchain.publickey import PublicKey
-from moltchain.bincode import encode_message, encode_transaction, EncodedInstruction
+from lichen.publickey import PublicKey
+from lichen.bincode import encode_message, encode_transaction, EncodedInstruction
 
 
 # --- Deterministic test data (same as Rust golden vector tests) ---

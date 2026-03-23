@@ -1,5 +1,5 @@
 /* ============================================================
-   MoltChain Wallet — wallet.css
+   Lichen Wallet — wallet.css
    Wallet-specific styles only. Base styles provided by:
      - shared-base-styles.css (reset, vars, .btn, .nav, etc.)
      - shared-theme.css (extra vars, .card, .btn overrides)
@@ -51,11 +51,11 @@
     font-size: 1rem;
 }
 .btn-icon:hover {
-    background: rgba(255, 107, 53, 0.15);
+    background: rgba(0, 201, 219, 0.15);
     color: var(--primary);
     border-color: var(--primary);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 201, 219, 0.2);
 }
 
 /* Circle button (e.g. copy in receive modal) */
@@ -66,17 +66,17 @@
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: rgba(255, 107, 53, 0.12);
-    border: 1px solid rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.12);
+    border: 1px solid rgba(0, 201, 219, 0.25);
     color: var(--primary);
     cursor: pointer;
     transition: all 0.25s ease;
     flex-shrink: 0;
 }
 .btn-circle:hover {
-    background: rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.25);
     transform: scale(1.08);
-    box-shadow: 0 4px 14px rgba(255, 107, 53, 0.25);
+    box-shadow: 0 4px 14px rgba(0, 201, 219, 0.25);
 }
 
 /* Form inputs */
@@ -112,8 +112,8 @@
 .form-input:focus,
 .form-textarea:focus {
     border-color: var(--primary);
-    background: rgba(255, 107, 53, 0.04);
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.12), 0 0 20px rgba(255, 107, 53, 0.06);
+    background: rgba(0, 201, 219, 0.04);
+    box-shadow: 0 0 0 3px rgba(0, 201, 219, 0.12), 0 0 20px rgba(0, 201, 219, 0.06);
 }
 .form-textarea {
     min-height: 100px;
@@ -142,7 +142,7 @@
     transition: background 0.2s, color 0.2s;
 }
 .tooltip-icon:hover {
-    background: rgba(255, 107, 53, 0.2);
+    background: rgba(0, 201, 219, 0.2);
     color: var(--primary);
 }
 
@@ -234,8 +234,8 @@
     position: relative;
     overflow: hidden;
     background:
-        radial-gradient(ellipse 80% 60% at 20% 80%, rgba(255, 107, 53, 0.12) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 50% at 80% 20%, rgba(247, 127, 0, 0.08) 0%, transparent 55%),
+        radial-gradient(ellipse 80% 60% at 20% 80%, rgba(0, 201, 219, 0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 80% 20%, rgba(0, 229, 255, 0.08) 0%, transparent 55%),
         radial-gradient(ellipse 50% 40% at 50% 50%, rgba(6, 214, 160, 0.05) 0%, transparent 50%),
         var(--bg-dark);
     background-size: 200% 200%, 200% 200%, 100% 100%, 100% 100%;
@@ -263,7 +263,7 @@
     width: 96px;
     height: 96px;
     margin-bottom: 1rem;
-    filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.35));
+    filter: drop-shadow(0 0 30px rgba(0, 201, 219, 0.35));
     animation: fadeIn 0.8s ease-out 0.2s both;
 }
 .welcome-logo h1 {
@@ -325,8 +325,8 @@
 }
 
 .carousel-card {
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.08) 0%, rgba(247, 127, 0, 0.04) 100%);
-    border: 1px solid rgba(255, 107, 53, 0.2);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.08) 0%, rgba(0, 229, 255, 0.04) 100%);
+    border: 1px solid rgba(0, 201, 219, 0.2);
     border-radius: 20px;
     padding: 2rem 1.5rem;
     text-align: center;
@@ -340,15 +340,15 @@
 }
 
 .carousel-card:hover {
-    border-color: rgba(255, 107, 53, 0.4);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.15);
+    border-color: rgba(0, 201, 219, 0.4);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.15);
 }
 
 .carousel-icon {
     font-size: 2.2rem;
-    color: var(--primary, #FF6B35);
+    color: var(--primary, #00C9DB);
     margin-bottom: 0.25rem;
-    filter: drop-shadow(0 0 12px rgba(255, 107, 53, 0.4));
+    filter: drop-shadow(0 0 12px rgba(0, 201, 219, 0.4));
 }
 
 .carousel-card h3 {
@@ -383,10 +383,10 @@
 }
 
 .carousel-dot.active {
-    background: var(--primary, #FF6B35);
+    background: var(--primary, #00C9DB);
     width: 24px;
     border-radius: 4px;
-    box-shadow: 0 0 8px rgba(255, 107, 53, 0.5);
+    box-shadow: 0 0 8px rgba(0, 201, 219, 0.5);
 }
 .welcome-feature {
     background: rgba(255, 255, 255, 0.04);
@@ -397,7 +397,7 @@
 }
 .welcome-feature:hover {
     transform: translateY(-4px);
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
     background: rgba(255, 255, 255, 0.06);
 }
 .welcome-feature .feature-icon {
@@ -536,10 +536,10 @@
     margin-bottom: 0.45rem;
 }
 .wizard-step-item.active .step-circle {
-    background: var(--primary);
+    background: #0891B2;
     border-color: var(--primary);
     color: #fff;
-    box-shadow: 0 0 18px rgba(255, 107, 53, 0.35);
+    box-shadow: 0 0 18px rgba(0, 201, 219, 0.35);
 }
 .wizard-step-item.completed .step-circle {
     background: var(--success);
@@ -604,7 +604,7 @@
     transition: border-color 0.2s;
 }
 .seed-word:hover {
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
 }
 .seed-word-number {
     color: var(--text-muted);
@@ -622,8 +622,8 @@
 
 /* Warning box */
 .warning-box {
-    background: rgba(255, 107, 53, 0.08);
-    border: 1px solid rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.08);
+    border: 1px solid rgba(0, 201, 219, 0.25);
     border-radius: 12px;
     padding: 1rem 1.2rem;
     margin-bottom: 1.5rem;
@@ -675,7 +675,7 @@
 .import-tab.active {
     background: var(--gradient-1);
     color: #fff;
-    box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3);
+    box-shadow: 0 4px 12px rgba(0, 201, 219, 0.3);
 }
 
 .import-method {
@@ -717,7 +717,7 @@
 }
 .file-upload:hover {
     border-color: var(--primary);
-    background: rgba(255, 107, 53, 0.04);
+    background: rgba(0, 201, 219, 0.04);
 }
 .file-upload .upload-icon {
     font-size: 2rem;
@@ -780,7 +780,7 @@
 .confirm-slot.filled {
     border-style: solid;
     border-color: var(--primary);
-    background: rgba(255, 107, 53, 0.08);
+    background: rgba(0, 201, 219, 0.08);
     color: var(--text-primary);
 }
 .confirm-slot.correct {
@@ -804,7 +804,7 @@
 }
 .confirm-word:hover {
     border-color: var(--primary);
-    background: rgba(255, 107, 53, 0.1);
+    background: rgba(0, 201, 219, 0.1);
 }
 .confirm-word.used {
     opacity: 0.35;
@@ -906,7 +906,7 @@
     white-space: nowrap;
 }
 .wallet-selector-btn:hover {
-    border-color: rgba(255, 107, 53, 0.35);
+    border-color: rgba(0, 201, 219, 0.35);
     background: rgba(255, 255, 255, 0.08);
 }
 .wallet-selector-btn .wallet-avatar {
@@ -967,8 +967,8 @@
     background: rgba(255, 255, 255, 0.06);
 }
 .wallet-dropdown-item.active {
-    background: rgba(255, 107, 53, 0.1);
-    border: 1px solid rgba(255, 107, 53, 0.2);
+    background: rgba(0, 201, 219, 0.1);
+    border: 1px solid rgba(0, 201, 219, 0.2);
 }
 
 /* Network selector - native <select> matching explorer */
@@ -1029,7 +1029,7 @@
 
 .balance-card {
     background: linear-gradient(135deg, #1a1f45 0%, #2a1a3e 40%, #1a2840 100%);
-    border: 1px solid rgba(255, 107, 53, 0.15);
+    border: 1px solid rgba(0, 201, 219, 0.15);
     border-radius: 24px;
     padding: 2rem;
     margin-bottom: 1.5rem;
@@ -1043,7 +1043,7 @@
     right: -30%;
     width: 300px;
     height: 300px;
-    background: radial-gradient(circle, rgba(255, 107, 53, 0.1) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(0, 201, 219, 0.1) 0%, transparent 70%);
     pointer-events: none;
 }
 
@@ -1096,8 +1096,8 @@
     font-weight: 500;
 }
 .action-btn:hover {
-    background: rgba(255, 107, 53, 0.12);
-    border-color: rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.12);
+    border-color: rgba(0, 201, 219, 0.25);
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
 }
@@ -1164,12 +1164,12 @@
 }
 .asset-item:hover {
     transform: translateY(-2px);
-    border-color: rgba(255, 107, 53, 0.25);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(255, 107, 53, 0.1);
+    border-color: rgba(0, 201, 219, 0.25);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 201, 219, 0.1);
 }
 .asset-item.asset-selected {
     border-color: var(--primary);
-    background: rgba(255, 107, 53, 0.05);
+    background: rgba(0, 201, 219, 0.05);
 }
 
 .asset-icon {
@@ -1189,7 +1189,7 @@
     border-radius: 50%;
     object-fit: cover;
 }
-.asset-icon-molt { color: var(--accent, #ff6b35); }
+.asset-icon-lichen { color: var(--accent, #00C9DB); }
 
 .asset-info {
     flex: 1;
@@ -1254,7 +1254,7 @@
     flex-shrink: 0;
 }
 .activity-icon.send {
-    background: rgba(255, 107, 53, 0.12);
+    background: rgba(0, 201, 219, 0.12);
     color: var(--primary);
 }
 .activity-icon.receive {
@@ -1316,7 +1316,7 @@
 }
 .nft-card:hover {
     transform: translateY(-4px);
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.2);
 }
 .nft-image {
@@ -1459,10 +1459,10 @@
     font-size: 1rem;
 }
 .modal-close:hover {
-    background: rgba(255, 107, 53, 0.15);
+    background: rgba(0, 201, 219, 0.15);
     color: var(--primary);
-    border-color: rgba(255, 107, 53, 0.3);
-    box-shadow: 0 0 12px rgba(255, 107, 53, 0.15);
+    border-color: rgba(0, 201, 219, 0.3);
+    box-shadow: 0 0 12px rgba(0, 201, 219, 0.15);
 }
 
 .modal-body {
@@ -1490,8 +1490,8 @@
     right: 0.75rem;
     top: 50%;
     transform: translateY(-50%);
-    background: rgba(255, 107, 53, 0.12);
-    border: 1px solid rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.12);
+    border: 1px solid rgba(0, 201, 219, 0.25);
     border-radius: 6px;
     padding: 0.25rem 0.55rem;
     color: var(--primary);
@@ -1502,7 +1502,7 @@
     text-transform: uppercase;
 }
 .amount-max:hover {
-    background: rgba(255, 107, 53, 0.2);
+    background: rgba(0, 201, 219, 0.2);
 }
 
 /* Fee estimate */
@@ -1545,8 +1545,8 @@
 
 /* ── Shared Banner Base (all tabs use this pattern) ── */
 .tab-banner {
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.08), rgba(247, 127, 0, 0.06));
-    border: 1px solid rgba(255, 107, 53, 0.12);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.08), rgba(0, 229, 255, 0.06));
+    border: 1px solid rgba(0, 201, 219, 0.12);
     border-radius: 14px;
     padding: 1.25rem 1.5rem;
     display: flex;
@@ -1784,7 +1784,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     transition: all 0.25s ease;
 }
 .nft-card:hover {
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
     transform: translateY(-2px);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
@@ -1899,7 +1899,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     color: var(--text-secondary);
 }
 .receive-tab.active {
-    background: rgba(255, 107, 53, 0.12);
+    background: rgba(0, 201, 219, 0.12);
     color: var(--primary);
     font-weight: 600;
 }
@@ -1923,8 +1923,8 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     transition: all 0.25s ease;
 }
 .deposit-card:hover {
-    border-color: rgba(255, 107, 53, 0.3);
-    background: rgba(255, 107, 53, 0.06);
+    border-color: rgba(0, 201, 219, 0.3);
+    background: rgba(0, 201, 219, 0.06);
 }
 .deposit-card.disabled {
     opacity: 0.5;
@@ -2152,8 +2152,8 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     flex-shrink: 0;
 }
 .settings-info-box.warning {
-    background: rgba(255, 107, 53, 0.06);
-    border-color: rgba(255, 107, 53, 0.2);
+    background: rgba(0, 201, 219, 0.06);
+    border-color: rgba(0, 201, 219, 0.2);
     color: #ff9a5c;
 }
 
@@ -2722,7 +2722,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.3px;
-    background: rgba(255, 107, 53, 0.12);
+    background: rgba(0, 201, 219, 0.12);
     color: var(--primary);
 }
 
@@ -2781,13 +2781,13 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 }
 
 /* ============================================================================
-   MoltyID Identity Tab
+   LichenID Identity Tab
    ============================================================================ */
 
 /* ── Banner ── */
 .id-banner {
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.08), rgba(247, 127, 0, 0.06));
-    border: 1px solid rgba(255, 107, 53, 0.12);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.08), rgba(0, 229, 255, 0.06));
+    border: 1px solid rgba(0, 201, 219, 0.12);
     border-radius: 14px;
     padding: 1.25rem 1.5rem;
     display: flex;
@@ -2801,7 +2801,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 .id-banner-icon {
     width: 46px; height: 46px;
     border-radius: 12px;
-    background: rgba(255, 107, 53, 0.12);
+    background: rgba(0, 201, 219, 0.12);
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
 }
@@ -2838,13 +2838,13 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 .id-onboard-active {
     cursor: pointer;
     border-color: var(--primary);
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.06), rgba(247, 127, 0, 0.04));
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.06), rgba(0, 229, 255, 0.04));
 }
 .id-onboard-active:hover {
     border-color: var(--primary);
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.12), rgba(247, 127, 0, 0.08));
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.12), rgba(0, 229, 255, 0.08));
     transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(255, 107, 53, 0.15);
+    box-shadow: 0 4px 16px rgba(0, 201, 219, 0.15);
 }
 .id-onboard-locked {
     opacity: 0.4;
@@ -2853,7 +2853,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 .id-onboard-num {
     width: 32px; height: 32px;
     border-radius: 50%;
-    background: var(--primary);
+    background: #0891B2;
     color: #fff;
     display: flex; align-items: center; justify-content: center;
     font-size: 0.85rem;
@@ -2914,10 +2914,10 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     gap: 0.5rem;
     flex-wrap: wrap;
 }
-.id-strip-molt {
+.id-strip-lichen {
     font-size: 0.82rem;
     font-weight: 500;
-    color: var(--primary, #ff6b35);
+    color: var(--primary, #00C9DB);
     font-family: 'JetBrains Mono', monospace;
 }
 .id-strip-meta {
@@ -2965,7 +2965,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 }
 .id-section-head i {
     font-size: 0.78rem;
-    color: var(--primary, #ff6b35);
+    color: var(--primary, #00C9DB);
     margin-right: 0.4rem;
 }
 .id-section-counter {
@@ -3010,7 +3010,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     gap: 0.3rem;
     transition: color 0.15s;
 }
-.id-link-btn:hover { color: var(--primary, #ff6b35); }
+.id-link-btn:hover { color: var(--primary, #00C9DB); }
 .id-link-btn i { font-size: 0.68rem; }
 .id-link-danger:hover { color: #ef4444; }
 
@@ -3069,11 +3069,11 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 }
 .id-tier-step.active { opacity: 1; }
 
-/* ── .molt Name ── */
+/* ── .lichen Name ── */
 .id-name-display {
     font-size: 1.15rem;
     font-weight: 700;
-    color: var(--primary, #ff6b35);
+    color: var(--primary, #00C9DB);
     font-family: 'JetBrains Mono', monospace;
     margin-bottom: 0.3rem;
 }
@@ -3231,9 +3231,9 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     flex-shrink: 0;
 }
 .id-action-btn:hover {
-    background: rgba(255, 107, 53, 0.12);
+    background: rgba(0, 201, 219, 0.12);
     color: var(--primary);
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
 }
 
 /* ── Loading state ── */
@@ -3298,7 +3298,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     align-items: center;
     gap: 0.5rem;
 }
-.shield-status-inner.pending  { background: rgba(255, 107, 53, 0.08); border: 1px solid rgba(255, 107, 53, 0.2); }
+.shield-status-inner.pending  { background: rgba(0, 201, 219, 0.08); border: 1px solid rgba(0, 201, 219, 0.2); }
 .shield-status-inner.error    { background: rgba(244, 63, 94, 0.08); border: 1px solid rgba(244, 63, 94, 0.2); }
 .shield-status-inner.success  { background: rgba(6, 214, 160, 0.08); border: 1px solid rgba(6, 214, 160, 0.2); }
 .shield-status-inner.pending i { color: var(--primary); }
@@ -3307,7 +3307,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 
 /* Shield Badge (Groth16 label) */
 .shield-badge {
-    background: rgba(255, 107, 53, 0.15);
+    background: rgba(0, 201, 219, 0.15);
     color: var(--primary);
     font-size: 0.7rem;
     padding: 2px 8px;
@@ -3399,10 +3399,10 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 .shield-info-box {
     font-size: 0.82rem;
     color: var(--text-muted);
-    background: rgba(255, 107, 53, 0.06);
+    background: rgba(0, 201, 219, 0.06);
     padding: 0.65rem 0.85rem;
     border-radius: 12px;
-    border: 1px solid rgba(255, 107, 53, 0.12);
+    border: 1px solid rgba(0, 201, 219, 0.12);
     margin-top: 0.5rem;
 }
 .shield-info-box i { color: var(--primary); margin-right: 0.35rem; }
@@ -3470,7 +3470,7 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
     transition: all 0.25s ease;
 }
 .shield-note-item:hover {
-    border-color: rgba(255, 107, 53, 0.25);
+    border-color: rgba(0, 201, 219, 0.25);
     transform: translateY(-1px);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
@@ -3499,13 +3499,13 @@ div.staking-tier-card.staking-tier-active { font-size: inherit; }
 
 /* Shield Modal Info Boxes */
 .shield-modal-info {
-    background: rgba(255, 107, 53, 0.06);
+    background: rgba(0, 201, 219, 0.06);
     padding: 0.75rem 1rem;
     border-radius: 12px;
     margin-bottom: 1rem;
     font-size: 0.85rem;
     color: var(--text-secondary);
-    border: 1px solid rgba(255, 107, 53, 0.12);
+    border: 1px solid rgba(0, 201, 219, 0.12);
 }
 .shield-modal-info i { margin-right: 0.3rem; color: var(--primary); }
 .shield-modal-info.unshield {

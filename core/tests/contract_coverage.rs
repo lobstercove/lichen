@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Exercises every exported function across all contracts with known coverage
-// gaps: moltdao, weth_token, wsol_token, moltoracle, compute_market,
+// gaps: lichendao, weth_token, wsol_token, lichenoracle, compute_market,
 // dex_governance, plus batch validation of all 29 contracts' basic operations.
 //
 // Pattern:
@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
-use moltchain_core::Pubkey;
+use lichen_core::contract::{ContractAccount, ContractContext, ContractRuntime};
+use lichen_core::Pubkey;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ fn exec(
     args: &[u8],
     storage: HashMap<Vec<u8>, Vec<u8>>,
     value: u64,
-) -> moltchain_core::ContractResult {
+) -> lichen_core::ContractResult {
     let ctx = ContractContext::with_args(
         caller,
         contract_addr(),
@@ -85,7 +85,7 @@ fn exec_simple(
     contract: &ContractAccount,
     function: &str,
     caller: Pubkey,
-) -> moltchain_core::ContractResult {
+) -> lichen_core::ContractResult {
     exec(contract, function, caller, &[], HashMap::new(), 0)
 }
 
@@ -98,7 +98,7 @@ fn exec_with_json_args(
     json_args: &serde_json::Value,
     storage: HashMap<Vec<u8>, Vec<u8>>,
     value: u64,
-) -> moltchain_core::ContractResult {
+) -> lichen_core::ContractResult {
     let args = serde_json::to_vec(json_args).unwrap();
     exec(contract, function, caller, &args, storage, value)
 }
@@ -117,9 +117,9 @@ fn admin_storage() -> HashMap<Vec<u8>, Vec<u8>> {
 
 const ALL_CONTRACTS: &[&str] = &[
     "bountyboard",
-    "clawpay",
-    "clawpump",
-    "clawvault",
+    "sporepay",
+    "sporepump",
+    "sporevault",
     "compute_market",
     "dex_amm",
     "dex_analytics",
@@ -128,19 +128,19 @@ const ALL_CONTRACTS: &[&str] = &[
     "dex_margin",
     "dex_rewards",
     "dex_router",
-    "lobsterlend",
-    "moltauction",
-    "moltbridge",
-    "moltcoin",
-    "moltdao",
-    "moltmarket",
-    "moltoracle",
-    "moltpunks",
-    "moltswap",
-    "moltyid",
-    "musd_token",
+    "thalllend",
+    "lichenauction",
+    "lichenbridge",
+    "lichencoin",
+    "lichendao",
+    "lichenmarket",
+    "lichenoracle",
+    "lichenpunks",
+    "lichenswap",
+    "lichenid",
+    "lusd_token",
     "prediction_market",
-    "reef_storage",
+    "moss_storage",
     "weth_token",
     "wsol_token",
 ];
@@ -175,17 +175,17 @@ fn test_all_contracts_compile_successfully() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 1: MOLTDAO CONTRACT — 25 functions
+//  SECTION 1: LICHENDAO CONTRACT — 25 functions
 // ═══════════════════════════════════════════════════════════════════════════════
 
-mod moltdao {
+mod lichendao {
     use super::*;
 
     fn contract() -> ContractAccount {
-        make_contract(load_wasm("moltdao"), admin())
+        make_contract(load_wasm("lichendao"), admin())
     }
 
-    /// MoltDAO functions take pointer/integer WASM params.
+    /// LichenDAO functions take pointer/integer WASM params.
     /// We pass JSON-encoded args which the ABI encoder converts:
     ///   I32 → 32-byte base58 pubkey pointer
     ///   I64 → raw u64 value
@@ -730,14 +730,14 @@ mod wsol_token {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 4: MOLTORACLE CONTRACT — 24 functions
+//  SECTION 4: LICHENORACLE CONTRACT — 24 functions
 // ═══════════════════════════════════════════════════════════════════════════════
 
-mod moltoracle {
+mod lichenoracle {
     use super::*;
 
     fn contract() -> ContractAccount {
-        make_contract(load_wasm("moltoracle"), admin())
+        make_contract(load_wasm("lichenoracle"), admin())
     }
 
     #[test]
@@ -1084,9 +1084,9 @@ mod compute_market {
     }
 
     #[test]
-    fn test_set_moltyid_address() {
+    fn test_set_lichenid_address() {
         let c = contract();
-        let result = exec(&c, "set_moltyid_address", admin(), &[], admin_storage(), 0);
+        let result = exec(&c, "set_lichenid_address", admin(), &[], admin_storage(), 0);
         let _ = result.success;
     }
 
@@ -1369,10 +1369,10 @@ mod dex_governance {
     }
 
     #[test]
-    fn test_call_dispatcher_set_moltyid_address() {
+    fn test_call_dispatcher_set_lichenid_address() {
         let c = contract();
         let args = serde_json::to_vec(&serde_json::json!({
-            "action": "set_moltyid_address",
+            "action": "set_lichenid_address",
             "address": admin().to_base58()
         }))
         .unwrap();
@@ -1498,18 +1498,18 @@ fn test_compute_market_set_claim_timeout_unauthorized() {
     }
 }
 
-// ── moltdao: cancel_proposal — documents that caller check is via proposer match ──
+// ── lichendao: cancel_proposal — documents that caller check is via proposer match ──
 
 #[test]
-fn test_moltdao_cancel_proposal_caller_check() {
-    // moltdao::cancel_proposal checks that caller == proposal.proposer,
+fn test_lichendao_cancel_proposal_caller_check() {
+    // lichendao::cancel_proposal checks that caller == proposal.proposer,
     // not caller == admin. With proposal_id=0, there's no proposal to match,
     // so it may succeed vacuously. This test documents the behavior.
     let args = serde_json::to_vec(&serde_json::json!({
         "proposal_id": 0
     }))
     .unwrap();
-    let code = load_wasm("moltdao");
+    let code = load_wasm("lichendao");
     let contract = make_contract(code, admin());
     // Just verify it doesn't crash
     let _result = exec(
@@ -1522,11 +1522,11 @@ fn test_moltdao_cancel_proposal_caller_check() {
     );
 }
 
-// ── moltoracle: submit_price — documents allowlist-based access ──
+// ── lichenoracle: submit_price — documents allowlist-based access ──
 
 #[test]
-fn test_moltoracle_submit_price_caller_check() {
-    // moltoracle::submit_price checks against an authorized_feeders list,
+fn test_lichenoracle_submit_price_caller_check() {
+    // lichenoracle::submit_price checks against an authorized_feeders list,
     // not a simple admin check. With empty state, an unknown caller may
     // succeed because the feeder list hasn't been initialized.
     let args = serde_json::to_vec(&serde_json::json!({
@@ -1534,7 +1534,7 @@ fn test_moltoracle_submit_price_caller_check() {
         "price": 100000000
     }))
     .unwrap();
-    let code = load_wasm("moltoracle");
+    let code = load_wasm("lichenoracle");
     let contract = make_contract(code, admin());
     let _result = exec(
         &contract,

@@ -11,10 +11,10 @@ fuzz_target!(|data: &[u8]| {
     // ── 1. Try bincode deserialization as a P2P message envelope ─────
     // The P2P layer uses bincode for wire format. Corrupt payloads from
     // malicious peers must produce Err, never panic.
-    let _ = bincode::deserialize::<moltchain_core::Block>(data);
-    let _ = bincode::deserialize::<moltchain_core::Transaction>(data);
-    let _ = bincode::deserialize::<moltchain_core::Vote>(data);
-    let _ = bincode::deserialize::<moltchain_core::Message>(data);
+    let _ = bincode::deserialize::<lichen_core::Block>(data);
+    let _ = bincode::deserialize::<lichen_core::Transaction>(data);
+    let _ = bincode::deserialize::<lichen_core::Vote>(data);
+    let _ = bincode::deserialize::<lichen_core::Message>(data);
 
     // ── 2. Try serde_json deserialization (JSON-RPC peer messages) ───
     let _ = serde_json::from_slice::<serde_json::Value>(data);
@@ -34,11 +34,11 @@ fuzz_target!(|data: &[u8]| {
 
     // ── 4. Hash::from_hex on arbitrary strings ──────────────────────
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = moltchain_core::Hash::from_hex(s);
+        let _ = lichen_core::Hash::from_hex(s);
     }
 
     // ── 5. Pubkey::from_base58 on arbitrary strings ─────────────────
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = moltchain_core::Pubkey::from_base58(s);
+        let _ = lichen_core::Pubkey::from_base58(s);
     }
 });

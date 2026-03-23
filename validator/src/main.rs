@@ -1,4 +1,4 @@
-// MoltChain Validator with BFT Consensus + P2P Network + RPC Server
+// Lichen Validator with BFT Consensus + P2P Network + RPC Server
 // Week 4: Multi-validator networking with QUIC transport + RPC integration
 // Week 5: Block broadcasting, mempool, and multi-validator consensus
 //
@@ -24,29 +24,29 @@ pub mod updater;
 pub mod wal;
 
 use futures_util::{SinkExt, StreamExt};
-use moltchain_core::nft::decode_token_state;
-use moltchain_core::{
+use lichen_core::nft::decode_token_state;
+use lichen_core::{
     compute_bft_timestamp, compute_validators_hash, evm_tx_hash, Account, Block,
     ContractInstruction, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet,
     Hash, Keypair, MarketActivity, MarketActivityKind, Mempool, NftActivity, NftActivityKind,
     Precommit, Prevote, ProgramCallActivity, Proposal, Pubkey, RoundStep, SlashingEvidence,
     SlashingOffense, StakePool, StateStore, Transaction, TxProcessor, ValidatorInfo, ValidatorSet,
     Vote, VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_SUPPLY_SHELLS, MAX_TX_AGE_BLOCKS,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, GENESIS_SUPPLY_SPORES, MAX_TX_AGE_BLOCKS,
     NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
-use moltchain_genesis::{
+use lichen_genesis::{
     derive_contract_address, genesis_auto_deploy, genesis_create_trading_pairs,
-    genesis_initialize_contracts, genesis_molt_price_8dec, genesis_seed_analytics_prices,
+    genesis_initialize_contracts, genesis_licn_price_8dec, genesis_seed_analytics_prices,
     genesis_seed_margin_prices, genesis_seed_oracle, genesis_wbnb_price_8dec,
-    genesis_weth_price_8dec, genesis_wsol_price_8dec, GENESIS_MOLT_PRICE_8DEC,
+    genesis_weth_price_8dec, genesis_wsol_price_8dec, GENESIS_LICN_PRICE_8DEC,
 };
-use moltchain_p2p::{
+use lichen_p2p::{
     validator_announcement_signing_message, ConsistencyReportMsg, MessageType, NodeRole, P2PConfig,
     P2PMessage, P2PNetwork, SnapshotKind, SnapshotRequestMsg, SnapshotResponseMsg,
     StatusRequestMsg, StatusResponseMsg,
 };
-use moltchain_rpc::start_rpc_server;
+use lichen_rpc::start_rpc_server;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -70,10 +70,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::consensus::{ConsensusAction, ConsensusEngine};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
-const LEGACY_CONTRACT_DEPLOY_FEE_SHELLS: u64 = 2_500_000_000;
-/// Treasury reserve funded at genesis for bootstrap grants (50M MOLT = 10% of 500M genesis).
+const LEGACY_CONTRACT_DEPLOY_FEE_SPORES: u64 = 2_500_000_000;
+/// Treasury reserve funded at genesis for bootstrap grants (50M LICN = 10% of 500M genesis).
 /// Block rewards are now minted via the inflation curve, not debited from treasury.
-const TREASURY_RESERVE_MOLT: u64 = 50_000_000;
+const TREASURY_RESERVE_LICN: u64 = 50_000_000;
 
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
@@ -365,27 +365,27 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
 }
 
 fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Path) {
-    // ZK keys are cached in a shared location (~/.moltchain/zk/) so they
+    // ZK keys are cached in a shared location (~/.lichen/zk/) so they
     // survive blockchain resets.  Release tarballs ship pre-generated keys
     // in a `zk/` directory next to the binary — those are copied into the
     // shared cache on first run so the expensive Groth16 setup never needs
     // to happen on the operator's machine.
     //
-    // Priority: env vars > ~/.moltchain/zk/ (shared cache) > bundled (next to exe) > auto-generate
+    // Priority: env vars > ~/.lichen/zk/ (shared cache) > bundled (next to exe) > auto-generate
     let shared_zk_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+        .join(".lichen")
         .join("zk");
 
-    let shield_path = env::var("MOLTCHAIN_ZK_SHIELD_VK_PATH")
+    let shield_path = env::var("LICHEN_ZK_SHIELD_VK_PATH")
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| shared_zk_dir.join("vk_shield.bin"));
-    let unshield_path = env::var("MOLTCHAIN_ZK_UNSHIELD_VK_PATH")
+    let unshield_path = env::var("LICHEN_ZK_UNSHIELD_VK_PATH")
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| shared_zk_dir.join("vk_unshield.bin"));
-    let transfer_path = env::var("MOLTCHAIN_ZK_TRANSFER_VK_PATH")
+    let transfer_path = env::var("LICHEN_ZK_TRANSFER_VK_PATH")
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| shared_zk_dir.join("vk_transfer.bin"));
@@ -528,9 +528,9 @@ fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
     };
 
     let companions = [
-        ("moltchain-faucet", "moltchain-faucet"),
-        ("moltchain-custody", "moltchain-custody"),
-        ("molt-cli", "molt-cli"),
+        ("lichen-faucet", "lichen-faucet"),
+        ("lichen-custody", "lichen-custody"),
+        ("lichen-cli", "lichen-cli"),
     ];
 
     let mut found = Vec::new();
@@ -548,16 +548,16 @@ fn discover_companion_binaries() -> Vec<(String, PathBuf)> {
 }
 
 fn has_persistent_p2p_identity(runtime_home: &Path) -> bool {
-    let moltchain_dir = runtime_home.join(".moltchain");
-    moltchain_dir.join("node_cert.der").exists() && moltchain_dir.join("node_key.der").exists()
+    let lichen_dir = runtime_home.join(".lichen");
+    lichen_dir.join("node_cert.der").exists() && lichen_dir.join("node_key.der").exists()
 }
 
 fn resolve_validator_runtime_home(data_dir: &Path) -> PathBuf {
-    if let Ok(explicit_home) = env::var("MOLTCHAIN_HOME") {
+    if let Ok(explicit_home) = env::var("LICHEN_HOME") {
         let explicit_path = PathBuf::from(&explicit_home);
         if !explicit_path.as_os_str().is_empty() {
             info!(
-                "🏠 Runtime home: {} (from MOLTCHAIN_HOME env)",
+                "🏠 Runtime home: {} (from LICHEN_HOME env)",
                 explicit_path.display()
             );
             return explicit_path;
@@ -644,7 +644,7 @@ fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
 
 /// Compile-time fallback bootstrap peers from core/src/network.rs
 fn load_embedded_seed_peers(chain_id: &str) -> Vec<String> {
-    use moltchain_core::network::{NetworkType, SeedsConfig};
+    use lichen_core::network::{NetworkType, SeedsConfig};
     let config = SeedsConfig::default_embedded();
     let network_type = if chain_id.contains("mainnet") {
         NetworkType::Mainnet
@@ -945,7 +945,7 @@ fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
                     }
                     _ => {}
                 }
-            } else if ix.program_id == moltchain_core::CONTRACT_PROGRAM_ID {
+            } else if ix.program_id == lichen_core::CONTRACT_PROGRAM_ID {
                 if let Ok(ContractInstruction::Call {
                     function,
                     args,
@@ -1142,7 +1142,7 @@ fn build_market_activity(
 
 fn emit_dex_events(
     state: &StateStore,
-    dex_broadcaster: &moltchain_rpc::dex_ws::DexEventBroadcaster,
+    dex_broadcaster: &lichen_rpc::dex_ws::DexEventBroadcaster,
     from_trade: u64,
     to_trade: u64,
     slot: u64,
@@ -1261,10 +1261,10 @@ fn emit_dex_events(
                 }
             }
         }
-        let bid_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
+        let bid_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = {
             let mut v: Vec<_> = bids
                 .into_iter()
-                .map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                .map(|(p, (q, c))| lichen_rpc::dex_ws::PriceLevel {
                     price: p as f64 / PRICE_SCALE,
                     quantity: q,
                     orders: c,
@@ -1278,10 +1278,10 @@ fn emit_dex_events(
             v.truncate(20);
             v
         };
-        let ask_levels: Vec<moltchain_rpc::dex_ws::PriceLevel> = {
+        let ask_levels: Vec<lichen_rpc::dex_ws::PriceLevel> = {
             let mut v: Vec<_> = asks
                 .into_iter()
-                .map(|(p, (q, c))| moltchain_rpc::dex_ws::PriceLevel {
+                .map(|(p, (q, c))| lichen_rpc::dex_ws::PriceLevel {
                     price: p as f64 / PRICE_SCALE,
                     quantity: q,
                     orders: c,
@@ -1713,9 +1713,9 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
 
         // P9-VAL-03 FIX: Use saturating_add to prevent overflow
         let balance_key = format!("balance_{}", hex::encode(trader));
-        let current_bal = state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
+        let current_bal = state.get_program_storage_u64("LICHENCOIN", balance_key.as_bytes());
         let _ = state.put_contract_storage(
-            &match state.get_symbol_registry("MOLTCOIN") {
+            &match state.get_symbol_registry("LICHENCOIN") {
                 Ok(Some(e)) => e.program,
                 _ => continue,
             },
@@ -2064,7 +2064,7 @@ fn bridge_update_candle(
 
 fn emit_program_and_nft_events(
     state: &StateStore,
-    ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
+    ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
     block: &Block,
 ) {
     // AUDIT-FIX 3.14: Track indexing errors for monitoring
@@ -2078,7 +2078,7 @@ fn emit_program_and_nft_events(
 
     for tx in &block.transactions {
         // Emit Transaction event for every tx in the block
-        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Transaction(tx.clone()));
+        let _ = ws_event_tx.send(lichen_rpc::ws::Event::Transaction(tx.clone()));
 
         // Emit AccountChange events for all accounts touched by this tx
         let mut seen_accounts = std::collections::HashSet::new();
@@ -2086,9 +2086,9 @@ fn emit_program_and_nft_events(
             for account_pubkey in &ix.accounts {
                 if seen_accounts.insert(*account_pubkey) {
                     if let Ok(Some(acct)) = state.get_account(account_pubkey) {
-                        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::AccountChange {
+                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::AccountChange {
                             pubkey: *account_pubkey,
-                            balance: acct.shells,
+                            balance: acct.spores,
                         });
                     }
                 }
@@ -2102,7 +2102,7 @@ fn emit_program_and_nft_events(
                         }
 
                         let collection = ix.accounts[1];
-                        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::NftMint { collection });
+                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::NftMint { collection });
                     }
                     Some(8) => {
                         if ix.accounts.len() < 3 {
@@ -2121,18 +2121,18 @@ fn emit_program_and_nft_events(
                             Err(_) => continue,
                         };
 
-                        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::NftTransfer {
+                        let _ = ws_event_tx.send(lichen_rpc::ws::Event::NftTransfer {
                             collection: token_state.collection,
                         });
                     }
                     _ => {}
                 }
-            } else if ix.program_id == moltchain_core::CONTRACT_PROGRAM_ID {
+            } else if ix.program_id == lichen_core::CONTRACT_PROGRAM_ID {
                 if let Ok(contract_ix) = ContractInstruction::deserialize(&ix.data) {
                     match contract_ix {
                         ContractInstruction::Deploy { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "deploy".to_string(),
                                 });
@@ -2140,7 +2140,7 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::Upgrade { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "upgrade".to_string(),
                                 });
@@ -2148,7 +2148,7 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::Close => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "close".to_string(),
                                 });
@@ -2156,7 +2156,7 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::SetUpgradeTimelock { .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "set_timelock".to_string(),
                                 });
@@ -2164,7 +2164,7 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::ExecuteUpgrade => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "execute_upgrade".to_string(),
                                 });
@@ -2172,7 +2172,7 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::VetoUpgrade => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramUpdate {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::ProgramUpdate {
                                     program: *program,
                                     kind: "veto_upgrade".to_string(),
                                 });
@@ -2180,12 +2180,11 @@ fn emit_program_and_nft_events(
                         }
                         ContractInstruction::Call { function, args, .. } => {
                             if let Some(program) = ix.accounts.get(1) {
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::ProgramCall {
-                                    program: *program,
-                                });
+                                let _ = ws_event_tx
+                                    .send(lichen_rpc::ws::Event::ProgramCall { program: *program });
 
                                 // Emit Log event for contract call
-                                let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Log {
+                                let _ = ws_event_tx.send(lichen_rpc::ws::Event::Log {
                                     contract: *program,
                                     message: format!("call:{}", function),
                                 });
@@ -2194,16 +2193,15 @@ fn emit_program_and_nft_events(
                                 if let Ok(events) = state.get_contract_logs(program, 50, None) {
                                     for event in &events {
                                         if event.slot == block.header.slot {
-                                            let _ =
-                                                ws_event_tx.send(moltchain_rpc::ws::Event::Log {
-                                                    contract: event.program,
-                                                    message: format!(
-                                                        "event:{}:{}",
-                                                        event.name,
-                                                        serde_json::to_string(&event.data)
-                                                            .unwrap_or_default()
-                                                    ),
-                                                });
+                                            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Log {
+                                                contract: event.program,
+                                                message: format!(
+                                                    "event:{}:{}",
+                                                    event.name,
+                                                    serde_json::to_string(&event.data)
+                                                        .unwrap_or_default()
+                                                ),
+                                            });
                                         }
                                     }
                                 }
@@ -2229,14 +2227,13 @@ fn emit_program_and_nft_events(
                                     );
 
                                     let _ = match kind {
-                                        MarketActivityKind::Listing => ws_event_tx.send(
-                                            moltchain_rpc::ws::Event::MarketListing { activity },
-                                        ),
-                                        MarketActivityKind::Sale => {
-                                            ws_event_tx.send(moltchain_rpc::ws::Event::MarketSale {
+                                        MarketActivityKind::Listing => {
+                                            ws_event_tx.send(lichen_rpc::ws::Event::MarketListing {
                                                 activity,
                                             })
                                         }
+                                        MarketActivityKind::Sale => ws_event_tx
+                                            .send(lichen_rpc::ws::Event::MarketSale { activity }),
                                         MarketActivityKind::Cancel => Ok(0),
                                         _ => Ok(0),
                                     };
@@ -2254,7 +2251,7 @@ fn emit_program_and_nft_events(
                                             .accounts
                                             .get(2)
                                             .copied()
-                                            .unwrap_or(moltchain_core::Pubkey([0; 32]));
+                                            .unwrap_or(lichen_core::Pubkey([0; 32]));
                                         // Parse args from JSON bytes
                                         let parsed =
                                             serde_json::from_slice::<serde_json::Value>(&args)
@@ -2276,24 +2273,23 @@ fn emit_program_and_nft_events(
                                         let asset = parsed
                                             .get("asset")
                                             .and_then(|v| v.as_str())
-                                            .unwrap_or("molt")
+                                            .unwrap_or("lichen")
                                             .to_string();
-                                        let _ = ws_event_tx.send(
-                                            moltchain_rpc::ws::Event::BridgeLock {
+                                        let _ =
+                                            ws_event_tx.send(lichen_rpc::ws::Event::BridgeLock {
                                                 chain: dest_chain,
                                                 asset,
                                                 amount,
                                                 sender,
                                                 recipient,
-                                            },
-                                        );
+                                            });
                                     }
                                     "mint" | "bridge_mint" => {
                                         let recipient = ix
                                             .accounts
                                             .get(1)
                                             .copied()
-                                            .unwrap_or(moltchain_core::Pubkey([0; 32]));
+                                            .unwrap_or(lichen_core::Pubkey([0; 32]));
                                         // Parse args from JSON bytes
                                         let parsed =
                                             serde_json::from_slice::<serde_json::Value>(&args)
@@ -2318,15 +2314,14 @@ fn emit_program_and_nft_events(
                                             .unwrap_or("musd")
                                             .to_string();
                                         let tx_hash = hex::encode(tx.signature().0);
-                                        let _ = ws_event_tx.send(
-                                            moltchain_rpc::ws::Event::BridgeMint {
+                                        let _ =
+                                            ws_event_tx.send(lichen_rpc::ws::Event::BridgeMint {
                                                 chain: source_chain,
                                                 asset,
                                                 amount,
                                                 recipient,
                                                 tx_hash,
-                                            },
-                                        );
+                                            });
                                     }
                                     _ => {}
                                 }
@@ -2485,26 +2480,26 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     const ORACLE_DECIMALS: u8 = 8;
 
     let wsol_usd =
-        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wSOL").unwrap_or(0.0);
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wSOL").unwrap_or(0.0);
     let weth_usd =
-        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wETH").unwrap_or(0.0);
     let wbnb_usd =
-        moltchain_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
+        lichen_core::consensus::consensus_oracle_price_from_state(state, "wBNB").unwrap_or(0.0);
 
     if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
         return;
     }
 
-    let molt_usd = moltchain_core::consensus::molt_price_from_state(state);
+    let licn_usd = lichen_core::consensus::licn_price_from_state(state);
 
     // ── Phase A: Mirror consensus prices into ORACLE compatibility storage ──
-    for asset in ["MOLT", "wSOL", "wETH", "wBNB"] {
+    for asset in ["LICN", "wSOL", "wETH", "wBNB"] {
         let consensus_feed =
-            moltchain_core::consensus::read_consensus_oracle_price_from_state(state, asset)
+            lichen_core::consensus::read_consensus_oracle_price_from_state(state, asset)
                 .map(|(price_raw, decimals, _)| (price_raw, decimals))
                 .or_else(|| {
-                    if asset == "MOLT" {
-                        Some((genesis_molt_price_8dec(), ORACLE_DECIMALS))
+                    if asset == "LICN" {
+                        Some((genesis_licn_price_8dec(), ORACLE_DECIMALS))
                     } else {
                         None
                     }
@@ -2533,21 +2528,21 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
     // The dex_core contract reads this during place_order to enforce
     // ±5% (market) / ±10% (limit) price band protection.
     let pair_prices: [(u64, f64); 7] = [
-        (1, molt_usd),
+        (1, licn_usd),
         (2, wsol_usd),
         (3, weth_usd),
         (
             4,
-            if molt_usd > 0.0 {
-                wsol_usd / molt_usd
+            if licn_usd > 0.0 {
+                wsol_usd / licn_usd
             } else {
                 0.0
             },
         ),
         (
             5,
-            if molt_usd > 0.0 {
-                weth_usd / molt_usd
+            if licn_usd > 0.0 {
+                weth_usd / licn_usd
             } else {
                 0.0
             },
@@ -2555,8 +2550,8 @@ fn apply_oracle_from_block(state: &StateStore, block: &Block) {
         (6, wbnb_usd),
         (
             7,
-            if molt_usd > 0.0 {
-                wbnb_usd / molt_usd
+            if licn_usd > 0.0 {
+                wbnb_usd / licn_usd
             } else {
                 0.0
             },
@@ -2819,16 +2814,16 @@ async fn revert_block_effects(
     // Compute fee reversal — fees are still treasury-sourced
     let fee_config = state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
     let total_fee = block_total_fees_paid(state, old_block, &fee_config);
 
     if total_fee > 0 {
         let producer_share = total_fee * fee_config.fee_producer_percent / 100;
         if producer_share > 0 {
             let fee_debit = producer_share.min(producer_account.spendable);
-            producer_account.shells = producer_account.shells.saturating_sub(fee_debit);
+            producer_account.spores = producer_account.spores.saturating_sub(fee_debit);
             producer_account.spendable = producer_account.spendable.saturating_sub(fee_debit);
-            treasury_account.shells = treasury_account.shells.saturating_add(fee_debit);
+            treasury_account.spores = treasury_account.spores.saturating_add(fee_debit);
             treasury_account.spendable = treasury_account.spendable.saturating_add(fee_debit);
         }
     }
@@ -2907,7 +2902,7 @@ async fn revert_block_effects(
 /// For non-revertible instructions (contract calls, NFT, staking), attempts to
 /// restore affected accounts from the nearest RocksDB checkpoint.
 fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &str) {
-    use moltchain_core::SYSTEM_PROGRAM_ID;
+    use lichen_core::SYSTEM_PROGRAM_ID;
 
     if old_block.header.slot == 0 {
         return;
@@ -2915,11 +2910,11 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
     let fee_config = state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     // AUDIT-FIX C7: Collect accounts touched by non-revertible instructions
     // so we can restore them from checkpoint if needed.
-    let mut non_revertible_accounts: Vec<moltchain_core::Pubkey> = Vec::new();
+    let mut non_revertible_accounts: Vec<lichen_core::Pubkey> = Vec::new();
 
     for (tx_index, tx) in old_block.transactions.iter().enumerate().rev() {
         // AUDIT-FIX 0.5: Detect non-system-transfer instructions that can't be reverted
@@ -2957,7 +2952,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         // 1. Reverse each system transfer instruction
         // L4-01 fix: collect all account mutations in an overlay, then flush
         // them atomically via a single WriteBatch to prevent partial reversals.
-        let mut overlay: HashMap<moltchain_core::Pubkey, Account> = HashMap::new();
+        let mut overlay: HashMap<lichen_core::Pubkey, Account> = HashMap::new();
 
         for ix in &tx.message.instructions {
             if ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
@@ -2985,7 +2980,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                 .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
                         });
                         let debit = amount.min(receiver.spendable);
-                        receiver.shells = receiver.shells.saturating_sub(debit);
+                        receiver.spores = receiver.spores.saturating_sub(debit);
                         receiver.spendable = receiver.spendable.saturating_sub(debit);
 
                         let sender = overlay.entry(from).or_insert_with(|| {
@@ -2995,7 +2990,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                 .flatten()
                                 .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
                         });
-                        sender.shells = sender.shells.saturating_add(debit);
+                        sender.spores = sender.spores.saturating_add(debit);
                         sender.spendable = sender.spendable.saturating_add(debit);
                     }
                 }
@@ -3014,7 +3009,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                             .flatten()
                             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
                     });
-                    payer.shells = payer.shells.saturating_add(fee);
+                    payer.spores = payer.spores.saturating_add(fee);
                     payer.spendable = payer.spendable.saturating_add(fee);
                 }
             }
@@ -3022,7 +3017,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
         // Flush all modified accounts atomically
         if !overlay.is_empty() {
-            let batch_accounts: Vec<(&moltchain_core::Pubkey, &Account)> = overlay.iter().collect();
+            let batch_accounts: Vec<(&lichen_core::Pubkey, &Account)> = overlay.iter().collect();
             if let Err(e) = state.atomic_put_accounts(&batch_accounts, 0) {
                 warn!("⚠️  Failed to atomically revert tx accounts: {}", e);
             }
@@ -3051,7 +3046,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
             match StateStore::open_checkpoint(cp_path) {
                 Ok(checkpoint_store) => {
                     // L4-01 fix: collect all restored accounts, then flush atomically
-                    let mut restore_accounts: Vec<(moltchain_core::Pubkey, Account)> = Vec::new();
+                    let mut restore_accounts: Vec<(lichen_core::Pubkey, Account)> = Vec::new();
                     let mut skipped = 0usize;
                     for acct_key in &non_revertible_accounts {
                         match checkpoint_store.get_account(acct_key) {
@@ -3061,8 +3056,8 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                             Ok(None) => {
                                 // Account didn't exist at checkpoint time — zero it out
                                 // (it was created by the reverted block's contract call)
-                                let zeroed = moltchain_core::Account {
-                                    shells: 0,
+                                let zeroed = lichen_core::Account {
+                                    spores: 0,
                                     spendable: 0,
                                     staked: 0,
                                     locked: 0,
@@ -3086,7 +3081,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                         }
                     }
                     if !restore_accounts.is_empty() {
-                        let batch_refs: Vec<(&moltchain_core::Pubkey, &Account)> =
+                        let batch_refs: Vec<(&lichen_core::Pubkey, &Account)> =
                             restore_accounts.iter().map(|(k, v)| (k, v)).collect();
                         match state.atomic_put_accounts(&batch_refs, 0) {
                             Ok(()) => {
@@ -3242,7 +3237,7 @@ async fn apply_block_effects(
         }
 
         // Compute total supply for inflation curve: genesis + minted - burned
-        let total_supply = GENESIS_SUPPLY_SHELLS
+        let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(state.get_total_minted().unwrap_or(0))
             .saturating_sub(state.get_total_burned().unwrap_or(0));
 
@@ -3268,31 +3263,30 @@ async fn apply_block_effects(
         // At the start of each new epoch, mint the previous epoch's inflation
         // and distribute to every active staker by stake weight, routed through
         // the vesting pipeline (bootstrap debt repayment).
-        if moltchain_core::is_epoch_boundary(slot) && slot > 0 {
-            let completed_epoch_start = moltchain_core::epoch_start_slot(
-                moltchain_core::consensus::slot_to_epoch(slot).saturating_sub(1),
+        if lichen_core::is_epoch_boundary(slot) && slot > 0 {
+            let completed_epoch_start = lichen_core::epoch_start_slot(
+                lichen_core::consensus::slot_to_epoch(slot).saturating_sub(1),
             );
-            let epoch_mint =
-                moltchain_core::compute_epoch_mint(completed_epoch_start, total_supply);
-            let reef_reward_pool = match state.get_reefstake_pool() {
-                Ok(reef_pool) if reef_pool.st_molt_token.total_supply > 0 => {
-                    let (_, reef_reward_pool) = moltchain_core::consensus::split_epoch_mint(
+            let epoch_mint = lichen_core::compute_epoch_mint(completed_epoch_start, total_supply);
+            let moss_reward_pool = match state.get_mossstake_pool() {
+                Ok(moss_pool) if moss_pool.st_licn_token.total_supply > 0 => {
+                    let (_, moss_reward_pool) = lichen_core::consensus::split_epoch_mint(
                         completed_epoch_start,
                         total_supply,
                     );
-                    reef_reward_pool
+                    moss_reward_pool
                 }
                 Ok(_) => 0,
                 Err(e) => {
                     warn!(
-                        "⚠️  Failed to load ReefStake pool before epoch distribution: {}",
+                        "⚠️  Failed to load MossStake pool before epoch distribution: {}",
                         e
                     );
                     0
                 }
             };
-            let staker_reward_pool = if reef_reward_pool > 0 {
-                epoch_mint.saturating_sub(reef_reward_pool)
+            let staker_reward_pool = if moss_reward_pool > 0 {
+                epoch_mint.saturating_sub(moss_reward_pool)
             } else {
                 epoch_mint
             };
@@ -3341,9 +3335,9 @@ async fn apply_block_effects(
                     warn!("⚠️  Failed to persist epoch staker rewards: {}", e);
                 }
 
-                let epoch = moltchain_core::consensus::slot_to_epoch(slot);
+                let epoch = lichen_core::consensus::slot_to_epoch(slot);
                 info!(
-                    "🏛️  Epoch {} rewards: minted {:.3} MOLT to {} stakers",
+                    "🏛️  Epoch {} rewards: minted {:.3} LICN to {} stakers",
                     epoch.saturating_sub(1),
                     total_minted as f64 / 1_000_000_000.0,
                     distributions.len(),
@@ -3358,32 +3352,32 @@ async fn apply_block_effects(
                     );
                 }
 
-                // ── ReefStake liquid staking reward distribution ──
-                // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
-                // to the ReefStake pool, funding stMOLT yield.
-                if reef_reward_pool > 0 {
-                    match state.get_reefstake_pool() {
-                        Ok(mut reef_pool) => {
-                            if reef_pool.st_molt_token.total_supply > 0 {
-                                reef_pool.distribute_rewards(reef_reward_pool);
+                // ── MossStake liquid staking reward distribution ──
+                // Allocate MOSSSTAKE_BLOCK_SHARE_BPS (10%) of epoch inflation
+                // to the MossStake pool, funding stLICN yield.
+                if moss_reward_pool > 0 {
+                    match state.get_mossstake_pool() {
+                        Ok(mut moss_pool) => {
+                            if moss_pool.st_licn_token.total_supply > 0 {
+                                moss_pool.distribute_rewards(moss_reward_pool);
                                 if let Err(e) =
-                                    state.atomic_mint_reefstake(&reef_pool, reef_reward_pool)
+                                    state.atomic_mint_mossstake(&moss_pool, moss_reward_pool)
                                 {
                                     warn!(
-                                        "⚠️  Failed to persist ReefStake epoch distribution: {}",
+                                        "⚠️  Failed to persist MossStake epoch distribution: {}",
                                         e
                                     );
                                 } else {
                                     debug!(
-                                        "🌊 ReefStake: minted {:.6} MOLT to {} stakers (epoch)",
-                                        reef_reward_pool as f64 / 1_000_000_000.0,
-                                        reef_pool.positions.len(),
+                                        "🌊 MossStake: minted {:.6} LICN to {} stakers (epoch)",
+                                        moss_reward_pool as f64 / 1_000_000_000.0,
+                                        moss_pool.positions.len(),
                                     );
                                 }
                             }
                         }
                         Err(e) => {
-                            warn!("⚠️  Failed to load ReefStake pool: {}", e);
+                            warn!("⚠️  Failed to load MossStake pool: {}", e);
                         }
                     }
                 }
@@ -3393,7 +3387,7 @@ async fn apply_block_effects(
             match state.apply_pending_governance_changes() {
                 Ok(0) => {} // No pending changes
                 Ok(n) => {
-                    let epoch = moltchain_core::consensus::slot_to_epoch(slot);
+                    let epoch = lichen_core::consensus::slot_to_epoch(slot);
                     info!(
                         "🏛️  Epoch {} governance: applied {} parameter change(s)",
                         epoch, n,
@@ -3408,7 +3402,7 @@ async fn apply_block_effects(
 
     let fee_config = state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
     let total_fee = block_total_fees_paid(state, block, &fee_config);
 
     if total_fee == 0 {
@@ -3439,10 +3433,10 @@ async fn apply_block_effects(
         _ => Account::new(0, treasury_pubkey),
     };
 
-    if treasury_account.shells < total_fee {
+    if treasury_account.spores < total_fee {
         warn!(
             "⚠️  Treasury balance {} < total fees {}, skipping distribution",
-            treasury_account.shells, total_fee
+            treasury_account.spores, total_fee
         );
         return;
     }
@@ -3625,8 +3619,8 @@ async fn apply_block_effects(
     // fee_liquid is the vesting-adjusted producer share (≤ producer_share).
     // The debt repayment portion stays in treasury as internal bookkeeping.
     // Treasury retains its own share (≈10%) automatically.
-    treasury_account.shells = treasury_account
-        .shells
+    treasury_account.spores = treasury_account
+        .spores
         .saturating_sub(fee_liquid + voters_paid + community_share);
     treasury_account.spendable = treasury_account
         .spendable
@@ -3655,20 +3649,20 @@ async fn apply_block_effects(
 
     if treasury_share > 0 {
         info!(
-            "🏦 Treasury fees retained: {:.6} MOLT",
+            "🏦 Treasury fees retained: {:.6} LICN",
             treasury_share as f64 / 1_000_000_000.0
         );
     }
 
-    // ── Founding moltys periodic vesting unlock ──
-    // Check if any locked founding moltys should be unlocked based on block timestamp.
+    // ── Founding symbionts periodic vesting unlock ──
+    // Check if any locked founding symbionts should be unlocked based on block timestamp.
     // Schedule: 6-month cliff, then 18-month linear vest to month 24.
     if let Ok(Some((cliff_end, vest_end, total_amount))) = state.get_founding_vesting_params() {
         let block_time = block.header.timestamp;
         if block_time >= cliff_end {
-            if let Ok(Some(fm_pubkey)) = state.get_founding_moltys_pubkey() {
+            if let Ok(Some(fm_pubkey)) = state.get_founding_symbionts_pubkey() {
                 if let Ok(Some(mut fm_acct)) = state.get_account(&fm_pubkey) {
-                    let target_unlocked = moltchain_core::consensus::founding_vesting_unlocked(
+                    let target_unlocked = lichen_core::consensus::founding_vesting_unlocked(
                         total_amount,
                         cliff_end,
                         vest_end,
@@ -3680,11 +3674,11 @@ async fn apply_block_effects(
                         fm_acct.spendable = fm_acct.spendable.saturating_add(new_unlock);
                         fm_acct.locked = fm_acct.locked.saturating_sub(new_unlock);
                         if let Err(e) = state.put_account(&fm_pubkey, &fm_acct) {
-                            warn!("⚠️  Failed to update founding moltys vesting: {}", e);
+                            warn!("⚠️  Failed to update founding symbionts vesting: {}", e);
                         } else if new_unlock > 1_000_000_000 {
-                            // Only log for significant unlocks (> 1 MOLT)
+                            // Only log for significant unlocks (> 1 LICN)
                             info!(
-                                "🔓 Founding moltys vest: unlocked {:.2} MOLT (total {:.2}M / {:.2}M)",
+                                "🔓 Founding symbionts vest: unlocked {:.2} LICN (total {:.2}M / {:.2}M)",
                                 new_unlock as f64 / 1_000_000_000.0,
                                 target_unlocked as f64 / 1_000_000_000_000_000_000.0,
                                 total_amount as f64 / 1_000_000_000_000_000_000.0,
@@ -3808,14 +3802,14 @@ async fn freeze_consensus_snapshot_for_height(
 ) -> (ValidatorSet, StakePool) {
     let height_pool = stake_pool.read().await.clone();
 
-    if moltchain_core::is_epoch_boundary(height) {
-        let epoch = moltchain_core::slot_to_epoch(height);
+    if lichen_core::is_epoch_boundary(height) {
+        let epoch = lichen_core::slot_to_epoch(height);
         {
             let mut vs = validator_set.write().await;
 
             if let Ok(pending) = state.get_pending_validator_changes(epoch) {
                 for change in &pending {
-                    if change.change_type == moltchain_core::ValidatorChangeType::Remove {
+                    if change.change_type == lichen_core::ValidatorChangeType::Remove {
                         vs.remove_validator(&change.pubkey);
                         if let Err(e) = state.delete_validator(&change.pubkey) {
                             warn!(
@@ -3923,7 +3917,7 @@ fn latest_verified_checkpoint(
     state: &StateStore,
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
-) -> Option<(moltchain_core::CheckpointMeta, String, Block)> {
+) -> Option<(lichen_core::CheckpointMeta, String, Block)> {
     let (meta, path) = StateStore::latest_checkpoint(data_dir)?;
     let finalized_slot = state.get_last_finalized_slot().ok()?;
     if meta.slot == 0 || meta.slot > finalized_slot {
@@ -3971,9 +3965,9 @@ fn verify_committed_block_authenticity(
 fn verify_checkpoint_anchor(
     slot: u64,
     state_root: [u8; 32],
-    checkpoint_header: Option<&moltchain_core::BlockHeader>,
+    checkpoint_header: Option<&lichen_core::BlockHeader>,
     commit_round: u32,
-    commit_signatures: &[moltchain_core::CommitSignature],
+    commit_signatures: &[lichen_core::CommitSignature],
     validator_set: &ValidatorSet,
     stake_pool: &StakePool,
 ) -> Result<(), String> {
@@ -4119,12 +4113,12 @@ fn checkpoint_anchor_support(
 const MICRO_SCALE: f64 = 1_000_000.0;
 
 /// Default Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB.
-/// Override via MOLTCHAIN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
+/// Override via LICHEN_ORACLE_WS_URL (e.g. for Binance US: wss://stream.binance.us:9443/ws/...)
 const DEFAULT_BINANCE_WS_URL: &str =
     "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 
 /// Default Binance REST fallback URL.
-/// Override via MOLTCHAIN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
+/// Override via LICHEN_ORACLE_REST_URL (e.g. for Binance US: https://api.binance.us/api/v3/...)
 const DEFAULT_BINANCE_REST_URL: &str =
     "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
 
@@ -4137,7 +4131,7 @@ struct BinanceTicker {
 
 fn seed_bootstrap_consensus_oracle_prices(state: &StateStore, slot: u64) {
     for (asset, price_raw) in [
-        ("MOLT", genesis_molt_price_8dec()),
+        ("LICN", genesis_licn_price_8dec()),
         ("wSOL", genesis_wsol_price_8dec()),
         ("wETH", genesis_weth_price_8dec()),
         ("wBNB", genesis_wbnb_price_8dec()),
@@ -4191,12 +4185,12 @@ fn build_oracle_attestation_tx(
     data.extend_from_slice(&price_raw.to_le_bytes());
     data.push(decimals);
 
-    let ix = moltchain_core::Instruction {
+    let ix = lichen_core::Instruction {
         program_id: CORE_SYSTEM_PROGRAM_ID,
         accounts: vec![validator_pubkey],
         data,
     };
-    let msg = moltchain_core::Message::new(vec![ix], recent_blockhash);
+    let msg = lichen_core::Message::new(vec![ix], recent_blockhash);
     let mut tx = Transaction::new(msg);
     let kp = Keypair::from_seed(validator_seed);
     tx.signatures.push(kp.sign(&tx.message.serialize()));
@@ -4206,7 +4200,7 @@ fn build_oracle_attestation_tx(
 #[derive(Clone)]
 struct OracleFeedTxContext {
     mempool: Arc<Mutex<Mempool>>,
-    p2p_peer_manager: Option<Arc<moltchain_p2p::PeerManager>>,
+    p2p_peer_manager: Option<Arc<lichen_p2p::PeerManager>>,
     p2p_config: P2PConfig,
     validator_seed: [u8; 32],
     validator_pubkey: Pubkey,
@@ -4249,12 +4243,12 @@ async fn submit_oracle_attestation_tx(
 
     if let Some(peer_mgr) = &tx_context.p2p_peer_manager {
         let target_id = tx.hash().0;
-        let msg = moltchain_p2p::P2PMessage::new(
-            moltchain_p2p::MessageType::Transaction(tx),
+        let msg = lichen_p2p::P2PMessage::new(
+            lichen_p2p::MessageType::Transaction(tx),
             tx_context.p2p_config.listen_addr,
         );
         peer_mgr
-            .route_to_closest(&target_id, moltchain_p2p::NON_CONSENSUS_FANOUT, msg)
+            .route_to_closest(&target_id, lichen_p2p::NON_CONSENSUS_FANOUT, msg)
             .await;
     }
 
@@ -4264,14 +4258,14 @@ async fn submit_oracle_attestation_tx(
 fn spawn_oracle_price_feeder(
     state: StateStore,
     shared_prices: SharedOraclePrices,
-    dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
+    dex_broadcaster: std::sync::Arc<lichen_rpc::dex_ws::DexEventBroadcaster>,
     tx_context: OracleFeedTxContext,
 ) {
     tokio::spawn(async move {
         // Configurable Binance endpoints via env vars (for geo-blocked regions)
-        let oracle_ws_url: String = std::env::var("MOLTCHAIN_ORACLE_WS_URL")
+        let oracle_ws_url: String = std::env::var("LICHEN_ORACLE_WS_URL")
             .unwrap_or_else(|_| DEFAULT_BINANCE_WS_URL.to_string());
-        let oracle_rest_url: String = std::env::var("MOLTCHAIN_ORACLE_REST_URL")
+        let oracle_rest_url: String = std::env::var("LICHEN_ORACLE_REST_URL")
             .unwrap_or_else(|_| DEFAULT_BINANCE_REST_URL.to_string());
         info!("🔮 Oracle WS: {}", oracle_ws_url);
         info!("🔮 Oracle REST: {}", oracle_rest_url);
@@ -4391,7 +4385,7 @@ fn spawn_oracle_price_feeder(
             // reads consensus-written state to broadcast WS events.
 
             for (asset, price_raw) in [
-                ("MOLT", GENESIS_MOLT_PRICE_8DEC),
+                ("LICN", GENESIS_LICN_PRICE_8DEC),
                 ("wSOL", cur_wsol.saturating_mul(100)),
                 ("wETH", cur_weth.saturating_mul(100)),
                 ("wBNB", cur_wbnb.saturating_mul(100)),
@@ -4424,23 +4418,23 @@ fn spawn_oracle_price_feeder(
             // WS broadcasts — read consensus state and emit to WebSocket clients
             let current_slot = state.get_last_slot().unwrap_or(0);
 
-            let molt_usd: f64 = 0.10;
+            let licn_usd: f64 = 0.10;
             let pair_prices: [(u64, f64); 7] = [
-                (1, molt_usd),
+                (1, licn_usd),
                 (2, wsol_usd),
                 (3, weth_usd),
                 (
                     4,
-                    if molt_usd > 0.0 {
-                        wsol_usd / molt_usd
+                    if licn_usd > 0.0 {
+                        wsol_usd / licn_usd
                     } else {
                         0.0
                     },
                 ),
                 (
                     5,
-                    if molt_usd > 0.0 {
-                        weth_usd / molt_usd
+                    if licn_usd > 0.0 {
+                        weth_usd / licn_usd
                     } else {
                         0.0
                     },
@@ -4448,8 +4442,8 @@ fn spawn_oracle_price_feeder(
                 (6, wbnb_usd),
                 (
                     7,
-                    if molt_usd > 0.0 {
-                        wbnb_usd / molt_usd
+                    if licn_usd > 0.0 {
+                        wbnb_usd / licn_usd
                     } else {
                         0.0
                     },
@@ -4845,7 +4839,7 @@ fn main() {
         .init();
 
     info!(
-        "🐺 MoltChain Supervisor started (max restarts: {})",
+        "🐺 Lichen Supervisor started (max restarts: {})",
         max_restarts
     );
 
@@ -5057,7 +5051,7 @@ async fn run_validator() {
     // Background task: sweep log files older than 7 days every 3 hours
     spawn_log_cleanup_task(log_dir.clone(), 7);
 
-    info!("🦞 MoltChain Validator starting...");
+    info!("🦞 Lichen Validator starting...");
 
     // Parse CLI args for P2P configuration
     let args: Vec<String> = env::args().collect();
@@ -5092,7 +5086,7 @@ async fn run_validator() {
     let data_dir = data_dir_path.to_string_lossy().to_string();
     info!("📂 Data directory: {}", data_dir);
 
-    let signer_bind = match env::var("MOLTCHAIN_SIGNER_BIND") {
+    let signer_bind = match env::var("LICHEN_SIGNER_BIND") {
         Ok(value) if value.eq_ignore_ascii_case("off") => None,
         Ok(value) => Some(value),
         Err(_) => {
@@ -5106,7 +5100,7 @@ async fn run_validator() {
         if let Ok(addr) = bind.parse::<SocketAddr>() {
             if !addr.ip().is_loopback() {
                 warn!(
-                    "MOLTCHAIN_SIGNER_BIND is exposed on {}. Use loopback or a private interface only.",
+                    "LICHEN_SIGNER_BIND is exposed on {}. Use loopback or a private interface only.",
                     addr
                 );
             }
@@ -5115,7 +5109,7 @@ async fn run_validator() {
                 threshold_signer::start_signer_server(addr, &signer_data_dir).await;
             });
         } else {
-            warn!("Invalid MOLTCHAIN_SIGNER_BIND value: {}", bind);
+            warn!("Invalid LICHEN_SIGNER_BIND value: {}", bind);
         }
     }
 
@@ -5168,7 +5162,7 @@ async fn run_validator() {
             Ok(config) => {
                 info!("✓ Genesis loaded successfully");
                 info!("  Chain ID: {}", config.chain_id);
-                info!("  Total supply: {} MOLT", config.total_supply_molt());
+                info!("  Total supply: {} LICN", config.total_supply_licn());
                 info!("  Initial validators: {}", config.initial_validators.len());
                 config
             }
@@ -5252,11 +5246,11 @@ async fn run_validator() {
         }
     }
 
-    // Env var fallback — MOLTCHAIN_BOOTSTRAP_PEERS provides reliable delivery
+    // Env var fallback — LICHEN_BOOTSTRAP_PEERS provides reliable delivery
     // of bootstrap peers without systemd word-splitting issues that can break
-    // MOLTCHAIN_EXTRA_ARGS expansion in ExecStart.
+    // LICHEN_EXTRA_ARGS expansion in ExecStart.
     if explicit_seed_peer_strings.is_empty() {
-        if let Ok(peers) = std::env::var("MOLTCHAIN_BOOTSTRAP_PEERS") {
+        if let Ok(peers) = std::env::var("LICHEN_BOOTSTRAP_PEERS") {
             for part in peers.split(',') {
                 let trimmed = part.trim();
                 if !trimmed.is_empty() {
@@ -5266,7 +5260,7 @@ async fn run_validator() {
             }
             if !explicit_seed_peer_strings.is_empty() {
                 info!(
-                    "📡 Loaded {} bootstrap peer(s) from MOLTCHAIN_BOOTSTRAP_PEERS env var",
+                    "📡 Loaded {} bootstrap peer(s) from LICHEN_BOOTSTRAP_PEERS env var",
                     explicit_seed_peer_strings.len()
                 );
             }
@@ -5329,7 +5323,7 @@ async fn run_validator() {
         channel: update_channel,
         no_auto_restart,
         jitter_max_secs: 60,
-        target_binary: "moltchain-validator".to_string(),
+        target_binary: "lichen-validator".to_string(),
         companion_binaries: discover_companion_binaries(),
     };
 
@@ -5367,7 +5361,7 @@ async fn run_validator() {
     // Search seeds.json in multiple locations
     let seeds_candidates = [
         data_dir_path.join("seeds.json"),
-        PathBuf::from("/etc/moltchain/seeds.json"),
+        PathBuf::from("/etc/lichen/seeds.json"),
         PathBuf::from("seeds.json"),
     ];
     let seeds_path = seeds_candidates
@@ -5386,7 +5380,7 @@ async fn run_validator() {
             );
         }
         seed_peers.extend(resolve_peer_list(&seed_file_peers));
-        let cached = moltchain_p2p::PeerStore::load_from_path(&peer_store_path);
+        let cached = lichen_p2p::PeerStore::load_from_path(&peer_store_path);
         seed_peers.extend(cached.iter().copied());
         cached
     } else if !explicit_seed_peers.is_empty() {
@@ -5448,17 +5442,17 @@ async fn run_validator() {
         runtime_home: Some(validator_runtime_home),
         peer_store_path: Some(peer_store_path.clone()),
         max_known_peers: 200,
-        // P2P role: read from MOLTCHAIN_P2P_ROLE env var, default to Validator
-        role: std::env::var("MOLTCHAIN_P2P_ROLE")
+        // P2P role: read from LICHEN_P2P_ROLE env var, default to Validator
+        role: std::env::var("LICHEN_P2P_ROLE")
             .ok()
             .and_then(|s| s.parse::<NodeRole>().ok())
             .unwrap_or(NodeRole::Validator),
-        // P2P max_peers: read from MOLTCHAIN_P2P_MAX_PEERS env var, or auto-set by role
-        max_peers: std::env::var("MOLTCHAIN_P2P_MAX_PEERS")
+        // P2P max_peers: read from LICHEN_P2P_MAX_PEERS env var, or auto-set by role
+        max_peers: std::env::var("LICHEN_P2P_MAX_PEERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok()),
-        // P2P reserved relay peers: read from MOLTCHAIN_P2P_RESERVED_PEERS env var (comma-separated)
-        reserved_relay_peers: std::env::var("MOLTCHAIN_P2P_RESERVED_PEERS")
+        // P2P reserved relay peers: read from LICHEN_P2P_RESERVED_PEERS env var (comma-separated)
+        reserved_relay_peers: std::env::var("LICHEN_P2P_RESERVED_PEERS")
             .ok()
             .map(|s| {
                 s.split(',')
@@ -5467,8 +5461,8 @@ async fn run_validator() {
                     .collect()
             })
             .unwrap_or_default(),
-        // P3-6: External address for NAT traversal (from MOLTCHAIN_EXTERNAL_ADDR env var)
-        external_addr: std::env::var("MOLTCHAIN_EXTERNAL_ADDR")
+        // P3-6: External address for NAT traversal (from LICHEN_EXTERNAL_ADDR env var)
+        external_addr: std::env::var("LICHEN_EXTERNAL_ADDR")
             .ok()
             .and_then(|s| s.parse::<std::net::SocketAddr>().ok()),
     };
@@ -5515,7 +5509,7 @@ async fn run_validator() {
     } else {
         // No state, no seeds — can't start
         error!("❌ No blocks on disk and no seed peers available.");
-        error!("   Run moltchain-genesis first, or provide --bootstrap-peers / seeds.json.");
+        error!("   Run lichen-genesis first, or provide --bootstrap-peers / seeds.json.");
         std::process::exit(1);
     };
 
@@ -5583,7 +5577,7 @@ async fn run_validator() {
                 if let Some(ref dist_wallets) = gw.distribution_wallets {
                     let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
                         .iter()
-                        .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_molt, dw.percentage))
+                        .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_licn, dw.percentage))
                         .collect();
                     if let Err(e) = state.set_genesis_accounts(&ga_entries) {
                         warn!("⚠️  Migration: failed to store genesis accounts: {}", e);
@@ -5642,7 +5636,7 @@ async fn run_validator() {
                                         }
                                         let pk_str = acc["pubkey"].as_str().unwrap_or("");
                                         if let Ok(pk) = Pubkey::from_base58(pk_str) {
-                                            let amt = acc["amount_molt"].as_u64().unwrap_or(0);
+                                            let amt = acc["amount_licn"].as_u64().unwrap_or(0);
                                             let pct = acc["percentage"].as_u64().unwrap_or(0) as u8;
                                             ga_entries.push((role, pk, amt, pct));
                                         }
@@ -5683,7 +5677,7 @@ async fn run_validator() {
         info!("  Resuming from slot {}", last_slot);
 
         // Account reconciliation disabled on startup (too slow for large databases)
-        // Use CLI command `molt admin reconcile-accounts` if needed
+        // Use CLI command `lichen admin reconcile-accounts` if needed
         let metrics = state.get_metrics();
         info!("  Total accounts (counter): {}", metrics.total_accounts);
 
@@ -5735,24 +5729,24 @@ async fn run_validator() {
             let mut treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
 
             // 4. Fund treasury from genesis account (treasury reserve for bootstrap grants)
-            let reward_shells = Account::molt_to_shells(TREASURY_RESERVE_MOLT.min(1_000_000_000));
+            let reward_spores = Account::licn_to_spores(TREASURY_RESERVE_LICN.min(1_000_000_000));
             if let Some(genesis_pk) = genesis_wallet.as_ref().map(|w| w.pubkey) {
                 if let Ok(Some(mut genesis_acct)) = state.get_account(&genesis_pk) {
-                    if genesis_acct.spendable >= reward_shells {
-                        genesis_acct.shells = genesis_acct.shells.saturating_sub(reward_shells);
+                    if genesis_acct.spendable >= reward_spores {
+                        genesis_acct.spores = genesis_acct.spores.saturating_sub(reward_spores);
                         genesis_acct.spendable =
-                            genesis_acct.spendable.saturating_sub(reward_shells);
-                        treasury_account.shells = reward_shells;
-                        treasury_account.spendable = reward_shells;
+                            genesis_acct.spendable.saturating_sub(reward_spores);
+                        treasury_account.spores = reward_spores;
+                        treasury_account.spendable = reward_spores;
                         state.put_account(&genesis_pk, &genesis_acct).ok();
                         info!(
-                            "  ✓ Funded treasury with {} MOLT from genesis (bootstrap reserve)",
-                            TREASURY_RESERVE_MOLT
+                            "  ✓ Funded treasury with {} LICN from genesis (bootstrap reserve)",
+                            TREASURY_RESERVE_LICN
                         );
                     } else {
                         warn!(
                             "  ⚠️  Genesis account has insufficient spendable balance ({} < {})",
-                            genesis_acct.spendable, reward_shells
+                            genesis_acct.spendable, reward_spores
                         );
                     }
                 }
@@ -5792,13 +5786,13 @@ async fn run_validator() {
 
         // ================================================================
         // STARTUP RECONCILIATION: Correct legacy deploy-fee typo in DB.
-        // Some nodes persisted 2.5 MOLT instead of canonical 25 MOLT.
+        // Some nodes persisted 2.5 LICN instead of canonical 25 LICN.
         // ================================================================
         {
             match state.get_fee_config() {
-                Ok(mut cfg) if cfg.contract_deploy_fee == LEGACY_CONTRACT_DEPLOY_FEE_SHELLS => {
+                Ok(mut cfg) if cfg.contract_deploy_fee == LEGACY_CONTRACT_DEPLOY_FEE_SPORES => {
                     warn!(
-                        "🔧 RECONCILE: correcting legacy contract deploy fee {} -> {} shells",
+                        "🔧 RECONCILE: correcting legacy contract deploy fee {} -> {} spores",
                         cfg.contract_deploy_fee, CONTRACT_DEPLOY_FEE
                     );
                     cfg.contract_deploy_fee = CONTRACT_DEPLOY_FEE;
@@ -5806,7 +5800,7 @@ async fn run_validator() {
                         error!("  ✗ Failed to reconcile contract deploy fee: {}", e);
                     } else {
                         info!(
-                            "  ✓ Contract deploy fee reconciled to {} shells (25 MOLT)",
+                            "  ✓ Contract deploy fee reconciled to {} spores (25 LICN)",
                             CONTRACT_DEPLOY_FEE
                         );
                     }
@@ -5835,7 +5829,7 @@ async fn run_validator() {
                 .map(|block| block.header.timestamp)
                 .unwrap_or(0);
 
-            // Check if analytics seed data is present (ana_lp_1 = MOLT/mUSD)
+            // Check if analytics seed data is present (ana_lp_1 = LICN/lUSD)
             let ana_lp_1_exists = state
                 .get_program_storage("ANALYTICS", b"ana_lp_1")
                 .is_some();
@@ -5848,10 +5842,10 @@ async fn run_validator() {
 
             seed_bootstrap_consensus_oracle_prices(&state, state.get_last_slot().unwrap_or(0));
 
-            // Check if oracle price feeds are present (price_MOLT)
-            let molt_price_exists = state.get_program_storage("ORACLE", b"price_MOLT").is_some();
+            // Check if oracle price feeds are present (price_LICN)
+            let licn_price_exists = state.get_program_storage("ORACLE", b"price_LICN").is_some();
 
-            // Check if margin prices are present (mrg_mark_1 = MOLT/mUSD)
+            // Check if margin prices are present (mrg_mark_1 = LICN/lUSD)
             let mrg_mark_1_exists = state.get_program_storage("MARGIN", b"mrg_mark_1").is_some();
 
             if !mrg_mark_1_exists {
@@ -5860,14 +5854,14 @@ async fn run_validator() {
                 info!("  ✓ Margin prices seeded for pairs 1-5");
             }
 
-            if !molt_price_exists {
+            if !licn_price_exists {
                 info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
                 // Write oracle prices directly to contract storage
                 // (WASM calls may not work on existing DB, so use direct writes)
-                if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "moltoracle") {
+                if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "lichenoracle") {
                     const ORACLE_DECIMALS: u8 = 8;
                     let oracle_feeds: &[(&str, u64)] = &[
-                        ("MOLT", genesis_molt_price_8dec()),
+                        ("LICN", genesis_licn_price_8dec()),
                         ("wSOL", genesis_wsol_price_8dec()),
                         ("wETH", genesis_weth_price_8dec()),
                         ("wBNB", genesis_wbnb_price_8dec()),
@@ -5985,8 +5979,8 @@ async fn run_validator() {
     // Load validator keypair from file (production-ready)
     // Priority order:
     // 1. --keypair CLI argument
-    // 2. MOLTCHAIN_VALIDATOR_KEYPAIR env var
-    // 3. ~/.moltchain/validators/validator-{port}.json
+    // 2. LICHEN_VALIDATOR_KEYPAIR env var
+    // 3. ~/.lichen/validators/validator-{port}.json
     // 4. Generate new and save
 
     let keypair_path = get_flag_value(&args, &["--keypair"]);
@@ -6069,7 +6063,7 @@ async fn run_validator() {
 
                 let validator = ValidatorInfo {
                     pubkey,
-                    stake: Account::molt_to_shells(validator_info.stake_molt),
+                    stake: Account::licn_to_spores(validator_info.stake_licn),
                     reputation: validator_info.reputation,
                     blocks_proposed: 0,
                     votes_cast: 0,
@@ -6107,7 +6101,7 @@ async fn run_validator() {
                 {
                     let pending =
                         should_add_local_validator_as_pending(is_joining_network, current_tip);
-                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
+                    info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} LICN, pending: {})",
                         on_chain_stake / 1_000_000_000, pending);
                     set.add_validator(ValidatorInfo {
                         pubkey: validator_pubkey,
@@ -6132,7 +6126,7 @@ async fn run_validator() {
             .any(|v| v.pubkey == validator_pubkey.to_base58())
         {
             let pending = should_add_local_validator_as_pending(is_joining_network, current_tip);
-            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} MOLT, pending: {})",
+            info!("📋 This validator not in genesis set, adding for peer routing (on-chain stake: {} LICN, pending: {})",
                 on_chain_stake / 1_000_000_000, pending);
             set.add_validator(ValidatorInfo {
                 pubkey: validator_pubkey,
@@ -6199,7 +6193,7 @@ async fn run_validator() {
                                     warn!("⚠️  Failed to return bootstrap grant to treasury: {e}");
                                 } else {
                                     info!(
-                                        "💰 Returned {} MOLT bootstrap grant to treasury from ghost {}",
+                                        "💰 Returned {} LICN bootstrap grant to treasury from ghost {}",
                                         ghost_account.staked / 1_000_000_000,
                                         ghost_pk.to_base58()
                                     );
@@ -6294,13 +6288,13 @@ async fn run_validator() {
             match validator_account {
                 Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
                     info!(
-                        "✓ Genesis validator account exists: {} MOLT",
-                        account.balance_molt()
+                        "✓ Genesis validator account exists: {} LICN",
+                        account.balance_licn()
                     );
                 }
                 Some(account) => {
                     warn!(
-                        "⚠️  Genesis validator account stake is below expected bootstrap amount ({:.2} MOLT)",
+                        "⚠️  Genesis validator account stake is below expected bootstrap amount ({:.2} LICN)",
                         account.staked as f64 / 1_000_000_000.0,
                     );
                     warn!(
@@ -6318,8 +6312,8 @@ async fn run_validator() {
             match validator_account {
                 Some(account) if account.staked >= BOOTSTRAP_GRANT_AMOUNT => {
                     info!(
-                        "✓ Validator account exists: {} MOLT",
-                        account.balance_molt()
+                        "✓ Validator account exists: {} LICN",
+                        account.balance_licn()
                     );
                     info!(
                         "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
@@ -6331,7 +6325,7 @@ async fn run_validator() {
                 }
                 Some(account) => {
                     info!(
-                        "⚠️  Validator account exists but insufficient stake ({:.2} MOLT < {} MOLT required)",
+                        "⚠️  Validator account exists but insufficient stake ({:.2} LICN < {} LICN required)",
                         account.staked as f64 / 1_000_000_000.0,
                         BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
                     );
@@ -6397,7 +6391,7 @@ async fn run_validator() {
         }
     });
 
-    // Stake tokens for this validator (100,000 MOLT minimum)
+    // Stake tokens for this validator (100,000 LICN minimum)
     // Uses get_stake() to avoid accumulating on every restart
     {
         let mut pool = stake_pool.write().await;
@@ -6407,7 +6401,7 @@ async fn run_validator() {
             .map(|s| s.amount)
             .unwrap_or(0);
         if existing >= BOOTSTRAP_GRANT_AMOUNT {
-            info!("✅ Already staked: {} MOLT", existing / 1_000_000_000);
+            info!("✅ Already staked: {} LICN", existing / 1_000_000_000);
 
             // Ensure fingerprint is registered (may be missing from pre-graduation validators)
             if machine_fingerprint != [0u8; 32] {
@@ -6473,7 +6467,7 @@ async fn run_validator() {
                                 .get_account(&validator_pubkey)
                                 .unwrap_or(None)
                                 .unwrap_or_else(|| Account {
-                                    shells: 0,
+                                    spores: 0,
                                     spendable: 0,
                                     staked: 0,
                                     locked: 0,
@@ -6484,7 +6478,7 @@ async fn run_validator() {
                                     dormant: false,
                                     missed_rent_epochs: 0,
                                 });
-                            acct.shells = acct.shells.saturating_add(grant);
+                            acct.spores = acct.spores.saturating_add(grant);
                             acct.staked = acct.staked.saturating_add(grant);
                             let _ = state.put_account(&validator_pubkey, &acct);
                             // Add to stake pool
@@ -6498,7 +6492,7 @@ async fn run_validator() {
                                 [0u8; 32],
                             ) {
                                 Ok((idx, _)) => {
-                                    info!("  ✅ Founding validator registered: {} MOLT staked (bootstrap #{})",
+                                    info!("  ✅ Founding validator registered: {} LICN staked (bootstrap #{})",
                                         grant / 1_000_000_000, idx);
                                     funded = true;
                                     needs_on_chain_registration = false;
@@ -6549,7 +6543,7 @@ async fn run_validator() {
                 ) {
                     Ok(_) => {
                         info!(
-                            "🔄 Restored stake pool entry from on-chain state: {} MOLT",
+                            "🔄 Restored stake pool entry from on-chain state: {} LICN",
                             on_chain_stake / 1_000_000_000
                         );
                     }
@@ -6607,15 +6601,14 @@ async fn run_validator() {
     let (snapshot_response_tx, mut snapshot_response_rx) =
         mpsc::channel::<SnapshotResponseMsg>(500);
     let (slashing_evidence_tx, mut slashing_evidence_rx) =
-        mpsc::channel::<moltchain_core::SlashingEvidence>(100);
+        mpsc::channel::<lichen_core::SlashingEvidence>(100);
     let (compact_block_tx, mut compact_block_rx) =
-        mpsc::channel::<moltchain_p2p::CompactBlockMsg>(1_000);
-    let (get_block_txs_tx, mut get_block_txs_rx) =
-        mpsc::channel::<moltchain_p2p::GetBlockTxsMsg>(200);
+        mpsc::channel::<lichen_p2p::CompactBlockMsg>(1_000);
+    let (get_block_txs_tx, mut get_block_txs_rx) = mpsc::channel::<lichen_p2p::GetBlockTxsMsg>(200);
     let (erasure_shard_request_tx, mut erasure_shard_request_rx) =
-        mpsc::channel::<moltchain_p2p::ErasureShardRequestMsg>(200);
+        mpsc::channel::<lichen_p2p::ErasureShardRequestMsg>(200);
     let (erasure_shard_response_tx, mut erasure_shard_response_rx) =
-        mpsc::channel::<moltchain_p2p::ErasureShardResponseMsg>(200);
+        mpsc::channel::<lichen_p2p::ErasureShardResponseMsg>(200);
 
     // BFT consensus channels (Tendermint-style propose/prevote/precommit)
     // Sized for burst tolerance during sync catch-up with 3+ validators
@@ -7174,16 +7167,13 @@ async fn run_validator() {
                                     if let Ok(Some(tip_block)) =
                                         state_for_blocks.get_block_by_slot(tip)
                                     {
-                                        let ix = moltchain_core::Instruction {
-                                            program_id:
-                                                moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                                        let ix = lichen_core::Instruction {
+                                            program_id: lichen_core::processor::SYSTEM_PROGRAM_ID,
                                             accounts: vec![Pubkey(block.header.validator)],
                                             data: ix_data,
                                         };
-                                        let msg = moltchain_core::Message::new(
-                                            vec![ix],
-                                            tip_block.hash(),
-                                        );
+                                        let msg =
+                                            lichen_core::Message::new(vec![ix], tip_block.hash());
                                         let mut tx = Transaction::new(msg);
                                         let kp = Keypair::from_seed(&slash_keypair_seed_for_blocks);
                                         let sig = kp.sign(&tx.message.serialize());
@@ -7195,14 +7185,14 @@ async fn run_validator() {
                                             }
                                         }
                                         let target_id = tx.hash().0;
-                                        let slash_msg = moltchain_p2p::P2PMessage::new(
-                                            moltchain_p2p::MessageType::Transaction(tx),
+                                        let slash_msg = lichen_p2p::P2PMessage::new(
+                                            lichen_p2p::MessageType::Transaction(tx),
                                             p2p_config_for_slash_blocks.listen_addr,
                                         );
                                         p2p_pm_for_slash_blocks
                                             .route_to_closest(
                                                 &target_id,
-                                                moltchain_p2p::NON_CONSENSUS_FANOUT,
+                                                lichen_p2p::NON_CONSENSUS_FANOUT,
                                                 slash_msg,
                                             )
                                             .await;
@@ -7312,7 +7302,7 @@ async fn run_validator() {
                             .set_rent_params(
                                 genesis_config_for_blocks
                                     .features
-                                    .rent_rate_shells_per_kb_month,
+                                    .rent_rate_spores_per_kb_month,
                                 genesis_config_for_blocks.features.rent_free_kb,
                             )
                             .ok();
@@ -7320,7 +7310,7 @@ async fn run_validator() {
                         // 2. Fee config from genesis config
                         let gc = &genesis_config_for_blocks;
                         let genesis_fee_config = FeeConfig {
-                            base_fee: gc.features.base_fee_shells,
+                            base_fee: gc.features.base_fee_spores,
                             contract_deploy_fee: CONTRACT_DEPLOY_FEE,
                             contract_upgrade_fee: CONTRACT_UPGRADE_FEE,
                             nft_mint_fee: NFT_MINT_FEE,
@@ -7352,15 +7342,15 @@ async fn run_validator() {
 
                         if let Some(gpk) = extracted_genesis_pubkey {
                             // 4. Process all distribution transfers from genesis block
-                            let total_supply_molt = 500_000_000u64;
-                            let total_shells = Account::molt_to_shells(total_supply_molt);
-                            let mut total_distributed_shells = 0u64;
+                            let total_supply_licn = 500_000_000u64;
+                            let total_spores = Account::licn_to_spores(total_supply_licn);
+                            let mut total_distributed_spores = 0u64;
 
                             for (i, tx) in block.transactions.iter().enumerate().skip(1) {
                                 if let Some(ix) = tx.message.instructions.first() {
                                     if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
                                         let recipient = ix.accounts[1];
-                                        let amount_shells = if ix.data.len() >= 9 {
+                                        let amount_spores = if ix.data.len() >= 9 {
                                             u64::from_le_bytes(
                                                 ix.data[1..9].try_into().unwrap_or([0u8; 8]),
                                             )
@@ -7369,25 +7359,25 @@ async fn run_validator() {
                                         };
 
                                         let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                                        acct.shells = amount_shells;
-                                        acct.spendable = amount_shells;
+                                        acct.spores = amount_spores;
+                                        acct.spendable = amount_spores;
                                         state_for_blocks.put_account(&recipient, &acct).ok();
-                                        total_distributed_shells += amount_shells;
+                                        total_distributed_spores += amount_spores;
 
                                         // tx[1] = treasury (validator_rewards) — works for both old and new genesis
                                         if i == 1 {
                                             state_for_blocks.set_treasury_pubkey(&recipient).ok();
                                             info!(
-                                                "  ✓ 📡 [sync] Treasury: {} ({} MOLT)",
+                                                "  ✓ 📡 [sync] Treasury: {} ({} LICN)",
                                                 recipient.to_base58(),
-                                                amount_shells / 1_000_000_000
+                                                amount_spores / 1_000_000_000
                                             );
                                         } else {
                                             info!(
-                                                "  ✓ 📡 [sync] Distribution {}: {} ({} MOLT)",
+                                                "  ✓ 📡 [sync] Distribution {}: {} ({} LICN)",
                                                 i,
                                                 recipient.to_base58(),
-                                                amount_shells / 1_000_000_000
+                                                amount_spores / 1_000_000_000
                                             );
                                         }
                                     }
@@ -7395,25 +7385,25 @@ async fn run_validator() {
                             }
 
                             // 5. Reconstruct genesis account (total supply minus all distributions)
-                            let mut genesis_account = Account::new(total_supply_molt, gpk);
-                            genesis_account.shells =
-                                total_shells.saturating_sub(total_distributed_shells);
+                            let mut genesis_account = Account::new(total_supply_licn, gpk);
+                            genesis_account.spores =
+                                total_spores.saturating_sub(total_distributed_spores);
                             genesis_account.spendable = genesis_account
-                                .shells
+                                .spores
                                 .saturating_sub(genesis_account.staked)
                                 .saturating_sub(genesis_account.locked);
                             state_for_blocks.put_account(&gpk, &genesis_account).ok();
                             state_for_blocks.set_genesis_pubkey(&gpk).ok();
                             info!(
-                                "  ✓ 📡 [sync] Genesis account: {} ({} MOLT remaining)",
+                                "  ✓ 📡 [sync] Genesis account: {} ({} LICN remaining)",
                                 gpk.to_base58(),
-                                genesis_account.shells / 1_000_000_000
+                                genesis_account.spores / 1_000_000_000
                             );
 
                             // 6. Create initial accounts from genesis config
                             for account_info in &genesis_config_for_blocks.initial_accounts {
                                 if let Ok(pubkey) = Pubkey::from_base58(&account_info.address) {
-                                    let account = Account::new(account_info.balance_molt, pubkey);
+                                    let account = Account::new(account_info.balance_licn, pubkey);
                                     state_for_blocks.put_account(&pubkey, &account).ok();
                                 }
                             }
@@ -7453,8 +7443,8 @@ async fn run_validator() {
                                             .ok()
                                             .flatten()
                                             .unwrap_or_else(|| Account::new(0, Pubkey([0x01; 32])));
-                                        account.shells =
-                                            account.shells.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                        account.spores =
+                                            account.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
                                         account.staked =
                                             account.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
                                         account.spendable = 0;
@@ -7767,8 +7757,8 @@ async fn run_validator() {
                                                 .unwrap_or_else(|| {
                                                     Account::new(0, SYSTEM_ACCOUNT_OWNER)
                                                 });
-                                            acct.shells =
-                                                acct.shells.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
+                                            acct.spores =
+                                                acct.spores.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
                                             acct.staked =
                                                 acct.staked.saturating_add(BOOTSTRAP_GRANT_AMOUNT);
                                             state_for_blocks.put_account(&producer, &acct).ok();
@@ -7797,7 +7787,7 @@ async fn run_validator() {
                                                 *mem_pool = pool;
                                             }
                                             info!(
-                                                "🩹 Genesis bootstrap replicated: {} staked {} MOLT",
+                                                "🩹 Genesis bootstrap replicated: {} staked {} LICN",
                                                 producer.to_base58(),
                                                 BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
                                             );
@@ -8548,10 +8538,8 @@ async fn run_validator() {
             info!("🔄 Vote receiver started");
 
             // Track votes per validator to detect double-voting
-            let mut validator_votes: std::collections::HashMap<
-                (moltchain_core::Pubkey, u64),
-                Vote,
-            > = std::collections::HashMap::new();
+            let mut validator_votes: std::collections::HashMap<(lichen_core::Pubkey, u64), Vote> =
+                std::collections::HashMap::new();
 
             while let Some(vote) = vote_rx.recv().await {
                 // Prune old entries to prevent memory leak (keep last 100 slots)
@@ -8620,13 +8608,12 @@ async fn run_validator() {
                                 let tip = state_for_votes.get_last_slot().unwrap_or(0);
                                 if let Ok(Some(tip_block)) = state_for_votes.get_block_by_slot(tip)
                                 {
-                                    let ix = moltchain_core::Instruction {
-                                        program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                                    let ix = lichen_core::Instruction {
+                                        program_id: lichen_core::processor::SYSTEM_PROGRAM_ID,
                                         accounts: vec![vote.validator],
                                         data: ix_data,
                                     };
-                                    let msg =
-                                        moltchain_core::Message::new(vec![ix], tip_block.hash());
+                                    let msg = lichen_core::Message::new(vec![ix], tip_block.hash());
                                     let mut tx = Transaction::new(msg);
                                     let kp = Keypair::from_seed(&slash_keypair_seed_for_votes);
                                     let sig = kp.sign(&tx.message.serialize());
@@ -8639,14 +8626,14 @@ async fn run_validator() {
                                     }
                                     if let Some(ref peer_mgr) = peer_mgr_for_slash {
                                         let target_id = tx.hash().0;
-                                        let slash_msg = moltchain_p2p::P2PMessage::new(
-                                            moltchain_p2p::MessageType::Transaction(tx),
+                                        let slash_msg = lichen_p2p::P2PMessage::new(
+                                            lichen_p2p::MessageType::Transaction(tx),
                                             p2p_config_for_slash_votes.listen_addr,
                                         );
                                         peer_mgr
                                             .route_to_closest(
                                                 &target_id,
-                                                moltchain_p2p::NON_CONSENSUS_FANOUT,
+                                                lichen_p2p::NON_CONSENSUS_FANOUT,
                                                 slash_msg,
                                             )
                                             .await;
@@ -8728,7 +8715,7 @@ async fn run_validator() {
             info!("🔄 Validator announcement receiver started");
             // 1.5d: Per-minute announcement rate limiting
             let mut last_announce_times: std::collections::HashMap<
-                moltchain_core::account::Pubkey,
+                lichen_core::account::Pubkey,
                 std::time::Instant,
             > = std::collections::HashMap::new();
             while let Some(announcement) = validator_announce_rx.recv().await {
@@ -8936,7 +8923,7 @@ async fn run_validator() {
                     // so they're excluded from consensus until the next height
                     // boundary after their on-chain stake is visible locally.
                     let current_slot = announcement.current_slot;
-                    let current_epoch = moltchain_core::slot_to_epoch(current_slot);
+                    let current_epoch = lichen_core::slot_to_epoch(current_slot);
                     let pending = should_add_announced_validator_as_pending(
                         local_tip,
                         local_stake,
@@ -8959,9 +8946,9 @@ async fn run_validator() {
 
                     // Queue the pending change in state for observability and restart recovery
                     if pending {
-                        let change = moltchain_core::PendingValidatorChange {
+                        let change = lichen_core::PendingValidatorChange {
                             pubkey: announcement.pubkey,
-                            change_type: moltchain_core::ValidatorChangeType::Add,
+                            change_type: lichen_core::ValidatorChangeType::Add,
                             queued_at_slot: current_slot,
                             effective_epoch: current_epoch + 1,
                         };
@@ -8983,14 +8970,14 @@ async fn run_validator() {
                         );
                     } else if pending {
                         info!(
-                            "⏳ Validator {} queued for consensus activation at epoch {} ({} MOLT staked)",
+                            "⏳ Validator {} queued for consensus activation at epoch {} ({} LICN staked)",
                             announcement.pubkey.to_base58(),
                             current_epoch + 1,
                             on_chain_stake / 1_000_000_000,
                         );
                     } else {
                         info!(
-                            "✅ Validator {} added with on-chain stake {} MOLT (genesis activation)",
+                            "✅ Validator {} added with on-chain stake {} LICN (genesis activation)",
                             announcement.pubkey.to_base58(),
                             on_chain_stake / 1_000_000_000
                         );
@@ -9498,14 +9485,14 @@ async fn run_validator() {
                                     ),
                                     "programs" => store
                                         .export_programs_cursor(replay_cursor.as_deref(), chunk_sz),
-                                    _ => Ok(moltchain_core::state::KvPage {
+                                    _ => Ok(lichen_core::state::KvPage {
                                         entries: Vec::new(),
                                         total: 0,
                                         next_cursor: None,
                                         has_more: false,
                                     }),
                                 }
-                                .unwrap_or_else(|_| moltchain_core::state::KvPage {
+                                .unwrap_or_else(|_| lichen_core::state::KvPage {
                                     entries: Vec::new(),
                                     total: 0,
                                     next_cursor: None,
@@ -9532,20 +9519,18 @@ async fn run_validator() {
                             "programs" => {
                                 store.export_programs_cursor(entry.1.as_deref(), chunk_sz)
                             }
-                            _ => Ok(moltchain_core::state::KvPage {
+                            _ => Ok(lichen_core::state::KvPage {
                                 entries: Vec::new(),
                                 total: 0,
                                 next_cursor: None,
                                 has_more: false,
                             }),
                         }
-                        .unwrap_or_else(|_| {
-                            moltchain_core::state::KvPage {
-                                entries: Vec::new(),
-                                total: 0,
-                                next_cursor: None,
-                                has_more: false,
-                            }
+                        .unwrap_or_else(|_| lichen_core::state::KvPage {
+                            entries: Vec::new(),
+                            total: 0,
+                            next_cursor: None,
+                            has_more: false,
                         });
 
                         entry.0 = chunk_index.saturating_add(1);
@@ -10313,17 +10298,17 @@ async fn run_validator() {
             base_ws.saturating_add(offset.saturating_mul(2))
         });
 
-    // Parse --admin-token from CLI or MOLTCHAIN_ADMIN_TOKEN env var
+    // Parse --admin-token from CLI or LICHEN_ADMIN_TOKEN env var
     let admin_token: Option<String> = get_flag_value(&args, &["--admin-token"])
         .map(|s| s.to_string())
-        .or_else(|| env::var("MOLTCHAIN_ADMIN_TOKEN").ok())
+        .or_else(|| env::var("LICHEN_ADMIN_TOKEN").ok())
         .filter(|t| !t.is_empty());
     if admin_token.is_some() {
         info!("🔒 Admin token configured for state-mutating RPC endpoints");
     } else {
         warn!(
             "⚠️  No admin_token configured — all admin RPC endpoints are disabled. \
-               Set MOLTCHAIN_ADMIN_TOKEN env var or --admin-token flag for production."
+               Set LICHEN_ADMIN_TOKEN env var or --admin-token flag for production."
         );
     }
 
@@ -10347,7 +10332,7 @@ async fn run_validator() {
             // P9-RPC-01: Defense-in-depth — reject sentinel blockhash for non-EVM TXs
             // before they even enter the mempool.  Only eth_sendRawTransaction may
             // submit TXs with the EVM sentinel; any other path is a bypass attempt.
-            if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+            if tx.message.recent_blockhash == lichen_core::Hash([0xEE; 32]) {
                 let is_evm = tx
                     .message
                     .instructions
@@ -10382,12 +10367,12 @@ async fn run_validator() {
             // Broadcast to P2P network
             if let Some(ref peer_mgr) = p2p_peer_manager_for_txs {
                 let target_id = tx.hash().0;
-                let msg = moltchain_p2p::P2PMessage::new(
-                    moltchain_p2p::MessageType::Transaction(tx),
+                let msg = lichen_p2p::P2PMessage::new(
+                    lichen_p2p::MessageType::Transaction(tx),
                     p2p_config_for_txs.listen_addr,
                 );
                 peer_mgr
-                    .route_to_closest(&target_id, moltchain_p2p::NON_CONSENSUS_FANOUT, msg)
+                    .route_to_closest(&target_id, lichen_p2p::NON_CONSENSUS_FANOUT, msg)
                     .await;
                 info!("📡 Broadcasted transaction to network");
             }
@@ -10395,13 +10380,13 @@ async fn run_validator() {
     });
 
     let tx_sender_for_rpc = Some(rpc_tx_sender);
-    let p2p_for_rpc: Option<Arc<dyn moltchain_rpc::P2PNetworkTrait>> =
+    let p2p_for_rpc: Option<Arc<dyn lichen_rpc::P2PNetworkTrait>> =
         p2p_peer_manager.as_ref().map(|peer_mgr| {
             struct PeerAdapter {
-                peer_mgr: Arc<moltchain_p2p::PeerManager>,
+                peer_mgr: Arc<lichen_p2p::PeerManager>,
             }
 
-            impl moltchain_rpc::P2PNetworkTrait for PeerAdapter {
+            impl lichen_rpc::P2PNetworkTrait for PeerAdapter {
                 fn peer_count(&self) -> usize {
                     self.peer_mgr.get_peers().len()
                 }
@@ -10417,12 +10402,12 @@ async fn run_validator() {
 
             Arc::new(PeerAdapter {
                 peer_mgr: peer_mgr.clone(),
-            }) as Arc<dyn moltchain_rpc::P2PNetworkTrait>
+            }) as Arc<dyn lichen_rpc::P2PNetworkTrait>
         });
 
     // Start WebSocket server FIRST so we can share its broadcasters with RPC
     let (ws_event_tx, ws_dex_broadcaster, ws_prediction_broadcaster, _ws_handle) =
-        match moltchain_rpc::start_ws_server(state_for_ws, ws_port, Some(finality_tracker.clone()))
+        match lichen_rpc::start_ws_server(state_for_ws, ws_port, Some(finality_tracker.clone()))
             .await
         {
             Ok(result) => {
@@ -10436,11 +10421,11 @@ async fn run_validator() {
                 );
                 // Create a dummy broadcast channel so the rest of the code can send events
                 // without checking — receivers simply don't exist.
-                let (dummy_tx, _) = tokio::sync::broadcast::channel::<moltchain_rpc::ws::Event>(1);
+                let (dummy_tx, _) = tokio::sync::broadcast::channel::<lichen_rpc::ws::Event>(1);
                 let dummy_broadcaster =
-                    std::sync::Arc::new(moltchain_rpc::dex_ws::DexEventBroadcaster::new(1));
+                    std::sync::Arc::new(lichen_rpc::dex_ws::DexEventBroadcaster::new(1));
                 let dummy_pred =
-                    std::sync::Arc::new(moltchain_rpc::ws::PredictionEventBroadcaster::new(1));
+                    std::sync::Arc::new(lichen_rpc::ws::PredictionEventBroadcaster::new(1));
                 let dummy_handle = tokio::spawn(async {});
                 (dummy_tx, dummy_broadcaster, dummy_pred, dummy_handle)
             }
@@ -10477,16 +10462,16 @@ async fn run_validator() {
     // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
     // and submits signed native oracle-attestation transactions.
     // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
-    // Can be disabled via MOLTCHAIN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
+    // Can be disabled via LICHEN_DISABLE_ORACLE=1 (e.g. if Binance is geo-blocked).
     // Create shared oracle prices — the feeder converts these observations
     // into native oracle-attestation transactions.
     let shared_oracle_prices = SharedOraclePrices::new();
 
-    let oracle_disabled = std::env::var("MOLTCHAIN_DISABLE_ORACLE")
+    let oracle_disabled = std::env::var("LICHEN_DISABLE_ORACLE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if oracle_disabled {
-        info!("🔮 Oracle price feeder disabled via MOLTCHAIN_DISABLE_ORACLE");
+        info!("🔮 Oracle price feeder disabled via LICHEN_DISABLE_ORACLE");
     } else {
         let state_for_oracle = state.clone();
         spawn_oracle_price_feeder(
@@ -10510,7 +10495,7 @@ async fn run_validator() {
         genesis_config.consensus.slot_duration_ms
     );
     info!(
-        "Base fee: {} shells ({:.5} MOLT)",
+        "Base fee: {} spores ({:.5} LICN)",
         BASE_FEE,
         BASE_FEE as f64 / 1_000_000_000.0
     );
@@ -10747,7 +10732,7 @@ async fn run_validator() {
             loop {
                 interval.tick().await;
                 let current_slot = state_for_cold.get_last_slot().unwrap_or(0);
-                let retain = moltchain_core::state::COLD_RETENTION_SLOTS;
+                let retain = lichen_core::state::COLD_RETENTION_SLOTS;
                 if current_slot > retain {
                     let cutoff = current_slot - retain;
                     match state_for_cold.migrate_to_cold(cutoff) {
@@ -10827,7 +10812,7 @@ async fn run_validator() {
                     let is_bootstrapping = !stake_info.is_fully_vested();
 
                     info!(
-                        "💰 Accumulated rewards: {:.3} MOLT (unclaimed)",
+                        "💰 Accumulated rewards: {:.3} LICN (unclaimed)",
                         unclaimed as f64 / 1_000_000_000.0
                     );
 
@@ -10843,7 +10828,7 @@ async fn run_validator() {
             // Report staking statistics
             let stats = pool.get_stats();
             info!(
-                "📊 Staking Stats | Total: {:.2} MOLT | Validators: {} | Unclaimed: {:.3} MOLT",
+                "📊 Staking Stats | Total: {:.2} LICN | Validators: {} | Unclaimed: {:.3} LICN",
                 stats.total_staked as f64 / 1_000_000_000.0,
                 stats.active_validators,
                 stats.total_unclaimed_rewards as f64 / 1_000_000_000.0
@@ -11046,8 +11031,8 @@ async fn run_validator() {
                         );
                         // Fall through to request full block
                         if let Some(ref pm) = peer_mgr_for_compact {
-                            let request = moltchain_p2p::P2PMessage::new(
-                                moltchain_p2p::MessageType::BlockRequest { slot },
+                            let request = lichen_p2p::P2PMessage::new(
+                                lichen_p2p::MessageType::BlockRequest { slot },
                                 pm.local_addr(),
                             );
                             let pm2 = pm.clone();
@@ -11090,8 +11075,8 @@ async fn run_validator() {
                         sender
                     );
                     if let Some(ref pm) = peer_mgr_for_compact {
-                        let request = moltchain_p2p::P2PMessage::new(
-                            moltchain_p2p::MessageType::GetBlockTxs {
+                        let request = lichen_p2p::P2PMessage::new(
+                            lichen_p2p::MessageType::GetBlockTxs {
                                 slot,
                                 missing_hashes,
                             },
@@ -11124,8 +11109,8 @@ async fn run_validator() {
                         // Send back all transactions from the block. The requester
                         // already knows which ones it needs; sending all is simpler
                         // and still efficient since the block is typically small.
-                        let response = moltchain_p2p::P2PMessage::new(
-                            moltchain_p2p::MessageType::BlockTxs {
+                        let response = lichen_p2p::P2PMessage::new(
+                            lichen_p2p::MessageType::BlockTxs {
                                 slot,
                                 transactions: block.transactions,
                             },
@@ -11169,15 +11154,15 @@ async fn run_validator() {
                                 continue;
                             }
                         };
-                        match moltchain_p2p::erasure::encode_shards(slot, &serialized) {
+                        match lichen_p2p::erasure::encode_shards(slot, &serialized) {
                             Ok(all_shards) => {
-                                let requested: Vec<moltchain_p2p::erasure::ErasureShard> = msg
+                                let requested: Vec<lichen_p2p::erasure::ErasureShard> = msg
                                     .shard_indices
                                     .iter()
                                     .filter_map(|&idx| all_shards.get(idx).cloned())
                                     .collect();
-                                let response = moltchain_p2p::P2PMessage::new(
-                                    moltchain_p2p::MessageType::ErasureShardResponse {
+                                let response = lichen_p2p::P2PMessage::new(
+                                    lichen_p2p::MessageType::ErasureShardResponse {
                                         slot,
                                         shards: requested,
                                     },
@@ -11215,13 +11200,13 @@ async fn run_validator() {
         let block_tx_for_erasure = block_tx_for_erasure;
         tokio::spawn(async move {
             // Track received shards per slot
-            let mut shard_buffers: HashMap<u64, Vec<Option<moltchain_p2p::erasure::ErasureShard>>> =
+            let mut shard_buffers: HashMap<u64, Vec<Option<lichen_p2p::erasure::ErasureShard>>> =
                 HashMap::new();
             while let Some(msg) = erasure_shard_response_rx.recv().await {
                 let slot = msg.slot;
                 let buffer = shard_buffers
                     .entry(slot)
-                    .or_insert_with(|| vec![None; moltchain_p2p::erasure::TOTAL_SHARDS]);
+                    .or_insert_with(|| vec![None; lichen_p2p::erasure::TOTAL_SHARDS]);
 
                 for shard in msg.shards {
                     let idx = shard.index;
@@ -11231,8 +11216,8 @@ async fn run_validator() {
                 }
 
                 let present = buffer.iter().filter(|s| s.is_some()).count();
-                if present >= moltchain_p2p::erasure::DATA_SHARDS {
-                    match moltchain_p2p::erasure::decode_shards(buffer) {
+                if present >= lichen_p2p::erasure::DATA_SHARDS {
+                    match lichen_p2p::erasure::decode_shards(buffer) {
                         Ok(data) => {
                             match bincode::deserialize::<Block>(&data) {
                                 Ok(block) => {
@@ -11526,7 +11511,7 @@ async fn run_validator() {
             let register_kp = Keypair::from_seed(&register_keypair_seed);
 
             // Helper: check local state for registration
-            let is_registered = |st: &moltchain_core::StateStore| -> bool {
+            let is_registered = |st: &lichen_core::StateStore| -> bool {
                 st.get_account(&register_pubkey)
                     .unwrap_or(None)
                     .map(|a| a.staked >= BOOTSTRAP_GRANT_AMOUNT)
@@ -11644,7 +11629,7 @@ async fn run_validator() {
                     Ok(resp) => match resp.json::<serde_json::Value>().await {
                         Ok(body) => {
                             if let Some(hex) = body["result"]["blockhash"].as_str() {
-                                match moltchain_core::Hash::from_hex(hex) {
+                                match lichen_core::Hash::from_hex(hex) {
                                     Ok(h) => h,
                                     Err(e) => {
                                         warn!(
@@ -11681,12 +11666,12 @@ async fn run_validator() {
                 // Build RegisterValidator tx: opcode 26 + fingerprint
                 let mut ix_data = vec![26u8];
                 ix_data.extend_from_slice(&register_fingerprint);
-                let ix = moltchain_core::Instruction {
-                    program_id: moltchain_core::processor::SYSTEM_PROGRAM_ID,
+                let ix = lichen_core::Instruction {
+                    program_id: lichen_core::processor::SYSTEM_PROGRAM_ID,
                     accounts: vec![register_pubkey],
                     data: ix_data,
                 };
-                let msg = moltchain_core::Message::new(vec![ix], blockhash);
+                let msg = lichen_core::Message::new(vec![ix], blockhash);
                 let mut tx = Transaction::new(msg);
                 let sig = register_kp.sign(&tx.message.serialize());
                 tx.signatures.push(sig);
@@ -12735,10 +12720,10 @@ async fn execute_consensus_actions(
     mempool: &Arc<Mutex<Mempool>>,
     processor: &Arc<TxProcessor>,
     finality_tracker: &FinalityTracker,
-    p2p_peer_manager: &Option<Arc<moltchain_p2p::PeerManager>>,
+    p2p_peer_manager: &Option<Arc<lichen_p2p::PeerManager>>,
     p2p_config: &P2PConfig,
-    ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
-    ws_dex_broadcaster: &Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>,
+    ws_event_tx: &tokio::sync::broadcast::Sender<lichen_rpc::ws::Event>,
+    ws_dex_broadcaster: &Arc<lichen_rpc::dex_ws::DexEventBroadcaster>,
     shared_oracle_prices: &SharedOraclePrices,
     last_block_time: &Arc<Mutex<std::time::Instant>>,
     last_dex_trade_count: &mut u64,
@@ -12908,7 +12893,7 @@ async fn execute_consensus_actions(
             // Broadcast block to network (compact + full fallback)
             if let Some(ref pm) = p2p_peer_manager {
                 let target_id = block.hash().0;
-                let compact = moltchain_p2p::CompactBlock::from_block(&block);
+                let compact = lichen_p2p::CompactBlock::from_block(&block);
                 let compact_msg = P2PMessage::new(
                     MessageType::CompactBlockMsg(compact),
                     p2p_config.listen_addr,
@@ -12917,7 +12902,7 @@ async fn execute_consensus_actions(
                 tokio::spawn(async move {
                     pm_c.route_to_closest(
                         &target_id,
-                        moltchain_p2p::NON_CONSENSUS_FANOUT,
+                        lichen_p2p::NON_CONSENSUS_FANOUT,
                         compact_msg,
                     )
                     .await;
@@ -12928,8 +12913,8 @@ async fn execute_consensus_actions(
             emit_program_and_nft_events(state, ws_event_tx, &block);
 
             // Broadcast block event to WebSocket subscribers
-            let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
-            let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Slot(height));
+            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Block(block.clone()));
+            let _ = ws_event_tx.send(lichen_rpc::ws::Event::Slot(height));
 
             // DEX events + analytics bridge + SL/TP triggers
             {
@@ -13005,8 +12990,8 @@ async fn execute_consensus_actions(
                 );
                 if let Ok(Some(val_account)) = state.get_account(&bft.validator_pubkey) {
                     info!(
-                        "   💰 Validator balance: {} MOLT",
-                        val_account.balance_molt()
+                        "   💰 Validator balance: {} LICN",
+                        val_account.balance_licn()
                     );
                 }
             }
@@ -13081,7 +13066,7 @@ async fn execute_consensus_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
+    use lichen_core::{Instruction, Message, MIN_VALIDATOR_STAKE};
 
     // ── Helper builders ─────────────────────────────────────────────
 
@@ -13117,7 +13102,7 @@ mod tests {
 
     fn make_block_with_txs(txs: Vec<Transaction>) -> Block {
         Block {
-            header: moltchain_core::BlockHeader {
+            header: lichen_core::BlockHeader {
                 slot: 1,
                 parent_hash: Hash([0u8; 32]),
                 state_root: Hash([0u8; 32]),
@@ -13139,7 +13124,7 @@ mod tests {
         state
             .register_symbol(
                 symbol,
-                moltchain_core::state::SymbolRegistryEntry {
+                lichen_core::state::SymbolRegistryEntry {
                     symbol: symbol.to_string(),
                     program,
                     owner: Pubkey([9u8; 32]),
@@ -13194,7 +13179,7 @@ mod tests {
 
         let block_hash = block.hash();
         let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        block.commit_signatures = vec![moltchain_core::CommitSignature {
+        block.commit_signatures = vec![lichen_core::CommitSignature {
             validator: validator_pk.0,
             signature: validator_kp.sign(&signable),
             timestamp: 1_000,
@@ -13278,7 +13263,7 @@ mod tests {
 
         let block_hash = block.hash();
         let signable = Precommit::signable_bytes(1, 0, &Some(block_hash), 1_000);
-        let commit_signatures = vec![moltchain_core::CommitSignature {
+        let commit_signatures = vec![lichen_core::CommitSignature {
             validator: validator_pk.0,
             signature: validator_kp.sign(&signable),
             timestamp: 1_000,
@@ -13603,8 +13588,8 @@ mod tests {
             .expect("put genesis pubkey");
 
         state
-            .put_oracle_consensus_price("MOLT", GENESIS_MOLT_PRICE_8DEC, 8, 7, 3)
-            .expect("seed MOLT consensus price");
+            .put_oracle_consensus_price("LICN", GENESIS_LICN_PRICE_8DEC, 8, 7, 3)
+            .expect("seed LICN consensus price");
         state
             .put_oracle_consensus_price("wSOL", 8_250_000_000, 8, 7, 3)
             .expect("seed wSOL consensus price");
@@ -13677,7 +13662,7 @@ mod tests {
 
         let mut stake_pool = StakePool::new();
         stake_pool
-            .stake(validator, moltchain_core::consensus::MIN_VALIDATOR_STAKE, 0)
+            .stake(validator, lichen_core::consensus::MIN_VALIDATOR_STAKE, 0)
             .expect("stake validator");
         state.put_stake_pool(&stake_pool).expect("put stake pool");
 
@@ -14177,7 +14162,7 @@ mod tests {
 
     #[test]
     fn treasury_reserve_is_50m() {
-        assert_eq!(TREASURY_RESERVE_MOLT, 50_000_000);
+        assert_eq!(TREASURY_RESERVE_LICN, 50_000_000);
     }
 
     #[test]
@@ -14213,7 +14198,7 @@ mod tests {
         state
             .register_symbol(
                 "DEX",
-                moltchain_core::state::SymbolRegistryEntry {
+                lichen_core::state::SymbolRegistryEntry {
                     symbol: "DEX".to_string(),
                     program: dex_pk,
                     owner: Pubkey([0u8; 32]),
@@ -14267,7 +14252,7 @@ mod tests {
         state
             .register_symbol(
                 "DEXMARGIN",
-                moltchain_core::state::SymbolRegistryEntry {
+                lichen_core::state::SymbolRegistryEntry {
                     symbol: "DEXMARGIN".to_string(),
                     program: margin_pk,
                     owner: Pubkey([0u8; 32]),
@@ -14279,14 +14264,14 @@ mod tests {
             )
             .unwrap();
 
-        // Register MOLTCOIN program
-        let moltcoin_pk = Pubkey([51u8; 32]);
+        // Register LICHENCOIN program
+        let lichencoin_pk = Pubkey([51u8; 32]);
         state
             .register_symbol(
-                "MOLTCOIN",
-                moltchain_core::state::SymbolRegistryEntry {
-                    symbol: "MOLTCOIN".to_string(),
-                    program: moltcoin_pk,
+                "LICHENCOIN",
+                lichen_core::state::SymbolRegistryEntry {
+                    symbol: "LICHENCOIN".to_string(),
+                    program: lichencoin_pk,
                     owner: Pubkey([0u8; 32]),
                     name: None,
                     template: None,
@@ -14301,7 +14286,7 @@ mod tests {
         state
             .register_symbol(
                 "DEX",
-                moltchain_core::state::SymbolRegistryEntry {
+                lichen_core::state::SymbolRegistryEntry {
                     symbol: "DEX".to_string(),
                     program: dex_pk,
                     owner: Pubkey([0u8; 32]),
@@ -14386,7 +14371,7 @@ mod tests {
 
         // Verify user balance credited (with saturating_add, P9-VAL-03)
         let balance_key = format!("balance_{}", hex::encode(trader));
-        let user_bal = state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
+        let user_bal = state.get_program_storage_u64("LICHENCOIN", balance_key.as_bytes());
         assert_eq!(user_bal, 600, "user should receive margin + capped profit");
     }
 }

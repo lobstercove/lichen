@@ -1,5 +1,5 @@
 // Minimal working integration tests
-use moltchain_core::*;
+use lichen_core::*;
 use tempfile::TempDir;
 
 #[test]
@@ -75,12 +75,12 @@ fn test_account_storage() {
     let keypair = Keypair::new();
     let pubkey = keypair.pubkey();
 
-    let account = Account::new(5, pubkey); // 5 MOLT
+    let account = Account::new(5, pubkey); // 5 LICN
 
     state.put_account(&pubkey, &account).unwrap();
 
     let retrieved = state.get_account(&pubkey).unwrap().unwrap();
-    assert_eq!(retrieved.shells, Account::molt_to_shells(5));
+    assert_eq!(retrieved.spores, Account::licn_to_spores(5));
 }
 
 #[test]

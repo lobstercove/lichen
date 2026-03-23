@@ -5,7 +5,7 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::{ContractAccount, ContractContext, ContractInstruction, ContractRuntime, Pubkey};
+use lichen_core::{ContractAccount, ContractContext, ContractInstruction, ContractRuntime, Pubkey};
 
 fuzz_target!(|data: &[u8]| {
     // Minimum viable: need at least 33 bytes for program_id + 1 byte data

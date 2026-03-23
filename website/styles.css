@@ -1,9 +1,9 @@
 /* ===== CSS Variables ===== */
 :root {
-    --primary: #FF6B35;
-    --primary-dark: #E5501B;
+    --primary: #00C9DB;
+    --primary-dark: #008B9E;
     --secondary: #004E89;
-    --accent: #F77F00;
+    --accent: #00E5FF;
     --success: #06D6A0;
     --warning: #FFD23F;
     --info: #118AB2;
@@ -14,7 +14,7 @@
     --text-secondary: #B8C1EC;
     --text-muted: #6B7A99;
     --border: #1F2544;
-    --gradient-1: linear-gradient(135deg, #FF6B35 0%, #F77F00 100%);
+    --gradient-1: linear-gradient(135deg, #0891B2 0%, #06B6D4 100%);
     --gradient-2: linear-gradient(135deg, #004E89 0%, #118AB2 100%);
     --gradient-3: linear-gradient(135deg, #06D6A0 0%, #118AB2 100%);
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -114,13 +114,13 @@ ul {
 
 .btn-primary {
     background: var(--gradient-1);
-    color: white;
+    color: #fff;
     box-shadow: var(--shadow);
 }
 
 .btn-primary:hover {
     transform: translateY(-2px);
-    box-shadow: 0 15px 40px rgba(255, 107, 53, 0.4);
+    box-shadow: 0 15px 40px rgba(0, 201, 219, 0.4);
     filter: brightness(1.1);
 }
 
@@ -238,8 +238,8 @@ ul {
     right: -64px;
     bottom: -64px;
     background: 
-        radial-gradient(circle at 20% 50%, rgba(255, 107, 53, 0.15) 0%, transparent 50%),
-        radial-gradient(circle at 80% 80%, rgba(247, 127, 0, 0.12) 0%, transparent 50%),
+        radial-gradient(circle at 20% 50%, rgba(0, 201, 219, 0.15) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(0, 229, 255, 0.12) 0%, transparent 50%),
         radial-gradient(circle at 40% 80%, rgba(17, 138, 178, 0.12) 0%, transparent 50%),
         radial-gradient(circle at 60% 20%, rgba(6, 214, 160, 0.08) 0%, transparent 50%),
         linear-gradient(180deg, var(--bg-dark) 0%, var(--bg-dark) 100%);
@@ -317,7 +317,7 @@ ul {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
-    filter: drop-shadow(0 0 30px rgba(255, 107, 53, 0.3));
+    filter: drop-shadow(0 0 30px rgba(0, 201, 219, 0.3));
 }
 
 .hero-subtitle {
@@ -347,11 +347,11 @@ ul {
 .stat:hover {
     transform: translateY(-5px);
     border-color: var(--primary);
-    box-shadow: 0 10px 40px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 10px 40px rgba(0, 201, 219, 0.2);
 }
 
 .stat:hover .stat-value {
-    text-shadow: 0 0 20px rgba(255, 107, 53, 0.5);
+    text-shadow: 0 0 20px rgba(0, 201, 219, 0.5);
 }
 
 .stat-value {
@@ -615,7 +615,7 @@ ul {
 .feature-card:hover {
     transform: translateY(-8px);
     border-color: var(--primary);
-    box-shadow: 0 20px 60px rgba(255, 107, 53, 0.3), 0 0 20px rgba(255, 107, 53, 0.1);
+    box-shadow: 0 20px 60px rgba(0, 201, 219, 0.3), 0 0 20px rgba(0, 201, 219, 0.1);
 }
 
 .feature-icon {
@@ -626,7 +626,7 @@ ul {
 
 .feature-card:hover .feature-icon {
     transform: scale(1.1) rotate(5deg);
-    filter: drop-shadow(0 0 15px rgba(255, 107, 53, 0.5));
+    filter: drop-shadow(0 0 15px rgba(0, 201, 219, 0.5));
 }
 
 .feature-icon i {
@@ -660,7 +660,7 @@ ul {
 .feature-detail {
     display: inline-block;
     padding: 0.4rem 0.8rem;
-    background: rgba(255, 107, 53, 0.1);
+    background: rgba(0, 201, 219, 0.1);
     border-radius: 6px;
     font-size: 0.85rem;
     color: var(--primary);
@@ -708,7 +708,7 @@ ul {
 
 .agent-feature:hover .agent-feature-icon {
     transform: scale(1.1);
-    filter: drop-shadow(0 0 10px rgba(255, 107, 53, 0.5));
+    filter: drop-shadow(0 0 10px rgba(0, 201, 219, 0.5));
 }
 
 .agent-feature-content h3 {
@@ -726,13 +726,13 @@ ul {
     border-radius: 12px;
     overflow: hidden;
     border: 1px solid var(--border);
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 1px rgba(0, 201, 219, 0.2);
     transition: all 0.3s ease;
 }
 
 .agents-visual .code-example:hover {
     transform: translateY(-5px);
-    box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5), 0 0 20px rgba(255, 107, 53, 0.3);
+    box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5), 0 0 20px rgba(0, 201, 219, 0.3);
 }
 
 /* ===== Code Examples ===== */
@@ -889,7 +889,7 @@ ul {
 
 .tool-card:hover .tool-icon {
     transform: scale(1.1);
-    filter: drop-shadow(0 0 10px rgba(255, 107, 53, 0.4));
+    filter: drop-shadow(0 0 10px rgba(0, 201, 219, 0.4));
 }
 
 .tool-card h4 {
@@ -1030,7 +1030,7 @@ ul {
 
 .utility-item:hover .utility-icon {
     transform: scale(1.1);
-    filter: drop-shadow(0 0 10px rgba(255, 107, 53, 0.4));
+    filter: drop-shadow(0 0 10px rgba(0, 201, 219, 0.4));
 }
 
 .utility-name {
@@ -1081,7 +1081,7 @@ ul {
 
 .roadmap-badge.active {
     background: var(--gradient-1);
-    color: white;
+    color: #fff;
 }
 
 .roadmap-content h3 {
@@ -1128,12 +1128,12 @@ ul {
 .community-card:hover {
     transform: translateY(-8px);
     border-color: var(--primary);
-    box-shadow: 0 20px 60px rgba(255, 107, 53, 0.25), 0 0 20px rgba(255, 107, 53, 0.1);
+    box-shadow: 0 20px 60px rgba(0, 201, 219, 0.25), 0 0 20px rgba(0, 201, 219, 0.1);
 }
 
 .community-card:hover .community-icon {
     transform: scale(1.1);
-    filter: drop-shadow(0 0 10px rgba(255, 107, 53, 0.5));
+    filter: drop-shadow(0 0 10px rgba(0, 201, 219, 0.5));
     transition: all 0.3s ease;
 }
 
@@ -1161,7 +1161,7 @@ ul {
 /* ===== CTA Section ===== */
 .cta-section {
     background: var(--gradient-1);
-    color: white;
+    color: #fff;
 }
 
 .cta-content {
@@ -1200,12 +1200,12 @@ ul {
 
 .cta-section .btn-secondary {
     background: transparent;
-    border-color: white;
-    color: white;
+    border-color: #fff;
+    color: #fff;
 }
 
 .cta-section .btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(10, 22, 40, 0.1);
 }
 
 .cta-note p {
@@ -1497,8 +1497,8 @@ ul {
 
 .chain-card.featured {
     border-color: var(--primary);
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.1) 0%, rgba(247, 127, 0, 0.05) 100%);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.2);
+    background: linear-gradient(135deg, rgba(0, 201, 219, 0.1) 0%, rgba(0, 229, 255, 0.05) 100%);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.2);
 }
 
 .chain-header {
@@ -1522,7 +1522,7 @@ ul {
     color: #00FFA3;
 }
 
-.chain-header.moltchain i {
+.chain-header.lichen i {
     color: var(--primary);
 }
 
@@ -1631,8 +1631,8 @@ ul {
 
 .deploy-section {
     background:
-        radial-gradient(circle at 10% 20%, rgba(255, 107, 53, 0.08) 0%, transparent 45%),
-        linear-gradient(180deg, transparent 0%, rgba(255, 107, 53, 0.02) 100%);
+        radial-gradient(circle at 10% 20%, rgba(0, 201, 219, 0.08) 0%, transparent 45%),
+        linear-gradient(180deg, transparent 0%, rgba(0, 201, 219, 0.02) 100%);
 }
 
 .api-section {
@@ -1756,7 +1756,7 @@ ul {
 
 .contract-card:hover {
     border-color: var(--primary);
-    box-shadow: 0 8px 32px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 8px 32px rgba(0, 201, 219, 0.2);
     transform: translateY(-4px);
 }
 
@@ -1776,6 +1776,7 @@ ul {
     align-items: center;
     justify-content: center;
     font-size: 1.5rem;
+    color: #fff;
 }
 
 .contract-meta h3 {
@@ -1785,7 +1786,7 @@ ul {
 }
 
 .contract-size {
-    color: var(--text-muted);
+    color: #00E5FF;
     font-size: 0.9rem;
     font-family: 'JetBrains Mono', monospace;
 }
@@ -2011,7 +2012,7 @@ ul {
 
 .api-tab:hover {
     color: var(--primary);
-    background: rgba(255, 107, 53, 0.05);
+    background: rgba(0, 201, 219, 0.05);
 }
 
 .api-tab.active {
@@ -2052,7 +2053,7 @@ ul {
     .api-tab.active {
         border-bottom-color: var(--border);
         border-left-color: var(--primary);
-        background: rgba(255, 107, 53, 0.05);
+        background: rgba(0, 201, 219, 0.05);
     }
 }
 
@@ -2088,12 +2089,12 @@ ul {
 }
 
 .wizard-tab:hover {
-    background: rgba(255, 107, 53, 0.05);
+    background: rgba(0, 201, 219, 0.05);
 }
 
 .wizard-tab.active {
     background: var(--gradient-1);
-    color: white;
+    color: #fff;
 }
 
 .wizard-number {
@@ -2111,7 +2112,7 @@ ul {
 }
 
 .wizard-tab.active .wizard-number {
-    border-color: white;
+    border-color: #fff;
     background: rgba(255, 255, 255, 0.2);
 }
 
@@ -2184,14 +2185,14 @@ ul {
     border-color: var(--primary);
     color: var(--primary);
     transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(255, 107, 53, 0.2);
+    box-shadow: 0 4px 16px rgba(0, 201, 219, 0.2);
 }
 
 .contract-tab.active {
     background: var(--gradient-1);
     border-color: var(--primary);
-    color: white;
-    box-shadow: 0 4px 20px rgba(255, 107, 53, 0.3);
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(0, 201, 219, 0.3);
 }
 
 .contract-tab i {

@@ -16,7 +16,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_token_transfer, get_caller, get_contract_address, get_slot, log_info,
     storage_get, storage_set, u64_to_bytes, Address,
 };
@@ -1043,7 +1043,7 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
     let mut ret = Vec::with_capacity(16);
     ret.extend_from_slice(&u64_to_bytes(fee_a));
     ret.extend_from_slice(&u64_to_bytes(fee_b));
-    moltchain_sdk::set_return_data(&ret);
+    lichen_sdk::set_return_data(&ret);
     0
 }
 
@@ -1128,7 +1128,7 @@ pub fn swap_exact_in(
     save_u64(TOTAL_FEES_KEY, load_u64(TOTAL_FEES_KEY).saturating_add(fee));
 
     // Return amount out
-    moltchain_sdk::set_return_data(&u64_to_bytes(amount_out));
+    lichen_sdk::set_return_data(&u64_to_bytes(amount_out));
     log_info("Swap executed");
     reentrancy_exit();
     0
@@ -1310,7 +1310,7 @@ pub fn get_pool_info(pool_id: u64) -> u64 {
     let pk = pool_key(pool_id);
     match storage_get(&pk) {
         Some(d) if d.len() >= POOL_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             pool_id
         }
         _ => 0,
@@ -1321,7 +1321,7 @@ pub fn get_position(position_id: u64) -> u64 {
     let pk = position_key(position_id);
     match storage_get(&pk) {
         Some(d) if d.len() >= POSITION_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             position_id
         }
         _ => 0,
@@ -1365,7 +1365,7 @@ pub fn quote_swap(pool_id: u64, is_token_a_in: bool, amount_in: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -1374,7 +1374,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 1: create_pool(caller, token_a, token_b, fee_tier, initial_sqrt_price)
@@ -1388,7 +1388,7 @@ pub extern "C" fn call() {
                     args[97],
                     bytes_to_u64(&args[98..106]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 2: set_pool_protocol_fee(caller, pool_id, fee_percent)
@@ -1400,7 +1400,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     args[41],
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
@@ -1415,7 +1415,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[49..57]),
                     bytes_to_u64(&args[57..65]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 4: remove_liquidity(provider, position_id, liquidity_amount)
@@ -1427,7 +1427,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 5: collect_fees(provider, position_id)
@@ -1435,7 +1435,7 @@ pub extern "C" fn call() {
             // provider(32) + position_id(8) = 40
             if args.len() >= 1 + 32 + 8 {
                 let r = collect_fees(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 6: swap_exact_in(trader, pool_id, is_token_a_in, amount_in, min_out, deadline)
@@ -1450,7 +1450,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[50..58]),
                     bytes_to_u64(&args[58..66]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 7: swap_exact_out(trader, pool_id, is_token_a_out, amount_out, max_in, deadline)
@@ -1465,52 +1465,52 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[50..58]),
                     bytes_to_u64(&args[58..66]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 8: emergency_pause(caller)
         8 => {
             if args.len() >= 1 + 32 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 9: emergency_unpause(caller)
         9 => {
             if args.len() >= 1 + 32 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 10: get_pool_info(pool_id)
         10 => {
             if args.len() >= 1 + 8 {
                 let r = get_pool_info(bytes_to_u64(&args[1..9]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 11: get_position(position_id)
         11 => {
             if args.len() >= 1 + 8 {
                 let r = get_position(bytes_to_u64(&args[1..9]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 12: get_pool_count()
         12 => {
             let r = get_pool_count();
-            moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            lichen_sdk::set_return_data(&u64_to_bytes(r));
         }
         // 13: get_position_count()
         13 => {
             let r = get_position_count();
-            moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            lichen_sdk::set_return_data(&u64_to_bytes(r));
         }
         // 14: get_tvl(pool_id)
         14 => {
             if args.len() >= 1 + 8 {
                 let r = get_tvl(bytes_to_u64(&args[1..9]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 15: quote_swap(pool_id, is_token_a_in, amount_in)
@@ -1522,20 +1522,20 @@ pub extern "C" fn call() {
                     args[9] != 0,
                     bytes_to_u64(&args[10..18]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         16 => {
             // get_total_volume — returns cumulative swap volume
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         17 => {
             // get_swap_count — returns total number of swaps
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(SWAP_COUNT_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(SWAP_COUNT_KEY)));
         }
         18 => {
             // get_total_fees_collected — returns cumulative fees
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
         }
         19 => {
             // get_amm_stats — returns aggregated stats [pool_count, position_count, swap_count, total_volume, total_fees]
@@ -1545,10 +1545,10 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(SWAP_COUNT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -1561,7 +1561,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();

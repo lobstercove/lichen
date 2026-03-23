@@ -1,0 +1,226 @@
+{
+  "contract": "lichendao",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize_dao",
+      "opcode": 0,
+      "params": [
+        { "name": "governance_token_ptr", "type": "Pubkey" },
+        { "name": "treasury_address_ptr", "type": "Pubkey" },
+        { "name": "min_proposal_threshold", "type": "u64" }
+      ]
+    },
+    {
+      "name": "create_proposal",
+      "opcode": 1,
+      "params": [
+        { "name": "proposer_ptr", "type": "Pubkey" },
+        { "name": "title_ptr", "type": "Pubkey" },
+        { "name": "title_len", "type": "u64" },
+        { "name": "description_ptr", "type": "Pubkey" },
+        { "name": "description_len", "type": "u64" },
+        { "name": "target_contract_ptr", "type": "Pubkey" },
+        { "name": "action_ptr", "type": "Pubkey" },
+        { "name": "action_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "create_proposal_typed",
+      "opcode": 2,
+      "params": [
+        { "name": "proposer_ptr", "type": "Pubkey" },
+        { "name": "title_ptr", "type": "Pubkey" },
+        { "name": "title_len", "type": "u64" },
+        { "name": "description_ptr", "type": "Pubkey" },
+        { "name": "description_len", "type": "u64" },
+        { "name": "target_contract_ptr", "type": "Pubkey" },
+        { "name": "action_ptr", "type": "Pubkey" },
+        { "name": "action_len", "type": "u64" },
+        { "name": "proposal_type", "type": "u64" }
+      ]
+    },
+    {
+      "name": "vote",
+      "opcode": 3,
+      "params": [
+        { "name": "voter_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "support", "type": "u64" },
+        { "name": "_voting_power", "type": "u64" }
+      ]
+    },
+    {
+      "name": "vote_with_reputation",
+      "opcode": 4,
+      "params": [
+        { "name": "voter_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "support", "type": "u64" },
+        { "name": "_token_balance", "type": "u64" },
+        { "name": "reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "execute_proposal",
+      "opcode": 5,
+      "params": [
+        { "name": "executor_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "action_ptr", "type": "Pubkey" },
+        { "name": "action_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "veto_proposal",
+      "opcode": 6,
+      "params": [
+        { "name": "voter_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "_token_balance", "type": "u64" },
+        { "name": "_reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cancel_proposal",
+      "opcode": 7,
+      "params": [
+        { "name": "canceller_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "treasury_transfer",
+      "opcode": 8,
+      "params": [
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_treasury_balance",
+      "opcode": 9,
+      "params": [
+        { "name": "token_ptr", "type": "Pubkey" },
+        { "name": "result_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_proposal",
+      "opcode": 10,
+      "params": [
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "result_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_dao_stats",
+      "opcode": 11,
+      "params": [
+        { "name": "result_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_active_proposals",
+      "opcode": 12,
+      "params": [
+        { "name": "result_ptr", "type": "Pubkey" },
+        { "name": "max_results", "type": "u64" }
+      ]
+    },
+    {
+      "name": "initialize",
+      "opcode": 13,
+      "params": [
+        { "name": "governance_token_ptr", "type": "Pubkey" },
+        { "name": "treasury_address_ptr", "type": "Pubkey" },
+        { "name": "min_proposal_threshold", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cast_vote",
+      "opcode": 14,
+      "params": [
+        { "name": "voter_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "support", "type": "u64" },
+        { "name": "_voting_power", "type": "u64" }
+      ]
+    },
+    {
+      "name": "finalize_proposal",
+      "opcode": 15,
+      "params": [
+        { "name": "executor_ptr", "type": "Pubkey" },
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "action_ptr", "type": "Pubkey" },
+        { "name": "action_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_proposal_count",
+      "opcode": 16,
+      "params": []
+    },
+    {
+      "name": "get_vote",
+      "opcode": 17,
+      "params": [
+        { "name": "proposal_id", "type": "u64" },
+        { "name": "voter_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_vote_count",
+      "opcode": 18,
+      "params": [
+        { "name": "proposal_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_total_supply",
+      "opcode": 19,
+      "params": []
+    },
+    {
+      "name": "set_quorum",
+      "opcode": 20,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "quorum", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_voting_period",
+      "opcode": 21,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "period", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_timelock_delay",
+      "opcode": 22,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "delay", "type": "u64" }
+      ]
+    },
+    {
+      "name": "dao_pause",
+      "opcode": 23,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "dao_unpause",
+      "opcode": 24,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    }
+  ]
+}

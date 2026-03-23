@@ -50,7 +50,7 @@ if (typeof document === 'undefined') {
 
 const sharedUtils = require('./shared/utils.js');
 const {
-    escapeHtml, formatNumber, formatHash, formatMolt,
+    escapeHtml, formatNumber, formatHash, formatLicn,
     formatTime, formatBytes, getTrustTier, normalizeTxType,
 } = sharedUtils;
 
@@ -180,10 +180,10 @@ console.log('── F13.4: Deduplicated utility functions ──');
     assertEqual(formatHash('short'), 'short', 'F13.4f — formatHash preserves short strings');
     assertEqual(formatHash(null), 'N/A', 'F13.4g — formatHash null → N/A');
 
-    // formatMolt conversion
-    const result = formatMolt(1_000_000_000);
-    assert(result.includes('1'), 'F13.4h — formatMolt 1B shells = 1 MOLT');
-    assert(result.includes('MOLT'), 'F13.4i — formatMolt includes MOLT suffix');
+    // formatLicn conversion
+    const result = formatLicn(1_000_000_000);
+    assert(result.includes('1'), 'F13.4h — formatLicn 1B spores = 1 LICN');
+    assert(result.includes('LICN'), 'F13.4i — formatLicn includes LICN suffix');
 
     // formatBytes
     assertEqual(formatBytes(0), '0 Bytes', 'F13.4j — formatBytes 0');
@@ -350,7 +350,7 @@ console.log('── F13.8: Explorer search routing wiring ──');
 
     assert(
         explorerSource.includes('window.location.href = `address.html?address=${encodeURIComponent(owner)}`;'),
-        'F13.8d — .molt owner route URL-encodes address'
+        'F13.8d — .lichen owner route URL-encodes address'
     );
 }
 
@@ -378,7 +378,7 @@ console.log('── Additional edge cases ──');
         'Edge — formatHash at boundary+1 (16 chars) truncated');
 
     // encodeURIComponent for URL parameters (used in href fixes)
-    const addrWithSpecial = 'MoLT"onload=alert(1)';
+    const addrWithSpecial = 'LiCN"onload=alert(1)';
     const encoded = encodeURIComponent(addrWithSpecial);
     assert(!encoded.includes('"'), 'Edge — encodeURIComponent removes dangerous chars from URLs');
 }

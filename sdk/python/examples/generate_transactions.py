@@ -5,7 +5,7 @@ import asyncio
 import sys
 sys.path.insert(0, '..')
 
-from moltchain import Connection, Keypair, TransactionBuilder, Instruction, PublicKey
+from lichen import Connection, Keypair, TransactionBuilder, Instruction, PublicKey
 
 async def main():
     print("🐍 Python SDK: Generating transactions...\n")

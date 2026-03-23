@@ -1,9 +1,9 @@
 // Validators Page Logic
-// Uses RPC_URL and MoltChainRPC class from explorer.js (loaded first)
-// NOTE: formatNumber, formatMolt, formatHash, copyToClipboard, escapeHtml,
+// Uses RPC_URL and LichenRPC class from explorer.js (loaded first)
+// NOTE: formatNumber, formatLicn, formatHash, copyToClipboard, escapeHtml,
 //       safeCopy, getTrustTier are provided by shared/utils.js (loaded before this file)
 
-// Validator consensus reputation uses a 0-1000 scale (separate from MoltyID 0-100000)
+// Validator consensus reputation uses a 0-1000 scale (separate from LichenID 0-100000)
 const VALIDATOR_MAX_REPUTATION = 1000;
 const VALIDATORS_PER_PAGE = 25;
 const VALIDATORS_MIN_REFRESH_MS = 3000;
@@ -53,10 +53,10 @@ async function loadValidators() {
         document.getElementById('totalValidators').textContent = validatorCount;
 
         validatorTotalStake = validators.reduce((sum, v) => sum + (v.stake || 0), 0);
-        document.getElementById('totalStake').textContent = formatMolt(validatorTotalStake);
+        document.getElementById('totalStake').textContent = formatLicn(validatorTotalStake);
 
-        validatorNameMap = typeof batchResolveMoltNames === 'function'
-            ? await batchResolveMoltNames(validators.map(v => v.pubkey).filter(Boolean))
+        validatorNameMap = typeof batchResolveLichenNames === 'function'
+            ? await batchResolveLichenNames(validators.map(v => v.pubkey).filter(Boolean))
             : {};
 
         allValidators = validators;
@@ -95,10 +95,10 @@ function renderValidators() {
         const lastActiveSlot = validator.last_active_slot || validator.lastActiveSlot || 0;
         const isOnline = validatorCurrentSlot - lastActiveSlot <= 100;
         const reputationScale = (reputation / VALIDATOR_MAX_REPUTATION) * 100;
-        const moltName = validatorNameMap[validatorPubkey] || null;
+        const lichenName = validatorNameMap[validatorPubkey] || null;
         const tier = trustTierFromReputation(reputation);
-        const addressLabel = escapeHtml(moltName
-            ? `${moltName}.molt`
+        const addressLabel = escapeHtml(lichenName
+            ? `${lichenName}.lichen`
             : formatHash(validatorPubkey));
         const addressLink = validatorPubkey
             ? `<a href="address.html?address=${encodeURIComponent(validatorPubkey)}" class="hash-short" title="${escapeHtml(validatorPubkey)}">${addressLabel}</a>`
@@ -114,7 +114,7 @@ function renderValidators() {
                         ${addressLink}
                     ${copyIcon}
                 </td>
-                <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${formatMolt(stake)}</span></td>
+                <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${formatLicn(stake)}</span></td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <div style="flex: 1; background: var(--bg-darker); height: 6px; border-radius: 3px; overflow: hidden;">

@@ -14,23 +14,23 @@ case $NETWORK in
     ;;
 esac
 
-echo "🛑 Stopping MoltChain local stack ($NETWORK)"
+echo "🛑 Stopping Lichen local stack ($NETWORK)"
 
-pkill -f "moltchain-validator" || true
-pkill -f "moltchain-custody" || true
+pkill -f "lichen-validator" || true
+pkill -f "lichen-custody" || true
 
-LOG_DIR="/tmp/moltchain-local-${NETWORK}"
+LOG_DIR="/tmp/lichen-local-${NETWORK}"
 if [ -d "$LOG_DIR" ]; then
   echo "Logs: $LOG_DIR"
 fi
 
-if pgrep -f "moltchain-validator" >/dev/null; then
+if pgrep -f "lichen-validator" >/dev/null; then
   echo "⚠️  Some validators still running"
 else
   echo "✅ Validators stopped"
 fi
 
-if pgrep -f "moltchain-custody" >/dev/null; then
+if pgrep -f "lichen-custody" >/dev/null; then
   echo "⚠️  Custody still running"
 else
   echo "✅ Custody stopped"

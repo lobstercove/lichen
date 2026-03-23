@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MoltChain Deep Stress & Integration Test
+Lichen Deep Stress & Integration Test
 ==========================================
 Goes beyond basic e2e: concurrent tx submission, multi-block consistency,
 explorer data paths verified end-to-end, RPC under sustained load,
@@ -21,17 +21,17 @@ from urllib.request import Request, urlopen
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(Path(__file__).parent))
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
 import nacl.signing
 
 RPC_URL = "http://127.0.0.1:8000"
 EXPLORER_URL = "http://127.0.0.1:3007"
-SHELLS_PER_MOLT = 1_000_000_000
+SPORES_PER_LICN = 1_000_000_000
 SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)
 
 STATE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "state-8000"
-TREASURY_KEY_PATH = STATE_DIR / "genesis-keys" / "treasury-moltchain-testnet-1.json"
+TREASURY_KEY_PATH = STATE_DIR / "genesis-keys" / "treasury-lichen-testnet-1.json"
 
 results = []
 
@@ -74,7 +74,7 @@ def load_treasury():
 # =====================================================================
 async def main():
     print("=" * 70)
-    print("  MoltChain Deep Stress & Integration Test")
+    print("  Lichen Deep Stress & Integration Test")
     print("=" * 70)
 
     conn = Connection(RPC_URL)
@@ -85,7 +85,7 @@ async def main():
     print("\n--- 1. Rapid-fire 10 transfers in sequence ---")
 
     wallets = [Keypair.generate() for _ in range(10)]
-    amount = 1 * SHELLS_PER_MOLT  # 1 MOLT each
+    amount = 1 * SPORES_PER_LICN  # 1 LICN each
 
     t0 = time.time()
     sigs = []
@@ -105,8 +105,8 @@ async def main():
     bal_ok = 0
     for w in wallets:
         b = await conn.get_balance(w.public_key())
-        shells = b.get("shells", 0) if isinstance(b, dict) else 0
-        if shells >= SHELLS_PER_MOLT * 0.99:
+        spores = b.get("spores", 0) if isinstance(b, dict) else 0
+        if spores >= SPORES_PER_LICN * 0.99:
             bal_ok += 1
     test("all 10 balances confirmed", bal_ok == 10, f"{bal_ok}/10")
 
@@ -175,9 +175,9 @@ async def main():
     # ── TEST 5: Multi-wallet fan-out + fan-in ───────────────────────
     print("\n--- 5. Fan-out + fan-in (wallets send back to treasury) ---")
 
-    # Each of the 10 wallets sends 0.5 MOLT back
+    # Each of the 10 wallets sends 0.5 LICN back
     return_sigs = []
-    send_amount = int(0.5 * SHELLS_PER_MOLT)
+    send_amount = int(0.5 * SPORES_PER_LICN)
     for w in wallets:
         try:
             blockhash = await conn.get_recent_blockhash()
@@ -191,12 +191,12 @@ async def main():
 
     await asyncio.sleep(3)
 
-    # Check remaining balances (~0.5 MOLT - fees)
+    # Check remaining balances (~0.5 LICN - fees)
     remaining_ok = 0
     for w in wallets:
         b = await conn.get_balance(w.public_key())
-        shells = b.get("shells", 0) if isinstance(b, dict) else 0
-        if 0 < shells < SHELLS_PER_MOLT:  # Between 0 and 1 MOLT
+        spores = b.get("spores", 0) if isinstance(b, dict) else 0
+        if 0 < spores < SPORES_PER_LICN:  # Between 0 and 1 LICN
             remaining_ok += 1
     test("fan-in balances correct", remaining_ok >= 9, f"{remaining_ok}/10")
 
@@ -208,10 +208,10 @@ async def main():
     entries = sym_res.get("entries", []) if isinstance(sym_res, dict) else (sym_res if isinstance(sym_res, list) else [])
     
     if entries:
-        # Pick TLOBSTER (agent-deployed) if available
-        tlobster = next((e for e in entries if e.get("symbol") == "TLOBSTER"), entries[0])
-        prog_id = tlobster.get("program", "")
-        sym = tlobster.get("symbol", "")
+        # Pick TSYMBIONT (agent-deployed) if available
+        tsymbiont = next((e for e in entries if e.get("symbol") == "TSYMBIONT"), entries[0])
+        prog_id = tsymbiont.get("program", "")
+        sym = tsymbiont.get("symbol", "")
 
         # Verify contract page loads and contains the symbol
         try:
@@ -254,7 +254,7 @@ async def main():
         staking = await conn._rpc("getStakingStatus", [vpub])
         if isinstance(staking, dict):
             total = staking.get("total_staked", 0)
-            test("validator staked = 10K MOLT", total == 10000 * SHELLS_PER_MOLT, f"staked={total}")
+            test("validator staked = 10K LICN", total == 10000 * SPORES_PER_LICN, f"staked={total}")
         else:
             ok("getStakingStatus", "returned non-dict (may be method-specific)")
 
@@ -291,16 +291,16 @@ async def main():
     # ── TEST 10: Edge case: double-spend attempt ────────────────────
     print("\n--- 10. Double-spend attempt ---")
 
-    # Create a wallet with exactly 1 MOLT
+    # Create a wallet with exactly 1 LICN
     double_wallet = Keypair.generate()
     blockhash = await conn.get_recent_blockhash()
-    ix = TransactionBuilder.transfer(treasury.public_key(), double_wallet.public_key(), 1 * SHELLS_PER_MOLT)
+    ix = TransactionBuilder.transfer(treasury.public_key(), double_wallet.public_key(), 1 * SPORES_PER_LICN)
     tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(treasury)
     await conn.send_transaction(tx)
     await asyncio.sleep(2)
 
-    # Try to send 0.8 MOLT twice simultaneously
-    spend_amount = int(0.8 * SHELLS_PER_MOLT)
+    # Try to send 0.8 LICN twice simultaneously
+    spend_amount = int(0.8 * SPORES_PER_LICN)
     target1 = Keypair.generate()
     target2 = Keypair.generate()
 
@@ -330,12 +330,12 @@ async def main():
     # At most ONE should succeed (0.8 + 0.8 > 1.0)
     t1_bal = await conn.get_balance(target1.public_key())
     t2_bal = await conn.get_balance(target2.public_key())
-    t1_shells = t1_bal.get("shells", 0) if isinstance(t1_bal, dict) else 0
-    t2_shells = t2_bal.get("shells", 0) if isinstance(t2_bal, dict) else 0
+    t1_spores = t1_bal.get("spores", 0) if isinstance(t1_bal, dict) else 0
+    t2_spores = t2_bal.get("spores", 0) if isinstance(t2_bal, dict) else 0
 
-    both_received = (t1_shells >= spend_amount and t2_shells >= spend_amount)
+    both_received = (t1_spores >= spend_amount and t2_spores >= spend_amount)
     test("double-spend prevented", not both_received,
-         f"t1={t1_shells} t2={t2_shells} (both receiving = double spend!)")
+         f"t1={t1_spores} t2={t2_spores} (both receiving = double spend!)")
 
     # ── TEST 11: Sustained load (200 RPCs over 5 seconds) ──────────
     print("\n--- 11. Sustained RPC load (200 calls, 5s) ---")

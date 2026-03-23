@@ -1,5 +1,5 @@
 /**
- * MoltChain Playground - Modal Styles
+ * Lichen Playground - Modal Styles
  * For wallet, settings, and other modals
  */
 
@@ -72,7 +72,7 @@
 }
 
 .modal-header h2 i {
-    color: #FF6B35;
+    color: #00C9DB;
 }
 
 .modal-close {
@@ -87,7 +87,7 @@
 }
 
 .modal-close:hover {
-    color: #FF6B35;
+    color: #00C9DB;
     background: rgba(255, 255, 255, 0.08);
 }
 
@@ -131,7 +131,7 @@
     display: block;
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.85rem;
-    color: #FF6B35;
+    color: #00C9DB;
     word-break: break-all;
 }
 
@@ -244,9 +244,9 @@
 .modal-form-group input:focus,
 .modal-form-group textarea:focus {
     outline: none;
-    border-color: #FF6B35;
-    background: rgba(255, 107, 53, 0.04);
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.12), 0 0 20px rgba(255, 107, 53, 0.06);
+    border-color: #00C9DB;
+    background: rgba(0, 201, 219, 0.04);
+    box-shadow: 0 0 0 3px rgba(0, 201, 219, 0.12), 0 0 20px rgba(0, 201, 219, 0.06);
 }
 
 /* Seed Phrase Display */
@@ -259,16 +259,16 @@
 }
 
 .seed-phrase-warning {
-    background: rgba(255, 107, 53, 0.08);
-    border: 1px solid rgba(255, 107, 53, 0.25);
-    border-left: 3px solid #FF6B35;
+    background: rgba(0, 201, 219, 0.08);
+    border: 1px solid rgba(0, 201, 219, 0.25);
+    border-left: 3px solid #00C9DB;
     padding: 1rem;
     margin-bottom: 1rem;
     border-radius: 12px;
 }
 
 .seed-phrase-warning i {
-    color: #FF6B35;
+    color: #00C9DB;
     margin-right: 0.5rem;
 }
 
@@ -292,7 +292,7 @@
 }
 
 .seed-word:hover {
-    border-color: rgba(255, 107, 53, 0.3);
+    border-color: rgba(0, 201, 219, 0.3);
 }
 
 .seed-word-number {
@@ -403,9 +403,9 @@
 }
 .wm-tab:hover { color: var(--text-secondary); background: rgba(255, 255, 255, 0.04); }
 .wm-tab.active {
-    background: linear-gradient(135deg, #FF6B35 0%, #F77F00 100%);
+    background: var(--gradient-1);
     color: #fff;
-    box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3);
+    box-shadow: 0 4px 12px rgba(0, 201, 219, 0.3);
 }
 .wm-tab-content { padding: 24px 28px; }
 .wm-tab-content.hidden { display: none; }
@@ -426,8 +426,8 @@
     border: 1px solid #1F2544;
     transition: border-color 0.2s;
 }
-.wm-wallet-item:hover { border-color: rgba(255, 107, 53, 0.3); }
-.wm-wallet-item.active-wallet { border-color: var(--orange-primary); background: rgba(255, 107, 53, 0.05); }
+.wm-wallet-item:hover { border-color: rgba(0, 201, 219, 0.3); }
+.wm-wallet-item.active-wallet { border-color: var(--teal-primary); background: rgba(0, 201, 219, 0.05); }
 .wm-wallet-addr { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; }
 .wm-wallet-item .btn-small { font-size: 0.72rem; padding: 0.3rem 0.6rem; border-radius: 8px; }
 .wm-wallet-actions { display: flex; gap: 6px; }
@@ -458,9 +458,9 @@
 }
 .wm-import-type:hover { color: var(--text-secondary); background: rgba(255, 255, 255, 0.04); }
 .wm-import-type.active {
-    background: linear-gradient(135deg, #FF6B35 0%, #F77F00 100%);
+    background: var(--gradient-1);
     color: #fff;
-    box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3);
+    box-shadow: 0 4px 12px rgba(0, 201, 219, 0.3);
 }
 
 /* Form inputs in wallet modal */
@@ -489,9 +489,9 @@
 }
 .wallet-modal-content .form-input::placeholder { color: #6B7A99; }
 .wallet-modal-content .form-input:focus {
-    border-color: #FF6B35;
-    background: rgba(255, 107, 53, 0.04);
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.12), 0 0 20px rgba(255, 107, 53, 0.06);
+    border-color: #00C9DB;
+    background: rgba(0, 201, 219, 0.04);
+    box-shadow: 0 0 0 3px rgba(0, 201, 219, 0.12), 0 0 20px rgba(0, 201, 219, 0.06);
 }
 
 /* Modal buttons */
@@ -509,12 +509,12 @@
     transition: transform 0.2s, box-shadow 0.2s;
 }
 .wallet-modal-content .btn-full.btn-primary {
-    background: linear-gradient(135deg, #FF6B35 0%, #F77F00 100%);
-    color: white;
+    background: var(--gradient-1);
+    color: #fff;
 }
 .wallet-modal-content .btn-full.btn-primary:hover {
     transform: translateY(-2px);
-    box-shadow: 0 0 20px rgba(255, 107, 53, 0.3);
+    box-shadow: 0 0 20px rgba(0, 201, 219, 0.3);
 }
 
 /* Mnemonic grid */
@@ -537,15 +537,15 @@
 }
 .mnemonic-grid input::placeholder { font-size: 0.7rem; color: #6B7A99; }
 .mnemonic-grid input:focus {
-    border-color: #FF6B35;
-    background: rgba(255, 107, 53, 0.04);
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.12), 0 0 20px rgba(255, 107, 53, 0.06);
+    border-color: #00C9DB;
+    background: rgba(0, 201, 219, 0.04);
+    box-shadow: 0 0 0 3px rgba(0, 201, 219, 0.12), 0 0 20px rgba(0, 201, 219, 0.06);
 }
 .wm-create-info {
     text-align: center;
     padding: 16px 0;
 }
-.wm-create-info i { font-size: 2rem; color: var(--orange-primary); margin-bottom: 12px; display: block; }
+.wm-create-info i { font-size: 2rem; color: var(--teal-primary); margin-bottom: 12px; display: block; }
 .wm-create-info h4 { margin-bottom: 6px; }
 .wm-create-info p { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; }
 #wmCreateBtn { margin-bottom: 16px; }
@@ -580,8 +580,8 @@
     align-items: center;
     gap: 0.75rem;
     padding: 1rem 1.2rem;
-    background: rgba(255, 107, 53, 0.08);
-    border: 1px solid rgba(255, 107, 53, 0.25);
+    background: rgba(0, 201, 219, 0.08);
+    border: 1px solid rgba(0, 201, 219, 0.25);
     border-radius: 12px;
     margin-top: 12px;
     color: var(--yellow-warning);

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pin MOLTCHAIN_HOME so the P2P identity (cert/key) is always resolved from
+# Pin LICHEN_HOME so the P2P identity (cert/key) is always resolved from
 # the same directory.  Without this, runtime_home autodetection can pick a
 # different path after updates, regenerating a new TLS certificate and
 # breaking TOFU trust with every peer.
 # Default: user home directory.  Override via env for systemd / containers.
-export MOLTCHAIN_HOME="${MOLTCHAIN_HOME:-$HOME}"
+export LICHEN_HOME="${LICHEN_HOME:-$HOME}"
 
 if [[ "$#" -lt 3 ]]; then
   echo "usage: $0 <instance-name> -- <command...>"
@@ -27,12 +27,12 @@ if [[ "$#" -eq 0 ]]; then
   exit 2
 fi
 
-RESTART_DELAY_SECS="${MOLTCHAIN_RESTART_DELAY_SECS:-2}"
-MAX_RESTART_DELAY_SECS="${MOLTCHAIN_MAX_RESTART_DELAY_SECS:-15}"
+RESTART_DELAY_SECS="${LICHEN_RESTART_DELAY_SECS:-2}"
+MAX_RESTART_DELAY_SECS="${LICHEN_MAX_RESTART_DELAY_SECS:-15}"
 # Exit code 75 = auto-update restart (immediate, no backoff)
 EXIT_CODE_UPDATE_RESTART=75
 # Reset backoff after this many seconds of stable runtime
-STABLE_RUNTIME_RESET_SECS="${MOLTCHAIN_STABLE_RESET_SECS:-180}"
+STABLE_RUNTIME_RESET_SECS="${LICHEN_STABLE_RESET_SECS:-180}"
 
 stop_requested=0
 child_pid=""

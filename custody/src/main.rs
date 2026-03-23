@@ -6,7 +6,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
 use frost_ed25519 as frost;
 use hmac::Mac;
-use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
+use lichen_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
 use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, DB};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -172,9 +172,9 @@ struct CustodyConfig {
     evm_usdt_contract: String,
     signer_endpoints: Vec<String>,
     signer_threshold: usize,
-    molt_rpc_url: Option<String>,
+    licn_rpc_url: Option<String>,
     treasury_keypair_path: Option<String>,
-    // Wrapped token contract addresses on MoltChain
+    // Wrapped token contract addresses on Lichen
     musd_contract_addr: Option<String>,
     wsol_contract_addr: Option<String>,
     weth_contract_addr: Option<String>,
@@ -292,9 +292,9 @@ struct CreditJob {
     job_id: String,
     deposit_id: String,
     to_address: String,
-    amount_shells: u64,
+    amount_spores: u64,
     /// Source chain asset identifier ("sol", "eth", "usdt", "usdc")
-    /// Determines which wrapped token contract to mint on MoltChain.
+    /// Determines which wrapped token contract to mint on Lichen.
     #[serde(default)]
     source_asset: String,
     /// Source chain ("solana", "ethereum")
@@ -314,11 +314,11 @@ struct CreditJob {
 #[derive(Debug, Serialize, Deserialize)]
 struct WithdrawalRequest {
     user_id: String,
-    asset: String, // "mUSD", "wSOL", "wETH"
+    asset: String, // "lUSD", "wSOL", "wETH"
     amount: u64,
     dest_chain: String,   // "solana", "ethereum"
     dest_address: String, // destination address on dest_chain
-    /// For mUSD withdrawals: which stablecoin to receive ("usdt" or "usdc"). Defaults to "usdt".
+    /// For lUSD withdrawals: which stablecoin to receive ("usdt" or "usdc"). Defaults to "usdt".
     #[serde(default = "default_preferred_stablecoin")]
     preferred_stablecoin: String,
 }
@@ -361,14 +361,14 @@ struct RebalanceJob {
 struct WithdrawalJob {
     job_id: String,
     user_id: String,
-    asset: String, // "mUSD", "wSOL", "wETH"
+    asset: String, // "lUSD", "wSOL", "wETH"
     amount: u64,
     dest_chain: String,
     dest_address: String,
-    /// For mUSD: which stablecoin the user wants ("usdt" or "usdc")
+    /// For lUSD: which stablecoin the user wants ("usdt" or "usdc")
     #[serde(default = "default_preferred_stablecoin")]
     preferred_stablecoin: String,
-    /// MoltChain burn tx signature (user burned their wrapped tokens)
+    /// Lichen burn tx signature (user burned their wrapped tokens)
     burn_tx_signature: Option<String>,
     /// Outbound chain tx hash (SOL/ETH/USDT sent to user's dest_address)
     outbound_tx_hash: Option<String>,
@@ -426,8 +426,8 @@ const CF_TX_INTENTS: &str = "tx_intents";
 /// Keys: webhook_id → JSON WebhookRegistration
 const CF_WEBHOOKS: &str = "webhooks";
 
-/// MoltChain contract runtime program address (all 0xFF bytes)
-const MOLT_CONTRACT_PROGRAM: [u8; 32] = [0xFF; 32];
+/// Lichen contract runtime program address (all 0xFF bytes)
+const LICN_CONTRACT_PROGRAM: [u8; 32] = [0xFF; 32];
 
 const SOLANA_SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 const SOLANA_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -437,12 +437,12 @@ const SOLANA_SWEEP_FEE_LAMPORTS: u64 = 5_000;
 const DEPOSIT_SEED_SOURCE_TREASURY_ROOT: &str = "treasury_root";
 const DEPOSIT_SEED_SOURCE_DEPOSIT_ROOT: &str = "deposit_root";
 
-/// Auto-discover wrapped token contract addresses from MoltChain's symbol registry.
+/// Auto-discover wrapped token contract addresses from Lichen's symbol registry.
 /// This eliminates the need to hardcode contract addresses — they are read from
 /// whatever was deployed during genesis (or later). Falls back to env vars if RPC fails.
 async fn autodiscover_contract_addresses(config: &mut CustodyConfig, http: &reqwest::Client) {
-    let Some(rpc_url) = config.molt_rpc_url.as_ref() else {
-        tracing::warn!("CUSTODY_MOLT_RPC_URL not set — skipping contract auto-discovery");
+    let Some(rpc_url) = config.licn_rpc_url.as_ref() else {
+        tracing::warn!("CUSTODY_LICHEN_RPC_URL not set — skipping contract auto-discovery");
         return;
     };
 
@@ -478,7 +478,7 @@ async fn autodiscover_contract_addresses(config: &mut CustodyConfig, http: &reqw
     };
 
     // getAllSymbolRegistry returns {"count": N, "entries": [...]} where each
-    // entry has {"symbol": "MUSD", "program": "base58addr", ...}.
+    // entry has {"symbol": "LUSD", "program": "base58addr", ...}.
     // Build a symbol -> program_address lookup from the entries array.
     let entries = result
         .get("entries")
@@ -513,7 +513,7 @@ async fn autodiscover_contract_addresses(config: &mut CustodyConfig, http: &reqw
 
     // Map well-known symbol names to config fields
     let symbol_map: &[(&str, &str)] = &[
-        ("MUSD", "musd"),
+        ("LUSD", "musd"),
         ("WSOL", "wsol"),
         ("WETH", "weth"),
         ("WBNB", "wbnb"),
@@ -553,7 +553,7 @@ async fn autodiscover_contract_addresses(config: &mut CustodyConfig, http: &reqw
 
     // Report final state
     let discovered = [
-        ("MUSD", &config.musd_contract_addr),
+        ("LUSD", &config.musd_contract_addr),
         ("WSOL", &config.wsol_contract_addr),
         ("WETH", &config.weth_contract_addr),
         ("WBNB", &config.wbnb_contract_addr),
@@ -656,9 +656,9 @@ async fn main() {
 
     // Log all configured chain endpoints and treasury addresses
     info!("══════════════════════════════════════════════════════════════");
-    info!("  MoltChain Custody Service — Chain Configuration");
+    info!("  Lichen Custody Service — Chain Configuration");
     info!("══════════════════════════════════════════════════════════════");
-    info!("  MoltChain RPC:   {:?}", config.molt_rpc_url);
+    info!("  Lichen RPC:   {:?}", config.licn_rpc_url);
     info!("  SOL RPC:         {:?}", config.solana_rpc_url);
     info!(
         "  ETH RPC:         {:?}",
@@ -768,7 +768,7 @@ async fn main() {
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
-        // Auto-discover contract addresses from MoltChain before creating state.
+        // Auto-discover contract addresses from Lichen before creating state.
         // This ensures all workers see the correct contract addresses from genesis.
         config: {
             let discovery_http = reqwest::Client::builder()
@@ -844,7 +844,7 @@ async fn main() {
         credit_worker_loop(credit_state).await;
     });
 
-    // Withdrawal: watches MoltChain for burn events → sends native assets on source chain
+    // Withdrawal: watches Lichen for burn events → sends native assets on source chain
     let withdrawal_state = state.clone();
     tokio::spawn(async move {
         withdrawal_worker_loop(withdrawal_state).await;
@@ -868,7 +868,7 @@ async fn main() {
         .route("/deposits", post(create_deposit))
         .route("/deposits/:deposit_id", get(get_deposit))
         .route("/withdrawals", post(create_withdrawal))
-        // AUDIT-FIX C4: Endpoint for clients to submit their MoltChain burn tx signature.
+        // AUDIT-FIX C4: Endpoint for clients to submit their Lichen burn tx signature.
         // Without this, withdrawal jobs stay in "pending_burn" forever because
         // burn_tx_signature starts as None and nothing ever populates it.
         .route("/withdrawals/:job_id/burn", put(submit_burn_signature))
@@ -881,14 +881,14 @@ async fn main() {
         .route("/ws/events", get(ws_events))
         // ── Audit event history endpoint ──
         .route("/events", get(list_events))
-        // AUDIT-FIX M-18: Restrict CORS to MoltChain domains
+        // AUDIT-FIX M-18: Restrict CORS to Lichen domains
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list([
-                    "https://moltchain.network".parse().unwrap(),
-                    "https://wallet.moltchain.network".parse().unwrap(),
-                    "https://explorer.moltchain.network".parse().unwrap(),
-                    "https://dex.moltchain.network".parse().unwrap(),
+                    "https://lichen.network".parse().unwrap(),
+                    "https://wallet.lichen.network".parse().unwrap(),
+                    "https://explorer.lichen.network".parse().unwrap(),
+                    "https://dex.lichen.network".parse().unwrap(),
                     "http://localhost:3000".parse().unwrap(),
                     "http://localhost:8080".parse().unwrap(),
                 ]))
@@ -966,11 +966,11 @@ async fn create_deposit(
         return Err(Json(ErrorResponse::invalid("Missing user_id/chain/asset")));
     }
 
-    // Validate user_id is a valid MoltChain base58 pubkey (32 bytes).
+    // Validate user_id is a valid Lichen base58 pubkey (32 bytes).
     // Reject early so build_credit_job never silently drops a credit.
     if Pubkey::from_base58(&payload.user_id).is_err() {
         return Err(Json(ErrorResponse::invalid(
-            "user_id must be a valid MoltChain base58 public key (32 bytes)",
+            "user_id must be a valid Lichen base58 public key (32 bytes)",
         )));
     }
 
@@ -1537,7 +1537,7 @@ fn bip44_coin_type(chain: &str) -> Result<u32, String> {
         "eth" | "ethereum" | "bsc" | "bnb" => Ok(60),
         "btc" | "bitcoin" => Ok(0),
         "ltc" | "litecoin" => Ok(2),
-        "molt" | "moltchain" => Ok(9999), // unregistered — use high range
+        "lichen" | "licn" => Ok(9999), // unregistered — use high range
         _ => Err(format!("Unknown coin type for chain: {}", chain)),
     }
 }
@@ -1842,9 +1842,9 @@ fn load_config() -> CustodyConfig {
         .unwrap_or_else(|_| "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string());
     let evm_usdt_contract = std::env::var("CUSTODY_EVM_USDT")
         .unwrap_or_else(|_| "0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string());
-    let molt_rpc_url = std::env::var("CUSTODY_MOLT_RPC_URL").ok();
+    let licn_rpc_url = std::env::var("CUSTODY_LICHEN_RPC_URL").ok();
     let treasury_keypair_path = std::env::var("CUSTODY_TREASURY_KEYPAIR").ok();
-    let musd_contract_addr = std::env::var("CUSTODY_MUSD_TOKEN_ADDR").ok();
+    let musd_contract_addr = std::env::var("CUSTODY_LUSD_TOKEN_ADDR").ok();
     let wsol_contract_addr = std::env::var("CUSTODY_WSOL_TOKEN_ADDR").ok();
     let weth_contract_addr = std::env::var("CUSTODY_WETH_TOKEN_ADDR").ok();
     let wbnb_contract_addr = std::env::var("CUSTODY_WBNB_TOKEN_ADDR").ok();
@@ -1920,7 +1920,7 @@ fn load_config() -> CustodyConfig {
         evm_usdt_contract,
         signer_endpoints: signer_endpoints.clone(),
         signer_threshold,
-        molt_rpc_url,
+        licn_rpc_url,
         treasury_keypair_path,
         musd_contract_addr,
         wsol_contract_addr,
@@ -2961,11 +2961,11 @@ async fn check_credit_confirmation(
     let Some(signature) = job.tx_signature.as_ref() else {
         return Ok(None);
     };
-    let Some(rpc_url) = state.config.molt_rpc_url.as_ref() else {
+    let Some(rpc_url) = state.config.licn_rpc_url.as_ref() else {
         return Ok(None);
     };
     let result =
-        match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await {
+        match licn_rpc_call(&state.http, rpc_url, "getTransaction", json!([signature])).await {
             Ok(v) => v,
             Err(e) if e.contains("not found") || e.contains("not exist") => return Ok(None),
             Err(e) => return Err(e),
@@ -3216,7 +3216,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                             Some(&credit_job.deposit_id),
                             None,
                             Some(
-                                &json!({ "amount_shells": credit_job.amount_shells, "to_address": credit_job.to_address }),
+                                &json!({ "amount_spores": credit_job.amount_spores, "to_address": credit_job.to_address }),
                             ),
                         );
                     }
@@ -3275,7 +3275,7 @@ async fn credit_worker_loop(state: CustodyState) {
 }
 
 async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
-    if state.config.molt_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
+    if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
         return Ok(());
     }
 
@@ -3285,7 +3285,7 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
             continue;
         }
         // AUDIT-FIX M4: Record intent before credit broadcast
-        let _ = record_tx_intent(&state.db, "credit", &job.job_id, "molt");
+        let _ = record_tx_intent(&state.db, "credit", &job.job_id, "lichen");
         match submit_wrapped_credit(state, &job).await {
             Ok(tx_signature) => {
                 let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
@@ -3350,7 +3350,7 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                     Some(&job.deposit_id),
                     job.tx_signature.as_deref(),
                     Some(
-                        &json!({ "amount_shells": job.amount_shells, "to_address": job.to_address }),
+                        &json!({ "amount_spores": job.amount_spores, "to_address": job.to_address }),
                     ),
                 );
             }
@@ -3378,7 +3378,7 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
         return Ok(None);
     };
 
-    if state.config.molt_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
+    if state.config.licn_rpc_url.is_none() || state.config.treasury_keypair_path.is_none() {
         return Ok(None);
     }
 
@@ -3399,15 +3399,15 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
         return Ok(None);
     }
 
-    // Convert from source chain decimals to MoltChain 9-decimal shells.
+    // Convert from source chain decimals to Lichen 9-decimal spores.
     // Must be ASSET-AWARE: native tokens and ERC-20/SPL tokens have different decimals.
     //   ETH native: 18 dec (wei)    | BNB native: 18 dec (wei)
     //   SOL native: 9 dec (lamports)
     //   USDT/USDC on Ethereum: 6 dec | USDT/USDC on BSC: 18 dec
     //   USDT/USDC on Solana: 6 dec
-    // MoltChain wrapped tokens all use 9 decimals (shells).
+    // Lichen wrapped tokens all use 9 decimals (spores).
     let source_decimals: u32 = source_chain_decimals(&source_chain, &source_asset);
-    let amount_shells: u64 = if source_decimals > 9 {
+    let amount_spores: u64 = if source_decimals > 9 {
         let divisor = 10u128.pow(source_decimals - 9);
         (raw_amount / divisor) as u64
     } else if source_decimals < 9 {
@@ -3416,9 +3416,9 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     } else {
         raw_amount as u64
     };
-    if amount_shells == 0 {
+    if amount_spores == 0 {
         tracing::warn!(
-            "converted amount is 0 shells (raw={}, chain={}, asset={}, source_dec={}), skipping credit",
+            "converted amount is 0 spores (raw={}, chain={}, asset={}, source_dec={}), skipping credit",
             raw_amount, source_chain, source_asset, source_decimals
         );
         return Ok(None);
@@ -3428,7 +3428,7 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
         job_id: Uuid::new_v4().to_string(),
         deposit_id: sweep.deposit_id.clone(),
         to_address: deposit.user_id,
-        amount_shells,
+        amount_spores,
         source_asset,
         source_chain,
         status: "queued".to_string(),
@@ -4039,13 +4039,13 @@ fn build_evm_threshold_withdrawal_intent(
     if is_erc20 {
         let contract_addr = evm_contract_for_asset(&state.config, asset)
             .map_err(|e| format!("resolve ERC-20 contract for withdrawal: {}", e))?;
-        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
         let transfer_data = evm_encode_erc20_transfer(&job.dest_address, chain_amount)
             .map_err(|e| format!("encode ERC-20 transfer: {}", e))?;
         let _ = nonce;
         Ok((contract_addr, 0u128, transfer_data))
     } else {
-        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, asset);
         let _ = nonce;
         Ok((job.dest_address.clone(), chain_amount, Vec::new()))
     }
@@ -4210,7 +4210,7 @@ fn build_threshold_solana_withdrawal_message(
     let authority_pubkey = decode_solana_pubkey(&treasury_owner)?;
     let from_token_pubkey = decode_solana_pubkey(&from_token_account)?;
     let to_token_pubkey = decode_solana_pubkey(&to_token_account)?;
-    let raw_amount = u64::try_from(shells_to_chain_amount(
+    let raw_amount = u64::try_from(spores_to_chain_amount(
         job.amount,
         &job.dest_chain,
         outbound_asset,
@@ -4887,9 +4887,9 @@ struct TreasuryKeyFile {
 async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<String, String> {
     let rpc_url = state
         .config
-        .molt_rpc_url
+        .licn_rpc_url
         .as_ref()
-        .ok_or_else(|| "missing CUSTODY_MOLT_RPC_URL".to_string())?;
+        .ok_or_else(|| "missing CUSTODY_LICHEN_RPC_URL".to_string())?;
     let keypair_path = state
         .config
         .treasury_keypair_path
@@ -4920,10 +4920,10 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
         &contract_pubkey,
         &treasury_keypair.pubkey(),
         &to_pubkey,
-        job.amount_shells,
+        job.amount_spores,
     );
 
-    let blockhash = molt_get_recent_blockhash(&state.http, rpc_url).await?;
+    let blockhash = licn_get_recent_blockhash(&state.http, rpc_url).await?;
     let message = Message::new(vec![instruction], blockhash);
     let signature = treasury_keypair.sign(&message.serialize());
     let mut tx = Transaction::new(message);
@@ -4933,7 +4933,7 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
     let tx_base64 = base64::engine::general_purpose::STANDARD.encode(tx_bytes);
 
     let token_label = match job.source_asset.as_str() {
-        "usdt" | "usdc" => "mUSD",
+        "usdt" | "usdc" => "lUSD",
         "sol" => "wSOL",
         "eth" => "wETH",
         "bnb" => "wBNB",
@@ -4941,10 +4941,10 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
     };
     info!(
         "minting {} {} to {} (deposit={})",
-        job.amount_shells, token_label, job.to_address, job.deposit_id
+        job.amount_spores, token_label, job.to_address, job.deposit_id
     );
 
-    molt_send_transaction(&state.http, rpc_url, &tx_base64).await
+    licn_send_transaction(&state.http, rpc_url, &tx_base64).await
 }
 
 /// Returns the native decimal precision for a given (chain, asset) pair.
@@ -4978,27 +4978,27 @@ fn source_chain_decimals(chain: &str, asset: &str) -> u32 {
     }
 }
 
-/// Convert MoltChain shells (9 decimals) to the target chain's native amount.
+/// Convert Lichen spores (9 decimals) to the target chain's native amount.
 ///
 /// Inverse of the deposit conversion in `build_credit_job`.
-fn shells_to_chain_amount(shells: u64, chain: &str, asset: &str) -> u128 {
+fn spores_to_chain_amount(spores: u64, chain: &str, asset: &str) -> u128 {
     let target_decimals = source_chain_decimals(chain, asset);
     if target_decimals > 9 {
-        (shells as u128).saturating_mul(10u128.pow(target_decimals - 9))
+        (spores as u128).saturating_mul(10u128.pow(target_decimals - 9))
     } else if target_decimals < 9 {
-        (shells as u128) / 10u128.pow(9 - target_decimals)
+        (spores as u128) / 10u128.pow(9 - target_decimals)
     } else {
-        shells as u128
+        spores as u128
     }
 }
 
-/// Resolve deposited asset → MoltChain wrapped token contract address.
+/// Resolve deposited asset → Lichen wrapped token contract address.
 ///
 /// Mapping:
 ///   sol (any chain)          → wSOL contract
 ///   eth (any chain)          → wETH contract
 ///   bnb (any chain)          → wBNB contract
-///   usdt, usdc (any chain)   → mUSD contract (unified stablecoin)
+///   usdt, usdc (any chain)   → lUSD contract (unified stablecoin)
 fn resolve_token_contract(config: &CustodyConfig, _chain: &str, asset: &str) -> Option<String> {
     match asset {
         "sol" => config.wsol_contract_addr.clone(),
@@ -5009,7 +5009,7 @@ fn resolve_token_contract(config: &CustodyConfig, _chain: &str, asset: &str) -> 
     }
 }
 
-/// Build a MoltChain contract Call instruction for the "mint" function.
+/// Build a Lichen contract Call instruction for the "mint" function.
 ///
 /// Payload format:
 ///   {"Call": {"function": "mint", "args": [...], "value": 0}}
@@ -5038,13 +5038,13 @@ fn build_contract_mint_instruction(
     let data = serde_json::to_vec(&payload).expect("json encode");
 
     Instruction {
-        program_id: Pubkey::new(MOLT_CONTRACT_PROGRAM),
+        program_id: Pubkey::new(LICN_CONTRACT_PROGRAM),
         accounts: vec![*caller, *contract_pubkey],
         data,
     }
 }
 
-/// Build a MoltChain contract Call instruction for the "burn" function.
+/// Build a Lichen contract Call instruction for the "burn" function.
 /// Used during withdrawal flow — treasury burns wrapped tokens on behalf of user.
 fn _build_contract_burn_instruction(
     contract_pubkey: &Pubkey,
@@ -5065,7 +5065,7 @@ fn _build_contract_burn_instruction(
     let data = serde_json::to_vec(&payload).expect("json encode");
 
     Instruction {
-        program_id: Pubkey::new(MOLT_CONTRACT_PROGRAM),
+        program_id: Pubkey::new(LICN_CONTRACT_PROGRAM),
         accounts: vec![*caller, *contract_pubkey],
         data,
     }
@@ -5095,8 +5095,8 @@ fn _build_system_transfer(from: &Pubkey, to: &Pubkey, amount: u64) -> Instructio
     }
 }
 
-async fn molt_get_recent_blockhash(client: &reqwest::Client, url: &str) -> Result<Hash, String> {
-    let result = molt_rpc_call(client, url, "getRecentBlockhash", json!([])).await?;
+async fn licn_get_recent_blockhash(client: &reqwest::Client, url: &str) -> Result<Hash, String> {
+    let result = licn_rpc_call(client, url, "getRecentBlockhash", json!([])).await?;
     let hash = result
         .get("blockhash")
         .and_then(|v| v.as_str())
@@ -5104,19 +5104,19 @@ async fn molt_get_recent_blockhash(client: &reqwest::Client, url: &str) -> Resul
     Hash::from_hex(hash).map_err(|e| format!("blockhash: {}", e))
 }
 
-async fn molt_send_transaction(
+async fn licn_send_transaction(
     client: &reqwest::Client,
     url: &str,
     tx_base64: &str,
 ) -> Result<String, String> {
-    let result = molt_rpc_call(client, url, "sendTransaction", json!([tx_base64])).await?;
+    let result = licn_rpc_call(client, url, "sendTransaction", json!([tx_base64])).await?;
     result
         .as_str()
         .map(|v| v.to_string())
         .ok_or_else(|| "missing tx signature".to_string())
 }
 
-async fn molt_rpc_call(
+async fn licn_rpc_call(
     client: &reqwest::Client,
     url: &str,
     method: &str,
@@ -5958,7 +5958,7 @@ fn to_be_bytes(value: u64) -> Vec<u8> {
 }
 
 // ============================================================================
-// WITHDRAWAL — Burn wrapped tokens on MoltChain, send native assets to user
+// WITHDRAWAL — Burn wrapped tokens on Lichen, send native assets to user
 // ============================================================================
 
 /// POST /withdrawals — User requests to withdraw wrapped tokens
@@ -5966,8 +5966,8 @@ fn to_be_bytes(value: u64) -> Vec<u8> {
 /// Flow:
 ///   1. User calls burn() on the wrapped token contract (client-side)
 ///   2. User POSTs burn tx signature + dest_chain + dest_address to this endpoint
-///   3. Custody verifies the burn on MoltChain
-///   4. For mUSD: checks stablecoin reserves, queues rebalance if needed
+///   3. Custody verifies the burn on Lichen
+///   4. For lUSD: checks stablecoin reserves, queues rebalance if needed
 ///   5. Custody uses threshold signatures to send native assets on the destination chain
 async fn create_withdrawal(
     State(state): State<CustodyState>,
@@ -6107,7 +6107,7 @@ async fn create_withdrawal(
         }));
     }
 
-    // For mUSD withdrawals: validate and resolve preferred stablecoin
+    // For lUSD withdrawals: validate and resolve preferred stablecoin
     let preferred = if asset_lower == "musd" {
         let pref = req.preferred_stablecoin.to_lowercase();
         if pref != "usdt" && pref != "usdc" {
@@ -6221,7 +6221,7 @@ async fn create_withdrawal(
         "status": "pending_burn",
         "preferred_stablecoin": stablecoin_info,
         "message": format!(
-            "Burn {} {} on MoltChain, then the outbound transfer to {} will be processed automatically.",
+            "Burn {} {} on Lichen, then the outbound transfer to {} will be processed automatically.",
             job.amount, job.asset, job.dest_chain
         ),
     }))
@@ -6336,11 +6336,11 @@ fn reset_pending_burn_submission(
     store_withdrawal_job(db, job)
 }
 
-/// AUDIT-FIX C4: Endpoint for clients to submit the MoltChain burn tx signature.
+/// AUDIT-FIX C4: Endpoint for clients to submit the Lichen burn tx signature.
 ///
 /// PUT /withdrawals/:job_id/burn
 ///
-/// After a user burns their wrapped tokens on MoltChain, they submit the burn tx
+/// After a user burns their wrapped tokens on Lichen, they submit the burn tx
 /// signature here. The withdrawal worker then verifies it and progresses the job.
 /// Without this endpoint, withdrawal jobs would hang at "pending_burn" forever.
 #[derive(Deserialize)]
@@ -7677,7 +7677,7 @@ fn is_ready_for_withdrawal_retry(job: &WithdrawalJob) -> bool {
 /// Background loop: processes withdrawal jobs through their lifecycle
 ///
 /// States:
-///   pending_burn  → verify user's burn tx on MoltChain → burned
+///   pending_burn  → verify user's burn tx on Lichen → burned
 ///   burned        → collect threshold signatures → signing
 ///   signing       → broadcast outbound tx on dest chain → broadcasting
 ///   broadcasting  → confirm on dest chain → confirmed
@@ -7691,12 +7691,12 @@ async fn withdrawal_worker_loop(state: CustodyState) {
 }
 
 async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
-    // Phase 1: pending_burn → check if burn tx is confirmed on MoltChain
+    // Phase 1: pending_burn → check if burn tx is confirmed on Lichen
     let pending = list_withdrawal_jobs_by_status(&state.db, "pending_burn")?;
     for mut job in pending {
         if let Some(ref burn_sig) = job.burn_tx_signature {
-            if let Some(rpc_url) = state.config.molt_rpc_url.as_ref() {
-                match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await
+            if let Some(rpc_url) = state.config.licn_rpc_url.as_ref() {
+                match licn_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await
                 {
                     Ok(result) => {
                         if !result.is_null() {
@@ -8227,7 +8227,7 @@ async fn broadcast_self_custody_solana_withdrawal(
         .await?;
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let raw_amount = u64::try_from(shells_to_chain_amount(
+    let raw_amount = u64::try_from(spores_to_chain_amount(
         job.amount,
         &job.dest_chain,
         outbound_asset,
@@ -8265,8 +8265,8 @@ async fn broadcast_self_custody_evm_withdrawal(
     let chain_id = evm_get_chain_id(&state.http, url).await?;
 
     if outbound_asset == "eth" || outbound_asset == "bnb" {
-        // Native value transfer — convert shells (9 dec) → wei (18 dec)
-        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
+        // Native value transfer — convert spores (9 dec) → wei (18 dec)
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
         let gas_limit = evm_estimate_gas(
             &state.http,
             url,
@@ -8295,9 +8295,9 @@ async fn broadcast_self_custody_evm_withdrawal(
             .map(|s| s.to_string())
             .ok_or_else(|| "no tx hash returned".to_string())
     } else {
-        // ERC-20 transfer for stablecoins — convert shells (9 dec) → token decimals
+        // ERC-20 transfer for stablecoins — convert spores (9 dec) → token decimals
         let contract = evm_contract_for_asset(&state.config, outbound_asset)?;
-        let chain_amount = shells_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
+        let chain_amount = spores_to_chain_amount(job.amount, &job.dest_chain, outbound_asset);
         let transfer_data = evm_encode_erc20_transfer(to_address, chain_amount)?;
         let gas_limit = evm_estimate_gas(
             &state.http,
@@ -9381,7 +9381,7 @@ mod tests {
             evm_usdt_contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string(),
             signer_endpoints: vec![],
             signer_threshold: 0,
-            molt_rpc_url: None,
+            licn_rpc_url: None,
             treasury_keypair_path: None,
             musd_contract_addr: None,
             wsol_contract_addr: None,
@@ -9450,7 +9450,7 @@ mod tests {
         let db_id = NEXT_TEST_DB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir()
             .join(format!(
-                "moltchain-custody-test-{}-{}",
+                "lichen-custody-test-{}-{}",
                 std::process::id(),
                 db_id
             ))
@@ -9515,7 +9515,7 @@ mod tests {
         state.config.signer_threshold = 2;
         state.config.frost_pubkey_package_hex = Some("deadbeef".to_string());
         let mut job = test_withdrawal_job();
-        job.asset = "mUSD".to_string();
+        job.asset = "lUSD".to_string();
         job.amount = 1_000_000_000;
 
         let mode = determine_withdrawal_signing_mode(&state, &job, "usdt").unwrap();
@@ -9590,7 +9590,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct MockMoltRpcState {
+    struct MockLichenRpcState {
         transaction_result: Value,
         requests: std::sync::Arc<tokio::sync::Mutex<Vec<Value>>>,
     }
@@ -9653,8 +9653,8 @@ mod tests {
         }))
     }
 
-    async fn mock_molt_rpc_handler(
-        axum::extract::State(state): axum::extract::State<MockMoltRpcState>,
+    async fn mock_licn_rpc_handler(
+        axum::extract::State(state): axum::extract::State<MockLichenRpcState>,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
         state.requests.lock().await.push(payload.clone());
@@ -9995,7 +9995,7 @@ mod tests {
         state.config.solana_treasury_owner = Some(treasury_owner.clone());
 
         let mut job = test_withdrawal_job();
-        job.asset = "mUSD".to_string();
+        job.asset = "lUSD".to_string();
         job.amount = 1_250_000_000;
         job.dest_address =
             derive_solana_address("user/dest/solana", &state.config.master_seed).unwrap();
@@ -10014,7 +10014,7 @@ mod tests {
             &decode_solana_pubkey(&treasury_owner).unwrap(),
             &decode_solana_pubkey(&from_token_account).unwrap(),
             &decode_solana_pubkey(&to_token_account).unwrap(),
-            u64::try_from(shells_to_chain_amount(job.amount, "solana", "usdt")).unwrap(),
+            u64::try_from(spores_to_chain_amount(job.amount, "solana", "usdt")).unwrap(),
             &recent_blockhash,
         )
         .unwrap();
@@ -10154,7 +10154,7 @@ mod tests {
     #[test]
     fn test_build_credit_job_uses_native_solana_credited_amount() {
         let mut state = test_state();
-        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
         state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
         state.config.wsol_contract_addr = Some("11111111111111111111111111111111".to_string());
 
@@ -10193,7 +10193,7 @@ mod tests {
         let credit = build_credit_job(&state, &sweep)
             .expect("build native SOL credit job")
             .expect("credit job should be created");
-        assert_eq!(credit.amount_shells, 10_000);
+        assert_eq!(credit.amount_spores, 10_000);
     }
 
     #[tokio::test]
@@ -10266,7 +10266,7 @@ mod tests {
         assert_eq!(bip44_coin_type("bnb").unwrap(), 60);
         assert_eq!(bip44_coin_type("btc").unwrap(), 0);
         assert_eq!(bip44_coin_type("bitcoin").unwrap(), 0);
-        assert_eq!(bip44_coin_type("molt").unwrap(), 9999);
+        assert_eq!(bip44_coin_type("lichen").unwrap(), 9999);
         assert!(bip44_coin_type("unknown").is_err());
     }
 
@@ -10338,15 +10338,15 @@ mod tests {
     #[test]
     fn test_resolve_token_contract_stablecoins() {
         let mut config = test_config();
-        config.musd_contract_addr = Some("MUSD_CONTRACT_456".to_string());
-        // Both USDT and USDC map to the same mUSD contract
+        config.musd_contract_addr = Some("LUSD_CONTRACT_456".to_string());
+        // Both USDT and USDC map to the same lUSD contract
         assert_eq!(
             resolve_token_contract(&config, "solana", "usdt"),
-            Some("MUSD_CONTRACT_456".to_string())
+            Some("LUSD_CONTRACT_456".to_string())
         );
         assert_eq!(
             resolve_token_contract(&config, "ethereum", "usdc"),
-            Some("MUSD_CONTRACT_456".to_string())
+            Some("LUSD_CONTRACT_456".to_string())
         );
     }
 
@@ -10987,7 +10987,7 @@ mod tests {
 
         state.config.evm_rpc_url = Some(rpc_url.clone());
         state.config.eth_rpc_url = Some(rpc_url);
-        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
         state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
         state.config.musd_contract_addr = Some("11111111111111111111111111111111".to_string());
 
@@ -11057,7 +11057,7 @@ mod tests {
         );
         assert_eq!(queued_credit_jobs[0].source_asset, "usdt");
         assert_eq!(queued_credit_jobs[0].source_chain, "ethereum");
-        assert_eq!(queued_credit_jobs[0].amount_shells, 2_500_000_000);
+        assert_eq!(queued_credit_jobs[0].amount_spores, 2_500_000_000);
 
         let reserve = get_reserve_balance(&state.db, "ethereum", "usdt")
             .expect("read reserve balance after confirmed sweep");
@@ -11102,7 +11102,7 @@ mod tests {
 
         state.config.evm_rpc_url = Some(rpc_url.clone());
         state.config.eth_rpc_url = Some(rpc_url);
-        state.config.molt_rpc_url = Some("http://localhost:8899".to_string());
+        state.config.licn_rpc_url = Some("http://localhost:8899".to_string());
         state.config.treasury_keypair_path = Some("/tmp/test-treasury.json".to_string());
         state.config.musd_contract_addr = Some("11111111111111111111111111111111".to_string());
 
@@ -11279,10 +11279,10 @@ mod tests {
     ) {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
-        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let molt_app: Router = Router::new()
-            .route("/", post(mock_molt_rpc_handler))
-            .with_state(MockMoltRpcState {
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
                 transaction_result: json!({
                     "success": true,
                     "contract_address": "wrapped-weth-contract",
@@ -11290,11 +11290,11 @@ mod tests {
                     "method": "burn",
                     "amount": 2500,
                 }),
-                requests: molt_requests.clone(),
+                requests: licn_requests.clone(),
             });
-        let molt_rpc_url = spawn_mock_server(molt_app).await;
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
 
-        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.licn_rpc_url = Some(licn_rpc_url);
         state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
 
         let job = WithdrawalJob {
@@ -11350,7 +11350,7 @@ mod tests {
                 .is_err()
         );
 
-        let requests = molt_requests.lock().await;
+        let requests = licn_requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].get("method").and_then(|value| value.as_str()),
@@ -11363,10 +11363,10 @@ mod tests {
     ) {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
-        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let molt_app: Router = Router::new()
-            .route("/", post(mock_molt_rpc_handler))
-            .with_state(MockMoltRpcState {
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
                 transaction_result: json!({
                     "success": true,
                     "contract_address": "wrong-weth-contract",
@@ -11374,11 +11374,11 @@ mod tests {
                     "method": "burn",
                     "amount": 2500,
                 }),
-                requests: molt_requests.clone(),
+                requests: licn_requests.clone(),
             });
-        let molt_rpc_url = spawn_mock_server(molt_app).await;
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
 
-        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.licn_rpc_url = Some(licn_rpc_url);
         state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
 
         let job = WithdrawalJob {
@@ -11434,7 +11434,7 @@ mod tests {
                 .is_err()
         );
 
-        let requests = molt_requests.lock().await;
+        let requests = licn_requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].get("method").and_then(|value| value.as_str()),
@@ -11447,10 +11447,10 @@ mod tests {
     ) {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
-        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let molt_app: Router = Router::new()
-            .route("/", post(mock_molt_rpc_handler))
-            .with_state(MockMoltRpcState {
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
                 transaction_result: json!({
                     "success": true,
                     "contract_address": "wrapped-weth-contract",
@@ -11458,11 +11458,11 @@ mod tests {
                     "method": "burn",
                     "amount": 1234,
                 }),
-                requests: molt_requests.clone(),
+                requests: licn_requests.clone(),
             });
-        let molt_rpc_url = spawn_mock_server(molt_app).await;
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
 
-        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.licn_rpc_url = Some(licn_rpc_url);
         state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
 
         let job = WithdrawalJob {
@@ -11518,7 +11518,7 @@ mod tests {
                 .is_err()
         );
 
-        let requests = molt_requests.lock().await;
+        let requests = licn_requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].get("method").and_then(|value| value.as_str()),
@@ -11531,10 +11531,10 @@ mod tests {
     ) {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
-        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let molt_app: Router = Router::new()
-            .route("/", post(mock_molt_rpc_handler))
-            .with_state(MockMoltRpcState {
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
                 transaction_result: json!({
                     "success": true,
                     "contract_address": "wrapped-weth-contract",
@@ -11542,11 +11542,11 @@ mod tests {
                     "method": "transfer",
                     "amount": 2500,
                 }),
-                requests: molt_requests.clone(),
+                requests: licn_requests.clone(),
             });
-        let molt_rpc_url = spawn_mock_server(molt_app).await;
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
 
-        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.licn_rpc_url = Some(licn_rpc_url);
         state.config.weth_contract_addr = Some("wrapped-weth-contract".to_string());
 
         let job = WithdrawalJob {
@@ -11602,7 +11602,7 @@ mod tests {
                 .is_err()
         );
 
-        let requests = molt_requests.lock().await;
+        let requests = licn_requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].get("method").and_then(|value| value.as_str()),
@@ -11615,10 +11615,10 @@ mod tests {
     ) {
         let mut state = test_state();
         let mut event_rx = state.event_tx.subscribe();
-        let molt_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let molt_app: Router = Router::new()
-            .route("/", post(mock_molt_rpc_handler))
-            .with_state(MockMoltRpcState {
+        let licn_requests = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let licn_app: Router = Router::new()
+            .route("/", post(mock_licn_rpc_handler))
+            .with_state(MockLichenRpcState {
                 transaction_result: json!({
                     "success": true,
                     "contract_address": "wrapped-weth-contract",
@@ -11626,11 +11626,11 @@ mod tests {
                     "method": "burn",
                     "amount": 2500,
                 }),
-                requests: molt_requests.clone(),
+                requests: licn_requests.clone(),
             });
-        let molt_rpc_url = spawn_mock_server(molt_app).await;
+        let licn_rpc_url = spawn_mock_server(licn_app).await;
 
-        state.config.molt_rpc_url = Some(molt_rpc_url);
+        state.config.licn_rpc_url = Some(licn_rpc_url);
         state.config.weth_contract_addr = None;
 
         let job = WithdrawalJob {
@@ -11683,7 +11683,7 @@ mod tests {
                 .is_err()
         );
 
-        let requests = molt_requests.lock().await;
+        let requests = licn_requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].get("method").and_then(|value| value.as_str()),
@@ -11700,7 +11700,7 @@ mod tests {
             job_id: "test-credit-count-1".to_string(),
             deposit_id: "dep-1".to_string(),
             to_address: "recipient".to_string(),
-            amount_shells: 500,
+            amount_spores: 500,
             source_asset: "usdt".to_string(),
             source_chain: "solana".to_string(),
             status: "queued".to_string(),
@@ -11794,68 +11794,68 @@ mod tests {
     }
 
     #[test]
-    fn test_shells_to_chain_amount() {
-        // ETH: 1 wETH = 1_000_000_000 shells → 1_000_000_000_000_000_000 wei
+    fn test_spores_to_chain_amount() {
+        // ETH: 1 wETH = 1_000_000_000 spores → 1_000_000_000_000_000_000 wei
         assert_eq!(
-            shells_to_chain_amount(1_000_000_000, "ethereum", "eth"),
+            spores_to_chain_amount(1_000_000_000, "ethereum", "eth"),
             1_000_000_000_000_000_000u128
         );
 
-        // BNB: 0.05 wBNB = 50_000_000 shells → 50_000_000_000_000_000 wei
+        // BNB: 0.05 wBNB = 50_000_000 spores → 50_000_000_000_000_000 wei
         assert_eq!(
-            shells_to_chain_amount(50_000_000, "bsc", "bnb"),
+            spores_to_chain_amount(50_000_000, "bsc", "bnb"),
             50_000_000_000_000_000u128
         );
 
-        // SOL: 1 wSOL = 1_000_000_000 shells → 1_000_000_000 lamports (same)
+        // SOL: 1 wSOL = 1_000_000_000 spores → 1_000_000_000 lamports (same)
         assert_eq!(
-            shells_to_chain_amount(1_000_000_000, "solana", "sol"),
+            spores_to_chain_amount(1_000_000_000, "solana", "sol"),
             1_000_000_000u128
         );
 
-        // USDT on Ethereum: 100 mUSD = 100_000_000_000 shells → 100_000_000 atoms (6 dec)
+        // USDT on Ethereum: 100 lUSD = 100_000_000_000 spores → 100_000_000 atoms (6 dec)
         assert_eq!(
-            shells_to_chain_amount(100_000_000_000, "ethereum", "usdt"),
+            spores_to_chain_amount(100_000_000_000, "ethereum", "usdt"),
             100_000_000u128
         );
 
-        // USDT on BSC: 100 mUSD = 100_000_000_000 shells → 100_000_000_000_000_000_000 atoms (18 dec)
+        // USDT on BSC: 100 lUSD = 100_000_000_000 spores → 100_000_000_000_000_000_000 atoms (18 dec)
         assert_eq!(
-            shells_to_chain_amount(100_000_000_000, "bsc", "usdt"),
+            spores_to_chain_amount(100_000_000_000, "bsc", "usdt"),
             100_000_000_000_000_000_000u128
         );
 
-        // USDC on Solana: 100 mUSD = 100_000_000_000 shells → 100_000_000 atoms (6 dec)
+        // USDC on Solana: 100 lUSD = 100_000_000_000 spores → 100_000_000 atoms (6 dec)
         assert_eq!(
-            shells_to_chain_amount(100_000_000_000, "solana", "usdc"),
+            spores_to_chain_amount(100_000_000_000, "solana", "usdc"),
             100_000_000u128
         );
     }
 
     #[test]
     fn test_deposit_credit_conversion_roundtrip() {
-        // Verify deposit conversion (chain → shells) and withdrawal conversion
-        // (shells → chain) are exact inverses for whole-unit amounts.
+        // Verify deposit conversion (chain → spores) and withdrawal conversion
+        // (spores → chain) are exact inverses for whole-unit amounts.
 
-        // 1 ETH deposit: 10^18 wei → 10^9 shells → 10^18 wei
+        // 1 ETH deposit: 10^18 wei → 10^9 spores → 10^18 wei
         let raw_eth: u128 = 1_000_000_000_000_000_000;
         let dec = source_chain_decimals("ethereum", "eth");
-        let shells = (raw_eth / 10u128.pow(dec - 9)) as u64;
-        assert_eq!(shells, 1_000_000_000);
-        assert_eq!(shells_to_chain_amount(shells, "ethereum", "eth"), raw_eth);
+        let spores = (raw_eth / 10u128.pow(dec - 9)) as u64;
+        assert_eq!(spores, 1_000_000_000);
+        assert_eq!(spores_to_chain_amount(spores, "ethereum", "eth"), raw_eth);
 
-        // 100 USDT on ETH: 100_000_000 (6 dec) → 100_000_000_000 shells → 100_000_000 (6 dec)
+        // 100 USDT on ETH: 100_000_000 (6 dec) → 100_000_000_000 spores → 100_000_000 (6 dec)
         let raw_usdt: u128 = 100_000_000;
         let dec = source_chain_decimals("ethereum", "usdt");
-        let shells = (raw_usdt * 10u128.pow(9 - dec)) as u64;
-        assert_eq!(shells, 100_000_000_000);
-        assert_eq!(shells_to_chain_amount(shells, "ethereum", "usdt"), raw_usdt);
+        let spores = (raw_usdt * 10u128.pow(9 - dec)) as u64;
+        assert_eq!(spores, 100_000_000_000);
+        assert_eq!(spores_to_chain_amount(spores, "ethereum", "usdt"), raw_usdt);
 
-        // 1 SOL: 1_000_000_000 lamports → 1_000_000_000 shells → 1_000_000_000 lamports
+        // 1 SOL: 1_000_000_000 lamports → 1_000_000_000 spores → 1_000_000_000 lamports
         let raw_sol: u128 = 1_000_000_000;
         let dec = source_chain_decimals("solana", "sol");
         assert_eq!(dec, 9);
-        let shells = raw_sol as u64;
-        assert_eq!(shells_to_chain_amount(shells, "solana", "sol"), raw_sol);
+        let spores = raw_sol as u64;
+        assert_eq!(spores_to_chain_amount(spores, "solana", "sol"), raw_sol);
     }
 }

@@ -8,7 +8,7 @@
 //
 // Uses WAT (WebAssembly Text) for minimal, self-contained test contracts.
 
-use moltchain_core::*;
+use lichen_core::*;
 use std::collections::HashMap;
 use tempfile::TempDir;
 
@@ -18,7 +18,7 @@ fn create_test_state() -> (StateStore, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let state = StateStore::open(temp_dir.path()).unwrap();
     let treasury = Keypair::new();
-    let treasury_account = account_with_shells(treasury.pubkey(), 10_000_000_000_000);
+    let treasury_account = account_with_spores(treasury.pubkey(), 10_000_000_000_000);
     state
         .put_account(&treasury.pubkey(), &treasury_account)
         .unwrap();
@@ -36,10 +36,10 @@ fn create_test_state() -> (StateStore, TempDir) {
     (state, temp_dir)
 }
 
-fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
+fn account_with_spores(owner: Pubkey, spores: u64) -> Account {
     Account {
-        shells,
-        spendable: shells,
+        spores,
+        spendable: spores,
         staked: 0,
         locked: 0,
         data: Vec::new(),
@@ -54,7 +54,7 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
 /// Deploy a WASM contract into the state store at the given address.
 fn deploy_wasm_contract(state: &StateStore, address: &Pubkey, owner: &Pubkey, wasm_bytes: &[u8]) {
     let contract = ContractAccount::new(wasm_bytes.to_vec(), *owner);
-    let mut account = account_with_shells(*address, 0);
+    let mut account = account_with_spores(*address, 0);
     account.executable = true;
     account.data = serde_json::to_vec(&contract).unwrap();
     state.put_account(address, &account).unwrap();
@@ -352,7 +352,7 @@ fn test_processor_applies_cross_call_changes() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), 10_000_000_000_000),
+            &account_with_spores(deployer.pubkey(), 10_000_000_000_000),
         )
         .unwrap();
 

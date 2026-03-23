@@ -1,12 +1,12 @@
-// Basic usage example for MoltChain SDK
+// Basic usage example for Lichen SDK
 
 import { Connection, PublicKey } from '../dist/index';
 
 async function main() {
-  // Connect to MoltChain
+  // Connect to Lichen
   const connection = new Connection('http://localhost:8899', 'ws://localhost:8900');
 
-  console.log('🦞 MoltChain SDK Example\n');
+  console.log('🦞 Lichen SDK Example\n');
 
   // 1. Get network info
   console.log('📡 Network Information:');
@@ -21,7 +21,7 @@ async function main() {
   const pubkey = new PublicKey('YourPublicKeyHere...');
   try {
     const balance = await connection.getBalance(pubkey);
-    console.log(`  Balance: ${balance.molt} MOLT (${balance.shells} shells)\n`);
+    console.log(`  Balance: ${balance.licn} LICN (${balance.shells} shells)\n`);
   } catch (error) {
     console.log(`  Error: ${error}\n`);
   }
@@ -39,7 +39,7 @@ async function main() {
   const validators = await connection.getValidators();
   console.log(`  Total: ${validators.length}`);
   validators.forEach((v: any, i: number) => {
-    console.log(`  ${i + 1}. ${v.pubkey.substring(0, 12)}... (Stake: ${v.stake / 1e9} MOLT)`);
+    console.log(`  ${i + 1}. ${v.pubkey.substring(0, 12)}... (Stake: ${v.stake / 1e9} LICN)`);
   });
   console.log();
 

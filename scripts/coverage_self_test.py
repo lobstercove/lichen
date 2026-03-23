@@ -10,7 +10,7 @@ import urllib.request
 
 SOURCE_ALIAS = {
     "compute_market": "compute",
-    "reef_storage": "storage",
+    "moss_storage": "storage",
     "dex_core": "dex-core",
     "dex_amm": "dex-amm",
     "dex_router": "dex-router",
@@ -19,7 +19,7 @@ SOURCE_ALIAS = {
     "dex_margin": "dex-margin",
     "dex_analytics": "dex-analytics",
     "prediction_market": "prediction-market",
-    "musd_token": "musd-token",
+    "lusd_token": "lusd-token",
     "weth_token": "weth-token",
     "wsol_token": "wsol-token",
 }

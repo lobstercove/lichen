@@ -162,11 +162,11 @@
       ]
     },
     {
-      "name": "set_moltyid_address",
+      "name": "set_lichenid_address",
       "opcode": 20,
       "params": [
         { "name": "caller_ptr", "type": "Pubkey" },
-        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+        { "name": "lichenid_addr_ptr", "type": "Pubkey" }
       ]
     },
     {

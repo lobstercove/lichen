@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::consensus::{Vote, ForkChoice};
+use lichen_core::consensus::{Vote, ForkChoice};
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz Vote deserialization — consensus-critical, must never panic.

@@ -15,12 +15,12 @@
 use ark_bn254::Fr;
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::rand::rngs::OsRng;
-use moltchain_core::zk::circuits::shield::ShieldCircuit;
-use moltchain_core::zk::circuits::unshield::UnshieldCircuit;
-use moltchain_core::zk::merkle::{fr_to_bytes, poseidon_hash_fr, MerkleTree};
-use moltchain_core::zk::prover::Prover;
-use moltchain_core::zk::setup;
-use moltchain_core::*;
+use lichen_core::zk::circuits::shield::ShieldCircuit;
+use lichen_core::zk::circuits::unshield::UnshieldCircuit;
+use lichen_core::zk::merkle::{fr_to_bytes, poseidon_hash_fr, MerkleTree};
+use lichen_core::zk::prover::Prover;
+use lichen_core::zk::setup;
+use lichen_core::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -48,7 +48,7 @@ fn create_test_env() -> TestEnv {
         .put_account(&treasury, &Account::new(0, treasury))
         .unwrap();
 
-    // Fund alice with 10 MOLT (10 billion shells)
+    // Fund alice with 10 LICN (10 billion spores)
     let alice_account = Account::new(10_000, alice);
     state.put_account(&alice, &alice_account).unwrap();
 
@@ -160,8 +160,8 @@ fn test_shield_then_unshield_full_lifecycle() {
         .load_unshield_key(&unshield_ceremony.proving_key_bytes)
         .expect("load unshield PK");
 
-    // ── Step 2: Shield 0.5 MOLT ─────────────────────────────────────────
-    let shield_amount = 500_000_000u64; // 0.5 MOLT
+    // ── Step 2: Shield 0.5 LICN ─────────────────────────────────────────
+    let shield_amount = 500_000_000u64; // 0.5 LICN
     let blinding = Fr::rand(&mut OsRng);
     let amount_fr = Fr::from(shield_amount);
     let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
@@ -594,7 +594,7 @@ fn test_shield_insufficient_balance_rejected() {
         .load_shield_key(&shield_ceremony.proving_key_bytes)
         .unwrap();
 
-    // Try to shield 100 MOLT when alice only has 10 MOLT
+    // Try to shield 100 LICN when alice only has 10 LICN
     let huge_amount = 100_000_000_000_000u64;
     let blinding = Fr::rand(&mut OsRng);
     let commitment_fr = poseidon_hash_fr(Fr::from(huge_amount), blinding);

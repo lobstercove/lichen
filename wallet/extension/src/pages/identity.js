@@ -8,10 +8,10 @@ import {
   setIdentityEndpoint,
   setIdentityAvailability,
   setIdentityRate,
-  registerMoltName,
-  renewMoltName,
-  transferMoltName,
-  releaseMoltName
+  registerLichenName,
+  renewLichenName,
+  transferLichenName,
+  releaseLichenName
 } from '../core/identity-service.js';
 import { isValidAddress } from '../core/crypto-service.js';
 
@@ -62,12 +62,12 @@ function isHttpUrl(url) {
   }
 }
 
-function normalizeMoltName(input) {
-  return String(input || '').trim().toLowerCase().replace(/\.molt$/, '');
+function normalizeLichenName(input) {
+  return String(input || '').trim().toLowerCase().replace(/\.licn$/, '');
 }
 
-function validateMoltNameOrThrow(input) {
-  const normalized = normalizeMoltName(input);
+function validateLichenNameOrThrow(input) {
+  const normalized = normalizeLichenName(input);
   if (!normalized) {
     throw new Error('Name is required');
   }
@@ -109,7 +109,7 @@ async function loadIdentityPage() {
       <div class="id-row"><strong>Status:</strong> ${details.active ? 'Active' : 'Inactive'}</div>
       <div class="id-row"><strong>Endpoint:</strong> ${escapeHtml(details.endpoint) || '—'}</div>
       <div class="id-row"><strong>Availability:</strong> ${escapeHtml(details.availability)}</div>
-      <div class="id-row"><strong>Rate:</strong> ${details.rate.toFixed(6)} MOLT</div>
+      <div class="id-row"><strong>Rate:</strong> ${details.rate.toFixed(6)} LICN</div>
     </div>
   `);
 
@@ -155,7 +155,7 @@ async function runAction(label, fn) {
 
 async function actionRegister() {
   await withWalletAction(async ({ wallet, network }) => {
-    const displayName = prompt('Display name:', wallet.name || 'MoltUser');
+    const displayName = prompt('Display name:', wallet.name || 'LicnUser');
     if (!displayName) return;
     if (displayName.trim().length < 2 || displayName.trim().length > 32) {
       setStatus('Register identity failed: name must be 2-32 chars');
@@ -295,9 +295,9 @@ async function actionSetAvailability() {
 
 async function actionSetRate() {
   await withWalletAction(async ({ wallet, network }) => {
-    let rateMolt;
+    let rateLicn;
     try {
-      rateMolt = parseNonNegativeNumber(prompt('Rate (MOLT per request):', '0.001') || '0.001', 'Rate');
+      rateLicn = parseNonNegativeNumber(prompt('Rate (LICN per request):', '0.001') || '0.001', 'Rate');
     } catch (error) {
       setStatus(`Set rate failed: ${error.message}`);
       return;
@@ -309,24 +309,24 @@ async function actionSetRate() {
       wallet,
       password,
       network,
-      rateMolt
+      rateLicn
     }));
   });
 }
 
 async function actionRegisterName() {
   await withWalletAction(async ({ wallet, network }) => {
-    const name = prompt('Name to register (without .molt):', 'myname');
+    const name = prompt('Name to register (without .licn):', 'myname');
     if (!name) return;
 
     let normalizedName;
     try {
-      normalizedName = validateMoltNameOrThrow(name);
+      normalizedName = validateLichenNameOrThrow(name);
       if (normalizedName.length <= 4) {
         throw new Error('3-4 char names are auction-only');
       }
     } catch (error) {
-      setStatus(`Register .molt failed: ${error.message}`);
+      setStatus(`Register .lichen failed: ${error.message}`);
       return;
     }
 
@@ -334,13 +334,13 @@ async function actionRegisterName() {
     try {
       durationYears = parseIntegerRange(prompt('Duration in years (1-10):', '1') || '1', 'Duration', 1, 10);
     } catch (error) {
-      setStatus(`Register .molt failed: ${error.message}`);
+      setStatus(`Register .lichen failed: ${error.message}`);
       return;
     }
     const password = prompt('Wallet password:', '');
     if (!password) return;
 
-    await runAction('Register .molt', () => registerMoltName({
+    await runAction('Register .lichen', () => registerLichenName({
       wallet,
       password,
       network,
@@ -352,14 +352,14 @@ async function actionRegisterName() {
 
 async function actionRenewName() {
   await withWalletAction(async ({ wallet, network }) => {
-    const name = prompt('Name to renew (without .molt):', 'myname');
+    const name = prompt('Name to renew (without .licn):', 'myname');
     if (!name) return;
 
     let normalizedName;
     try {
-      normalizedName = validateMoltNameOrThrow(name);
+      normalizedName = validateLichenNameOrThrow(name);
     } catch (error) {
-      setStatus(`Renew .molt failed: ${error.message}`);
+      setStatus(`Renew .lichen failed: ${error.message}`);
       return;
     }
 
@@ -367,13 +367,13 @@ async function actionRenewName() {
     try {
       additionalYears = parseIntegerRange(prompt('Additional years (1-10):', '1') || '1', 'Additional years', 1, 10);
     } catch (error) {
-      setStatus(`Renew .molt failed: ${error.message}`);
+      setStatus(`Renew .lichen failed: ${error.message}`);
       return;
     }
     const password = prompt('Wallet password:', '');
     if (!password) return;
 
-    await runAction('Renew .molt', () => renewMoltName({
+    await runAction('Renew .lichen', () => renewLichenName({
       wallet,
       password,
       network,
@@ -385,27 +385,27 @@ async function actionRenewName() {
 
 async function actionTransferName() {
   await withWalletAction(async ({ wallet, network }) => {
-    const name = prompt('Name to transfer (without .molt):', 'myname');
+    const name = prompt('Name to transfer (without .licn):', 'myname');
     if (!name) return;
 
     let normalizedName;
     try {
-      normalizedName = validateMoltNameOrThrow(name);
+      normalizedName = validateLichenNameOrThrow(name);
     } catch (error) {
-      setStatus(`Transfer .molt failed: ${error.message}`);
+      setStatus(`Transfer .lichen failed: ${error.message}`);
       return;
     }
 
     const recipient = prompt('Recipient address:', '');
     if (!recipient) return;
     if (!isValidAddress(recipient.trim())) {
-      setStatus('Transfer .molt failed: invalid recipient address');
+      setStatus('Transfer .lichen failed: invalid recipient address');
       return;
     }
     const password = prompt('Wallet password:', '');
     if (!password) return;
 
-    await runAction('Transfer .molt', () => transferMoltName({
+    await runAction('Transfer .lichen', () => transferLichenName({
       wallet,
       password,
       network,
@@ -417,14 +417,14 @@ async function actionTransferName() {
 
 async function actionReleaseName() {
   await withWalletAction(async ({ wallet, network }) => {
-    const name = prompt('Name to release (without .molt):', 'myname');
+    const name = prompt('Name to release (without .licn):', 'myname');
     if (!name) return;
 
     let normalizedName;
     try {
-      normalizedName = validateMoltNameOrThrow(name);
+      normalizedName = validateLichenNameOrThrow(name);
     } catch (error) {
-      setStatus(`Release .molt failed: ${error.message}`);
+      setStatus(`Release .lichen failed: ${error.message}`);
       return;
     }
 
@@ -436,7 +436,7 @@ async function actionReleaseName() {
     const password = prompt('Wallet password:', '');
     if (!password) return;
 
-    await runAction('Release .molt', () => releaseMoltName({
+    await runAction('Release .lichen', () => releaseLichenName({
       wallet,
       password,
       network,

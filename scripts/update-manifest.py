@@ -28,11 +28,11 @@ for e in raw_entries:
         entries[e['symbol']] = e['program']
 
 manifest = {
-    'deployer': entries.get('MOLT', ''),  # deployer is implied by MOLT owner
+    'deployer': entries.get('LICN', ''),  # deployer is implied by LICN owner
     'deployed_at': '2026-02-19T00:00:00Z',
     'note': 'Updated from live genesis symbol registry',
     'contracts': {
-        'musd_token': entries.get('MUSD', ''),
+        'lusd_token': entries.get('LUSD', ''),
         'wsol_token': entries.get('WSOL', ''),
         'weth_token': entries.get('WETH', ''),
         'dex_core': entries.get('DEX', ''),
@@ -45,11 +45,11 @@ manifest = {
         'prediction_market': entries.get('PREDICT', ''),
     },
     'token_contracts': {
-        'MOLT': entries.get('MOLT', ''),
-        'mUSD': entries.get('MUSD', ''),
+        'LICN': entries.get('LICN', ''),
+        'lUSD': entries.get('LUSD', ''),
         'wSOL': entries.get('WSOL', ''),
         'wETH': entries.get('WETH', ''),
-        'REEF': entries.get('REEF', ''),
+        'MOSS': entries.get('MOSS', ''),
     },
     'dex_contracts': {
         'dex_core': entries.get('DEX', ''),
@@ -62,8 +62,8 @@ manifest = {
         'prediction_market': entries.get('PREDICT', ''),
     },
     'trading_pairs': [
-        'MOLT/mUSD', 'wSOL/mUSD', 'wETH/mUSD', 'REEF/mUSD',
-        'wSOL/MOLT', 'wETH/MOLT', 'REEF/MOLT',
+        'LICN/lUSD', 'wSOL/lUSD', 'wETH/lUSD', 'MOSS/lUSD',
+        'wSOL/LICN', 'wETH/LICN', 'MOSS/LICN',
     ],
 }
 

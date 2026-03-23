@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# MoltChain Validator Launcher
+# Lichen Validator Launcher
 # ============================================================================
 #
 # Usage: ./run-validator.sh [network] <validator_number>
@@ -68,42 +68,42 @@ DB_PATH="${REPO_ROOT}/data/state-${P2P_PORT}"
 VALIDATOR_HOME="${DB_PATH}/home"
 mkdir -p "$VALIDATOR_HOME"
 
-LOCAL_LISTEN_ADDR="${MOLTCHAIN_LOCAL_LISTEN_ADDR:-127.0.0.1}"
+LOCAL_LISTEN_ADDR="${LICHEN_LOCAL_LISTEN_ADDR:-127.0.0.1}"
 VALIDATOR_KEYPAIR_FILE="${DB_PATH}/validator-keypair.json"
 GENESIS_WALLET_FILE="${DB_PATH}/genesis-wallet.json"
 LOCAL_SEEDS_FILE="${DB_PATH}/seeds.json"
-CLI_BIN="${REPO_ROOT}/target/release/molt"
-GENESIS_BIN="${REPO_ROOT}/target/release/moltchain-genesis"
-VALIDATOR_BIN="${REPO_ROOT}/target/release/moltchain-validator"
+CLI_BIN="${REPO_ROOT}/target/release/licn"
+GENESIS_BIN="${REPO_ROOT}/target/release/lichen-genesis"
+VALIDATOR_BIN="${REPO_ROOT}/target/release/lichen-validator"
 
 # Save real user home BEFORE overriding — needed for shared ZK verification keys
 REAL_USER_HOME="${HOME}"
 
 # Ensure each validator has isolated persistent identity/fingerprint stores.
-# Without this, multiple local validators share ~/.moltchain/node_cert.der and
+# Without this, multiple local validators share ~/.lichen/node_cert.der and
 # can be rejected as banned/duplicate peers.
 export HOME="$VALIDATOR_HOME"
 
 # Point ZK verification keys to the shared cache in the REAL user home.
 # The per-validator HOME override above prevents dirs::home_dir() from finding
-# ~/.moltchain/zk/ — we fix that by setting explicit env vars.
-if [[ -d "${REAL_USER_HOME}/.moltchain/zk" ]]; then
-	export MOLTCHAIN_ZK_SHIELD_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_shield.bin"
-	export MOLTCHAIN_ZK_UNSHIELD_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_unshield.bin"
-	export MOLTCHAIN_ZK_TRANSFER_VK_PATH="${REAL_USER_HOME}/.moltchain/zk/vk_transfer.bin"
+# ~/.lichen/zk/ — we fix that by setting explicit env vars.
+if [[ -d "${REAL_USER_HOME}/.lichen/zk" ]]; then
+	export LICHEN_ZK_SHIELD_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_shield.bin"
+	export LICHEN_ZK_UNSHIELD_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_unshield.bin"
+	export LICHEN_ZK_TRANSFER_VK_PATH="${REAL_USER_HOME}/.lichen/zk/vk_transfer.bin"
 fi
 
-if [[ "${MOLTCHAIN_SUPERVISED:-0}" != "1" && "${MOLTCHAIN_DISABLE_SUPERVISOR:-0}" != "1" && -x "$SUPERVISOR_SCRIPT" ]]; then
+if [[ "${LICHEN_SUPERVISED:-0}" != "1" && "${LICHEN_DISABLE_SUPERVISOR:-0}" != "1" && -x "$SUPERVISOR_SCRIPT" ]]; then
 	SUPERVISOR_INSTANCE="${NETWORK}-v${VALIDATOR_NUM}-p${P2P_PORT}"
-	exec "$SUPERVISOR_SCRIPT" "$SUPERVISOR_INSTANCE" -- env MOLTCHAIN_SUPERVISED=1 "$REPO_ROOT/run-validator.sh" "${ORIG_ARGS[@]}"
+	exec "$SUPERVISOR_SCRIPT" "$SUPERVISOR_INSTANCE" -- env LICHEN_SUPERVISED=1 "$REPO_ROOT/run-validator.sh" "${ORIG_ARGS[@]}"
 fi
 
 write_local_seeds_file() {
 	cat > "$LOCAL_SEEDS_FILE" <<EOF
 {
   "$NETWORK": {
-    "network_id": "moltchain-${NETWORK}-local",
-    "chain_id": "moltchain-${NETWORK}-1",
+    "network_id": "lichen-${NETWORK}-local",
+    "chain_id": "lichen-${NETWORK}-1",
     "seeds": [],
     "bootstrap_peers": [
       "127.0.0.1:${BASE_P2P}"
@@ -146,15 +146,15 @@ try:
     print(f'export GENESIS_BNB_USD={m.get(\"BNBUSDT\", 620.0):.2f}')
 except: pass
 " 2>/dev/null)"
-		export GENESIS_MOLT_USD="${GENESIS_MOLT_USD:-0.10}"
-		echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} MOLT=\$${GENESIS_MOLT_USD}"
+		export GENESIS_LICN_USD="${GENESIS_LICN_USD:-0.10}"
+		echo "  Genesis prices: SOL=\$${GENESIS_SOL_USD:-?} ETH=\$${GENESIS_ETH_USD:-?} BNB=\$${GENESIS_BNB_USD:-?} LICN=\$${GENESIS_LICN_USD}"
 	else
 		echo "  Could not fetch live prices, using defaults"
 	fi
 
 	if [[ ! -x "$CLI_BIN" || ! -x "$GENESIS_BIN" || ! -x "$VALIDATOR_BIN" ]]; then
 		echo "Building required release binaries..."
-		cargo build --release --bin molt --bin moltchain-genesis --bin moltchain-validator || exit 1
+		cargo build --release --bin licn --bin lichen-genesis --bin lichen-validator || exit 1
 	fi
 
 	if [[ ! -f "$VALIDATOR_KEYPAIR_FILE" ]]; then
@@ -189,7 +189,7 @@ case $VALIDATOR_NUM in
 		;;
 esac
 
-echo "MoltChain Validator: $NAME"
+echo "Lichen Validator: $NAME"
 echo "=================================="
 echo "Network: $NETWORK"
 echo "RPC:     http://localhost:$RPC_PORT"
@@ -208,12 +208,12 @@ fi
 
 echo ""
 echo "Block Production (Tendermint BFT):"
-echo "   No TXs: Heartbeat ~800ms (0.01 MOLT)"
-echo "   With TXs: ~400ms blocks (0.02 MOLT)"
+echo "   No TXs: Heartbeat ~800ms (0.01 LICN)"
+echo "   With TXs: ~400ms blocks (0.02 LICN)"
 echo ""
 
-if [ -z "${MOLTCHAIN_SIGNER_BIND:-}" ]; then
-	export MOLTCHAIN_SIGNER_BIND="0.0.0.0:${SIGNER_PORT}"
+if [ -z "${LICHEN_SIGNER_BIND:-}" ]; then
+	export LICHEN_SIGNER_BIND="0.0.0.0:${SIGNER_PORT}"
 fi
 
 if [ "$NETWORK" = "testnet" ]; then
@@ -244,7 +244,7 @@ done
 write_local_seeds_file
 ensure_local_genesis
 
-if [[ "${MOLTCHAIN_SUPERVISED:-0}" == "1" ]]; then
+if [[ "${LICHEN_SUPERVISED:-0}" == "1" ]]; then
 	# External supervisor is active; run validator in direct worker mode to
 	# avoid nested watchdogs and orphaned child processes.
 	EXTRA_FLAGS="$EXTRA_FLAGS --supervised --no-watchdog"
@@ -262,7 +262,7 @@ if [ -x "$VALIDATOR_BIN" ]; then
 else
 	echo "Release binary not found at $VALIDATOR_BIN"
 	echo "Building with cargo..."
-	exec cargo run --release --bin moltchain-validator -- \
+	exec cargo run --release --bin lichen-validator -- \
 		--network "$NETWORK" \
 		--rpc-port "$RPC_PORT" \
 		--ws-port "$WS_PORT" \

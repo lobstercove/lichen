@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// MoltChain RPC — DEX REST API Module
-// Implements /api/v1/* endpoints for MoltyDEX
+// Lichen RPC — DEX REST API Module
+// Implements /api/v1/* endpoints for Lichen DEX
 //
 // Reads contract storage directly from StateStore using the dex_core, dex_amm,
 // dex_margin, dex_analytics, dex_router, dex_rewards, dex_governance key layouts.
@@ -588,12 +588,12 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
 
     // Cache miss or expired — rebuild
     let known_tokens: &[(&str, &str)] = &[
-        ("MOLT", "MOLT"),
-        ("MUSD", "mUSD"),
+        ("LICN", "LICN"),
+        ("LUSD", "lUSD"),
         ("WSOL", "wSOL"),
         ("WETH", "wETH"),
         ("WBNB", "wBNB"),
-        ("REEF", "REEF"),
+        ("MOSS", "MOSS"),
         ("PUNKS", "PUNKS"),
         ("BOUNTY", "BOUNTY"),
         ("COMPUTE", "COMPUTE"),
@@ -2527,12 +2527,12 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 /// GET /api/v1/oracle/prices — All oracle price feeds
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let assets = ["MOLT", "wSOL", "wETH", "wBNB"];
+    let assets = ["LICN", "wSOL", "wETH", "wBNB"];
     let mut feeds = Vec::new();
 
     for asset in &assets {
         if let Ok(Some(price)) = state.state.get_oracle_consensus_price(asset) {
-            let stale = slot.saturating_sub(price.slot) > moltchain_core::ORACLE_STALENESS_SLOTS;
+            let stale = slot.saturating_sub(price.slot) > lichen_core::ORACLE_STALENESS_SLOTS;
             let timestamp = state
                 .state
                 .get_block_by_slot(price.slot)
@@ -2569,33 +2569,33 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Get the live consensus oracle price for a DEX pair.
-/// Returns the USD-denominated price (or MOLT-denominated for cross pairs)
+/// Returns the USD-denominated price (or LICN-denominated for cross pairs)
 /// from the validator-attested oracle, or None if unavailable/stale.
-fn oracle_price_for_pair(state: &moltchain_core::StateStore, pair_id: u64) -> Option<f64> {
-    use moltchain_core::consensus::{consensus_oracle_price_from_state, molt_price_from_state};
-    let molt_usd = molt_price_from_state(state);
+fn oracle_price_for_pair(state: &lichen_core::StateStore, pair_id: u64) -> Option<f64> {
+    use lichen_core::consensus::{consensus_oracle_price_from_state, licn_price_from_state};
+    let licn_usd = licn_price_from_state(state);
     match pair_id {
-        1 => Some(molt_usd),
+        1 => Some(licn_usd),
         2 => consensus_oracle_price_from_state(state, "wSOL"),
         3 => consensus_oracle_price_from_state(state, "wETH"),
         4 => consensus_oracle_price_from_state(state, "wSOL").map(|wsol| {
-            if molt_usd > 0.0 {
-                wsol / molt_usd
+            if licn_usd > 0.0 {
+                wsol / licn_usd
             } else {
                 0.0
             }
         }),
         5 => consensus_oracle_price_from_state(state, "wETH").map(|weth| {
-            if molt_usd > 0.0 {
-                weth / molt_usd
+            if licn_usd > 0.0 {
+                weth / licn_usd
             } else {
                 0.0
             }
         }),
         6 => consensus_oracle_price_from_state(state, "wBNB"),
         7 => consensus_oracle_price_from_state(state, "wBNB").map(|wbnb| {
-            if molt_usd > 0.0 {
-                wbnb / molt_usd
+            if licn_usd > 0.0 {
+                wbnb / licn_usd
             } else {
                 0.0
             }
@@ -2660,7 +2660,7 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         .route("/stats/rewards", get(get_rewards_stats))
         .route("/stats/analytics", get(get_analytics_stats))
         .route("/stats/governance", get(get_governance_stats))
-        .route("/stats/moltswap", get(get_moltswap_stats))
+        .route("/stats/lichenswap", get(get_lichenswap_stats))
         // Oracle
         .route("/oracle/prices", get(get_oracle_prices))
 }
@@ -2782,13 +2782,13 @@ async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
     .into_response()
 }
 
-async fn get_moltswap_stats(State(state): State<Arc<RpcState>>) -> Response {
+async fn get_lichenswap_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(
         serde_json::json!({
-            "swapCount": read_u64(&state, "MOLTSWAP", "ms_swap_count"),
-            "volumeA": read_u64(&state, "MOLTSWAP", "ms_volume_a"),
-            "volumeB": read_u64(&state, "MOLTSWAP", "ms_volume_b"),
+            "swapCount": read_u64(&state, "LICHENSWAP", "ms_swap_count"),
+            "volumeA": read_u64(&state, "LICHENSWAP", "ms_volume_a"),
+            "volumeB": read_u64(&state, "LICHENSWAP", "ms_volume_b"),
         }),
         slot,
     )

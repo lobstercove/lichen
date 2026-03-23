@@ -16,7 +16,7 @@
  *  F10E.3  — Consistent bottom panel toggling
  *  F10E.4  — Governance New Proposal wallet-gate
  *  F10E.5  — Parameter + Delist proposal form fields
- *  F10E.6  — MOLT/mUSD genesis price $0.10
+ *  F10E.6  — LICN/lUSD genesis price $0.10
  *  F10E.7  — Oracle fast-poll price overlay (FE-06: replaced Binance WS)
  *  F10E.8  — CSS disabled styles
  *  F10E.9  — Margin position wallet-gate
@@ -26,7 +26,7 @@
  * Oracle Price Feed Integration tests:
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
- *  - Background price feeder service (internal oracle → moltoracle + analytics)
+ *  - Background price feeder service (internal oracle → lichenoracle + analytics)
  *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
  *  - Frontend real-time overlay (oracle fast-poll for responsive updates)
  *  - End-to-end data flow verification
@@ -38,7 +38,7 @@
  *  PD — Frontend oracle reference line: gold dashed line on TradingView chart
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
- *  - Background price feeder service (internal oracle → moltoracle + analytics)
+ *  - Background price feeder service (internal oracle → lichenoracle + analytics)
  *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
  *  - Frontend real-time overlay (oracle fast-poll for responsive updates)
  *  - End-to-end data flow verification
@@ -323,6 +323,7 @@ assert('recent_blockhash' in parsed.message, 'Uses recent_blockhash field');
 console.log('\n── F10.1-F10.7: Handler wiring structural checks ──');
 
 const fs = require('fs');
+const path = require('path');
 const dexSource = fs.readFileSync(__dirname + '/dex.js', 'utf8');
 
 // F10.1: Order submission uses contractIx + buildPlaceOrderArgs
@@ -419,13 +420,13 @@ assert(dexSource.includes("ptype === 'param'"), 'F10E.5: Param proposal data con
 assert(dexSource.includes('proposalData.pair_id') && dexSource.includes('proposalData.reason') && dexSource.includes('delistReason'), 'F10E.5: Delist sends pair_id + reason');
 assert(dexSource.includes('proposalData.parameter') && dexSource.includes('proposalData.proposed_value'), 'F10E.5: Param sends parameter + proposed_value');
 
-// F10E.6: MOLT/mUSD genesis price $0.10
-assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'F10E.6: MOLT_GENESIS_PRICE constant exists');
-assert(dexSource.includes('MOLT_GENESIS_PRICE = 0.10') || dexSource.includes('MOLT_GENESIS_PRICE = 0.1'), 'F10E.6: Genesis price is $0.10');
-assert(dexSource.includes('lastPrice: MOLT_GENESIS_PRICE'), 'F10E.6: State defaults to genesis price');
+// F10E.6: LICN/lUSD genesis price $0.10
+assert(dexSource.includes('LICHEN_GENESIS_PRICE'), 'F10E.6: LICHEN_GENESIS_PRICE constant exists');
+assert(dexSource.includes('LICHEN_GENESIS_PRICE = 0.10') || dexSource.includes('LICHEN_GENESIS_PRICE = 0.1'), 'F10E.6: Genesis price is $0.10');
+assert(dexSource.includes('lastPrice: LICHEN_GENESIS_PRICE'), 'F10E.6: State defaults to genesis price');
 // Verify fallback pair creation
-assert(dexSource.includes("genesis MOLT/mUSD"), 'F10E.6: Genesis pair fallback message');
-assert(dexSource.includes("price: MOLT_GENESIS_PRICE"), 'F10E.6: Genesis pair uses MOLT_GENESIS_PRICE');
+assert(dexSource.includes("genesis LICN/lUSD"), 'F10E.6: Genesis pair fallback message');
+assert(dexSource.includes("price: LICHEN_GENESIS_PRICE"), 'F10E.6: Genesis pair uses LICHEN_GENESIS_PRICE');
 
 // F10E.7: Oracle fast-poll price overlay (FE-06 fix: replaced Binance WS with internal oracle)
 assert(dexSource.includes('startOracleFastPoll'), 'F10E.7: startOracleFastPoll function exists');
@@ -536,7 +537,7 @@ assert(!validatorSrc.includes('"BTC"'), 'ORACLE: BTC removed from oracle feeds')
 
 // Genesis oracle seeding: validator writes oracle prices directly via put_contract_storage
 assert(validatorSrc.includes('put_contract_storage') && validatorSrc.includes('price_key'), 'ORACLE: Validator writes oracle prices directly');
-assert(validatorSrc.includes('oracle_pk') && validatorSrc.includes('price_MOLT'), 'ORACLE: Oracle price keys use price_MOLT pattern');
+assert(validatorSrc.includes('oracle_pk') && validatorSrc.includes('price_LICN'), 'ORACLE: Oracle price keys use price_LICN pattern');
 
 // Genesis analytics price seeding
 assert(validatorSrc.includes('ana_lp_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Analytics last prices seeded (ana_lp_)');
@@ -545,8 +546,8 @@ assert(validatorSrc.includes('ana_c_') && validatorSrc.includes('put_contract_st
 assert(validatorSrc.includes('ana_cc_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Candle counts seeded (ana_cc_)');
 
 // Genesis pair price mapping
-assert(validatorSrc.includes('wsol_usd / molt_usd'), 'ORACLE: MOLT/wSOL computed from wsol/molt ratio');
-assert(validatorSrc.includes('weth_usd / molt_usd'), 'ORACLE: MOLT/wETH computed from weth/molt ratio');
+assert(validatorSrc.includes('wsol_usd / licn_usd'), 'ORACLE: LICN/wSOL computed from wsol/licn ratio');
+assert(validatorSrc.includes('weth_usd / licn_usd'), 'ORACLE: LICN/wETH computed from weth/licn ratio');
 
 // Background price feeder service (WebSocket-based)
 assert(validatorSrc.includes('BINANCE_WS_URL'), 'ORACLE: Binance WebSocket URL constant');
@@ -589,8 +590,8 @@ assert(rpcDexSrc.includes('Oracle price fallback') && rpcDexSrc.includes('price_
 assert(rpcDexSrc.includes('oracle_price') || rpcDexSrc.includes('oracle_usd'), 'RPC: Oracle price variable used');
 assert(rpcDexSrc.includes('100_000_000.0'), 'RPC: 8-decimal oracle price conversion');
 
-// RPC oracle fallback for MOLT-quoted pairs
-assert(rpcDexSrc.includes('price_MOLT') && rpcDexSrc.includes('oracle'), 'RPC: MOLT oracle read for pair conversion');
+// RPC oracle fallback for LICN-quoted pairs
+assert(rpcDexSrc.includes('price_LICN') && rpcDexSrc.includes('oracle'), 'RPC: LICN oracle read for pair conversion');
 assert(rpcDexSrc.includes('"wSOL"') && rpcDexSrc.includes('"wETH"'), 'RPC: Oracle mappings for wSOL and wETH');
 
 // RPC oracle fallback in get_pair_ticker
@@ -609,33 +610,33 @@ assert(dexSource.includes('applyOracleRealTimeOverlay'), 'FE: applyOracleRealTim
 assert(!dexSource.includes('updateExternalPricedPairs'), 'FE: Old updateExternalPricedPairs removed');
 assert(!dexSource.includes('apiPriceless'), 'FE: Old apiPriceless flag removed');
 assert(dexSource.includes('oracle fast-poll') || dexSource.includes('Oracle Fast-Poll'), 'FE: Oracle overlay documented');
-assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'FE: MOLT genesis price constant used in overlay');
+assert(dexSource.includes('LICHEN_GENESIS_PRICE'), 'FE: LICN genesis price constant used in overlay');
 assert(!dexSource.includes('externalPrices.BTC'), 'FE: BTC removed from externalPrices');
 
 // Real-time overlay logic
 assert(dexSource.includes('state.activePair') && dexSource.includes('applyOracleRealTimeOverlay'), 'FE: Real-time overlay updates active pair only');
-assert(dexSource.includes('MOLT') && dexSource.includes('moltPair'), 'FE: MOLT-quoted pair conversion in overlay');
+assert(dexSource.includes('LICN') && dexSource.includes('licnPair'), 'FE: LICN-quoted pair conversion in overlay');
 
 // ── Validator genesis pair creation tests ──
 console.log('\n── Genesis Pair Creation ──');
 
-assert(genesisSrc.includes('wSOL/mUSD') && genesisSrc.includes('wsol_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: wSOL/mUSD pair created');
-assert(genesisSrc.includes('wETH/mUSD') && genesisSrc.includes('weth_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: wETH/mUSD pair created');
-assert(genesisSrc.includes('wSOL/MOLT') && genesisSrc.includes('molt_addr') && genesisSrc.includes('wsol_addr'), 'GENESIS: wSOL/MOLT pair created');
-assert(genesisSrc.includes('wETH/MOLT') && genesisSrc.includes('molt_addr') && genesisSrc.includes('weth_addr'), 'GENESIS: wETH/MOLT pair created');
-assert(genesisSrc.includes('MOLT/mUSD') && genesisSrc.includes('molt_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: MOLT/mUSD pair created');
+assert(genesisSrc.includes('wSOL/lUSD') && genesisSrc.includes('wsol_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: wSOL/lUSD pair created');
+assert(genesisSrc.includes('wETH/lUSD') && genesisSrc.includes('weth_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: wETH/lUSD pair created');
+assert(genesisSrc.includes('wSOL/LICN') && genesisSrc.includes('licn_addr') && genesisSrc.includes('wsol_addr'), 'GENESIS: wSOL/LICN pair created');
+assert(genesisSrc.includes('wETH/LICN') && genesisSrc.includes('licn_addr') && genesisSrc.includes('weth_addr'), 'GENESIS: wETH/LICN pair created');
+assert(genesisSrc.includes('LICN/lUSD') && genesisSrc.includes('licn_addr') && genesisSrc.includes('musd_addr'), 'GENESIS: LICN/lUSD pair created');
 
 // AMM pools with dynamically computed sqrt_price from live oracle prices
 // sqrt_price = floor(sqrt(price) * 2^32) — computed at genesis time
-assert(genesisSrc.includes('sqrt_price(sol_usd)'), 'GENESIS: wSOL/mUSD pool sqrt_price computed from live SOL price');
-assert(genesisSrc.includes('sqrt_price(eth_usd)'), 'GENESIS: wETH/mUSD pool sqrt_price computed from live ETH price');
-assert(genesisSrc.includes('sqrt_price(sol_usd / molt_usd)'), 'GENESIS: wSOL/MOLT pool sqrt_price computed from SOL/MOLT ratio');
-assert(genesisSrc.includes('sqrt_price(eth_usd / molt_usd)'), 'GENESIS: wETH/MOLT pool sqrt_price computed from ETH/MOLT ratio');
+assert(genesisSrc.includes('sqrt_price(sol_usd)'), 'GENESIS: wSOL/lUSD pool sqrt_price computed from live SOL price');
+assert(genesisSrc.includes('sqrt_price(eth_usd)'), 'GENESIS: wETH/lUSD pool sqrt_price computed from live ETH price');
+assert(genesisSrc.includes('sqrt_price(sol_usd / licn_usd)'), 'GENESIS: wSOL/LICN pool sqrt_price computed from SOL/LICN ratio');
+assert(genesisSrc.includes('sqrt_price(eth_usd / licn_usd)'), 'GENESIS: wETH/LICN pool sqrt_price computed from ETH/LICN ratio');
 
-// ── moltoracle contract tests ──
-console.log('\n── MoltOracle Contract ──');
+// ── lichenoracle contract tests ──
+console.log('\n── LichenOracle Contract ──');
 
-const oracleSrc = fs.readFileSync(__dirname + '/../contracts/moltoracle/src/lib.rs', 'utf8');
+const oracleSrc = fs.readFileSync(__dirname + '/../contracts/lichenoracle/src/lib.rs', 'utf8');
 assert(oracleSrc.includes('submit_price'), 'ORACLE CONTRACT: submit_price function exists');
 assert(oracleSrc.includes('add_price_feeder'), 'ORACLE CONTRACT: add_price_feeder function exists');
 assert(oracleSrc.includes('get_price'), 'ORACLE CONTRACT: get_price function exists');
@@ -662,7 +663,7 @@ assert(analyticsSrc.includes('INTERVALS: [u64; 9]'), 'ANALYTICS CONTRACT: 9 cand
 console.log('\n── End-to-End Data Flow ──');
 
 // Verify the complete pipeline exists:
-// Binance → oracle feeder → moltoracle storage → put_contract_storage → RPC reads ana_lp_ → frontend loadPairs
+// Binance → oracle feeder → lichenoracle storage → put_contract_storage → RPC reads ana_lp_ → frontend loadPairs
 
 // 1. External source → Validator WebSocket feeder
 assert(validatorSrc.includes('tokio_tungstenite'), 'E2E: WebSocket client for Binance');
@@ -741,51 +742,51 @@ assert(
     'P2.1: genesis_exec_contract returns false on non-zero error code'
 );
 
-// P2.2: MOLT/mUSD AMM sqrt_price uses dynamic sqrt_price(molt_usd) (F2.4)
+// P2.2: LICN/lUSD AMM sqrt_price uses dynamic sqrt_price(licn_usd) (F2.4)
 assert(
-    genesisSource.includes('sqrt_price(molt_usd)'),
-    'P2.2: MOLT/mUSD AMM uses dynamic sqrt_price(molt_usd)'
+    genesisSource.includes('sqrt_price(licn_usd)'),
+    'P2.2: LICN/lUSD AMM uses dynamic sqrt_price(licn_usd)'
 );
 
-// P2.3: wSOL/mUSD AMM sqrt_price uses dynamic sqrt_price(sol_usd) (F2.5)
+// P2.3: wSOL/lUSD AMM sqrt_price uses dynamic sqrt_price(sol_usd) (F2.5)
 assert(
     genesisSource.includes('sqrt_price(sol_usd)'),
-    'P2.3: wSOL/mUSD AMM uses dynamic sqrt_price(sol_usd)'
+    'P2.3: wSOL/lUSD AMM uses dynamic sqrt_price(sol_usd)'
 );
 
-// P2.4: wETH/mUSD AMM sqrt_price uses dynamic sqrt_price(eth_usd) (F2.5)
+// P2.4: wETH/lUSD AMM sqrt_price uses dynamic sqrt_price(eth_usd) (F2.5)
 assert(
     genesisSource.includes('sqrt_price(eth_usd)'),
-    'P2.4: wETH/mUSD AMM uses dynamic sqrt_price(eth_usd)'
+    'P2.4: wETH/lUSD AMM uses dynamic sqrt_price(eth_usd)'
 );
 
 // P2.5: Cross-pair AMM prices derived from base oracle prices
 assert(
-    genesisSource.includes('sqrt_price(sol_usd / molt_usd)'),
-    'P2.5: wSOL/MOLT sqrt_price derived from sol_usd / molt_usd'
+    genesisSource.includes('sqrt_price(sol_usd / licn_usd)'),
+    'P2.5: wSOL/LICN sqrt_price derived from sol_usd / licn_usd'
 );
 assert(
-    genesisSource.includes('sqrt_price(eth_usd / molt_usd)'),
-    'P2.5: wETH/MOLT sqrt_price derived from eth_usd / molt_usd'
+    genesisSource.includes('sqrt_price(eth_usd / licn_usd)'),
+    'P2.5: wETH/LICN sqrt_price derived from eth_usd / licn_usd'
 );
 
-// P2.6: Genesis creates 7 AMM pools (no REEF)
+// P2.6: Genesis creates 7 AMM pools (no MOSS)
 {
     const poolLine = genesisSource.indexOf('pool_configs:');
     const poolEnd = genesisSource.indexOf('];', poolLine);
     const poolBlock = genesisSource.slice(poolLine, poolEnd);
-    const poolDefs = (poolBlock.match(/"(MOLT|wSOL|wETH|wBNB)\/(mUSD|MOLT|wSOL|wETH|wBNB)"/g) || []);
+    const poolDefs = (poolBlock.match(/"(LICN|wSOL|wETH|wBNB)\/(lUSD|LICN|wSOL|wETH|wBNB)"/g) || []);
     assert(poolDefs.length === 7, `P2.6: Genesis creates 7 AMM pools (got ${poolDefs.length})`);
-    assert(!poolBlock.includes('REEF'), 'P2.6: No REEF pairs in genesis pools');
+    assert(!poolBlock.includes('MOSS'), 'P2.6: No MOSS pairs in genesis pools');
 }
 
 // P2.7: Genesis creates pools with symbol-based labels (F2.7)
 assert(
-    genesisSource.includes('"MOLT/mUSD"') && genesisSource.includes('"wSOL/mUSD"'),
+    genesisSource.includes('"LICN/lUSD"') && genesisSource.includes('"wSOL/lUSD"'),
     'P2.7: Genesis pool_configs use symbol-based pair labels'
 );
 
-// P2.8: Genesis pool_configs has 7 entries (no REEF) (F2.9)
+// P2.8: Genesis pool_configs has 7 entries (no MOSS) (F2.9)
 {
     assert(
         genesisSource.includes('[(&str, [u8; 32], [u8; 32], u64); 7]'),
@@ -793,16 +794,16 @@ assert(
     );
     const poolLine2 = genesisSource.indexOf('pool_configs:');
     const poolEnd2 = genesisSource.indexOf('];', poolLine2);
-    assert(!genesisSource.slice(poolLine2, poolEnd2).includes('REEF'), 'P2.8: No REEF pools in genesis');
+    assert(!genesisSource.slice(poolLine2, poolEnd2).includes('MOSS'), 'P2.8: No MOSS pools in genesis');
 }
 
 // P2.9: testnet-deploy.sh has pairs array for seeding
 assert(
-    testnetDeploySource.includes('"MOLT:mUSD"') || testnetDeploySource.includes("'MOLT:mUSD'"),
-    'P2.9: testnet-deploy.sh references MOLT:mUSD pair'
+    testnetDeploySource.includes('"LICN:lUSD"') || testnetDeploySource.includes("'LICN:lUSD'"),
+    'P2.9: testnet-deploy.sh references LICN:lUSD pair'
 );
 {
-    const pairsInDeploy = (testnetDeploySource.match(/"(MOLT|wSOL|wETH|wBNB|REEF):(mUSD|MOLT)"/g) || []);
+    const pairsInDeploy = (testnetDeploySource.match(/"(LICN|wSOL|wETH|wBNB):(lUSD|LICN)"/g) || []);
     assert(pairsInDeploy.length > 0, `P2.9: testnet-deploy.sh has trading pair definitions`);
 }
 
@@ -819,7 +820,7 @@ assert(
 // P2.11: Startup reconciliation for oracle prices (F2.2)
 assert(
     validatorSource.includes('Oracle price feeds missing'),
-    'P2.11: Startup reconciliation checks for missing price_MOLT'
+    'P2.11: Startup reconciliation checks for missing price_LICN'
 );
 assert(
     validatorSource.includes('Oracle price seeded'),
@@ -828,7 +829,7 @@ assert(
 
 // P2.12: Genesis logs seed prices at startup
 assert(
-    genesisSource.includes('Genesis prices: MOLT='),
+    genesisSource.includes('Genesis prices: LICN='),
     'P2.12: Genesis logs seed prices at startup'
 );
 
@@ -989,8 +990,8 @@ assert(
 // P3.F5: F3.5 FIX — Fallback pair uses pairId: 1 (not 0)
 assert(
     dexSource.includes('pairId: 1, id:') &&
-    !dexSource.includes("pairId: 0, id: 'MOLT/mUSD'"),
-    'P3.F5: Fallback MOLT/mUSD pair uses pairId: 1 (not 0) (F3.5 fix)'
+    !dexSource.includes("pairId: 0, id: 'LICN/lUSD'"),
+    'P3.F5: Fallback LICN/lUSD pair uses pairId: 1 (not 0) (F3.5 fix)'
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1154,7 +1155,7 @@ assert(
 
 // P5.7: Candle aggregation — dex_analytics contract uses correct interval boundaries
 {
-    const analyticsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_analytics/src/lib.rs';
+    const analyticsPath = path.resolve(__dirname, '../contracts/dex_analytics/src/lib.rs');
     try {
         const analyticsSource = fs.readFileSync(analyticsPath, 'utf8');
         assert(
@@ -1225,7 +1226,7 @@ assert(
 // P6.1: WS URL configurable
 assert(
     dexSource.includes('ws://') && dexSource.includes(':8900'),
-    'P6.1: WS URL defaults to ws://localhost:8900 with MOLTCHAIN_WS override'
+    'P6.1: WS URL defaults to ws://localhost:8900 with LICHEN_WS override'
 );
 
 // P6.2: DexWS class with constructor, connect, subscribe, unsubscribe
@@ -1267,7 +1268,7 @@ assert(
 
 // P6.8: DexEvent has rename_all = camelCase (F6.9 fix)
 {
-    const wsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/dex_ws.rs';
+    const wsPath = path.resolve(__dirname, '../rpc/src/dex_ws.rs');
     const wsSource = fs.readFileSync(wsPath, 'utf8');
     assert(
         wsSource.includes('rename_all = "camelCase"') && wsSource.includes('pub enum DexEvent'),
@@ -1307,7 +1308,7 @@ assert(
 
 // P6.14: emit_dex_events wired in validator (F6.2 fix)
 {
-    const validatorPath = '/Users/johnrobin/.openclaw/workspace/moltchain/validator/src/main.rs';
+    const validatorPath = path.resolve(__dirname, '../validator/src/main.rs');
     const validatorSource = fs.readFileSync(validatorPath, 'utf8');
     assert(
         validatorSource.includes('fn emit_dex_events(') && validatorSource.includes('emit_dex_events(&state_c, &bc_c'),
@@ -1317,7 +1318,7 @@ assert(
 
 // P6.14: emit_dex_events wired in validator (F6.2 fix)
 {
-    const validatorPath = '/Users/johnrobin/.openclaw/workspace/moltchain/validator/src/main.rs';
+    const validatorPath = path.resolve(__dirname, '../validator/src/main.rs');
     const validatorSource = fs.readFileSync(validatorPath, 'utf8');
     assert(
         validatorSource.includes('fn emit_dex_events(') && validatorSource.includes('emit_dex_events(&state_c, &bc_c'),
@@ -1328,9 +1329,9 @@ assert(
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 7: Pool View — AMM Liquidity
 // ═══════════════════════════════════════════════════════════════════════════
-const dexRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/dex.rs';
-const dexJsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/dex.js';
-const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.html';
+const dexRsPath = path.resolve(__dirname, '../rpc/src/dex.rs');
+const dexJsPath = path.resolve(__dirname, '../dex/dex.js');
+const indexHtmlPath = path.resolve(__dirname, '../dex/index.html');
 
 // P7.1: decode_pool byte offsets match contract (96-byte layout)
 {
@@ -1828,8 +1829,8 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
 // ═══════════════════════════════════════════════════════════════════════════
 // PHASE 10: Margin Trading (Inline) — Tests
 // ═══════════════════════════════════════════════════════════════════════════
-const marginRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_margin/src/lib.rs';
-const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/prediction.rs';
+const marginRsPath = path.resolve(__dirname, '../contracts/dex_margin/src/lib.rs');
+const predictionRsPath = path.resolve(__dirname, '../rpc/src/prediction.rs');
 
 // P10.1: calculate_margin_ratio_with_pnl exists in contract
 {
@@ -2070,7 +2071,7 @@ assert(
     'PB.4: Inactive markets still receive oracle analytics updates'
 );
 
-// PB.5: Oracle feeder still writes to moltoracle unconditionally
+// PB.5: Oracle feeder still writes to lichenoracle unconditionally
 {
     // The oracle feed writes (price_key → feed) happen BEFORE the analytics
     // section, so they always execute regardless of trade_active skip
@@ -2078,7 +2079,7 @@ assert(
     const tradeActiveCheck = validatorSrcAll.indexOf('Active market: trades drive displayed prices');
     assert(
         oracleFeedWrite > 0 && tradeActiveCheck > 0 && oracleFeedWrite < tradeActiveCheck,
-        'PB.5: Oracle moltoracle writes occur before (not gated by) trade-active check'
+        'PB.5: Oracle lichenoracle writes occur before (not gated by) trade-active check'
     );
 }
 
@@ -2431,21 +2432,21 @@ assert(
 // Phase 12: Prediction Market — Trade & Create
 // ═══════════════════════════════════════════════════════════════════════════
 
-// P12.1: Amount scale uses 1e6 (MUSD_UNIT), not 1e9 (F12.1)
+// P12.1: Amount scale uses 1e6 (LUSD_UNIT), not 1e9 (F12.1)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    assert(dexJs.includes('amt * 1e6'), 'P12.1a: Buy shares sends amt * 1e6 (MUSD_UNIT)');
-    // Scope to prediction section only — ClaWPump code legitimately uses amt * 1e9
+    assert(dexJs.includes('amt * 1e6'), 'P12.1a: Buy shares sends amt * 1e6 (LUSD_UNIT)');
+    // Scope to prediction section only — SporePump code legitimately uses amt * 1e9
     const predStart = dexJs.indexOf('function buyPredictionShares');
     const predEnd = dexJs.indexOf('function sellPredictionShares');
     const predSection = predStart > 0 && predEnd > predStart ? dexJs.slice(predStart, predEnd) : '';
     assert(!predSection.includes('amt * 1e9'), 'P12.1b: No amt * 1e9 in prediction trade code');
 }
 
-// P12.2: RPC PRICE_SCALE for prediction matches contract MUSD_UNIT (1e6) (F12.10)
+// P12.2: RPC PRICE_SCALE for prediction matches contract LUSD_UNIT (1e6) (F12.10)
 {
     const predRs = fs.readFileSync(predictionRsPath, 'utf8');
-    assert(predRs.includes('PRICE_SCALE: u64 = 1_000_000'), 'P12.2: RPC PRICE_SCALE = 1_000_000 matching MUSD_UNIT');
+    assert(predRs.includes('PRICE_SCALE: u64 = 1_000_000'), 'P12.2: RPC PRICE_SCALE = 1_000_000 matching LUSD_UNIT');
 }
 
 // P12.3: updatePredictCalc uses CPMM formula, not linear (F12.2)
@@ -2471,12 +2472,12 @@ assert(
     assert(!dexJs.includes('writeU8(arr, 0, 11); // opcode'), 'P12.4b: No opcode 11 (dao_resolve) in resolve builder');
     // Layout: 82 bytes for submit_resolution
     assert(dexJs.includes('new ArrayBuffer(82)'), 'P12.4c: Resolve instruction is 82 bytes');
-    assert(dexJs.includes('100_000_000'), 'P12.4d: DISPUTE_BOND (100 mUSD) included');
+    assert(dexJs.includes('100_000_000'), 'P12.4d: DISPUTE_BOND (100 lUSD) included');
 }
 
 // P12.5: CSS wallet-gates predict-toggle-btn, not predict-outcome-btn (F12.4)
 {
-    const css = fs.readFileSync('/Users/johnrobin/.openclaw/workspace/moltchain/dex/dex.css', 'utf8');
+    const css = fs.readFileSync(path.resolve(__dirname, '../dex/dex.css'), 'utf8');
     assert(css.includes('.wallet-gated-disabled .predict-toggle-btn'), 'P12.5a: CSS targets predict-toggle-btn');
     assert(!css.includes('.wallet-gated-disabled .predict-outcome-btn'), 'P12.5b: Old predict-outcome-btn selector removed');
 }
@@ -2536,7 +2537,7 @@ assert(
 {
     const html = fs.readFileSync(indexHtmlPath, 'utf8');
     assert(html.includes('Fee (2%)'), 'P12.12a: HTML shows 2% fee');
-    const predContractRs = fs.readFileSync('/Users/johnrobin/.openclaw/workspace/moltchain/contracts/prediction_market/src/lib.rs', 'utf8');
+    const predContractRs = fs.readFileSync(path.resolve(__dirname, '../contracts/prediction_market/src/lib.rs'), 'utf8');
     assert(predContractRs.includes('TRADING_FEE_BPS: u64 = 200'), 'P12.12b: Contract fee = 200 bps = 2%');
 }
 
@@ -2552,7 +2553,7 @@ assert(
 // P12.14: Create market handler validates initial liquidity amount
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    assert(dexJs.includes('liq * 1e6'), 'P12.14: Initial liquidity converted to MUSD units (1e6)');
+    assert(dexJs.includes('liq * 1e6'), 'P12.14: Initial liquidity converted to LUSD units (1e6)');
 }
 
 // P12.15: "My Markets" tab has proper HTML table structure
@@ -2575,12 +2576,12 @@ assert(
 // P13.1: HTML tier thresholds match contract (100K/1M/10M, not 10K/100K/1M)
 {
     const html = fs.readFileSync(indexHtmlPath, 'utf8');
-    assert(html.includes('&lt; 100K MOLT'), 'P13.1: Bronze threshold is < 100K MOLT');
+    assert(html.includes('&lt; 100K LICN'), 'P13.1: Bronze threshold is < 100K LICN');
     assert(html.includes('100K — 1M'), 'P13.1: Silver threshold is 100K — 1M');
     assert(html.includes('1M — 10M'), 'P13.1: Gold threshold is 1M — 10M');
-    assert(html.includes('&gt; 10M MOLT'), 'P13.1: Diamond threshold is > 10M MOLT');
-    assert(!html.includes('&lt; 10K MOLT'), 'P13.1: Old wrong Bronze threshold removed');
-    assert(!html.includes('&gt; 1M MOLT'), 'P13.1: Old wrong Diamond threshold removed');
+    assert(html.includes('&gt; 10M LICN'), 'P13.1: Diamond threshold is > 10M LICN');
+    assert(!html.includes('&lt; 10K LICN'), 'P13.1: Old wrong Bronze threshold removed');
+    assert(!html.includes('&gt; 1M LICN'), 'P13.1: Old wrong Diamond threshold removed');
 }
 
 // P13.2: Tier computed client-side from totalVolume (no data.tier dependency)
@@ -2592,14 +2593,14 @@ assert(
     assert(!(/\bdata\.tier\b/.test(dexJs)), 'P13.2: No data.tier dependency (phantom field removed)');
 }
 
-// P13.3: TIER_THRESHOLDS match contract constants (in shells)
+// P13.3: TIER_THRESHOLDS match contract constants (in spores)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    // Bronze < 100K MOLT = 100_000 * 1e9 = 100_000_000_000_000
+    // Bronze < 100K LICN = 100_000 * 1e9 = 100_000_000_000_000
     assert(dexJs.includes('100_000_000_000_000'), 'P13.3: Bronze max matches contract TIER_BRONZE_MAX');
-    // Silver < 1M MOLT = 1_000_000 * 1e9 = 1_000_000_000_000_000
+    // Silver < 1M LICN = 1_000_000 * 1e9 = 1_000_000_000_000_000
     assert(dexJs.includes('1_000_000_000_000_000'), 'P13.3: Silver max matches contract TIER_SILVER_MAX');
-    // Gold < 10M MOLT = 10_000_000 * 1e9 = 10_000_000_000_000_000
+    // Gold < 10M LICN = 10_000_000 * 1e9 = 10_000_000_000_000_000
     assert(dexJs.includes('10_000_000_000_000_000'), 'P13.3: Gold max matches contract TIER_GOLD_MAX');
     // Diamond has Infinity (no upper bound)
     assert(dexJs.includes('Infinity'), 'P13.3: Diamond has no upper bound (Infinity)');
@@ -2803,12 +2804,12 @@ assert(
     assert(structSection.includes('new_taker_fee'), 'P14.7: ProposalJson has new_taker_fee field');
 }
 
-// P14.8: Vote handler no longer checks MOLT balance (contract checks reputation)
+// P14.8: Vote handler no longer checks LICN balance (contract checks reputation)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     const fnStart = dexJs.indexOf('function bindVoteButtons');
     const voteSection = dexJs.substring(fnStart, fnStart + 1500);
-    assert(!voteSection.includes('moltBalance'), 'P14.8: No MOLT balance check for voting');
+    assert(!voteSection.includes('licnBalance'), 'P14.8: No LICN balance check for voting');
     assert(voteSection.includes('buildVoteArgs'), 'P14.8: Uses buildVoteArgs for binary instruction');
 }
 
@@ -2819,11 +2820,11 @@ assert(
     assert(dexJs.includes('data.activeProposals'), 'P14.9: Uses camelCase activeProposals');
 }
 
-// P14.10: HTML listing liquidity shows 100,000 MOLT (matching contract)
+// P14.10: HTML listing liquidity shows 100,000 LICN (matching contract)
 {
     const html = fs.readFileSync(indexHtmlPath, 'utf8');
-    assert(html.includes('100,000 MOLT'), 'P14.10: Min listing liquidity is 100,000 MOLT');
-    assert(!html.includes('>10,000 MOLT<'), 'P14.10: Old wrong 10,000 MOLT removed');
+    assert(html.includes('100,000 LICN'), 'P14.10: Min listing liquidity is 100,000 LICN');
+    assert(!html.includes('>10,000 LICN<'), 'P14.10: Old wrong 10,000 LICN removed');
 }
 
 // P14.11: Filter reapplied after loadProposals DOM rebuild
@@ -3361,7 +3362,7 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 
 // P17W.12: Backend oracle feeder accepts DexEventBroadcaster parameter
 {
-    assert(validatorSrcAll.includes('dex_broadcaster: std::sync::Arc<moltchain_rpc::dex_ws::DexEventBroadcaster>'), 'P17W.12a: Oracle feeder takes DexEventBroadcaster param');
+    assert(validatorSrcAll.includes('dex_broadcaster: std::sync::Arc<lichen_rpc::dex_ws::DexEventBroadcaster>'), 'P17W.12a: Oracle feeder takes DexEventBroadcaster param');
 }
 
 // P17W.13: WS orderbook subscription handler processes bids/asks from WS data
@@ -3389,8 +3390,8 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 // Phase 18: Analytics Contract Wiring
 // ═══════════════════════════════════════════════════════════════════════════
 
-const analyticsContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_analytics/src/lib.rs';
-const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_core/src/lib.rs';
+const analyticsContractPath = path.resolve(__dirname, '../contracts/dex_analytics/src/lib.rs');
+const dexCoreContractPath = path.resolve(__dirname, '../contracts/dex_core/src/lib.rs');
 
 // P18.1: Analytics contract tracks trades, candles (9 intervals), 24h stats, trader stats
 {
@@ -3525,15 +3526,15 @@ const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/cont
 // Phase 19: Token Contracts & Balances
 // ═══════════════════════════════════════════════════════════════════════════
 
-const musdContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/musd_token/src/lib.rs';
-const wsolContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/wsol_token/src/lib.rs';
-const wethContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/weth_token/src/lib.rs';
-const moltContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/moltcoin/src/lib.rs';
-const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.rs';
+const musdContractPath = path.resolve(__dirname, '../contracts/lusd_token/src/lib.rs');
+const wsolContractPath = path.resolve(__dirname, '../contracts/wsol_token/src/lib.rs');
+const wethContractPath = path.resolve(__dirname, '../contracts/weth_token/src/lib.rs');
+const licnContractPath = path.resolve(__dirname, '../contracts/lichencoin/src/lib.rs');
+const rpcLibPath = path.resolve(__dirname, '../rpc/src/lib.rs');
 
 // P19.1: Standard token interface
 {
-    for (const [name, p] of [['musd', musdContractPath], ['wsol', wsolContractPath], ['weth', wethContractPath], ['molt', moltContractPath]]) {
+    for (const [name, p] of [['musd', musdContractPath], ['wsol', wsolContractPath], ['weth', wethContractPath], ['licn', licnContractPath]]) {
         const src = fs.readFileSync(p, 'utf8');
         assert(src.includes('fn initialize'), `P19.1a: ${name} has initialize`);
         assert(src.includes('balance_of') || src.includes('fn transfer'), `P19.1b: ${name} has balance_of or transfer`);
@@ -3553,10 +3554,10 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     assert(tbBlock.includes('get_symbol_registry_by_program'), 'P19.2e: getTokenBalance looks up registry');
 }
 
-// P19.3: mUSD uses 9 decimals matching system convention (F19.3a fix)
+// P19.3: lUSD uses 9 decimals matching system convention (F19.3a fix)
 {
     const musd = fs.readFileSync(musdContractPath, 'utf8');
-    assert(musd.includes('DECIMALS: u8 = 9'), 'P19.3a: mUSD DECIMALS is 9 (not 6)');
+    assert(musd.includes('DECIMALS: u8 = 9'), 'P19.3a: lUSD DECIMALS is 9 (not 6)');
     assert(musd.includes('100_000_000_000_000'), 'P19.3b: MINT_CAP adjusted for 9 decimals');
 }
 
@@ -3566,7 +3567,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     const lbIdx = js.indexOf('async function loadBalances');
     assert(lbIdx !== -1, 'P19.4a: loadBalances function exists');
     const lbBlock = js.substring(lbIdx, lbIdx + 1300);
-    assert(lbBlock.includes('spendable'), 'P19.4b: Uses spendable instead of total shells');
+    assert(lbBlock.includes('spendable'), 'P19.4b: Uses spendable instead of total spores');
     assert(lbBlock.includes('getTokenAccounts'), 'P19.4c: Fetches token accounts for wallet');
     assert(lbBlock.includes('ta.ui_amount'), 'P19.4d: Uses ui_amount from token accounts');
     assert(lbBlock.includes('ta.symbol'), 'P19.4e: Uses symbol from token accounts');
@@ -3574,11 +3575,11 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
 
 // P19.5: Token minting at genesis
 {
-    const molt = fs.readFileSync(moltContractPath, 'utf8');
-    assert(molt.includes('fn initialize'), 'P19.5a: MOLT has initialize function');
-    // MOLT mints initial supply on init
-    const initIdx = molt.indexOf('fn initialize');
-    const initBlock = molt.substring(initIdx, initIdx + 2600);
+    const licn = fs.readFileSync(licnContractPath, 'utf8');
+    assert(licn.includes('fn initialize'), 'P19.5a: LICN has initialize function');
+    // LICN mints initial supply on init
+    const initIdx = licn.indexOf('fn initialize');
+    const initBlock = licn.substring(initIdx, initIdx + 2600);
     assert(initBlock.includes('mint') || initBlock.includes('Token::') || initBlock.includes('make_token') || initBlock.includes('token.initialize'), 'P19.5b: initialize mints initial supply');
 }
 
@@ -3593,19 +3594,19 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     assert(weth.includes('fn burn') || weth.includes('redeem'), 'P19.6e: wETH has burn/redeem');
 }
 
-// P19.7: mUSD issuance mechanism
+// P19.7: lUSD issuance mechanism
 {
     const musd = fs.readFileSync(musdContractPath, 'utf8');
-    assert(musd.includes('fn mint'), 'P19.7a: mUSD has mint function');
-    assert(musd.includes('MINT_CAP_PER_EPOCH') || musd.includes('rate_limit'), 'P19.7b: mUSD has rate limiting');
-    assert(musd.includes('pause') || musd.includes('PAUSED'), 'P19.7c: mUSD has emergency pause');
+    assert(musd.includes('fn mint'), 'P19.7a: lUSD has mint function');
+    assert(musd.includes('MINT_CAP_PER_EPOCH') || musd.includes('rate_limit'), 'P19.7b: lUSD has rate limiting');
+    assert(musd.includes('pause') || musd.includes('PAUSED'), 'P19.7c: lUSD has emergency pause');
 }
 
-// P19.8: Transfer MOLT
+// P19.8: Transfer LICN
 {
-    const molt = fs.readFileSync(moltContractPath, 'utf8');
-    assert(molt.includes('fn transfer'), 'P19.8a: MOLT has transfer function');
-    assert(molt.includes('test_transfer'), 'P19.8b: MOLT has transfer test');
+    const licn = fs.readFileSync(licnContractPath, 'utf8');
+    assert(licn.includes('fn transfer'), 'P19.8a: LICN has transfer function');
+    assert(licn.includes('test_transfer'), 'P19.8b: LICN has transfer test');
 }
 
 // P19.9: Token symbols match registry
@@ -3769,16 +3770,16 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
 // Phase 21: SDK & Market Maker Integration
 // ═══════════════════════════════════════════════════════════════════════════
 
-const orderbookTsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/orderbook.ts';
-const ammTsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/amm.ts';
-const sdkConnectionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/js/src/connection.ts';
-const sdkClientPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/client.ts';
-const mmIndexPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/index.ts';
-const mmSpreadPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/strategies/spread.ts';
-const mmConfigPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/config.ts';
-const sdkTypesPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/types.ts';
-const sdkWebsocketPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/websocket.ts';
-const sdkTransactionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/js/src/transaction.ts';
+const orderbookTsPath = path.resolve(__dirname, '../dex/sdk/src/orderbook.ts');
+const ammTsPath = path.resolve(__dirname, '../dex/sdk/src/amm.ts');
+const sdkConnectionPath = path.resolve(__dirname, '../sdk/js/src/connection.ts');
+const sdkClientPath = path.resolve(__dirname, '../dex/sdk/src/client.ts');
+const mmIndexPath = path.resolve(__dirname, '../dex/market-maker/src/index.ts');
+const mmSpreadPath = path.resolve(__dirname, '../dex/market-maker/src/strategies/spread.ts');
+const mmConfigPath = path.resolve(__dirname, '../dex/market-maker/src/config.ts');
+const sdkTypesPath = path.resolve(__dirname, '../dex/sdk/src/types.ts');
+const sdkWebsocketPath = path.resolve(__dirname, '../dex/sdk/src/websocket.ts');
+const sdkTransactionPath = path.resolve(__dirname, '../sdk/js/src/transaction.ts');
 
 // P21.1: SDK connection.ts — res.ok check (F21.1b)
 {
@@ -3843,7 +3844,7 @@ const sdkTransactionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/j
     const src = fs.readFileSync(mmIndexPath, 'utf8');
     assert(src.includes('loadWallet'), 'P21.4a: market maker loads wallet from file');
     assert(src.includes('walletPath'), 'P21.4b: market maker uses wallet path from config');
-    assert(src.includes('wallet,'), 'P21.4c: wallet passed to MoltDEX constructor');
+    assert(src.includes('wallet,'), 'P21.4c: wallet passed to LicnDEX constructor');
     assert(src.includes('MM_WALLET_PATH'), 'P21.4d: wallet path configurable via env var');
 }
 {
@@ -3973,8 +3974,8 @@ const sdkTransactionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/j
 // Phase 22: Security & Input Validation
 // ═══════════════════════════════════════════════════════════════════════════
 
-const govContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_governance/src/lib.rs';
-const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/prediction_market/src/lib.rs';
+const govContractPath = path.resolve(__dirname, '../contracts/dex_governance/src/lib.rs');
+const predictionContractPath = path.resolve(__dirname, '../contracts/prediction_market/src/lib.rs');
 
 // P22.1: escapeHtml applied to all user-supplied strings (F22.1a/b/c/d)
 {
@@ -4218,7 +4219,7 @@ const cssContent = fs.readFileSync(__dirname + '/dex.css', 'utf8');
 // ═══════════════════════════════════════════════════════════════════════════
 const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf-8');
 
-// P24.1: Margin equity uses divided values (not raw shells)
+// P24.1: Margin equity uses divided values (not raw spores)
 {
     // Phase 1 refactored equity calc to use unrealized PnL instead of realized PnL
     assert(dexJs.includes('totalMargin += (p.margin || 0) / 1e9'), 'P24.1a: margin sums divided by 1e9');
@@ -4401,7 +4402,7 @@ console.log('\n── Phase 1: Bottom Panel Consolidation ──');
     // 1.4: PnL % displayed
     assert(dexJs.includes('pnlPct'), 'P1.4a: pnlPct computed in loadMarginPositions');
     assert(dexJs.includes('pnlPctStr'), 'P1.4b: pnlPctStr formatted');
-    // PnL format: "+12.50% (+0.0125 MOLT)" — check pattern
+    // PnL format: "+12.50% (+0.0125 LICN)" — check pattern
     assert(dexJs.includes('(${pnlPctStr})'), 'P1.4c: PnL percentage shown in parentheses alongside absolute');
 
     // 1.5: Add/Remove margin builders
@@ -4818,8 +4819,8 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P7.1a: computeTokenUsd function exists
     assert(dexJs.includes('function computeTokenUsd'), 'P7.1a: computeTokenUsd function exists');
 
-    // P7.1b: computeTokenUsd handles stablecoins (mUSD/USDT/USDC return amount directly)
-    assert(dexJs.includes("symbol === 'mUSD'") || dexJs.includes("'mUSD'"), 'P7.1b: computeTokenUsd handles mUSD stablecoin');
+    // P7.1b: computeTokenUsd handles stablecoins (lUSD/USDT/USDC return amount directly)
+    assert(dexJs.includes("symbol === 'lUSD'") || dexJs.includes("'lUSD'"), 'P7.1b: computeTokenUsd handles lUSD stablecoin');
     assert(dexJs.includes("symbol === 'USDT'") || dexJs.includes("'USDT'"), 'P7.1b2: computeTokenUsd handles USDT stablecoin');
 
     // P7.1c: computeTokenUsd uses pair prices for non-stablecoins
@@ -4828,8 +4829,8 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P7.1d: computeTokenUsd handles inverse pair lookup
     assert(dexJs.includes('pairs.find(p => p.quote === symbol'), 'P7.1d: computeTokenUsd handles inverse pair');
 
-    // P7.1e: computeTokenUsd cross-references via MOLT
-    assert(dexJs.includes("p.quote === 'MOLT'"), 'P7.1e: computeTokenUsd cross-references via MOLT');
+    // P7.1e: computeTokenUsd cross-references via LICN
+    assert(dexJs.includes("p.quote === 'LICN'"), 'P7.1e: computeTokenUsd cross-references via LICN');
 
     // P7.1f: computePortfolioSummary function exists
     assert(dexJs.includes('function computePortfolioSummary'), 'P7.1f: computePortfolioSummary function exists');
@@ -4876,7 +4877,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P7.1s: renderPortfolioSummary clears when disconnected
     assert(dexJs.includes("container.innerHTML = ''") || dexJs.includes("container.innerHTML=''"), 'P7.1s: renderPortfolioSummary clears when disconnected');
 
-    // P7.1t: loadBalances computes USD for non-MOLT tokens via computeTokenUsd
+    // P7.1t: loadBalances computes USD for non-LICN tokens via computeTokenUsd
     assert(dexJs.includes('computeTokenUsd(ta.symbol'), 'P7.1t: loadBalances uses computeTokenUsd for token pricing');
 
     // P7.1u: Functional test — computeTokenUsd for stablecoin returns amount
@@ -4885,8 +4886,8 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
         assert(fnBody, 'P7.1u-pre: computeTokenUsd function extracted');
         if (fnBody) {
             const fn = new Function('symbol', 'amount', 'pairs', fnBody[1].replace(/return /g, 'return '));
-            const result = fn('mUSD', 100, []);
-            assert(result === 100, `P7.1u: computeTokenUsd('mUSD', 100) = ${result}, expected 100`);
+            const result = fn('lUSD', 100, []);
+            assert(result === 100, `P7.1u: computeTokenUsd('lUSD', 100) = ${result}, expected 100`);
         }
     }
 
@@ -4895,7 +4896,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
         const fnBody = dexJs.match(/function computeTokenUsd\(symbol, amount\)\s*\{([\s\S]*?)\n    \}/);
         if (fnBody) {
             const fn = new Function('symbol', 'amount', 'pairs', fnBody[1]);
-            const testPairs = [{ base: 'wETH', quote: 'mUSD', price: 3000 }];
+            const testPairs = [{ base: 'wETH', quote: 'lUSD', price: 3000 }];
             const result = fn('wETH', 2, testPairs);
             assert(result === 6000, `P7.1v: computeTokenUsd('wETH', 2) with pair price 3000 = ${result}, expected 6000`);
         }
@@ -4927,7 +4928,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     assert(dexJs.includes("new Blob([csv]"), 'P7.2c: CSV uses Blob for download');
 
     // P7.2d: CSV filename uses date pattern
-    assert(dexJs.includes('moltchain-trades-'), 'P7.2d: CSV filename starts with moltchain-trades-');
+    assert(dexJs.includes('lichen-trades-'), 'P7.2d: CSV filename starts with lichen-trades-');
 
     // P7.2e: CSV triggers download via anchor click
     assert(dexJs.includes('a.click()'), 'P7.2e: CSV triggers download via anchor click');
@@ -5092,7 +5093,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P8.1n: Dispute countdown shows hours and minutes remaining
     assert(dexJs.includes('hoursRemaining') && dexJs.includes('minutesRemaining'), 'P8.1n: Dispute countdown computes hours/minutes');
 
-    // P8.1o: Dispute countdown uses 0.4s per slot conversion (DEX-09: MoltChain slot time is 400ms)
+    // P8.1o: Dispute countdown uses 0.4s per slot conversion (DEX-09: Lichen slot time is 400ms)
     assert(dexJs.includes('slotsRemaining * 0.4') || dexJs.includes('* 0.4'), 'P8.1o: Slot-to-seconds conversion at 0.4s/slot');
 
     // P8.1p: Disputed market shows "awaiting DAO resolution" message
@@ -5142,8 +5143,8 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     // P8.1aa: disputeHtml variable used in card rendering
     assert(dexJs.includes('${disputeHtml}'), 'P8.1aa: disputeHtml inserted into market card');
 
-    // P8.1ab: Challenge requires 100 mUSD bond (user informed)
-    assert(dexJs.includes('100 mUSD'), 'P8.1ab: Challenge prompt mentions 100 mUSD bond');
+    // P8.1ab: Challenge requires 100 lUSD bond (user informed)
+    assert(dexJs.includes('100 lUSD'), 'P8.1ab: Challenge prompt mentions 100 lUSD bond');
 
     // P8.1ac: Resolver address displayed in dispute panel  
     assert(dexJs.includes('resolverAddr'), 'P8.1ac: Resolver address shown in dispute panel');
@@ -5556,7 +5557,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     const cardBody = dexSource.split('function generatePnlShareCard(')[1].split('\n    function ')[0];
     assert(cardBody.includes("createElement('canvas')") && cardBody.includes('getContext'),
         'MRG4.3c: Share card creates Canvas element');
-    assert(cardBody.includes('MoltChain DEX'), 'MRG4.3d: Card has MoltChain DEX branding');
+    assert(cardBody.includes('Lichen DEX'), 'MRG4.3d: Card has Lichen DEX branding');
     assert(cardBody.includes('createLinearGradient'), 'MRG4.3e: Card uses gradient background');
     assert(cardBody.includes('isProfit') && cardBody.includes('#0a2e1a'), 'MRG4.3f: Green gradient for profit');
     assert(cardBody.includes('#2e0a0a'), 'MRG4.3g: Red gradient for loss');
@@ -5569,7 +5570,7 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
     assert(cardBody.includes("'Leverage:'"), 'MRG4.3n: Card displays leverage');
     assert(cardBody.includes('canvas.width') && cardBody.includes('canvas.height'),
         'MRG4.3x: Canvas has explicit dimensions');
-    assert(cardBody.includes('moltchain.network'), 'MRG4.3y: Card footer shows moltchain.network');
+    assert(cardBody.includes('lichen.network'), 'MRG4.3y: Card footer shows lichen.network');
 
     const modalBody = dexSource.split('function showPnlShareCard(')[1] || '';
     assert(modalBody.includes('Copy Image'), 'MRG4.3o: Share modal has Copy Image button');
@@ -5879,8 +5880,8 @@ console.log('\n── Task 10: Prediction Market Tests ──');
         const feeBps = 200;
         const fee = Math.floor(amount * feeBps / 10000);
         const netAmount = amount - fee;
-        assert(fee === 2_000_000, 'T10.47: 2% fee on 100 mUSD = 2 mUSD');
-        assert(netAmount === 98_000_000, 'T10.48: Net after fee = 98 mUSD');
+        assert(fee === 2_000_000, 'T10.47: 2% fee on 100 lUSD = 2 lUSD');
+        assert(netAmount === 98_000_000, 'T10.48: Net after fee = 98 lUSD');
     }
 
     // Multi-outcome price test (3 outcomes, equal reserves)
@@ -6040,8 +6041,8 @@ console.log('\n── Task 12: Comprehensive E2E Structure ──');
         'contracts/prediction_market/src/lib.rs',
         'contracts/dex_core/src/lib.rs',
         'contracts/dex_amm/src/lib.rs',
-        'contracts/moltcoin/src/lib.rs',
-        'contracts/moltyid/src/lib.rs',
+        'contracts/lichencoin/src/lib.rs',
+        'contracts/lichenid/src/lib.rs',
     ];
     for (const c of contractsWithTests) {
         if (fs.existsSync(c)) {
@@ -6058,7 +6059,7 @@ console.log('\n── Task 12: Comprehensive E2E Structure ──');
         ? 'shared/utils.js'
         : 'dex/shared/utils.js';
     const sharedUtils = fs.readFileSync(sharedUtilsPath, 'utf8');
-    assert(sharedUtils.includes('SHELLS_PER_MOLT'), 'T12.9: shared/utils.js has SHELLS_PER_MOLT constant');
+    assert(sharedUtils.includes('SPORES_PER_LICN'), 'T12.9: shared/utils.js has SPORES_PER_LICN constant');
     assert(sharedUtils.includes('TRUST_TIER_THRESHOLDS'), 'T12.10: shared/utils.js has TRUST_TIER_THRESHOLDS');
     assert(sharedUtils.includes('ACHIEVEMENT_DEFS'), 'T12.11: shared/utils.js has ACHIEVEMENT_DEFS');
     assert(sharedUtils.includes('FEE_SPLIT'), 'T12.12: shared/utils.js has FEE_SPLIT');
@@ -6070,7 +6071,7 @@ console.log('\n── Task 12: Comprehensive E2E Structure ──');
     }
     if (fs.existsSync('explorer/js/transaction.js')) {
         const txJs = fs.readFileSync('explorer/js/transaction.js', 'utf8');
-        assert(txJs.includes('SHELLS_PER_MOLT') || txJs.includes('FEE_SPLIT'), 'T12.15: transaction.js uses shared constants');
+        assert(txJs.includes('SPORES_PER_LICN') || txJs.includes('FEE_SPLIT'), 'T12.15: transaction.js uses shared constants');
     }
 }
 

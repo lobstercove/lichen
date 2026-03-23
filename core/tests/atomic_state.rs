@@ -1,11 +1,11 @@
 // L4-01: Atomic state transition tests
 //
-// Verifies that `atomic_put_accounts` and `atomic_put_account_with_reefstake`
+// Verifies that `atomic_put_accounts` and `atomic_put_account_with_mossstake`
 // persist multiple mutations in a single RocksDB WriteBatch — either all
 // succeed or none are visible.
 
-use moltchain_core::reefstake::ReefStakePool;
-use moltchain_core::*;
+use lichen_core::mossstake::MossStakePool;
+use lichen_core::*;
 use tempfile::TempDir;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -32,10 +32,10 @@ fn create_test_state() -> (StateStore, TempDir) {
     (state, temp_dir)
 }
 
-fn make_account(owner: Pubkey, shells: u64) -> Account {
+fn make_account(owner: Pubkey, spores: u64) -> Account {
     Account {
-        shells,
-        spendable: shells,
+        spores,
+        spendable: spores,
         staked: 0,
         locked: 0,
         data: Vec::new(),
@@ -71,8 +71,8 @@ fn test_atomic_put_accounts_all_or_nothing() {
     // Both must be visible
     let a = state.get_account(&alice).unwrap().unwrap();
     let b = state.get_account(&bob).unwrap().unwrap();
-    assert_eq!(a.shells, 500);
-    assert_eq!(b.shells, 300);
+    assert_eq!(a.spores, 500);
+    assert_eq!(b.spores, 300);
 }
 
 #[test]
@@ -84,13 +84,13 @@ fn test_atomic_put_accounts_with_burn() {
 
     let initial_burned = state.get_total_burned().unwrap();
 
-    // Write account + burn 42 shells — both in same WriteBatch
+    // Write account + burn 42 spores — both in same WriteBatch
     state
         .atomic_put_accounts(&[(&alice, &alice_acct)], 42)
         .unwrap();
 
     let a = state.get_account(&alice).unwrap().unwrap();
-    assert_eq!(a.shells, 1000);
+    assert_eq!(a.spores, 1000);
     assert_eq!(state.get_total_burned().unwrap(), initial_burned + 42);
 }
 
@@ -104,12 +104,12 @@ fn test_atomic_put_accounts_updates_existing() {
     state
         .put_account(&alice, &make_account(alice, 100))
         .unwrap();
-    assert_eq!(state.get_account(&alice).unwrap().unwrap().shells, 100);
+    assert_eq!(state.get_account(&alice).unwrap().unwrap().spores, 100);
 
     // Atomic update
     let updated = make_account(alice, 200);
     state.atomic_put_accounts(&[(&alice, &updated)], 0).unwrap();
-    assert_eq!(state.get_account(&alice).unwrap().unwrap().shells, 200);
+    assert_eq!(state.get_account(&alice).unwrap().unwrap().spores, 200);
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn test_atomic_put_accounts_many_accounts() {
 
     for (i, key) in keys.iter().enumerate() {
         let a = state.get_account(key).unwrap().unwrap();
-        assert_eq!(a.shells, (i as u64 + 1) * 100);
+        assert_eq!(a.spores, (i as u64 + 1) * 100);
     }
 }
 
@@ -162,11 +162,11 @@ fn test_atomic_put_accounts_fee_charging_pattern() {
     let to_treasury = 90; // rest to treasury
 
     let mut payer_acct = state.get_account(&payer).unwrap().unwrap();
-    payer_acct.shells -= fee;
+    payer_acct.spores -= fee;
     payer_acct.spendable -= fee;
 
     let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
-    treasury_acct.shells += to_treasury;
+    treasury_acct.spores += to_treasury;
     treasury_acct.spendable += to_treasury;
 
     let initial_burned = state.get_total_burned().unwrap();
@@ -178,13 +178,13 @@ fn test_atomic_put_accounts_fee_charging_pattern() {
 
     let p = state.get_account(&payer).unwrap().unwrap();
     let t = state.get_account(&treasury).unwrap().unwrap();
-    assert_eq!(p.shells, 10_000 - fee);
-    assert_eq!(t.shells, 50_000 + to_treasury);
+    assert_eq!(p.spores, 10_000 - fee);
+    assert_eq!(t.spores, 50_000 + to_treasury);
     assert_eq!(state.get_total_burned().unwrap(), initial_burned + burn);
 }
 
 #[test]
-fn test_atomic_put_account_with_reefstake() {
+fn test_atomic_put_account_with_mossstake() {
     let (state, _dir) = create_test_state();
 
     let treasury = Keypair::new().pubkey();
@@ -192,33 +192,33 @@ fn test_atomic_put_account_with_reefstake() {
         .put_account(&treasury, &make_account(treasury, 1_000_000))
         .unwrap();
 
-    // Create a ReefStake pool with some supply
-    let mut pool = ReefStakePool::new();
-    pool.st_molt_token.total_supply = 100_000;
+    // Create a MossStake pool with some supply
+    let mut pool = MossStakePool::new();
+    pool.st_licn_token.total_supply = 100_000;
 
     // Pre-store the pool
-    state.put_reefstake_pool(&pool).unwrap();
+    state.put_mossstake_pool(&pool).unwrap();
 
     // Now simulate a reward distribution: debit treasury, update pool
-    let reef_share = 500;
+    let moss_share = 500;
     let mut t_acct = state.get_account(&treasury).unwrap().unwrap();
-    t_acct.shells -= reef_share;
-    t_acct.spendable -= reef_share;
-    pool.distribute_rewards(reef_share);
+    t_acct.spores -= moss_share;
+    t_acct.spendable -= moss_share;
+    pool.distribute_rewards(moss_share);
 
     // Atomic write
     state
-        .atomic_put_account_with_reefstake(&treasury, &t_acct, &pool)
+        .atomic_put_account_with_mossstake(&treasury, &t_acct, &pool)
         .unwrap();
 
     // Verify both persisted
     let t = state.get_account(&treasury).unwrap().unwrap();
-    assert_eq!(t.shells, 1_000_000 - reef_share);
+    assert_eq!(t.spores, 1_000_000 - moss_share);
 
-    let p = state.get_reefstake_pool().unwrap();
-    assert_eq!(p.st_molt_token.total_supply, 100_000);
-    // Pool should have accumulated the 500 shells of rewards
-    assert!(p.st_molt_token.total_molt_staked >= reef_share);
+    let p = state.get_mossstake_pool().unwrap();
+    assert_eq!(p.st_licn_token.total_supply, 100_000);
+    // Pool should have accumulated the 500 spores of rewards
+    assert!(p.st_licn_token.total_licn_staked >= moss_share);
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn test_charge_fee_direct_uses_atomic_write() {
         .unwrap();
 
     let treasury = state.get_treasury_pubkey().unwrap().unwrap();
-    let _treasury_bal_before = state.get_account(&treasury).unwrap().unwrap().shells;
+    let _treasury_bal_before = state.get_account(&treasury).unwrap().unwrap().spores;
 
     // Create and process a minimal transaction (fee will be charged atomically)
     let receiver = Keypair::new().pubkey();

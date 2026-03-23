@@ -1,7 +1,7 @@
 //! Test transaction creation capabilities
 
-use moltchain_client_sdk::{Client, Keypair, TransactionBuilder};
-use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
+use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Test multiple instructions
     println!("\n📝 Testing multi-instruction transaction...");
-    let memo_data = b"Hello MoltChain!".to_vec();
+    let memo_data = b"Hello Lichen!".to_vec();
     let memo_instruction = Instruction {
         program_id: SYSTEM_PROGRAM_ID,
         accounts: vec![sender.pubkey()],

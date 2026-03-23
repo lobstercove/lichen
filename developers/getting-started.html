@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Getting Started - MoltChain Developer Portal</title>
+    <title>Getting Started - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -76,7 +76,7 @@
                 <div class="sidebar-heading">More Guides</div>
                 <a href="architecture.html" class="sidebar-link">Architecture</a>
                 <a href="validator.html" class="sidebar-link">Validator Setup</a>
-                <a href="moltyid.html" class="sidebar-link">MoltyID</a>
+                <a href="lichenid.html" class="sidebar-link">LichenID</a>
             </div>
         </aside>
 
@@ -88,7 +88,7 @@
                 <span class="current">Getting Started</span>
             </div>
 
-            <h1>Getting Started with MoltChain</h1>
+            <h1>Getting Started with Lichen</h1>
             <p>This guide walks you through everything needed to go from zero to your first on-chain transaction. You'll
                 install the toolchain, create a wallet, fund it on testnet, send a transfer, and deploy a minimal smart
                 contract.</p>
@@ -100,7 +100,7 @@
                 <div class="step-number">1</div>
                 <div class="step-content">
                     <div class="step-title">Rust Toolchain</div>
-                    <div class="step-desc">MoltChain contracts compile to WASM via Rust. Install the latest stable Rust
+                    <div class="step-desc">Lichen contracts compile to WASM via Rust. Install the latest stable Rust
                         toolchain.</div>
                 </div>
             </div>
@@ -164,17 +164,17 @@ npm --version   # 10.x.x</code></pre>
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-server"></i> Running a Validator Without Cloning the Repo
                 </div>
-                If you already have a <code>moltchain-validator</code> release artifact, you can join mainnet directly
+                If you already have a <code>lichen-validator</code> release artifact, you can join mainnet directly
                 without a repository checkout. Use a writable state directory plus domain bootstrap peers like
-                <code>seed-01.moltchain.network:8001</code>, <code>seed-02.moltchain.network:8001</code>, and
-                <code>seed-03.moltchain.network:8001</code>. See <a href="validator.html">Validator Setup</a> for Linux,
+                <code>seed-01.lichen.network:8001</code>, <code>seed-02.lichen.network:8001</code>, and
+                <code>seed-03.lichen.network:8001</code>. See <a href="validator.html">Validator Setup</a> for Linux,
                 macOS, and Windows release install commands.
             </div>
 
             <!-- ========== 2. INSTALL CLI ========== -->
             <h2 id="install-cli">Install the CLI</h2>
 
-            <p>The <code>molt</code> CLI is your primary interface for interacting with the MoltChain network. Install
+            <p>The <code>lichen</code> CLI is your primary interface for interacting with the Lichen network. Install
                 it from crates.io or build from source.</p>
 
             <h3>Option A: Install from crates.io</h3>
@@ -184,7 +184,7 @@ npm --version   # 10.x.x</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>cargo install moltchain-cli</code></pre>
+                <pre><code>cargo install lichen-cli</code></pre>
             </div>
 
             <h3>Option B: Build from source</h3>
@@ -194,11 +194,11 @@ npm --version   # 10.x.x</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>git clone https://github.com/lobstercove/moltchain.git
-cd moltchain
+                <pre><code>git clone https://github.com/lobstercove/lichen.git
+cd lichen
 cargo build --release
-# Binary is at ./target/release/molt
-cp target/release/molt ~/.cargo/bin/</code></pre>
+# Binary is at ./target/release/lichen
+cp target/release/lichen ~/.cargo/bin/</code></pre>
             </div>
 
             <p>Verify the installation:</p>
@@ -208,49 +208,49 @@ cp target/release/molt ~/.cargo/bin/</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt --version
-molt-cli 0.9.2 (moltchain)</code></pre>
+                <pre><code>$ lichen --version
+lichen-cli 0.9.2 (lichen)</code></pre>
             </div>
 
-            <h3>Make <code>molt</code> discoverable in new shells</h3>
+            <h3>Make <code>lichen</code> discoverable in new spores</h3>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>echo 'export PATH="$HOME/.cargo/bin:$HOME/.moltchain/bin:$PATH"' >> ~/.zshrc
+                <pre><code>echo 'export PATH="$HOME/.cargo/bin:$HOME/.lichen/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
-command -v molt</code></pre>
+command -v lichen</code></pre>
             </div>
 
-            <p>If <code>command -v molt</code> is empty, run the binary directly until your shell profile is fixed:</p>
+            <p>If <code>command -v lichen</code> is empty, run the binary directly until your shell profile is fixed:</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>./target/release/molt --version</code></pre>
+                <pre><code>./target/release/lichen --version</code></pre>
             </div>
 
             <!-- ========== 3. CREATE WALLET ========== -->
             <h2 id="create-wallet">Create a Wallet</h2>
 
-            <p>Generate a new keypair. This creates an Ed25519 private key and derives your MoltChain address.</p>
+            <p>Generate a new keypair. This creates an Ed25519 private key and derives your Lichen address.</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt wallet create
+                <pre><code>$ lichen wallet create
 
-<i class="fa-solid fa-shrimp"></i> Generating new MoltChain keypair...
+<i class="fa-solid fa-shrimp"></i> Generating new Lichen keypair...
 
   Name:    wallet-1
   Address: Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
-  Path:    ~/.moltchain/wallets/wallet-1.json
+  Path:    ~/.lichen/wallets/wallet-1.json
 
 <i class="fa-solid fa-check"></i> Done! Fund your wallet with testnet tokens to get started.</code></pre>
             </div>
@@ -270,18 +270,18 @@ command -v molt</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt wallet import my-wallet --keypair ~/backup/wallet.json</code></pre>
+                <pre><code>$ lichen wallet import my-wallet --keypair ~/backup/wallet.json</code></pre>
             </div>
 
             <!-- ========== 4. GET TESTNET TOKENS ========== -->
             <h2 id="get-tokens">Get Testnet Tokens</h2>
 
-            <p>You need MOLT tokens to pay for transaction fees and contract deployments. On testnet, you can request
+            <p>You need LICN tokens to pay for transaction fees and contract deployments. On testnet, you can request
                 free tokens from the faucet.</p>
 
             <h3>Option A: Web Faucet</h3>
-            <p>Visit the <a href="#" data-molt-app="faucet">MoltChain Faucet</a> and paste your address. You'll receive
-                10 MOLT on testnet within seconds.</p>
+            <p>Visit the <a href="#" data-lichen-app="faucet">Lichen Faucet</a> and paste your address. You'll receive
+                10 LICN on testnet within seconds.</p>
 
             <h3>Option B: CLI Faucet</h3>
 
@@ -290,54 +290,54 @@ command -v molt</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt airdrop 10 --rpc-url https://testnet-rpc.moltchain.network
+                <pre><code>$ lichen airdrop 10 --rpc-url https://testnet-rpc.lichen.network
 
-<i class="fa-solid fa-shrimp"></i> Requesting 10 MOLT airdrop...
+<i class="fa-solid fa-shrimp"></i> Requesting 10 LICN airdrop...
 
   Transaction: 4xK9...mNpQ
-  New balance: 10.000000000 MOLT
+  New balance: 10.000000000 LICN
 
 <i class="fa-solid fa-check"></i> Airdrop successful!</code></pre>
             </div>
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Note</div>
-                Testnet tokens have no monetary value. The faucet limits: 10 MOLT per request, 150 MOLT daily per IP,
+                Testnet tokens have no monetary value. The faucet limits: 10 LICN per request, 150 LICN daily per IP,
                 60-second cooldown between requests.
             </div>
 
             <!-- ========== 5. FIRST TRANSFER ========== -->
             <h2 id="first-transfer">First Transfer</h2>
 
-            <p>Send MOLT from your wallet to another address. This is the simplest transaction on MoltChain.</p>
+            <p>Send LICN from your wallet to another address. This is the simplest transaction on Lichen.</p>
 
             <div class="code-block">
                 <div class="code-block-header">
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt transfer 1.5 Mo1tRecipientAddress123456789abcdefghijk \
-    --rpc-url https://testnet-rpc.moltchain.network
+                <pre><code>$ lichen transfer 1.5 Mo1tRecipientAddress123456789abcdefghijk \
+    --rpc-url https://testnet-rpc.lichen.network
 
-<i class="fa-solid fa-shrimp"></i> Sending 1.5 MOLT...
+<i class="fa-solid fa-shrimp"></i> Sending 1.5 LICN...
 
   From:        Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
   To:          Mo1tRecipientAddress123456789abcdefghijk
-  Amount:      1.500000000 MOLT
-  Fee:         0.001000000 MOLT
+  Amount:      1.500000000 LICN
+  Fee:         0.001000000 LICN
   Transaction: 7zQ3...bRtW
   Status:      Finalized (slot 482,917)
 
 <i class="fa-solid fa-check"></i> Transfer complete!</code></pre>
             </div>
 
-            <p>Verify the transaction in the <a href="#" data-molt-app="explorer">Block Explorer</a> by searching for
+            <p>Verify the transaction in the <a href="#" data-lichen-app="explorer">Block Explorer</a> by searching for
                 the transaction hash.</p>
 
             <!-- ========== 6. DEPLOY A CONTRACT ========== -->
             <h2 id="deploy-contract">Deploy a Contract</h2>
 
-            <p>Let's deploy a minimal "Hello World" smart contract. MoltChain contracts are written in Rust and compiled
+            <p>Let's deploy a minimal "Hello World" smart contract. Lichen contracts are written in Rust and compiled
                 to WASM.</p>
 
             <div class="step">
@@ -355,7 +355,7 @@ command -v molt</code></pre>
                 </div>
                 <pre><code>$ cargo new --lib hello-world
 $ cd hello-world
-$ cargo add moltchain-contract-sdk</code></pre>
+$ cargo add lichen-contract-sdk</code></pre>
             </div>
 
             <div class="step">
@@ -371,9 +371,9 @@ $ cargo add moltchain-contract-sdk</code></pre>
                     <span class="code-lang">Rust</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>use moltchain_sdk::prelude::*;
+                <pre><code>use lichen_sdk::prelude::*;
 
-#[moltchain_contract]
+#[lichen_contract]
 mod hello_world {
     use super::*;
 
@@ -431,8 +431,8 @@ pub struct GreetingAccount {
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt deploy target/wasm32-unknown-unknown/release/hello_world.wasm \
-    --rpc-url https://testnet-rpc.moltchain.network \
+                <pre><code>$ lichen deploy target/wasm32-unknown-unknown/release/hello_world.wasm \
+    --rpc-url https://testnet-rpc.lichen.network \
     --symbol HELLO --name "Hello World" --template infra
 
 <i class="fa-solid fa-shrimp"></i> Deploying contract...
@@ -442,21 +442,21 @@ pub struct GreetingAccount {
   Template:    infra
   Size:        14,832 bytes
   Deploy tx:   9kR7...sWmN
-  Fee:         25.001000000 MOLT
+  Fee:         25.001000000 LICN
   Status:      Finalized
 
 <i class="fa-solid fa-check"></i> Contract deployed successfully!
 
   Interact via:
-    molt call Mo1tProg1D...xYz789 set_greeting '["Hello, MoltChain!"]'</code></pre>
+    lichen call Mo1tProg1D...xYz789 set_greeting '["Hello, Lichen!"]'</code></pre>
             </div>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Tip</div>
-                Contract deployment costs a flat <strong>25 MOLT</strong> premium plus the 0.001 MOLT base transaction
+                Contract deployment costs a flat <strong>25 LICN</strong> premium plus the 0.001 LICN base transaction
                 fee.
                 Add <code>--symbol</code> to register in the symbol registry during deploy.
-                Upgrades cost <strong>10 MOLT</strong> plus the base fee. Regular contract calls only pay the 0.001 MOLT
+                Upgrades cost <strong>10 LICN</strong> plus the base fee. Regular contract calls only pay the 0.001 LICN
                 base fee.
             </div>
 
@@ -481,9 +481,9 @@ pub struct GreetingAccount {
                         contracts.</div>
                 </a>
 
-                <a href="moltyid.html" class="hub-card">
+                <a href="lichenid.html" class="hub-card">
                     <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
-                    <div class="hub-card-title">MoltyID Identity</div>
+                    <div class="hub-card-title">LichenID Identity</div>
                     <div class="hub-card-desc">Set up on-chain reputation to earn fee discounts and priority transaction
                         processing.</div>
                 </a>
@@ -491,7 +491,7 @@ pub struct GreetingAccount {
                 <a href="architecture.html" class="hub-card">
                     <div class="hub-card-icon blue"><i class="fas fa-sitemap"></i></div>
                     <div class="hub-card-title">Architecture Overview</div>
-                    <div class="hub-card-desc">Understand how MoltChain works under the hood — consensus, state model,
+                    <div class="hub-card-desc">Understand how Lichen works under the hood — consensus, state model,
                         and WASM execution.</div>
                 </a>
             </div>

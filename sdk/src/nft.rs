@@ -1,4 +1,4 @@
-// MoltChain NFT Standard (MT-721)
+// Lichen NFT Standard (MT-721)
 // Similar to ERC-721 / Metaplex NFT Standard
 
 use crate::{Address, ContractError, storage_get, storage_set, bytes_to_u64, u64_to_bytes};

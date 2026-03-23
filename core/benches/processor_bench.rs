@@ -1,11 +1,11 @@
-// MoltChain Core — Performance Benchmarks
+// Lichen Core — Performance Benchmarks
 //
 // Run:  cargo bench --bench processor_bench
 // Quick: cargo bench --bench processor_bench -- --warmup-time 1 --measurement-time 3
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use moltchain_core::StateStore;
-use moltchain_core::{
+use lichen_core::StateStore;
+use lichen_core::{
     Account, Block, Hash, Instruction, Keypair, Message, Pubkey, Transaction, TxProcessor,
 };
 use tempfile::TempDir;
@@ -27,7 +27,7 @@ fn make_signed_transfer(sender: &Keypair, recent_blockhash: Hash) -> Transaction
     let ix = Instruction {
         program_id: Pubkey([0u8; 32]), // system program
         accounts: vec![sender.pubkey(), receiver.pubkey()],
-        data: bincode::serialize(&(1_000_000u64)).unwrap(), // 0.001 MOLT
+        data: bincode::serialize(&(1_000_000u64)).unwrap(), // 0.001 LICN
     };
     let msg = Message::new(vec![ix], recent_blockhash);
     let mut tx = Transaction::new(msg);
@@ -53,7 +53,7 @@ fn bench_process_transactions(c: &mut Criterion) {
             let sender = Keypair::generate();
 
             // Fund the sender account in state
-            let acct = Account::new(1_000_000_000_000, sender.pubkey()); // 1000 MOLT
+            let acct = Account::new(1_000_000_000_000, sender.pubkey()); // 1000 LICN
             state
                 .put_account(&sender.pubkey(), &acct)
                 .expect("fund sender");

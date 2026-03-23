@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MoltWallet</title>
+  <title>LichenWallet</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
   <link rel="stylesheet" href="../styles/shared-base-styles.css" />
   <link rel="stylesheet" href="../styles/shared-theme.css" />
@@ -17,15 +17,15 @@
   <main class="popup-root">
     <header class="popup-header">
       <div class="popup-logo">
-        <img src="../../MoltWallet_Logo_256.png" alt="MoltWallet" class="popup-logo-icon" />
-        <span>MoltWallet</span>
+        <img src="../../LichenWallet_Logo_256.png" alt="LichenWallet" class="popup-logo-icon" />
+        <span>LichenWallet</span>
       </div>
       <button id="openFullPage" class="btn btn-secondary btn-small">Open Full</button>
     </header>
 
     <section id="welcomeScreen" class="wallet-content popup-card screen active">
       <div class="legacy-welcome">
-        <h3 style="margin-bottom: 0.5rem;">Welcome to MoltWallet</h3>
+        <h3 style="margin-bottom: 0.5rem;">Welcome to LichenWallet</h3>
         <p class="step-description" style="margin-bottom: 1rem;">Create a new wallet or import an existing seed phrase.
         </p>
         <button data-action="goCreate" class="btn btn-primary btn-large popup-btn-block">Create New Wallet</button>
@@ -34,10 +34,10 @@
 
       <div class="web-welcome wallet-container welcome-container">
         <div class="welcome-logo">
-          <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet" />
-          <h1>MoltWallet</h1>
+          <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet" />
+          <h1>LichenWallet</h1>
         </div>
-        <p class="welcome-subtitle">Your gateway to the MoltChain ecosystem</p>
+        <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
 
         <div class="welcome-carousel">
           <div class="carousel-track">
@@ -65,8 +65,8 @@
             <div class="carousel-slide">
               <div class="carousel-card">
                 <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
-                <h3>MoltyID Identity</h3>
-                <p>.molt naming, skill attestations, 0–100K reputation score</p>
+                <h3>LichenID Identity</h3>
+                <p>.lichen naming, skill attestations, 0–100K reputation score</p>
               </div>
             </div>
             <div class="carousel-slide">
@@ -228,7 +228,7 @@
           <span class="popup-balance-label">Total Balance</span>
           <button id="refreshBalance" class="popup-btn-icon"><i class="fas fa-sync-alt"></i></button>
         </div>
-        <div class="popup-balance-amount" id="walletBalance">0.00 MOLT</div>
+        <div class="popup-balance-amount" id="walletBalance">0.00 LICN</div>
         <div class="popup-balance-usd" id="balanceUsd">$0.00 USD</div>
         <div class="popup-balance-breakdown" id="balanceBreakdown"></div>
         <div class="popup-balance-actions">
@@ -262,16 +262,16 @@
           <input id="sendTo" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)" />
         </div>
         <div class="form-group">
-          <label>Amount (MOLT)</label>
+          <label>Amount (LICN)</label>
           <div style="position:relative">
             <input id="sendAmount" type="number" class="form-input" placeholder="0.00" style="padding-right:3.5rem" />
             <button id="sendMaxBtn" type="button"
-              style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;font-weight:600;cursor:pointer;">MAX</button>
+              style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:#0891B2;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;font-weight:600;cursor:pointer;">MAX</button>
           </div>
           <div id="sendAvailableBalance" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;"></div>
         </div>
         <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem;"><i class="fas fa-info-circle"></i>
-          Network Fee: 0.001 MOLT</div>
+          Network Fee: 0.001 LICN</div>
         <div class="form-group">
           <label>Password</label>
           <input id="sendPassword" type="password" class="form-input" placeholder="Unlock to sign" />
@@ -283,7 +283,7 @@
       <!-- Tab Content: Receive -->
       <div class="popup-tab-content" data-tab="receive" id="receivePanel">
         <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
-          Receive MOLT and all MoltChain tokens
+          Receive LICN and all Lichen tokens
         </p>
         <div id="receiveQrCode" style="text-align:center;margin-bottom:0.75rem;"></div>
         <div class="form-group">
@@ -302,7 +302,7 @@
         </div>
         <div class="popup-receive-info">
           <i class="fas fa-info-circle" style="color:#4ade80;"></i>
-          Both addresses work! Use Base58 for MoltChain/Solana wallets, 0x for MetaMask/Ethereum wallets
+          Both addresses work! Use Base58 for Lichen/Solana wallets, 0x for MetaMask/Ethereum wallets
         </div>
       </div>
 
@@ -331,26 +331,26 @@
       <!-- Tab Content: Staking -->
       <div class="popup-tab-content" data-tab="staking" id="stakingPanel">
         <div id="stakingValidatorInfo"></div>
-        <div id="reefStakePanel">
+        <div id="mossStakePanel">
           <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
             <i class="fas fa-water" style="color:#3b82f6;"></i>
             <strong style="font-size:0.9rem;">Liquid Staking</strong>
           </div>
-          <div id="reefStakeStats"
+          <div id="mossStakeStats"
             style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
-          <div id="reefTiersGrid"
+          <div id="mossTiersGrid"
             style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
           <div
             style="font-size:0.72rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);">
             <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
-            Stake MOLT → receive stMOLT. Rewards auto-compound. Flexible tier: 7-day cooldown. Locked tiers: boosted
+            Stake LICN → receive stLICN. Rewards auto-compound. Flexible tier: 7-day cooldown. Locked tiers: boosted
             APY.
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
             <button id="extStakeBtn" class="btn btn-primary btn-small"><i class="fas fa-arrow-down"></i> Stake
-              MOLT</button>
+              LICN</button>
             <button id="extUnstakeBtn" class="btn btn-secondary btn-small"><i class="fas fa-arrow-up"></i> Unstake
-              stMOLT</button>
+              stLICN</button>
           </div>
           <div id="extPendingUnstakes" style="margin-top:0.75rem;display:none;"></div>
         </div>
@@ -359,7 +359,7 @@
       <!-- Tab Content: Identity -->
       <div class="popup-tab-content" data-tab="identity" id="identityPanel">
         <div id="identityContent">
-          <!-- MoltyID identity loaded dynamically -->
+          <!-- LichenID identity loaded dynamically -->
         </div>
       </div>
 
@@ -372,7 +372,7 @@
           <i class="fas fa-user-shield"></i>
           <div>
             <strong>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></strong>
-            <p style="font-size:0.75rem;margin:0;">Shield MOLT to make transactions fully private using ZK proofs.</p>
+            <p style="font-size:0.75rem;margin:0;">Shield LICN to make transactions fully private using ZK proofs.</p>
           </div>
         </div>
 
@@ -381,8 +381,8 @@
           <div class="popup-shield-balance-row">
             <div>
               <div class="popup-shield-label">Shielded Balance</div>
-              <div class="popup-shield-balance-value" id="extShieldedBalance">0.0000 MOLT</div>
-              <div class="popup-shield-balance-sub" id="extShieldedShells">0 shells</div>
+              <div class="popup-shield-balance-value" id="extShieldedBalance">0.0000 LICN</div>
+              <div class="popup-shield-balance-sub" id="extShieldedSpores">0 spores</div>
             </div>
             <div class="popup-shield-actions">
               <button class="btn btn-primary btn-small" id="extShieldBtn"><i class="fas fa-arrow-down"></i>
@@ -447,7 +447,7 @@
             <div class="popup-shield-empty">
               <i class="fas fa-shield-alt"></i>
               <p>No shielded notes yet</p>
-              <p style="font-size:0.72rem;color:var(--text-muted);">Shield MOLT to create your first private note</p>
+              <p style="font-size:0.72rem;color:var(--text-muted);">Shield LICN to create your first private note</p>
             </div>
           </div>
         </div>
@@ -456,7 +456,7 @@
       <!-- Tab Content: Bridge/Deposit -->
       <div class="popup-tab-content" data-tab="deposit" id="depositPanel">
         <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
-          Bridge tokens from other chains to MoltChain
+          Bridge tokens from other chains to Lichen
         </p>
         <div class="popup-deposit-chains">
           <button class="popup-deposit-chain-btn" data-bridge-chain="SOL">
@@ -490,17 +490,17 @@
         <div class="popup-settings-section">
           <h4><i class="fas fa-server"></i> Network</h4>
           <div class="form-group"><label>Mainnet RPC</label><input id="settingsMainnetRpc" class="form-input"
-              placeholder="https://rpc.moltchain.network" /></div>
+              placeholder="https://rpc.lichen.network" /></div>
           <div class="form-group"><label>Testnet RPC</label><input id="settingsTestnetRpc" class="form-input"
-              placeholder="https://testnet-rpc.moltchain.network" /></div>
+              placeholder="https://testnet-rpc.lichen.network" /></div>
           <div class="form-group"><label>Local Testnet RPC</label><input id="settingsLocalTestnetRpc" class="form-input"
               placeholder="http://localhost:8899" /></div>
           <div class="form-group"><label>Local Mainnet RPC</label><input id="settingsLocalMainnetRpc" class="form-input"
               placeholder="http://localhost:9899" /></div>
           <div class="form-group"><label>Mainnet Custody</label><input id="settingsMainnetCustody" class="form-input"
-              placeholder="https://custody.moltchain.network" /></div>
+              placeholder="https://custody.lichen.network" /></div>
           <div class="form-group"><label>Testnet Custody</label><input id="settingsTestnetCustody" class="form-input"
-              placeholder="https://testnet-custody.moltchain.network" /></div>
+              placeholder="https://testnet-custody.lichen.network" /></div>
           <div class="form-group"><label>Local Custody</label><input id="settingsLocalCustody" class="form-input"
               placeholder="http://localhost:9105" /></div>
           <button id="saveRpcSettings" class="btn btn-secondary btn-small popup-btn-block">Save RPC Endpoints</button>
@@ -596,7 +596,7 @@
             <div><strong>Version:</strong> <span id="aboutVersion">1.0.0</span></div>
             <div><strong>Network:</strong> <span id="aboutNetwork">—</span></div>
             <div><strong>License:</strong> MIT</div>
-            <div><a href="https://github.com/lobstercove/moltchain" target="_blank" rel="noopener"><i
+            <div><a href="https://github.com/lobstercove/lichen" target="_blank" rel="noopener"><i
                   class="fab fa-github"></i> GitHub Repository</a></div>
           </div>
         </div>

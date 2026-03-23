@@ -1,0 +1,145 @@
+{
+  "contract": "thalllend",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "deposit",
+      "opcode": 1,
+      "params": [
+        { "name": "depositor_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "opcode": 2,
+      "params": [
+        { "name": "depositor_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "borrow",
+      "opcode": 3,
+      "params": [
+        { "name": "borrower_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "repay",
+      "opcode": 4,
+      "params": [
+        { "name": "borrower_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "liquidate",
+      "opcode": 5,
+      "params": [
+        { "name": "liquidator_ptr", "type": "Pubkey" },
+        { "name": "borrower_ptr", "type": "Pubkey" },
+        { "name": "repay_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_account_info",
+      "opcode": 6,
+      "params": [
+        { "name": "user_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_protocol_stats",
+      "opcode": 7,
+      "params": []
+    },
+    {
+      "name": "flash_borrow",
+      "opcode": 8,
+      "params": [
+        { "name": "borrower_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "flash_repay",
+      "opcode": 9,
+      "params": [
+        { "name": "borrower_ptr", "type": "Pubkey" },
+        { "name": "repay_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "pause",
+      "opcode": 10,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "unpause",
+      "opcode": 11,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_deposit_cap",
+      "opcode": 12,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "cap", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_reserve_factor",
+      "opcode": 13,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "factor", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw_reserves",
+      "opcode": 14,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_interest_rate",
+      "opcode": 15,
+      "params": []
+    },
+    {
+      "name": "get_deposit_count",
+      "opcode": 16,
+      "params": []
+    },
+    {
+      "name": "get_borrow_count",
+      "opcode": 17,
+      "params": []
+    },
+    {
+      "name": "get_liquidation_count",
+      "opcode": 18,
+      "params": []
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 19,
+      "params": []
+    }
+  ]
+}

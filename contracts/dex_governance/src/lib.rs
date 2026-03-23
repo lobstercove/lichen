@@ -3,7 +3,7 @@
 // Features:
 //   - Proposal-based pair listing via community voting
 //   - Fee change proposals with time-locks
-//   - MoltyID reputation-gated proposals (min 500 rep)
+//   - LichenID reputation-gated proposals (min 500 rep)
 //   - 48-hour voting period, 66% approval threshold
 //   - Emergency delisting by admin
 //   - Listing requirements: min liquidity, min holders
@@ -19,7 +19,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
     u64_to_bytes, Address, CrossCall,
 };
@@ -33,7 +33,7 @@ const VOTING_PERIOD_SLOTS: u64 = 432_000; // ~48 hours at 400ms/slot
 const APPROVAL_THRESHOLD_BPS: u64 = 6600; // 66%
 const EXECUTION_DELAY_SLOTS: u64 = 9_000; // 1 hour timelock after voting at 400ms/slot
 const MIN_REPUTATION: u64 = 500;
-const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000_000; // 10,000 MOLT ($1K at $0.10) per TOKENOMICS.md
+const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000_000; // 10,000 LICN ($1K at $0.10) per TOKENOMICS.md
 const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
 
@@ -60,7 +60,7 @@ const PAUSED_KEY: &[u8] = b"gov_paused";
 const REENTRANCY_KEY: &[u8] = b"gov_reentrancy";
 const PROPOSAL_COUNT_KEY: &[u8] = b"gov_prop_count";
 const CORE_ADDRESS_KEY: &[u8] = b"gov_core_addr";
-const MOLTYID_ADDRESS_KEY: &[u8] = b"gov_moltyid_addr";
+const LICHENID_ADDRESS_KEY: &[u8] = b"gov_lichenid_addr";
 const TOTAL_VOTES_KEY: &[u8] = b"gov_total_votes";
 const VOTER_COUNT_KEY: &[u8] = b"gov_voter_count";
 
@@ -453,7 +453,7 @@ pub fn get_allowed_quote_count() -> u64 {
 /// Get the preferred quote token address
 pub fn get_preferred_quote() -> u64 {
     let addr = load_addr(PREFERRED_QUOTE_KEY);
-    moltchain_sdk::set_return_data(&addr);
+    lichen_sdk::set_return_data(&addr);
     if is_zero(&addr) {
         0
     } else {
@@ -489,7 +489,7 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
     // Verify proposer has sufficient on-chain reputation
     if !verify_reputation(&p, MIN_REPUTATION) {
         reentrancy_exit();
-        log_info("Proposal rejected: insufficient MoltyID reputation");
+        log_info("Proposal rejected: insufficient LichenID reputation");
         return 5;
     }
 
@@ -602,10 +602,10 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
         return 200;
     }
 
-    // Verify voter has on-chain reputation via MoltyID cross-contract call
+    // Verify voter has on-chain reputation via LichenID cross-contract call
     if !verify_reputation(&v, MIN_REPUTATION) {
         reentrancy_exit();
-        log_info("Vote rejected: insufficient MoltyID reputation");
+        log_info("Vote rejected: insufficient LichenID reputation");
         return 5;
     }
 
@@ -923,15 +923,15 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     0
 }
 
-/// Set the MoltyID contract address for on-chain reputation verification.
+/// Set the LichenID contract address for on-chain reputation verification.
 /// Admin only. Required for reputation-gated voting and proposals.
 /// Returns: 0=success, 1=not admin, 2=zero address
-pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
+pub fn set_lichenid_address(caller: *const u8, lichenid_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
     let mut addr = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
-        core::ptr::copy_nonoverlapping(moltyid_addr, addr.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(lichenid_addr, addr.as_mut_ptr(), 32);
     }
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -944,28 +944,28 @@ pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
     if is_zero(&addr) {
         return 2;
     }
-    storage_set(MOLTYID_ADDRESS_KEY, &addr);
-    log_info("MoltyID address configured for reputation verification");
+    storage_set(LICHENID_ADDRESS_KEY, &addr);
+    log_info("LichenID address configured for reputation verification");
     0
 }
 
-/// Verify that an address has sufficient on-chain reputation via MoltyID.
-/// The processor injects the caller's MoltyID reputation into the contract's
+/// Verify that an address has sufficient on-chain reputation via LichenID.
+/// The processor injects the caller's LichenID reputation into the contract's
 /// storage at key "rep:{hex_pubkey}" before execution, so we can read it
-/// directly via storage_get. If no MoltyID address is configured, fails closed.
+/// directly via storage_get. If no LichenID address is configured, fails closed.
 fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
-    // Check if MoltyID address is configured (non-zero)
-    match storage_get(MOLTYID_ADDRESS_KEY) {
+    // Check if LichenID address is configured (non-zero)
+    match storage_get(LICHENID_ADDRESS_KEY) {
         Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {}
         _ => {
-            // P10-SC-10: Fail closed when MoltyID is not configured
-            log_info("verify_reputation: MoltyID not configured — denying (fail closed)");
+            // P10-SC-10: Fail closed when LichenID is not configured
+            log_info("verify_reputation: LichenID not configured — denying (fail closed)");
             return false;
         }
     };
 
     // Read reputation from injected cross-contract storage.
-    // The processor pre-populates "rep:{hex_pubkey}" with the MoltyID
+    // The processor pre-populates "rep:{hex_pubkey}" with the LichenID
     // reputation value for the transaction caller.
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
     let mut rep_key = Vec::with_capacity(68);
@@ -980,7 +980,7 @@ fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
             let reputation = bytes_to_u64(&data);
             reputation >= min_rep
         }
-        // No reputation data found → block (MoltyID is configured but
+        // No reputation data found → block (LichenID is configured but
         // caller has no identity/reputation registered)
         _ => false,
     }
@@ -994,7 +994,7 @@ pub fn get_proposal_info(proposal_id: u64) -> u64 {
     let pk = proposal_key(proposal_id);
     match storage_get(&pk) {
         Some(d) if d.len() >= PROPOSAL_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             proposal_id
         }
         _ => 0,
@@ -1005,7 +1005,7 @@ pub fn get_proposal_info(proposal_id: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -1013,7 +1013,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         1 => {
@@ -1024,7 +1024,7 @@ pub extern "C" fn call() {
                     args[33..65].as_ptr(),
                     args[65..97].as_ptr(),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         2 => {
@@ -1035,28 +1035,28 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     args[41] != 0,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         3 => {
             // finalize_proposal
             if args.len() >= 9 {
                 let r = finalize_proposal(bytes_to_u64(&args[1..9]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         4 => {
             // execute_proposal
             if args.len() >= 9 {
                 let r = execute_proposal(bytes_to_u64(&args[1..9]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         5 => {
             // set_preferred_quote
             if args.len() >= 1 + 32 + 32 {
                 let r = set_preferred_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         6 => {
@@ -1065,7 +1065,7 @@ pub extern "C" fn call() {
         }
         7 => {
             // get_proposal_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_proposal_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_proposal_count()));
         }
         8 => {
             // get_proposal_info
@@ -1084,14 +1084,14 @@ pub extern "C" fn call() {
                     maker,
                     taker,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         10 => {
             // emergency_delist
             if args.len() >= 1 + 32 + 8 {
                 let r = emergency_delist(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         11 => {
@@ -1102,47 +1102,47 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         12 => {
             // emergency_pause
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         13 => {
             // emergency_unpause
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         14 => {
-            // set_moltyid_address
+            // set_lichenid_address
             if args.len() >= 1 + 32 + 32 {
-                let r = set_moltyid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                let r = set_lichenid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         15 => {
             // add_allowed_quote(caller[32] + quote_addr[32])
             if args.len() >= 1 + 32 + 32 {
                 let r = add_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         16 => {
             // remove_allowed_quote(caller[32] + quote_addr[32])
             if args.len() >= 1 + 32 + 32 {
                 let r = remove_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         17 => {
             // get_allowed_quote_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
         }
         18 => {
             // get_governance_stats — [proposal_count, total_votes, voter_count]
@@ -1150,14 +1150,14 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(PROPOSAL_COUNT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOTES_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         19 => {
             // get_voter_count — unique voters
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -1170,7 +1170,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();
@@ -1182,8 +1182,8 @@ mod tests {
 
     fn setup_with_reputation() -> [u8; 32] {
         let admin = setup();
-        let moltyid = [77u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid.as_ptr()), 0);
+        let lichenid = [77u8; 32];
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
 
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
         let seed_rep = |addr: [u8; 32]| {
@@ -1476,7 +1476,7 @@ mod tests {
         assert_eq!(get_proposal_info(999), 0);
     }
 
-    // --- Preferred quote currency (mUSD enforcement) ---
+    // --- Preferred quote currency (lUSD enforcement) ---
 
     #[test]
     fn test_set_preferred_quote_governance() {
@@ -1544,36 +1544,36 @@ mod tests {
         assert_eq!(get_preferred_quote(), 0); // 0 = not set
     }
 
-    // --- MoltyID reputation integration ---
+    // --- LichenID reputation integration ---
 
     #[test]
-    fn test_set_moltyid_address_success() {
+    fn test_set_lichenid_address_success() {
         let admin = setup();
-        let moltyid = [77u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid.as_ptr()), 0);
-        let stored = storage_get(MOLTYID_ADDRESS_KEY).unwrap();
-        assert_eq!(stored.as_slice(), &moltyid);
+        let lichenid = [77u8; 32];
+        assert_eq!(set_lichenid_address(admin.as_ptr(), lichenid.as_ptr()), 0);
+        let stored = storage_get(LICHENID_ADDRESS_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &lichenid);
     }
 
     #[test]
-    fn test_set_moltyid_address_not_admin() {
+    fn test_set_lichenid_address_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
-        let moltyid = [77u8; 32];
+        let lichenid = [77u8; 32];
         test_mock::set_caller(rando);
-        assert_eq!(set_moltyid_address(rando.as_ptr(), moltyid.as_ptr()), 1);
+        assert_eq!(set_lichenid_address(rando.as_ptr(), lichenid.as_ptr()), 1);
     }
 
     #[test]
-    fn test_set_moltyid_address_zero_rejected() {
+    fn test_set_lichenid_address_zero_rejected() {
         let admin = setup();
         let zero = [0u8; 32];
-        assert_eq!(set_moltyid_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_lichenid_address(admin.as_ptr(), zero.as_ptr()), 2);
     }
 
     #[test]
     fn test_verify_reputation_no_address_denies() {
-        // P10-SC-10: Without MoltyID address configured, verify_reputation fails closed
+        // P10-SC-10: Without LichenID address configured, verify_reputation fails closed
         let _admin = setup();
         let user = [5u8; 32];
         assert!(!verify_reputation(&user, 500));
@@ -1582,20 +1582,20 @@ mod tests {
 
     #[test]
     fn test_verify_reputation_test_mode_blocks_without_data() {
-        // With MoltyID configured but no reputation data → blocks
+        // With LichenID configured but no reputation data → blocks
         let admin = setup();
-        let moltyid = [77u8; 32];
-        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let lichenid = [77u8; 32];
+        set_lichenid_address(admin.as_ptr(), lichenid.as_ptr());
         let user = [5u8; 32];
         assert!(!verify_reputation(&user, 500));
     }
 
     #[test]
     fn test_verify_reputation_with_data() {
-        // With MoltyID configured and reputation data injected → checks threshold
+        // With LichenID configured and reputation data injected → checks threshold
         let admin = setup();
-        let moltyid = [77u8; 32];
-        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let lichenid = [77u8; 32];
+        set_lichenid_address(admin.as_ptr(), lichenid.as_ptr());
         let user = [5u8; 32];
         // Inject reputation data into mock storage (simulating processor injection)
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
@@ -1614,10 +1614,10 @@ mod tests {
 
     #[test]
     fn test_propose_with_reputation_check() {
-        // With MoltyID configured but no reputation data, proposals are blocked
+        // With LichenID configured but no reputation data, proposals are blocked
         let admin = setup();
-        let moltyid = [77u8; 32];
-        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let lichenid = [77u8; 32];
+        set_lichenid_address(admin.as_ptr(), lichenid.as_ptr());
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
@@ -1631,17 +1631,17 @@ mod tests {
 
     #[test]
     fn test_vote_with_reputation_check() {
-        // With MoltyID configured but no reputation data, votes are blocked
+        // With LichenID configured but no reputation data, votes are blocked
         let admin = setup();
-        let moltyid = [77u8; 32];
-        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let lichenid = [77u8; 32];
+        set_lichenid_address(admin.as_ptr(), lichenid.as_ptr());
         let proposer = [2u8; 32];
         let _voter = [3u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
         test_mock::set_caller(proposer);
-        // Propose also fails reputation check with MoltyID configured
+        // Propose also fails reputation check with LichenID configured
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             5 // reputation check fails — no reputation data

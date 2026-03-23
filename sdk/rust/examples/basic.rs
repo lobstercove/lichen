@@ -1,10 +1,10 @@
 //! Basic usage example
 
-use moltchain_client_sdk::{Client, Keypair};
+use lichen_client_sdk::{Client, Keypair};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🦞 MoltChain Rust SDK Example\n");
+    println!("🦞 Lichen Rust SDK Example\n");
     
     // 1. Create client
     let client = Client::new("http://localhost:8899");
@@ -34,10 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Check balance
     match client.get_balance(&keypair.pubkey()).await {
         Ok(balance) => {
-            println!("\n💰 Balance: {} MOLT", balance.molt());
+            println!("\n💰 Balance: {} LICN", balance.licn());
         }
         Err(_e) => {
-            println!("\n💰 Balance: 0 MOLT (account not found)");
+            println!("\n💰 Balance: 0 LICN (account not found)");
         }
     }
     

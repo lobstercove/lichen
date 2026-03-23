@@ -1,5 +1,5 @@
 /**
- * MoltChain Playground - Real Example Contracts
+ * Lichen Playground - Real Example Contracts
  * Production-ready contracts ready to deploy and test
  */
 

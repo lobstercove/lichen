@@ -1,8 +1,8 @@
-"""Subscription example for MoltChain Python SDK"""
+"""Subscription example for Lichen Python SDK"""
 
 import asyncio
 import signal
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
 
 # Global flag for graceful shutdown
@@ -24,7 +24,7 @@ async def main():
         'ws://localhost:8900'
     )
     
-    print('🦞 MoltChain Subscription Example\n')
+    print('🦞 Lichen Subscription Example\n')
     print('Press Ctrl+C to exit\n')
     
     # Track subscription IDs
@@ -60,7 +60,7 @@ async def main():
     print('📡 Subscribing to account changes...')
     pubkey = PublicKey('YourPublicKeyHere...')
     async def on_account(account):
-        print(f"👤 Account {account['pubkey'][:12]}... balance: {account['molt']} MOLT")
+        print(f"👤 Account {account['pubkey'][:12]}... balance: {account['licn']} LICN")
     
     account_sub = await connection.on_account_change(pubkey, on_account)
     subscriptions.append(('account', account_sub))

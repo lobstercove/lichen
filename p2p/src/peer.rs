@@ -4,7 +4,7 @@ use crate::message::P2PMessage;
 use crate::peer_ban::PeerBanList;
 use crate::peer_store::PeerStore;
 use dashmap::DashMap;
-use moltchain_core::Pubkey;
+use lichen_core::Pubkey;
 use quinn::{Connection, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
@@ -17,11 +17,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-fn runtime_moltchain_dir(runtime_home: Option<&Path>) -> PathBuf {
+fn runtime_lichen_dir(runtime_home: Option<&Path>) -> PathBuf {
     runtime_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join(".moltchain")
+        .join(".lichen")
 }
 
 /// Peer information
@@ -280,8 +280,8 @@ impl PeerManager {
 
         // AUDIT-FIX C1-01: Load or generate persistent node identity
         // Replaces ephemeral per-startup certificate with persistent cert+key
-        // stored at ~/.moltchain/node_cert.der + ~/.moltchain/node_key.der
-        let runtime_dir = runtime_moltchain_dir(runtime_home.as_deref());
+        // stored at ~/.lichen/node_cert.der + ~/.lichen/node_key.der
+        let runtime_dir = runtime_lichen_dir(runtime_home.as_deref());
         let identity = NodeIdentity::load_or_generate(&runtime_dir)?;
 
         // Clone cert chain + key bytes for client connections (mutual TLS)
@@ -291,16 +291,16 @@ impl PeerManager {
 
         // AUDIT-FIX C1-01: Server config with mutual TLS
         // Replaces .with_no_client_auth() — server now validates connecting peers'
-        // certificates using MoltClientCertVerifier (self-signature verification).
+        // certificates using LichenClientCertVerifier (self-signature verification).
         // client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
         let server_key = PrivateKeyDer::try_from(identity.key_bytes)
             .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut server_crypto = rustls::ServerConfig::builder()
-            .with_client_cert_verifier(Arc::new(MoltClientCertVerifier))
+            .with_client_cert_verifier(Arc::new(LichenClientCertVerifier))
             .with_single_cert(vec![identity.cert_der], server_key)
             .map_err(|e| format!("Failed to create rustls config: {}", e))?;
 
-        server_crypto.alpn_protocols = vec![b"molt".to_vec()];
+        server_crypto.alpn_protocols = vec![b"lichen".to_vec()];
 
         // Configure QUIC server
         let mut server_config = ServerConfig::with_crypto(Arc::new(
@@ -512,18 +512,18 @@ impl PeerManager {
         info!("🦞 P2P: Connecting to peer {}", peer_addr);
 
         // AUDIT-FIX C1-01: Proper TLS certificate verification + mutual TLS
-        // Replaces SkipServerVerification with MoltCertVerifier (validates self-signatures).
+        // Replaces SkipServerVerification with LichenCertVerifier (validates self-signatures).
         // Client now presents its own certificate for mutual authentication.
         let client_key = PrivateKeyDer::try_from(self.node_key_bytes.clone())
             .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut rustls_config = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(MoltCertVerifier))
+            .with_custom_certificate_verifier(Arc::new(LichenCertVerifier))
             .with_client_auth_cert(self.node_cert_chain.clone(), client_key)
             .map_err(|e| format!("Failed to create TLS client config: {}", e))?;
 
         // Configure ALPN
-        rustls_config.alpn_protocols = vec![b"molt".to_vec()];
+        rustls_config.alpn_protocols = vec![b"lichen".to_vec()];
 
         let mut client_config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
@@ -837,12 +837,12 @@ impl PeerManager {
     /// a CertRotation message to broadcast to all peers.
     pub fn rotate_local_certificate(
         &mut self,
-        moltchain_dir: &std::path::Path,
+        lichen_dir: &std::path::Path,
     ) -> Result<crate::message::MessageType, String> {
         let old_fp = self.local_fingerprint;
 
         // Generate new identity (overwrites node_cert.der + node_key.der)
-        let new_identity = NodeIdentity::load_or_generate_fresh(moltchain_dir)?;
+        let new_identity = NodeIdentity::load_or_generate_fresh(lichen_dir)?;
         let new_fp = new_identity.fingerprint;
         let new_cert_der = new_identity.cert_der.as_ref().to_vec();
 
@@ -1399,7 +1399,7 @@ async fn handle_connection(
 // ============================================================================
 
 /// Persistent node identity — generates or loads a certificate + private key
-/// from ~/.moltchain/node_cert.der and ~/.moltchain/node_key.der.
+/// from ~/.lichen/node_cert.der and ~/.lichen/node_key.der.
 /// Provides stable cryptographic identity across node restarts.
 struct NodeIdentity {
     cert_der: CertificateDer<'static>,
@@ -1409,9 +1409,9 @@ struct NodeIdentity {
 }
 
 impl NodeIdentity {
-    fn load_or_generate(moltchain_dir: &Path) -> Result<Self, String> {
-        let cert_path = moltchain_dir.join("node_cert.der");
-        let key_path = moltchain_dir.join("node_key.der");
+    fn load_or_generate(lichen_dir: &Path) -> Result<Self, String> {
+        let cert_path = lichen_dir.join("node_cert.der");
+        let key_path = lichen_dir.join("node_key.der");
 
         if cert_path.exists() && key_path.exists() {
             let cert_bytes = fs::read(&cert_path)
@@ -1432,8 +1432,8 @@ impl NodeIdentity {
                 fingerprint,
             })
         } else {
-            fs::create_dir_all(moltchain_dir)
-                .map_err(|e| format!("Failed to create {}: {}", moltchain_dir.display(), e))?;
+            fs::create_dir_all(lichen_dir)
+                .map_err(|e| format!("Failed to create {}: {}", lichen_dir.display(), e))?;
 
             let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
                 .map_err(|e| format!("Failed to generate certificate: {}", e))?;
@@ -1468,12 +1468,12 @@ impl NodeIdentity {
 
     /// M-9: Generate a fresh certificate, overwriting existing one.
     /// Used for deliberate certificate rotation.
-    fn load_or_generate_fresh(moltchain_dir: &Path) -> Result<Self, String> {
-        fs::create_dir_all(moltchain_dir)
-            .map_err(|e| format!("Failed to create {}: {}", moltchain_dir.display(), e))?;
+    fn load_or_generate_fresh(lichen_dir: &Path) -> Result<Self, String> {
+        fs::create_dir_all(lichen_dir)
+            .map_err(|e| format!("Failed to create {}: {}", lichen_dir.display(), e))?;
 
-        let cert_path = moltchain_dir.join("node_cert.der");
-        let key_path = moltchain_dir.join("node_key.der");
+        let cert_path = lichen_dir.join("node_cert.der");
+        let key_path = lichen_dir.join("node_key.der");
 
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .map_err(|e| format!("Failed to generate certificate: {}", e))?;
@@ -1520,7 +1520,7 @@ impl NodeIdentity {
 
 /// AUDIT-FIX C1-01: TOFU (Trust On First Use) peer certificate fingerprint store.
 /// Tracks known peer certificate fingerprints to detect identity changes.
-/// Persists to ~/.moltchain/peer_fingerprints.json for durability across restarts.
+/// Persists to ~/.lichen/peer_fingerprints.json for durability across restarts.
 struct PeerFingerprintStore {
     /// Map from peer address string to hex-encoded SHA-256 certificate fingerprint
     fingerprints: Mutex<HashMap<String, String>>,
@@ -1740,9 +1740,9 @@ fn verify_self_signed_cert(cert_der: &[u8]) -> Result<[u8; 32], String> {
 /// DER-formatted data. Combined with TOFU fingerprint pinning (done after connection
 /// establishment in connect_peer/start_accepting) for complete peer identity verification.
 #[derive(Debug)]
-struct MoltCertVerifier;
+struct LichenCertVerifier;
 
-impl rustls::client::danger::ServerCertVerifier for MoltCertVerifier {
+impl rustls::client::danger::ServerCertVerifier for LichenCertVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer,
@@ -1817,9 +1817,9 @@ impl rustls::client::danger::ServerCertVerifier for MoltCertVerifier {
 /// Validates that connecting peers present properly self-signed certificates.
 /// client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
 #[derive(Debug)]
-struct MoltClientCertVerifier;
+struct LichenClientCertVerifier;
 
-impl rustls::server::danger::ClientCertVerifier for MoltClientCertVerifier {
+impl rustls::server::danger::ClientCertVerifier for LichenClientCertVerifier {
     fn offer_client_auth(&self) -> bool {
         true
     }
@@ -2094,7 +2094,7 @@ mod tests {
     #[test]
     fn test_c1_01_tofu_new_peer() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_new_{}_{}.json",
+            "lichen_tofu_new_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2116,7 +2116,7 @@ mod tests {
     #[test]
     fn test_c1_01_tofu_known_peer_match() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_match_{}_{}.json",
+            "lichen_tofu_match_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2141,7 +2141,7 @@ mod tests {
     #[test]
     fn test_c1_01_tofu_fingerprint_changed() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_changed_{}_{}.json",
+            "lichen_tofu_changed_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2167,7 +2167,7 @@ mod tests {
     #[test]
     fn test_c1_01_tofu_persistence() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_persist_{}_{}.json",
+            "lichen_tofu_persist_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2229,9 +2229,9 @@ mod tests {
         assert_ne!(fp_empty, fp_data);
     }
 
-    /// Test MoltCertVerifier accepts valid self-signed certificates
+    /// Test LichenCertVerifier accepts valid self-signed certificates
     #[test]
-    fn test_c1_01_molt_cert_verifier_accepts_valid() {
+    fn test_c1_01_licn_cert_verifier_accepts_valid() {
         rustls::crypto::ring::default_provider()
             .install_default()
             .ok();
@@ -2240,7 +2240,7 @@ mod tests {
             .expect("Failed to generate cert");
         let cert_der = CertificateDer::from(cert.cert);
 
-        let verifier = MoltCertVerifier;
+        let verifier = LichenCertVerifier;
         let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
         let result = verifier.verify_server_cert(
             &cert_der,
@@ -2251,15 +2251,15 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "Valid self-signed cert should be accepted by MoltCertVerifier"
+            "Valid self-signed cert should be accepted by LichenCertVerifier"
         );
     }
 
-    /// Test MoltCertVerifier rejects garbage data
+    /// Test LichenCertVerifier rejects garbage data
     #[test]
-    fn test_c1_01_molt_cert_verifier_rejects_garbage() {
+    fn test_c1_01_licn_cert_verifier_rejects_garbage() {
         let garbage = CertificateDer::from(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        let verifier = MoltCertVerifier;
+        let verifier = LichenCertVerifier;
         let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
         let result = verifier.verify_server_cert(
             &garbage,
@@ -2270,7 +2270,7 @@ mod tests {
         );
         assert!(
             result.is_err(),
-            "Garbage data should be rejected by MoltCertVerifier"
+            "Garbage data should be rejected by LichenCertVerifier"
         );
     }
 
@@ -2430,7 +2430,7 @@ mod tests {
     #[tokio::test]
     async fn test_subnet_limit_in_connect_peer() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-subnet-{}",
+            "lichen-test-subnet-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2498,7 +2498,7 @@ mod tests {
     #[tokio::test]
     async fn test_fastest_peers_sorting() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-fastest-{}",
+            "lichen-test-fastest-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2563,7 +2563,7 @@ mod tests {
     #[tokio::test]
     async fn test_bandwidth_stats() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-bw-{}",
+            "lichen-test-bw-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2606,7 +2606,7 @@ mod tests {
     #[tokio::test]
     async fn test_bandwidth_stats_unknown_peer() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-bw-unk-{}",
+            "lichen-test-bw-unk-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2631,7 +2631,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_consensus_targets_use_bounded_kademlia_fanout() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-kad-fanout-{}",
+            "lichen-test-kad-fanout-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2669,7 +2669,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_consensus_targets_fall_back_to_all_peers_without_overlay_entries() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-kad-fallback-{}",
+            "lichen-test-kad-fallback-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -2712,7 +2712,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_accepted() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_{}_{}.json",
+            "lichen_tofu_rot_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2754,7 +2754,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_rejected_unknown_peer() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_unk_{}_{}.json",
+            "lichen_tofu_rot_unk_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2780,7 +2780,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_rejected_wrong_old_fp() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_mismatch_{}_{}.json",
+            "lichen_tofu_rot_mismatch_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2815,7 +2815,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_rejected_fp_mismatch_cert() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_certmm_{}_{}.json",
+            "lichen_tofu_rot_certmm_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2849,7 +2849,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_rate_limited() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_rate_{}_{}.json",
+            "lichen_tofu_rot_rate_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2897,7 +2897,7 @@ mod tests {
     #[test]
     fn test_cert_rotation_invalid_cert_rejected() {
         let path = std::env::temp_dir().join(format!(
-            "moltchain_tofu_rot_invcert_{}_{}.json",
+            "lichen_tofu_rot_invcert_{}_{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2997,7 +2997,7 @@ mod tests {
     #[tokio::test]
     async fn test_asn_bucket_limit_in_connect_peer() {
         let tmp = std::env::temp_dir().join(format!(
-            "molt-test-asn-{}",
+            "lichen-test-asn-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

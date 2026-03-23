@@ -1,4 +1,4 @@
-// MoltChain Consensus WAL (Write-Ahead Log)
+// Lichen Consensus WAL (Write-Ahead Log)
 //
 // Persists consensus state so that after a crash the validator does NOT
 // violate the Tendermint safety invariant (locked-value rule).
@@ -15,7 +15,7 @@
 // applied, the WAL is truncated (checkpointed) because the committed
 // block is the new source of truth.
 
-use moltchain_core::Hash;
+use lichen_core::Hash;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;

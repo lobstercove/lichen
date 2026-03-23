@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn test_shield_circuit_satisfies() {
         let cs = ConstraintSystem::<Fr>::new_ref();
-        let circuit = valid_circuit(1_000_000_000); // 1 MOLT
+        let circuit = valid_circuit(1_000_000_000); // 1 LICN
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
         // Expect non-trivial constraint count (Poseidon + range check + equality)

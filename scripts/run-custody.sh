@@ -36,7 +36,7 @@ if [ -z "${CUSTODY_DB_PATH:-}" ]; then
   export CUSTODY_DB_PATH="./data/custody-${NETWORK}"
 fi
 
-echo "🦞 Starting MoltChain Custody"
+echo "🦞 Starting Lichen Custody"
 echo "=============================="
 echo "Network: $NETWORK"
 echo "DB: $CUSTODY_DB_PATH"
@@ -44,4 +44,4 @@ echo "Signers: $CUSTODY_SIGNER_ENDPOINTS"
 echo "Threshold: $CUSTODY_SIGNER_THRESHOLD"
 echo ""
 
-cargo run --release --bin moltchain-custody
+cargo run --release --bin lichen-custody

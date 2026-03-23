@@ -8,9 +8,9 @@
 
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use moltchain_core::zk::{MerkleTree, ShieldedPoolState};
-use moltchain_core::StateStore;
-use moltchain_rpc::build_rpc_router;
+use lichen_core::zk::{MerkleTree, ShieldedPoolState};
+use lichen_core::StateStore;
+use lichen_rpc::build_rpc_router;
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -101,8 +101,8 @@ fn create_empty_app() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -139,7 +139,7 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
     let pool_state = ShieldedPoolState {
         merkle_root: tree.root(),
         commitment_count: n_commitments,
-        total_shielded: n_commitments * 1_000_000_000, // 1 MOLT per commitment
+        total_shielded: n_commitments * 1_000_000_000, // 1 LICN per commitment
         vk_shield_hash: [0xAA; 32],
         vk_unshield_hash: [0xBB; 32],
         vk_transfer_hash: [0xCC; 32],
@@ -158,8 +158,8 @@ fn create_populated_app(n_commitments: u64, spent_nullifiers: &[[u8; 32]]) -> ax
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -217,7 +217,7 @@ async fn test_rpc_get_shielded_pool_state_populated() {
 
     assert_eq!(result["commitmentCount"], 5);
     assert_eq!(result["totalShielded"], 5_000_000_000u64);
-    assert_eq!(result["totalShieldedMolt"], "5.000000000");
+    assert_eq!(result["totalShieldedLicn"], "5.000000000");
     assert_eq!(
         result["vkShieldHash"].as_str().unwrap(),
         hex::encode([0xAA; 32])
@@ -293,13 +293,13 @@ async fn test_rpc_get_shielded_merkle_path_valid() {
     assert_eq!(result["index"], 2);
     // Siblings should be an array of TREE_DEPTH hex strings
     let siblings = result["siblings"].as_array().unwrap();
-    assert_eq!(siblings.len(), moltchain_core::zk::TREE_DEPTH);
+    assert_eq!(siblings.len(), lichen_core::zk::TREE_DEPTH);
     for s in siblings {
         assert_eq!(s.as_str().unwrap().len(), 64);
     }
     // pathBits should be an array of TREE_DEPTH booleans
     let bits = result["pathBits"].as_array().unwrap();
-    assert_eq!(bits.len(), moltchain_core::zk::TREE_DEPTH);
+    assert_eq!(bits.len(), lichen_core::zk::TREE_DEPTH);
     // Root should be present
     assert_eq!(result["root"].as_str().unwrap().len(), 64);
 }
@@ -519,11 +519,11 @@ async fn test_rest_get_merkle_path_valid() {
     assert_eq!(data["index"], 1);
     assert_eq!(
         data["siblings"].as_array().unwrap().len(),
-        moltchain_core::zk::TREE_DEPTH
+        lichen_core::zk::TREE_DEPTH
     );
     assert_eq!(
         data["pathBits"].as_array().unwrap().len(),
-        moltchain_core::zk::TREE_DEPTH
+        lichen_core::zk::TREE_DEPTH
     );
 }
 
@@ -789,7 +789,7 @@ async fn test_merkle_proof_roundtrip_verification() {
             .map(|b| b.as_bool().unwrap())
             .collect();
 
-        let merkle_path = moltchain_core::zk::MerklePath {
+        let merkle_path = lichen_core::zk::MerklePath {
             siblings,
             path_bits,
             index: idx,
@@ -819,8 +819,8 @@ fn create_app_from_state(state: StateStore) -> axum::Router {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -831,7 +831,7 @@ fn create_app_from_state(state: StateStore) -> axum::Router {
 
 #[tokio::test]
 async fn test_rpc_reflects_processor_shielded_state() {
-    use moltchain_core::zk::ShieldedPoolState;
+    use lichen_core::zk::ShieldedPoolState;
 
     // Simulate processor state after processing:
     //   - 3 shield transactions
@@ -854,7 +854,7 @@ async fn test_rpc_reflects_processor_shielded_state() {
     let nullifier = test_nullifier(100);
     state.mark_nullifier_spent(&nullifier).unwrap();
 
-    // Pool state: 3 commitments, 1.5 MOLT remaining (after 0.5 MOLT unshielded)
+    // Pool state: 3 commitments, 1.5 LICN remaining (after 0.5 LICN unshielded)
     let pool = ShieldedPoolState {
         merkle_root: tree.root(),
         commitment_count: 3,
@@ -923,5 +923,5 @@ async fn test_rpc_reflects_processor_shielded_state() {
     // ── Verify pool via REST ─────────────────────────────────────────────
     let resp = rest_get(&app, "/api/v1/shielded/pool").await.unwrap();
     assert_eq!(resp["data"]["totalShielded"], 1_500_000_000u64);
-    assert_eq!(resp["data"]["totalShieldedMolt"], "1.500000000");
+    assert_eq!(resp["data"]["totalShieldedLicn"], "1.500000000");
 }

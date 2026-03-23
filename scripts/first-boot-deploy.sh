@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# MoltChain First-Boot Contract Deployment
+# Lichen First-Boot Contract Deployment
 # ============================================================================
 #
 # Runs automatically after genesis to deploy ALL smart contracts, initialize
@@ -26,7 +26,7 @@ TOOLS_DIR="${REPO_ROOT}/tools"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 MANIFEST="${REPO_ROOT}/deploy-manifest.json"
 
-RPC_URL="${CUSTODY_MOLT_RPC_URL:-http://127.0.0.1:8899}"
+RPC_URL="${CUSTODY_LICHEN_RPC_URL:-http://127.0.0.1:8899}"
 SKIP_BUILD=false
 MAX_RETRIES=30
 RETRY_DELAY=2
@@ -49,7 +49,7 @@ for arg in "$@"; do
 done
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  🦞 MoltChain First-Boot Contract Deployment            ║${NC}"
+echo -e "${CYAN}║  🦞 Lichen First-Boot Contract Deployment            ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo -e "  RPC:      ${RPC_URL}"
 echo -e "  Manifest: ${MANIFEST}"
@@ -104,7 +104,7 @@ else
     
     # Check which contracts need building
     DEX_AND_TOKEN_CONTRACTS=(
-        musd_token wsol_token weth_token wbnb_token
+        lusd_token wsol_token weth_token wbnb_token
         dex_core dex_amm dex_router
         dex_governance dex_margin dex_rewards dex_analytics
         prediction_market
@@ -150,11 +150,11 @@ fi
 # Critical: the custody service must use the SAME keypair that initialized
 # the wrapped token contracts, otherwise mint() calls will fail with
 # "not admin" (error code 2).
-CUSTODY_TREASURY_TARGET="/etc/moltchain/custody-treasury.json"
+CUSTODY_TREASURY_TARGET="/etc/lichen/custody-treasury.json"
 DEPLOYER_KP="${SCRIPT_DIR}/../keypairs/deployer.json"
 if [ -f "$DEPLOYER_KP" ]; then
     echo -e "  Copying deployer keypair to custody treasury: ${CUSTODY_TREASURY_TARGET}"
-    sudo mkdir -p /etc/moltchain
+    sudo mkdir -p /etc/lichen
     sudo cp "$DEPLOYER_KP" "$CUSTODY_TREASURY_TARGET"
     sudo chmod 600 "$CUSTODY_TREASURY_TARGET"
     echo -e "  ${GREEN}✅ Custody treasury keypair aligned with contract admin${NC}"
@@ -166,9 +166,9 @@ fi
 echo -e "\n${CYAN}[4/5]${NC} Deploying core infrastructure contracts..."
 
 CORE_CONTRACTS=(
-    moltcoin moltdao moltswap moltbridge moltmarket moltoracle
-    moltauction moltpunks moltyid lobsterlend clawpay clawpump
-    clawvault bountyboard compute_market reef_storage shielded_pool
+    lichencoin lichendao lichenswap lichenbridge lichenmarket lichenoracle
+    lichenauction lichenpunks lichenid thalllend sporepay sporepump
+    sporevault bountyboard compute_market moss_storage shielded_pool
 )
 
 if [ -f "${TOOLS_DIR}/deploy_contract.py" ]; then
@@ -176,7 +176,7 @@ if [ -f "${TOOLS_DIR}/deploy_contract.py" ]; then
         WASM="${CONTRACTS_DIR}/${c}/${c}.wasm"
         if [ -f "$WASM" ]; then
             echo -e "  Deploying ${c}..."
-            CUSTODY_MOLT_RPC_URL="${RPC_URL}" python3 "${TOOLS_DIR}/deploy_contract.py" \
+            CUSTODY_LICHEN_RPC_URL="${RPC_URL}" python3 "${TOOLS_DIR}/deploy_contract.py" \
                 "$WASM" 2>&1 | sed 's/^/    /' || true
         fi
     done
@@ -190,7 +190,7 @@ fi
 # ─────────────────────────────────────────────────────────
 echo -e "\n${CYAN}[5/5]${NC} Seeding AMM pools + insurance fund..."
 
-CUSTODY_MOLT_RPC_URL="${RPC_URL}" python3 "${SCRIPT_DIR}/seed_pools.py" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
+CUSTODY_LICHEN_RPC_URL="${RPC_URL}" python3 "${SCRIPT_DIR}/seed_pools.py" 2>&1 | sed 's/^/    /' || echo -e "  ${YELLOW}⚠  Pool seeding failed, chain may need manual seeding${NC}"
 
 # ─────────────────────────────────────────────────────────
 # Final verification

@@ -208,9 +208,9 @@ console.log('\n── F14.8: Transfer amount validation ──');
     assert(!validateTransferAmount(-1), 'Rejects negative');
     assert(!validateTransferAmount(0), 'Rejects zero');
     assert(!validateTransferAmount(1_000_000_001), 'Rejects over 1B');
-    assert(validateTransferAmount(1), 'Accepts 1 MOLT');
-    assert(validateTransferAmount(0.001), 'Accepts 0.001 MOLT');
-    assert(validateTransferAmount(1_000_000_000), 'Accepts max 1B MOLT');
+    assert(validateTransferAmount(1), 'Accepts 1 LICN');
+    assert(validateTransferAmount(0.001), 'Accepts 0.001 LICN');
+    assert(validateTransferAmount(1_000_000_000), 'Accepts max 1B LICN');
     assert(!validateTransferAmount(parseFloat('')), 'Rejects empty string parsed');
     assert(!validateTransferAmount(parseFloat('abc')), 'Rejects non-numeric string parsed');
 }
@@ -222,7 +222,7 @@ console.log('\n── F14.9: SDK duplicate getAccount removed ──');
 
 {
     const fs = require('fs');
-    const sdkSource = fs.readFileSync(__dirname + '/js/moltchain-sdk.js', 'utf8');
+    const sdkSource = fs.readFileSync(__dirname + '/js/lichen-sdk.js', 'utf8');
     
     // Count occurrences of "async getAccount(" — should be exactly 1
     const matches = sdkSource.match(/async getAccount\(/g);

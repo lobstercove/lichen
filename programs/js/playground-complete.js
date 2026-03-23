@@ -1,11 +1,11 @@
 /**
- * MoltChain Playground - COMPLETE WORKING VERSION
+ * Lichen Playground - COMPLETE WORKING VERSION
  * All features properly implemented and wired
  * 
  * @version 3.0.0 (Actually Production Ready)
  */
 
-console.log('🦞 MoltChain Playground Loading (Complete Version)...');
+console.log('🦞 Lichen Playground Loading (Complete Version)...');
 
 const EXPLORER_NETWORK_STORAGE_KEY = 'explorer_network';
 const PLAYGROUND_NETWORK_STORAGE_KEY = 'playground_network';
@@ -26,8 +26,8 @@ function mapExplorerToSdkNetwork(network) {
 }
 
 // Load SDK first
-if (typeof MoltChain === 'undefined') {
-    console.error('❌ MoltChain SDK not loaded! Include moltchain-sdk.js first');
+if (typeof Lichen === 'undefined') {
+    console.error('❌ Lichen SDK not loaded! Include lichen-sdk.js first');
 }
 
 // AUDIT-FIX F14.1–F14.7: HTML-escape helper to prevent XSS in innerHTML
@@ -134,8 +134,8 @@ const Playground = {
     async initNetwork(network) {
         this.network = normalizeExplorerNetwork(network);
         const sdkNetwork = mapExplorerToSdkNetwork(this.network);
-        this.rpc = new MoltChain.RPC(sdkNetwork);
-        this.ws = new MoltChain.WebSocket(sdkNetwork);
+        this.rpc = new Lichen.RPC(sdkNetwork);
+        this.ws = new Lichen.WebSocket(sdkNetwork);
 
         try {
             await this.ws.connect();
@@ -659,7 +659,7 @@ const Playground = {
                     if (tpsEl) tpsEl.textContent = metrics.tps.toFixed(2);
                     if (totalTxsEl) totalTxsEl.textContent = metrics.total_transactions.toLocaleString();
                     if (blockTimeEl) blockTimeEl.textContent = `${(metrics.average_block_time * 1000).toFixed(0)}ms`;
-                    if (burnedEl) burnedEl.textContent = `${(metrics.total_burned / 1_000_000_000).toFixed(2)} MOLT`;
+                    if (burnedEl) burnedEl.textContent = `${(metrics.total_burned / 1_000_000_000).toFixed(2)} LICN`;
                 } catch (e) {
                     // Ignore errors
                 }
@@ -974,7 +974,7 @@ const Playground = {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `moltchain-playground-snapshot-${Date.now()}.json`;
+        a.download = `lichen-playground-snapshot-${Date.now()}.json`;
         a.click();
         URL.revokeObjectURL(url);
     },
@@ -1113,7 +1113,7 @@ const Playground = {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'moltchain-program.json';
+        a.download = 'lichen-program.json';
         a.click();
 
         this.addTerminalLine('📤 Program exported', 'success');
@@ -1206,11 +1206,11 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Token Name</label>
-                        <input type="text" class="form-input" id="tokenNameInput" placeholder="MoltCoin">
+                        <input type="text" class="form-input" id="tokenNameInput" placeholder="LichenCoin">
                     </div>
                     <div class="form-group">
                         <label>Symbol</label>
-                        <input type="text" class="form-input" id="tokenSymbolInput" placeholder="MOLT">
+                        <input type="text" class="form-input" id="tokenSymbolInput" placeholder="LICN">
                     </div>
                     <div class="template-registry-status">
                         <span class="template-registry-label">Registry status:</span>
@@ -1226,11 +1226,11 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Website URL</label>
-                        <input type="text" class="form-input" id="tokenWebsiteInput" placeholder="https://moltcoin.io">
+                        <input type="text" class="form-input" id="tokenWebsiteInput" placeholder="https://lichencoin.io">
                     </div>
                     <div class="form-group">
                         <label>Logo URL</label>
-                        <input type="text" class="form-input" id="tokenLogoUrlInput" placeholder="https://moltcoin.io/logo.png">
+                        <input type="text" class="form-input" id="tokenLogoUrlInput" placeholder="https://lichencoin.io/logo.png">
                     </div>
                     <div class="form-group" style="grid-column: 1 / -1;">
                         <label>Description</label>
@@ -1238,15 +1238,15 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Twitter/X URL</label>
-                        <input type="text" class="form-input" id="tokenTwitterInput" placeholder="https://x.com/moltcoin">
+                        <input type="text" class="form-input" id="tokenTwitterInput" placeholder="https://x.com/lichencoin">
                     </div>
                     <div class="form-group">
                         <label>Telegram URL</label>
-                        <input type="text" class="form-input" id="tokenTelegramInput" placeholder="https://t.me/moltcoin">
+                        <input type="text" class="form-input" id="tokenTelegramInput" placeholder="https://t.me/lichencoin">
                     </div>
                     <div class="form-group">
                         <label>Discord URL</label>
-                        <input type="text" class="form-input" id="tokenDiscordInput" placeholder="https://discord.gg/moltcoin">
+                        <input type="text" class="form-input" id="tokenDiscordInput" placeholder="https://discord.gg/lichencoin">
                     </div>
                     <div class="form-group">
                         <label>Owner (deployer)</label>
@@ -1334,7 +1334,7 @@ const Playground = {
                 <div class="template-options-grid">
                     <div class="form-group">
                         <label>Collection Name</label>
-                        <input type="text" class="form-input" id="nftNameInput" placeholder="MoltPunks">
+                        <input type="text" class="form-input" id="nftNameInput" placeholder="LichenPunks">
                     </div>
                     <div class="form-group">
                         <label>Symbol</label>
@@ -1462,7 +1462,7 @@ const Playground = {
                     <div class="form-group">
                         <label>Graduation Market Cap</label>
                         <input type="number" class="form-input" id="launchGradMcapInput" min="100000" max="10000000" step="1000" value="${current.graduationMcap}">
-                        <div class="template-options-note">MOLT market cap to graduate to MoltSwap</div>
+                        <div class="template-options-note">LICN market cap to graduate to LichenSwap</div>
                     </div>
                 </div>
                 <div class="template-options-note">Changing options regenerates the template code.</div>
@@ -1710,8 +1710,8 @@ const Playground = {
     getTemplateDefaults(exampleId) {
         if (exampleId === 'token') {
             return {
-                name: 'MoltCoin',
-                symbol: 'MOLT',
+                name: 'LichenCoin',
+                symbol: 'LICN',
                 decimals: 9,
                 supply: '1000000',
                 website: '',
@@ -1725,7 +1725,7 @@ const Playground = {
         }
         if (exampleId === 'nft') {
             return {
-                name: 'MoltPunks',
+                name: 'LichenPunks',
                 symbol: 'MPNK',
                 maxSupply: '10000',
                 royaltyBps: 500,
@@ -1939,7 +1939,7 @@ const Playground = {
         return code.replace(re, `$1${newValue}$3`);
     },
 
-    // --- Lending (LobsterLend) ---
+    // --- Lending (ThallLend) ---
     generateLendingTemplateFiles(options) {
         const example = EXAMPLES.lending;
         let code = example.files['lib.rs'];
@@ -1968,7 +1968,7 @@ const Playground = {
         return { collateralFactor: Math.max(25, Math.min(95, cf)), liquidationThreshold: Math.max(50, Math.min(99, lt)), liquidationBonus: Math.max(1, Math.min(20, lb)) };
     },
 
-    // --- Launchpad (ClawPump) ---
+    // --- Launchpad (SporePump) ---
     generateLaunchpadTemplateFiles(options) {
         const example = EXAMPLES.launchpad;
         let code = example.files['lib.rs'];
@@ -1995,7 +1995,7 @@ const Playground = {
         return { platformFee: Math.max(0, Math.min(10, pf)), graduationMcap: Math.max(100000, Math.min(10000000, gm)) };
     },
 
-    // --- Vault (ClawVault) ---
+    // --- Vault (SporeVault) ---
     generateVaultTemplateFiles(options) {
         const example = EXAMPLES.vault;
         let code = example.files['lib.rs'];
@@ -2022,7 +2022,7 @@ const Playground = {
         return { performanceFee: Math.max(0, Math.min(50, pf)), maxStrategies: Math.max(1, Math.min(10, ms)) };
     },
 
-    // --- Identity (MoltyID) ---
+    // --- Identity (LichenID) ---
     generateIdentityTemplateFiles(options) {
         const example = EXAMPLES.identity;
         let code = example.files['lib.rs'];
@@ -2053,7 +2053,7 @@ const Playground = {
         return { initialReputation: Math.max(1, Math.min(10000, ir)), maxReputation: Math.max(1000, Math.min(1000000, mr)), vouchCost: Math.max(1, Math.min(100, vc)), vouchReward: Math.max(1, Math.min(200, vr)) };
     },
 
-    // --- Marketplace (MoltMarket) ---
+    // --- Marketplace (LichenMarket) ---
     generateMarketplaceTemplateFiles(options) {
         const example = EXAMPLES.marketplace;
         let code = example.files['lib.rs'];
@@ -2078,7 +2078,7 @@ const Playground = {
         return { feeBps: Math.max(0, Math.min(1000, fb)) };
     },
 
-    // --- Auction (MoltAuction) ---
+    // --- Auction (LichenAuction) ---
     generateAuctionTemplateFiles(options) {
         const example = EXAMPLES.auction;
         let code = example.files['lib.rs'];
@@ -2162,7 +2162,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -2240,7 +2240,7 @@ pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
 #![no_main]
 #![allow(static_mut_refs)]
 
-use moltchain_sdk::{Token, Address, log_info};
+use lichen_sdk::{Token, Address, log_info};
 
 // Program ID (auto-updated by Playground)
 const PROGRAM_ID: &str = "program_id_here";
@@ -2420,7 +2420,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -2471,7 +2471,7 @@ pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
 #![no_main]
 #![allow(static_mut_refs)]
 
-use moltchain_sdk::{NFT, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
+use lichen_sdk::{NFT, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
 
 // Program ID (auto-updated by Playground)
 const PROGRAM_ID: &str = "program_id_here";
@@ -2802,12 +2802,12 @@ pub extern "C" fn total_minted() -> u64 {
     normalizeExampleSource(source) {
         let normalized = source || '';
 
-        if (!/use\s+moltchain_sdk::\*/.test(normalized)) {
+        if (!/use\s+lichen_sdk::\*/.test(normalized)) {
             const borshMatch = normalized.match(/^use\s+borsh[^\n]*\n/m);
             if (borshMatch) {
-                normalized = normalized.replace(borshMatch[0], `${borshMatch[0]}use moltchain_sdk::*;\n`);
+                normalized = normalized.replace(borshMatch[0], `${borshMatch[0]}use lichen_sdk::*;\n`);
             } else {
-                normalized = `use moltchain_sdk::*;\n\n${normalized}`;
+                normalized = `use lichen_sdk::*;\n\n${normalized}`;
             }
         }
 
@@ -2934,18 +2934,18 @@ pub extern "C" fn total_minted() -> u64 {
 
         try {
             // Create deployer
-            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const deployer = new Lichen.ProgramDeployer(this.rpc, this.wallet);
 
             // Get deploy settings from sidebar
             const programName = document.getElementById('programName')?.value || 'my_program';
             const verify = document.getElementById('verifyCode')?.checked || false;
             const fundingInput = document.getElementById('initialFunding')?.value || '0';
-            const fundingMolt = Number.parseFloat(fundingInput);
-            if (!Number.isFinite(fundingMolt) || fundingMolt < 0) {
+            const fundingLicn = Number.parseFloat(fundingInput);
+            if (!Number.isFinite(fundingLicn) || fundingLicn < 0) {
                 this.addTerminalLine('❌ Initial funding must be a non-negative number', 'error');
                 return;
             }
-            const initialFunding = Math.round(fundingMolt * 1_000_000_000);
+            const initialFunding = Math.round(fundingLicn * 1_000_000_000);
             const programIdOverride = this.getProgramIdOverride();
             const upgradeAuthority = document.getElementById('upgradeAuthority')?.value || 'wallet';
             const customAuthority = document.getElementById('customAuthority')?.value || '';
@@ -2986,7 +2986,7 @@ pub extern "C" fn total_minted() -> u64 {
                 initData,
                 metadata: {
                     name: programName,
-                    description: 'Deployed from MoltChain Playground'
+                    description: 'Deployed from Lichen Playground'
                 },
                 programIdOverride
             });
@@ -3057,7 +3057,7 @@ pub extern "C" fn total_minted() -> u64 {
         this.addTerminalLine('', 'normal');
 
         try {
-            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const deployer = new Lichen.ProgramDeployer(this.rpc, this.wallet);
             const result = await deployer.upgrade(programId, this.compiledWasm);
 
             this.addTerminalLine('✅ Program upgraded successfully!', 'success');
@@ -3091,7 +3091,7 @@ pub extern "C" fn total_minted() -> u64 {
 
         this.addTerminalLine(`🗑️ Closing program ${programId}...`, 'info');
         try {
-            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const deployer = new Lichen.ProgramDeployer(this.rpc, this.wallet);
             const result = await deployer.close(programId);
             this.addTerminalLine('✅ Program closed!', 'success');
             this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
@@ -3321,11 +3321,11 @@ pub extern "C" fn total_minted() -> u64 {
             const args = JSON.parse(argsJson);
 
             // Build transaction
-            const tx = new MoltChain.TransactionBuilder(this.rpc);
+            const tx = new Lichen.TransactionBuilder(this.rpc);
             await tx.setRecentBlockhash();
 
             tx.addInstruction(
-                MoltChain.TransactionBuilder.call(this.wallet.address, programId, functionName, args)
+                Lichen.TransactionBuilder.call(this.wallet.address, programId, functionName, args)
             );
 
             tx.sign(this.wallet);
@@ -3337,7 +3337,7 @@ pub extern "C" fn total_minted() -> u64 {
             this.addTerminalLine('   Waiting for confirmation...', 'info');
 
             // Wait for confirmation
-            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const deployer = new Lichen.ProgramDeployer(this.rpc, this.wallet);
             const confirmed = await deployer.waitForConfirmation(signature);
 
             if (confirmed) {
@@ -3450,7 +3450,7 @@ pub extern "C" fn total_minted() -> u64 {
                     this.activeWalletId = null;
                     this.wallet = null;
                     this.balance = null;
-                    localStorage.removeItem('molt_wallet');
+                    localStorage.removeItem('lichen_wallet');
                     this.updateWalletDisplay();
                     this.updateProgramIdPreview();
                     this.renderWalletList();
@@ -3467,7 +3467,7 @@ pub extern "C" fn total_minted() -> u64 {
             this.activeWalletId = null;
             this.wallet = null;
             this.balance = null;
-            localStorage.removeItem('molt_wallet');
+            localStorage.removeItem('lichen_wallet');
             this.saveWalletStore();
             this.updateWalletDisplay();
             this.renderWalletList();
@@ -3491,11 +3491,11 @@ pub extern "C" fn total_minted() -> u64 {
                     seedBytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
                 } else {
                     // Try base58 decode
-                    seedBytes = MoltChain.utils.base58Decode(raw);
+                    seedBytes = Lichen.utils.base58Decode(raw);
                 }
                 if (seedBytes.length === 64) seedBytes = seedBytes.slice(0, 32);
                 if (seedBytes.length !== 32) { alert('Invalid key length (need 32 or 64 bytes)'); return; }
-                wallet = new MoltChain.Wallet(seedBytes);
+                wallet = new Lichen.Wallet(seedBytes);
             } catch (e) {
                 alert('Invalid private key: ' + e.message);
                 return;
@@ -3517,7 +3517,7 @@ pub extern "C" fn total_minted() -> u64 {
                     );
                 }).then(seedBuffer => {
                     const seed = new Uint8Array(seedBuffer).slice(0, 32);
-                    wallet = new MoltChain.Wallet(seed);
+                    wallet = new Lichen.Wallet(seed);
                     this._finishImport(wallet);
                 }).catch(e => alert('Mnemonic derivation failed: ' + e.message));
                 return; // async path
@@ -3547,11 +3547,11 @@ pub extern "C" fn total_minted() -> u64 {
 
     async wmConnectExtension() {
         try {
-            if (typeof window.moltWallet === 'undefined') {
-                alert('MoltWallet extension not detected. Please install it.');
+            if (typeof window.lichenWallet === 'undefined') {
+                alert('LichenWallet extension not detected. Please install it.');
                 return;
             }
-            const resp = await window.moltWallet.connect();
+            const resp = await window.lichenWallet.connect();
             if (resp && resp.address) {
                 // Create a lightweight wallet object
                 this.wallet = { address: resp.address, isExtension: true, export: () => ({ publicKey: resp.address }) };
@@ -3573,7 +3573,7 @@ pub extern "C" fn total_minted() -> u64 {
     wmCreateWallet() {
         const createPassword = document.getElementById('wmCreatePassword')?.value.trim() || '';
         if (!createPassword) { alert('Password is required'); return; }
-        const wallet = new MoltChain.Wallet();
+        const wallet = new Lichen.Wallet();
         this.wallet = wallet;
         const label = `Wallet ${this.wallets.length + 1}`;
         this.addWalletToStore(wallet, label);
@@ -3616,7 +3616,7 @@ pub extern "C" fn total_minted() -> u64 {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `molt-wallet-${Date.now()}.json`;
+        a.download = `lichen-wallet-${Date.now()}.json`;
         a.click();
 
         this.addTerminalLine('✅ Wallet exported', 'success');
@@ -3626,7 +3626,7 @@ pub extern "C" fn total_minted() -> u64 {
         if (confirm('Are you sure you want to disconnect your wallet?')) {
             this.wallet = null;
             this.balance = null;
-            localStorage.removeItem('molt_wallet');
+            localStorage.removeItem('lichen_wallet');
             this.activeWalletId = null;
 
             this.updateWalletDisplay();
@@ -3640,11 +3640,11 @@ pub extern "C" fn total_minted() -> u64 {
     saveWallet() {
         if (!this.wallet) return;
         const walletData = this.wallet.export('');
-        localStorage.setItem('molt_wallet', JSON.stringify(walletData));
+        localStorage.setItem('lichen_wallet', JSON.stringify(walletData));
     },
 
     loadWalletStore() {
-        const stored = localStorage.getItem('molt_wallets');
+        const stored = localStorage.getItem('lichen_wallets');
         if (stored) {
             try {
                 this.wallets = JSON.parse(stored) || [];
@@ -3653,16 +3653,16 @@ pub extern "C" fn total_minted() -> u64 {
             }
         }
 
-        const savedActive = localStorage.getItem('molt_active_wallet_id');
+        const savedActive = localStorage.getItem('lichen_active_wallet_id');
         if (savedActive) {
             this.activeWalletId = savedActive;
         }
 
-        const legacy = localStorage.getItem('molt_wallet');
+        const legacy = localStorage.getItem('lichen_wallet');
         if (legacy) {
             try {
                 const walletData = JSON.parse(legacy);
-                const address = MoltChain.Wallet.import(walletData, '').address;
+                const address = Lichen.Wallet.import(walletData, '').address;
                 if (!this.wallets.some(item => item.address === address)) {
                     this.wallets.push({
                         id: `wallet_${Date.now()}`,
@@ -3680,11 +3680,11 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     saveWalletStore() {
-        localStorage.setItem('molt_wallets', JSON.stringify(this.wallets));
+        localStorage.setItem('lichen_wallets', JSON.stringify(this.wallets));
         if (this.activeWalletId) {
-            localStorage.setItem('molt_active_wallet_id', this.activeWalletId);
+            localStorage.setItem('lichen_active_wallet_id', this.activeWalletId);
         } else {
-            localStorage.removeItem('molt_active_wallet_id');
+            localStorage.removeItem('lichen_active_wallet_id');
         }
     },
 
@@ -3716,7 +3716,7 @@ pub extern "C" fn total_minted() -> u64 {
         const active = this.wallets.find(item => item.id === this.activeWalletId);
         if (active?.seed) {
             try {
-                this.wallet = MoltChain.Wallet.import({ seed: active.seed }, '');
+                this.wallet = Lichen.Wallet.import({ seed: active.seed }, '');
                 await this.refreshBalance();
                 this.updateWalletDisplay();
                 return;
@@ -3744,7 +3744,7 @@ pub extern "C" fn total_minted() -> u64 {
         this.activeWalletId = null;
         this.wallet = null;
         this.balance = null;
-        localStorage.removeItem('molt_wallet');
+        localStorage.removeItem('lichen_wallet');
         this.saveWalletStore();
         this.updateWalletDisplay();
     },
@@ -3754,20 +3754,20 @@ pub extern "C" fn total_minted() -> u64 {
         const text = document.getElementById('walletBalanceText');
         const dropdownBalance = document.getElementById('walletDropdownBalance');
 
-        const shells = this.balance?.spendable ?? this.balance?.balance ?? 0;
-        const molt = (shells / 1_000_000_000).toFixed(4);
+        const spores = this.balance?.spendable ?? this.balance?.balance ?? 0;
+        const licn = (spores / 1_000_000_000).toFixed(4);
 
         if (pill && text) {
             if (this.wallet) {
                 pill.style.display = 'inline-flex';
-                text.textContent = `${molt} MOLT`;
+                text.textContent = `${licn} LICN`;
             } else {
                 pill.style.display = 'none';
             }
         }
 
         if (dropdownBalance) {
-            dropdownBalance.textContent = `${molt} MOLT`;
+            dropdownBalance.textContent = `${licn} LICN`;
         }
     },
 
@@ -3845,13 +3845,13 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
-        this.addTerminalLine('💧 Requesting testnet MOLT...', 'info');
+        this.addTerminalLine('💧 Requesting testnet LICN...', 'info');
 
         try {
             const amount = this.network === 'local' ? 1000 : 100;
             const result = await this.rpc.requestFaucet(this.wallet.address, amount);
 
-            this.addTerminalLine(`✅ Received ${amount} MOLT!`, 'success');
+            this.addTerminalLine(`✅ Received ${amount} LICN!`, 'success');
             this.addTerminalLine(`   Signature: ${result.signature}`, 'info');
 
             // Refresh balance after a delay
@@ -3878,7 +3878,7 @@ pub extern "C" fn total_minted() -> u64 {
 
         // AUDIT-FIX F14.8: validate transfer amount
         if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) {
-            this.addTerminalLine('❌ Amount must be between 0 and 1e9 MOLT', 'error');
+            this.addTerminalLine('❌ Amount must be between 0 and 1e9 LICN', 'error');
             return;
         }
 
@@ -3888,16 +3888,16 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
-        this.addTerminalLine(`💸 Sending ${amount} MOLT to ${recipient}...`, 'info');
+        this.addTerminalLine(`💸 Sending ${amount} LICN to ${recipient}...`, 'info');
 
         try {
-            const amountShells = amount * 1_000_000_000;
+            const amountSpores = amount * 1_000_000_000;
 
-            const tx = new MoltChain.TransactionBuilder(this.rpc);
+            const tx = new Lichen.TransactionBuilder(this.rpc);
             await tx.setRecentBlockhash();
 
             tx.addInstruction(
-                MoltChain.TransactionBuilder.transfer(this.wallet.address, recipient, amountShells)
+                Lichen.TransactionBuilder.transfer(this.wallet.address, recipient, amountSpores)
             );
 
             tx.sign(this.wallet);
@@ -4181,7 +4181,7 @@ pub extern "C" fn total_minted() -> u64 {
 
         const prompt = document.createElement('span');
         prompt.className = 'terminal-prompt';
-        prompt.textContent = 'molt@playground:~$';
+        prompt.textContent = 'lichen@playground:~$';
 
         const text = document.createElement('span');
         text.className = 'terminal-text';
@@ -4224,9 +4224,9 @@ pub extern "C" fn total_minted() -> u64 {
                 }
                 try {
                     await this.refreshBalance();
-                    const shells = this.balance?.balance ?? 0;
-                    const molt = (shells / 1_000_000_000).toFixed(4);
-                    this.addTerminalLine(`Balance: ${molt} MOLT`, 'info');
+                    const spores = this.balance?.balance ?? 0;
+                    const licn = (spores / 1_000_000_000).toFixed(4);
+                    this.addTerminalLine(`Balance: ${licn} LICN`, 'info');
                 } catch (error) {
                     this.addTerminalLine('Balance lookup failed', 'warning');
                 }
@@ -4321,7 +4321,7 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     getExplorerUrl() {
-        return MoltChain.CONFIG.networks[this.network].explorer;
+        return Lichen.CONFIG.networks[this.network].explorer;
     },
 
     truncateAddress(addr, start = 8, end = 6) {
@@ -4416,7 +4416,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
 
         try {
-            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const deployer = new Lichen.ProgramDeployer(this.rpc, this.wallet);
             const programId = await deployer.deriveProgramAddress(this.wallet.address, this.compiledWasm);
             preview.value = programId;
             this.updateProgramIdDeclaration(programId);
@@ -4453,7 +4453,7 @@ pub extern "C" fn total_minted() -> u64 {
     },
 
     createProgramKeypair(autoDownload = false) {
-        const utils = MoltChain.utils;
+        const utils = Lichen.utils;
         const seed = new Uint8Array(32);
         crypto.getRandomValues(seed);
         const keypair = window.nacl.sign.keyPair.fromSeed(seed);
@@ -4492,7 +4492,7 @@ pub extern "C" fn total_minted() -> u64 {
         }
 
         try {
-            const utils = MoltChain.utils;
+            const utils = Lichen.utils;
             const seedBytes = utils.base58Decode(seed);
             if (!seedBytes || seedBytes.length !== 32) {
                 this.showToast('Program seed must decode to 32 bytes', 'warning');
@@ -4535,7 +4535,7 @@ pub extern "C" fn total_minted() -> u64 {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `molt-program-keypair-${Date.now()}.json`;
+        a.download = `lichen-program-keypair-${Date.now()}.json`;
         a.click();
     },
 
@@ -4805,12 +4805,12 @@ pub extern "C" fn total_minted() -> u64 {
 // ============================================================================
 
 const DEFAULT_FILES = {
-    LIB_RS: `// Welcome to MoltChain Playground
+    LIB_RS: `// Welcome to Lichen Playground
 // Project: workspace
 // This is a simple counter program
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // Program ID (auto-updated by Playground)
 const PROGRAM_ID: &str = "program_id_here";
@@ -4864,7 +4864,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 borsh = "0.10"
 
 [profile.release]
@@ -4894,9 +4894,9 @@ const EXAMPLES = {
         name: 'Blank',
         description: 'Minimal contract starter',
         files: {
-            'lib.rs': `// Minimal MoltChain contract
+            'lib.rs': `// Minimal Lichen contract
 
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // Program ID (auto-updated by Playground)
 const PROGRAM_ID: &str = "program_id_here";
@@ -4926,18 +4926,18 @@ pub extern "C" fn initialize() -> Result<()> {
         }
     },
     token: {
-        name: 'MoltCoin MT-20',
+        name: 'LichenCoin MT-20',
         description: 'Native fungible token contract',
         templateType: 'token',
         files: {
-            'lib.rs': `// MoltCoin Token Contract
+            'lib.rs': `// LichenCoin Token Contract
 // Example MT-20 fungible token
 
 #![no_std]
 #![no_main]
 #![allow(static_mut_refs)]
 
-use moltchain_sdk::{Token, Address, log_info};
+use lichen_sdk::{Token, Address, log_info};
 
 // Initialize token
 static mut TOKEN: Option<Token> = None;
@@ -4967,14 +4967,14 @@ pub extern "C" fn initialize(owner_ptr: *const u8) {
 
     unsafe {
         OWNER = Some(owner);
-        TOKEN = Some(Token::new("MoltCoin", "MOLT", 9));
+        TOKEN = Some(Token::new("LichenCoin", "LICN", 9));
     }
 
     // Initialize with 1 million tokens
     let initial_supply = 1_000_000 * 1_000_000_000; // 1M with 9 decimals
     get_token().initialize(initial_supply, owner).expect("Initialization failed");
 
-    log_info("MoltCoin initialized");
+    log_info("LichenCoin initialized");
 }
 
 /// Get balance of an account
@@ -5093,7 +5093,7 @@ pub extern "C" fn total_supply() -> u64 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltcoin-token"
+name = "lichencoin-token"
 version = "0.1.0"
 edition = "2021"
 
@@ -5101,7 +5101,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -5113,18 +5113,18 @@ strip = true
         }
     },
     nft: {
-        name: 'MoltPunks Collection',
+        name: 'LichenPunks Collection',
         description: 'NFT collection + minting',
         templateType: 'nft',
         files: {
-            'lib.rs': `// MoltPunks - Collectible NFT Contract
+            'lib.rs': `// LichenPunks - Collectible NFT Contract
 // Example implementation of MT-721 standard
 
 #![no_std]
 #![no_main]
 #![allow(static_mut_refs)]
 
-use moltchain_sdk::{NFT, Address, log_info};
+use lichen_sdk::{NFT, Address, log_info};
 
 static mut NFT_COLLECTION: Option<NFT> = None;
 static mut MINTER: Option<Address> = None;
@@ -5154,12 +5154,12 @@ pub extern "C" fn initialize(minter_ptr: *const u8) {
         let minter = Address(minter_addr);
         
         // Initialize collection
-        NFT_COLLECTION = Some(NFT::new("MoltPunks", "MPNK"));
+        NFT_COLLECTION = Some(NFT::new("LichenPunks", "MPNK"));
         MINTER = Some(minter);
         
         get_nft().initialize(minter).expect("Init failed");
         
-        log_info("MoltPunks NFT collection initialized");
+        log_info("LichenPunks NFT collection initialized");
     }
 }
 
@@ -5353,7 +5353,7 @@ pub extern "C" fn total_minted() -> u64 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltpunks-nft"
+name = "lichenpunks-nft"
 version = "0.1.0"
 edition = "2021"
 
@@ -5361,7 +5361,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -5373,17 +5373,17 @@ strip = true
         }
     },
     dex: {
-        name: 'MoltSwap AMM',
+        name: 'LichenSwap AMM',
         description: 'AMM with TWAP oracle, price impact guards, flash loans',
         files: {
-            'lib.rs': `// MoltSwap - Automated Market Maker DEX
+            'lib.rs': `// LichenSwap - Automated Market Maker DEX
 // Decentralized exchange with liquidity pools
 
 #![no_std]
 #![no_main]
 #![allow(static_mut_refs)]
 
-use moltchain_sdk::{Pool, Address, log_info};
+use lichen_sdk::{Pool, Address, log_info};
 
 static mut POOL: Option<Pool> = None;
 
@@ -5415,7 +5415,7 @@ pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
         
         POOL = Some(pool);
         
-        log_info("MoltSwap liquidity pool initialized");
+        log_info("LichenSwap liquidity pool initialized");
     }
 }
 
@@ -5559,7 +5559,7 @@ pub extern "C" fn get_total_liquidity() -> u64 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltswap-dex"
+name = "lichenswap-dex"
 version = "0.1.0"
 edition = "2021"
 
@@ -5567,7 +5567,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -5579,10 +5579,10 @@ strip = true
         }
     },
     dao: {
-        name: 'MoltDAO Governance',
+        name: 'LichenDAO Governance',
         description: 'Token-weighted proposals',
         files: {
-            'lib.rs': `// MoltDAO - Decentralized Autonomous Organization
+            'lib.rs': `// LichenDAO - Decentralized Autonomous Organization
 // Features: Token-weighted voting, Proposals, Treasury management
 
 #![no_std]
@@ -5591,7 +5591,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
     call_token_transfer, set_return_data
 };
@@ -5611,7 +5611,7 @@ pub extern "C" fn initialize_dao(
     treasury_address_ptr: *const u8,
     min_proposal_threshold: u64, // Minimum tokens to create proposal
 ) -> u32 {
-    log_info("🏛️  Initializing MoltDAO...");
+    log_info("🏛️  Initializing LichenDAO...");
     
     let gov_token = unsafe { core::slice::from_raw_parts(governance_token_ptr, 32) };
     let treasury = unsafe { core::slice::from_raw_parts(treasury_address_ptr, 32) };
@@ -5837,7 +5837,7 @@ pub extern "C" fn get_dao_stats() -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltdao-governance"
+name = "lichendao-governance"
 version = "0.1.0"
 edition = "2021"
 
@@ -5845,7 +5845,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -5857,11 +5857,11 @@ strip = true
         }
     },
     lending: {
-        name: 'LobsterLend',
+        name: 'ThallLend',
         description: 'Lending with flash loans, reentrancy guards, emergency pause',
         templateType: 'lending',
         files: {
-            'lib.rs': `// LobsterLend - P2P Lending Protocol
+            'lib.rs': `// ThallLend - P2P Lending Protocol
 // Deposit collateral, borrow assets, earn interest, automated liquidations
 
 #![no_std]
@@ -5870,7 +5870,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
@@ -5911,7 +5911,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"ll_total_deposits", 0);
     store_u64(b"ll_total_borrows", 0);
     store_u64(b"ll_last_accrue", get_timestamp());
-    log_info("\\xf0\\x9f\\xa6\\x9e LobsterLend initialized");
+    log_info("\\xf0\\x9f\\xa6\\x9e ThallLend initialized");
     1
 }
 
@@ -5924,7 +5924,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     store_u64(key.as_bytes(), current + amount);
     let total = load_u64(b"ll_total_deposits");
     store_u64(b"ll_total_deposits", total + amount);
-    log_info(&alloc::format!("Deposited {} shells", amount));
+    log_info(&alloc::format!("Deposited {} spores", amount));
     1
 }
 
@@ -5943,7 +5943,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     store_u64(dep_key.as_bytes(), remaining);
     let total = load_u64(b"ll_total_deposits");
     store_u64(b"ll_total_deposits", total.saturating_sub(amount));
-    log_info(&alloc::format!("Withdrew {} shells", amount));
+    log_info(&alloc::format!("Withdrew {} spores", amount));
     1
 }
 
@@ -5966,7 +5966,7 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(bor_key.as_bytes(), existing_borrow + amount);
     let total = load_u64(b"ll_total_borrows");
     store_u64(b"ll_total_borrows", total + amount);
-    log_info(&alloc::format!("Borrowed {} shells", amount));
+    log_info(&alloc::format!("Borrowed {} spores", amount));
     1
 }
 
@@ -5980,7 +5980,7 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(key.as_bytes(), current - repay_amount);
     let total = load_u64(b"ll_total_borrows");
     store_u64(b"ll_total_borrows", total.saturating_sub(repay_amount));
-    log_info(&alloc::format!("Repaid {} shells", repay_amount));
+    log_info(&alloc::format!("Repaid {} spores", repay_amount));
     1
 }
 
@@ -6015,7 +6015,7 @@ pub extern "C" fn get_protocol_stats() -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "lobsterlend"
+name = "thalllend"
 version = "0.1.0"
 edition = "2021"
 
@@ -6023,7 +6023,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6035,12 +6035,12 @@ strip = true
         }
     },
     launchpad: {
-        name: 'ClawPump Launchpad',
+        name: 'SporePump Launchpad',
         description: 'Bonding curve launches with anti-manipulation and royalties',
         templateType: 'launchpad',
         files: {
-            'lib.rs': `// ClawPump - Token Launchpad with Bonding Curves
-// Fair-launch tokens that graduate to MoltSwap at market cap threshold
+            'lib.rs': `// SporePump - Token Launchpad with Bonding Curves
+// Fair-launch tokens that graduate to LichenSwap at market cap threshold
 
 #![no_std]
 #![no_main]
@@ -6048,14 +6048,14 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
 
-const CREATION_FEE: u64 = 10_000_000_000;     // 10 MOLT
-const GRADUATION_MCAP: u64 = 100_000;          // Graduate at 100K MOLT market cap
-const BASE_PRICE: u64 = 1000;                 // Base price in shells
+const CREATION_FEE: u64 = 10_000_000_000;     // 10 LICN
+const GRADUATION_MCAP: u64 = 100_000;          // Graduate at 100K LICN market cap
+const BASE_PRICE: u64 = 1000;                 // Base price in spores
 const SLOPE: u64 = 1;                         // Linear bonding curve slope
 const SLOPE_SCALE: u64 = 1_000_000;
 const PLATFORM_FEE_PERCENT: u64 = 1;
@@ -6080,14 +6080,14 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     storage_set(b"cp_admin", admin);
     store_u64(b"cp_token_count", 0);
     store_u64(b"cp_total_fees", 0);
-    log_info("\\xf0\\x9f\\x9a\\x80 ClawPump initialized");
+    log_info("\\xf0\\x9f\\x9a\\x80 SporePump initialized");
     1
 }
 
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     if fee_paid < CREATION_FEE {
-        log_info("Insufficient creation fee (need 10 MOLT)");
+        log_info("Insufficient creation fee (need 10 LICN)");
         return 0;
     }
     let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
@@ -6099,7 +6099,7 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     let mut data = Vec::with_capacity(65);
     data.extend_from_slice(creator);                // creator (32)
     data.extend_from_slice(&u64_to_bytes(0));       // supply_sold (8)
-    data.extend_from_slice(&u64_to_bytes(0));       // molt_raised (8)
+    data.extend_from_slice(&u64_to_bytes(0));       // licn_raised (8)
     data.extend_from_slice(&u64_to_bytes(1_000_000_000 * 1_000_000_000)); // max_supply (8)
     data.extend_from_slice(&u64_to_bytes(get_timestamp())); // created_at (8)
     data.push(0);                                    // graduated (1)
@@ -6110,20 +6110,20 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> u64 {
+pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, licn_amount: u64) -> u64 {
     let h = alloc::format!("{:016x}", token_id);
     let key = alloc::format!("cpt:{}", h);
     let data = match storage_get(key.as_bytes()) {
         Some(d) => d,
         None => { log_info("Token not found"); return 0; }
     };
-    if data[64] == 1 { log_info("Token graduated, trade on MoltSwap"); return 0; }
+    if data[64] == 1 { log_info("Token graduated, trade on LichenSwap"); return 0; }
 
     let supply = bytes_to_u64(&data[32..40]);
     // Linear bonding curve: price = BASE + SLOPE * supply / SCALE
     let price = BASE_PRICE + SLOPE * supply / SLOPE_SCALE;
-    let fee = molt_amount * PLATFORM_FEE_PERCENT / 100;
-    let net = molt_amount - fee;
+    let fee = licn_amount * PLATFORM_FEE_PERCENT / 100;
+    let net = licn_amount - fee;
     let tokens_bought = if price > 0 { net * 1_000_000_000 / price } else { 0 };
 
     log_info(&alloc::format!("Bought {} tokens at price {} (1% fee)", tokens_bought, price));
@@ -6140,9 +6140,9 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     };
     let supply = bytes_to_u64(&data[32..40]);
     let price = BASE_PRICE + SLOPE * supply / SLOPE_SCALE;
-    let molt_back = token_amount * price / 1_000_000_000;
-    log_info(&alloc::format!("Sold {} tokens for {} MOLT", token_amount, molt_back));
-    molt_back
+    let licn_back = token_amount * price / 1_000_000_000;
+    log_info(&alloc::format!("Sold {} tokens for {} LICN", token_amount, licn_back));
+    licn_back
 }
 
 #[no_mangle]
@@ -6161,7 +6161,7 @@ pub extern "C" fn get_token_count() -> u64 {
 }
 `,
             'Cargo.toml': `[package]
-name = "clawpump"
+name = "sporepump"
 version = "0.1.0"
 edition = "2021"
 
@@ -6169,7 +6169,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6181,10 +6181,10 @@ strip = true
         }
     },
     streaming: {
-        name: 'ClawPay Streaming',
+        name: 'SporePay Streaming',
         description: 'Sablier-style payment streams',
         files: {
-            'lib.rs': `// ClawPay - Streaming Payments
+            'lib.rs': `// SporePay - Streaming Payments
 // Time-windowed streams with proportional withdrawals
 
 #![no_std]
@@ -6193,7 +6193,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_slot
 };
@@ -6242,7 +6242,7 @@ pub extern "C" fn create_stream(
     let key = alloc::format!("stream_{}", id);
     storage_set(key.as_bytes(), &stream);
 
-    log_info(&alloc::format!("Stream #{} created: {} shells over {} slots", id, total_amount, end_slot - start_slot));
+    log_info(&alloc::format!("Stream #{} created: {} spores over {} slots", id, total_amount, end_slot - start_slot));
     id as u32
 }
 
@@ -6313,7 +6313,7 @@ pub extern "C" fn get_withdrawable(stream_id: u64) -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "clawpay"
+name = "sporepay"
 version = "0.1.0"
 edition = "2021"
 
@@ -6321,7 +6321,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6333,11 +6333,11 @@ strip = true
         }
     },
     vault: {
-        name: 'ClawVault Yield',
+        name: 'SporeVault Yield',
         description: 'Yield aggregator with fees, caps, risk tiers, and strategies',
         templateType: 'vault',
         files: {
-            'lib.rs': `// ClawVault - Yield Aggregator
+            'lib.rs': `// SporeVault - Yield Aggregator
 // ERC-4626-style vault shares, multi-strategy, auto-compounding
 
 #![no_std]
@@ -6346,7 +6346,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
@@ -6381,7 +6381,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"cv_total_assets", 0);
     store_u64(b"cv_total_shares", 0);
     store_u64(b"cv_strategy_count", 0);
-    log_info("\\xf0\\x9f\\x8f\\xa6 ClawVault initialized");
+    log_info("\\xf0\\x9f\\x8f\\xa6 SporeVault initialized");
     1
 }
 
@@ -6421,7 +6421,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     store_u64(b"cv_total_assets", total_assets + amount);
     store_u64(b"cv_total_shares", total_shares + shares);
 
-    log_info(&alloc::format!("Deposited {} MOLT, received {} shares", amount, shares));
+    log_info(&alloc::format!("Deposited {} LICN, received {} shares", amount, shares));
     shares
 }
 
@@ -6440,7 +6440,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     store_u64(key.as_bytes(), user_shares - shares_to_burn);
     store_u64(b"cv_total_assets", total_assets - amount);
     store_u64(b"cv_total_shares", total_shares - shares_to_burn);
-    log_info(&alloc::format!("Withdrew {} MOLT for {} shares", amount, shares_to_burn));
+    log_info(&alloc::format!("Withdrew {} LICN for {} shares", amount, shares_to_burn));
     amount
 }
 
@@ -6475,7 +6475,7 @@ pub extern "C" fn get_vault_stats() -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "clawvault"
+name = "sporevault"
 version = "0.1.0"
 edition = "2021"
 
@@ -6483,7 +6483,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6495,12 +6495,12 @@ strip = true
         }
     },
     identity: {
-        name: 'MoltyID Identity',
+        name: 'LichenID Identity',
         description: 'Identity with cooldowns, pause, admin transfer',
         templateType: 'identity',
         files: {
-            'lib.rs': `// MoltyID - Agent Identity System
-// Registration, reputation, .molt naming, vouching, skill attestations
+            'lib.rs': `// LichenID - Agent Identity System
+// Registration, reputation, .lichen naming, vouching, skill attestations
 
 #![no_std]
 #![no_main]
@@ -6508,7 +6508,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
@@ -6550,7 +6550,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
     storage_set(b"mid_admin", admin);
     store_u64(b"mid_count", 0);
-    log_info("\\xf0\\x9f\\x86\\x94 MoltyID initialized");
+    log_info("\\xf0\\x9f\\x86\\x94 LichenID initialized");
     1
 }
 
@@ -6629,7 +6629,7 @@ pub extern "C" fn register_name(
         return 0;
     }
 
-    // Tiered pricing: 3-char = 1B, 4-char = 500M, 5+ = 100M shells
+    // Tiered pricing: 3-char = 1B, 4-char = 500M, 5+ = 100M spores
     let required = match len { 3 => 1_000_000_000u64, 4 => 500_000_000, _ => 100_000_000 };
     if fee_paid < required {
         log_info(&alloc::format!("Name fee: {} required, {} paid", required, fee_paid));
@@ -6647,7 +6647,7 @@ pub extern "C" fn register_name(
     storage_set(key.as_bytes(), owner);
     storage_set(alloc::format!("name_rev:{}", hex(owner)).as_bytes(), name);
 
-    log_info(&alloc::format!("Registered {}.molt", name_str));
+    log_info(&alloc::format!("Registered {}.lichen", name_str));
     1
 }
 
@@ -6657,7 +6657,7 @@ pub extern "C" fn resolve_name(name_ptr: *const u8, name_len: u32) -> u32 {
     let name_str = core::str::from_utf8(name).unwrap_or("?");
     match storage_get(alloc::format!("name:{}", name_str).as_bytes()) {
         Some(addr) => { set_return_data(&addr); 1 }
-        None => { log_info(&alloc::format!("{}.molt not found", name_str)); 0 }
+        None => { log_info(&alloc::format!("{}.lichen not found", name_str)); 0 }
     }
 }
 
@@ -6686,7 +6686,7 @@ pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltyid-identity"
+name = "lichenid-identity"
 version = "0.1.0"
 edition = "2021"
 
@@ -6694,7 +6694,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6706,11 +6706,11 @@ strip = true
         }
     },
     marketplace: {
-        name: 'MoltMarket NFT',
+        name: 'LichenMarket NFT',
         description: 'NFT marketplace with offers, bids, and fixed layout',
         templateType: 'marketplace',
         files: {
-            'lib.rs': `// MoltMarket - NFT Marketplace
+            'lib.rs': `// LichenMarket - NFT Marketplace
 // List, buy, cancel with cross-contract composability
 
 #![no_std]
@@ -6719,7 +6719,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     Address, log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, call_token_transfer, call_nft_transfer
 };
@@ -6739,7 +6739,7 @@ pub extern "C" fn initialize(owner_ptr: *const u8, fee_recipient_ptr: *const u8)
     storage_set(b"mk_owner", owner);
     storage_set(b"mk_fee_addr", fee_addr);
     storage_set(b"mk_fee_bps", &u64_to_bytes(DEFAULT_FEE_BPS));
-    log_info("\\xf0\\x9f\\x8f\\xaa MoltMarket initialized (2.5% fee)");
+    log_info("\\xf0\\x9f\\x8f\\xaa LichenMarket initialized (2.5% fee)");
 }
 
 #[no_mangle]
@@ -6765,7 +6765,7 @@ pub extern "C" fn list_nft(
     listing.push(1);                            // 144: active
 
     storage_set(key.as_bytes(), &listing);
-    log_info(&alloc::format!("Listed NFT #{} for {} shells", token_id, price));
+    log_info(&alloc::format!("Listed NFT #{} for {} spores", token_id, price));
     1
 }
 
@@ -6818,7 +6818,7 @@ pub extern "C" fn cancel_listing(
 }
 `,
             'Cargo.toml': `[package]
-name = "moltmarket-marketplace"
+name = "lichenmarket-marketplace"
 version = "0.1.0"
 edition = "2021"
 
@@ -6826,7 +6826,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6838,11 +6838,11 @@ strip = true
         }
     },
     auction: {
-        name: 'MoltAuction',
+        name: 'LichenAuction',
         description: 'Auctions with anti-sniping, reserve prices, cancellation',
         templateType: 'auction',
         files: {
-            'lib.rs': `// MoltAuction - NFT Auction House
+            'lib.rs': `// LichenAuction - NFT Auction House
 // English auctions, offers/bids, creator royalties, collection stats
 
 #![no_std]
@@ -6851,7 +6851,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     Address, log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
@@ -6877,7 +6877,7 @@ const AUCTION_SIZE: usize = 137;
 pub extern "C" fn initialize(marketplace_ptr: *const u8) -> u32 {
     let marketplace = unsafe { core::slice::from_raw_parts(marketplace_ptr, 32) };
     storage_set(b"au_marketplace", marketplace);
-    log_info("\\xf0\\x9f\\x94\\xa8 MoltAuction initialized");
+    log_info("\\xf0\\x9f\\x94\\xa8 LichenAuction initialized");
     1
 }
 
@@ -6971,7 +6971,7 @@ pub extern "C" fn set_royalty(caller_ptr: *const u8, collection_id: u64, royalty
 }
 `,
             'Cargo.toml': `[package]
-name = "moltauction-marketplace"
+name = "lichenauction-marketplace"
 version = "0.1.0"
 edition = "2021"
 
@@ -6979,7 +6979,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -6991,10 +6991,10 @@ strip = true
         }
     },
     oracle: {
-        name: 'MoltOracle Feeds',
+        name: 'LichenOracle Feeds',
         description: 'Price feeds, VRF, attestations',
         files: {
-            'lib.rs': `// MoltOracle - Decentralized Oracle
+            'lib.rs': `// LichenOracle - Decentralized Oracle
 // Price feeds, verifiable random function (VRF), attestation services
 
 #![no_std]
@@ -7003,7 +7003,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
@@ -7023,7 +7023,7 @@ pub extern "C" fn initialize_oracle(owner_ptr: *const u8) -> u32 {
     let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
     storage_set(b"oracle_owner", owner);
     storage_set(b"oracle_feed_count", &u64_to_bytes(0));
-    log_info("\\xf0\\x9f\\x93\\xa1 MoltOracle initialized");
+    log_info("\\xf0\\x9f\\x93\\xa1 LichenOracle initialized");
     1
 }
 
@@ -7142,7 +7142,7 @@ pub extern "C" fn reveal_randomness(
 }
 `,
             'Cargo.toml': `[package]
-name = "moltoracle-feeds"
+name = "lichenoracle-feeds"
 version = "0.1.0"
 edition = "2021"
 
@@ -7150,7 +7150,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -7162,10 +7162,10 @@ strip = true
         }
     },
     bridge: {
-        name: 'MoltBridge',
+        name: 'LichenBridge',
         description: 'Secure cross-chain bridge with multi-call confirmation',
         files: {
-            'lib.rs': `// MoltBridge - Secure Cross-Chain Bridge
+            'lib.rs': `// LichenBridge - Secure Cross-Chain Bridge
 // Multi-call confirmation pattern: submit_mint() + confirm_mint()
 // Fixes single-call vulnerability from v1 (mint_bridged was exploitable)
 // Features: request expiry, source TX dedup, fund reservation, emergency pause
@@ -7176,7 +7176,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, get_slot
 };
@@ -7215,7 +7215,7 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     store_u64(b"mint_request_count", 0);
     store_u64(b"bridge_locked_amount", 0);
     store_u64(b"bridge_validator_count", 0);
-    log_info("MoltBridge initialized");
+    log_info("LichenBridge initialized");
     1
 }
 
@@ -7255,7 +7255,7 @@ pub extern "C" fn lock_tokens(
 
     let key = alloc::format!("bridge_tx_{}", nonce);
     storage_set(key.as_bytes(), &tx);
-    log_info(&alloc::format!("Locked {} MOLT → chain {} (nonce #{})", amount, dest_chain, nonce));
+    log_info(&alloc::format!("Locked {} LICN → chain {} (nonce #{})", amount, dest_chain, nonce));
     nonce as u32
 }
 
@@ -7301,7 +7301,7 @@ pub extern "C" fn submit_mint(
     // Mark source TX as used
     storage_set(dedup_key.as_bytes(), &u64_to_bytes(req_id));
 
-    log_info(&alloc::format!("Mint request #{} submitted: {} MOLT", req_id, amount));
+    log_info(&alloc::format!("Mint request #{} submitted: {} LICN", req_id, amount));
     req_id as u32
 }
 
@@ -7338,7 +7338,7 @@ pub extern "C" fn confirm_mint(caller_ptr: *const u8, request_id: u64) -> u32 {
     let reserved = load_u64(b"bridge_reserved");
     store_u64(b"bridge_reserved", reserved.saturating_sub(amount));
 
-    log_info(&alloc::format!("Mint #{} confirmed: {} MOLT released", request_id, amount));
+    log_info(&alloc::format!("Mint #{} confirmed: {} LICN released", request_id, amount));
     1
 }
 
@@ -7368,7 +7368,7 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
         Some(d) => {
             let amount = bytes_to_u64(&d[32..40]);
             let status = match d[41] { 0 => "pending", 1 => "completed", 2 => "cancelled", _ => "?" };
-            log_info(&alloc::format!("Bridge TX #{}: {} MOLT ({})", nonce, amount, status));
+            log_info(&alloc::format!("Bridge TX #{}: {} LICN ({})", nonce, amount, status));
             1
         }
         None => 0
@@ -7376,7 +7376,7 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "moltbridge"
+name = "lichenbridge"
 version = "0.1.0"
 edition = "2021"
 
@@ -7384,7 +7384,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -7408,7 +7408,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, get_slot
 };
@@ -7457,7 +7457,7 @@ pub extern "C" fn create_bounty(
 
     let key = alloc::format!("bounty_{}", id);
     storage_set(key.as_bytes(), &bounty);
-    log_info(&alloc::format!("Bounty #{} created: {} MOLT reward", id, reward));
+    log_info(&alloc::format!("Bounty #{} created: {} LICN reward", id, reward));
     id as u32
 }
 
@@ -7508,7 +7508,7 @@ pub extern "C" fn approve_work(caller_ptr: *const u8, bounty_id: u64, submission
     data[90] = submission_id as u8;
     storage_set(key.as_bytes(), &data);
 
-    log_info(&alloc::format!("Bounty #{} completed! Submission #{} approved, {} MOLT paid", bounty_id, submission_id, reward));
+    log_info(&alloc::format!("Bounty #{} completed! Submission #{} approved, {} LICN paid", bounty_id, submission_id, reward));
     1
 }
 
@@ -7535,7 +7535,7 @@ pub extern "C" fn get_bounty(bounty_id: u64) -> u32 {
             let reward = bytes_to_u64(&d[64..72]);
             let status = match d[80] { 0 => "open", 1 => "completed", 2 => "cancelled", _ => "?" };
             let subs = d[81];
-            log_info(&alloc::format!("Bounty #{}: {} MOLT, {}, {} submissions", bounty_id, reward, status, subs));
+            log_info(&alloc::format!("Bounty #{}: {} LICN, {}, {} submissions", bounty_id, reward, status, subs));
             1
         }
         None => 0
@@ -7551,7 +7551,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -7575,7 +7575,7 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, get_slot
 };
@@ -7622,7 +7622,7 @@ pub extern "C" fn register_provider(
 
     let key = alloc::format!("provider_{}", h);
     storage_set(key.as_bytes(), &data);
-    log_info(&alloc::format!("Provider registered: {} units @ {} MOLT/unit", capacity, price_per_unit));
+    log_info(&alloc::format!("Provider registered: {} units @ {} LICN/unit", capacity, price_per_unit));
     1
 }
 
@@ -7657,7 +7657,7 @@ pub extern "C" fn submit_job(
 
     let key = alloc::format!("job_{}", id);
     storage_set(key.as_bytes(), &job);
-    log_info(&alloc::format!("Job #{} submitted: {} MOLT payment", id, payment));
+    log_info(&alloc::format!("Job #{} submitted: {} LICN payment", id, payment));
     id as u32
 }
 
@@ -7727,7 +7727,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -7739,10 +7739,10 @@ strip = true
         }
     },
     storage: {
-        name: 'ReefStorage',
+        name: 'MossStorage',
         description: 'Decentralized storage with proof-of-storage, staking, slashing',
         files: {
-            'lib.rs': `// Reef Storage - Decentralized Storage
+            'lib.rs': `// Moss Storage - Decentralized Storage
 // Register storage requests, providers confirm and earn rewards
 
 #![no_std]
@@ -7751,14 +7751,14 @@ strip = true
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     log_info, storage_get, storage_set,
     bytes_to_u64, u64_to_bytes, get_slot
 };
 
 const MAX_REPLICATION: u8 = 10;
 const MIN_DURATION: u64 = 1000;  // Minimum 1000 slots
-const REWARD_PER_SLOT_PER_BYTE: u64 = 10; // 10 shells per slot per byte
+const REWARD_PER_SLOT_PER_BYTE: u64 = 10; // 10 spores per slot per byte
 const MAX_PROVIDERS: u8 = 16;
 // DataEntry: owner(32)+size(8)+replication(1)+confirmations(1)+expiry(8)+created(8)+provider_count(1) = 59 header
 const DATA_HEADER_SIZE: usize = 59;
@@ -7815,7 +7815,7 @@ pub extern "C" fn store_data(
     store_u64(b"data_count", count);
 
     let cost = size * duration_slots * replication_factor as u64 * REWARD_PER_SLOT_PER_BYTE;
-    log_info(&alloc::format!("Storage registered: {} bytes, {}x replication, {} slots (cost: {} shells)",
+    log_info(&alloc::format!("Storage registered: {} bytes, {}x replication, {} slots (cost: {} spores)",
         size, replication_factor, duration_slots, cost));
     1
 }
@@ -7879,7 +7879,7 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
     let rewards = load_u64(key.as_bytes());
     if rewards == 0 { log_info("No rewards to claim"); return 0; }
     store_u64(key.as_bytes(), 0);
-    log_info(&alloc::format!("Claimed {} shells in storage rewards", rewards));
+    log_info(&alloc::format!("Claimed {} spores in storage rewards", rewards));
     1
 }
 
@@ -7900,7 +7900,7 @@ pub extern "C" fn get_storage_info(data_hash_ptr: *const u8) -> u32 {
 }
 `,
             'Cargo.toml': `[package]
-name = "reef-storage"
+name = "moss-storage"
 version = "0.1.0"
 edition = "2021"
 
@@ -7908,7 +7908,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", version = "1.0" }
+lichen-sdk = { package = "lichen-contract-sdk", version = "1.0" }
 
 [profile.release]
 opt-level = "z"
@@ -7920,7 +7920,7 @@ strip = true
         }
     },
 
-    // ═══════════════════ MoltyDEX Suite ═══════════════════
+    // ═══════════════════ Lichen DEX Suite ═══════════════════
 
     dex_core: {
         name: 'DEX Core (CLOB)',
@@ -7930,7 +7930,7 @@ strip = true
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Core — Central Limit Order Book ═══════
 // Order types: Limit, Market, Stop-Limit, Post-Only
@@ -8026,7 +8026,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* create_pair */ }
@@ -8046,7 +8046,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8059,7 +8059,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX AMM — Concentrated Liquidity ═══════
 // Uniswap V3-style with tick ranges and fee tiers
@@ -8132,7 +8132,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* create_pool */ }
@@ -8152,23 +8152,23 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
 
     dex_router: {
         name: 'DEX Router (Smart Routing)',
-        description: 'Smart order routing across CLOB, AMM, and legacy MoltSwap with multi-hop splits',
+        description: 'Smart order routing across CLOB, AMM, and legacy LichenSwap with multi-hop splits',
         files: {
             'lib.rs': `#![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Router — Smart Order Routing ═══════
-// Routes across: CLOB (dex_core), AMM (dex_amm), Legacy (MoltSwap)
+// Routes across: CLOB (dex_core), AMM (dex_amm), Legacy (LichenSwap)
 // Strategies: Direct, Multi-hop, Split, CLOB+AMM Hybrid
 
 const ROUTE_CLOB: u8 = 0;
@@ -8224,7 +8224,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* register_route */ }
@@ -8244,7 +8244,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8257,13 +8257,13 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Governance ═══════
 // Proposal types: New Pair, Fee Change, Delist, Param Change
 // 48h voting period (172,800 slots @2.5s)
 // 66% approval threshold, 1h execution timelock
-// MoltyID reputation-gated (min 500 rep)
+// LichenID reputation-gated (min 500 rep)
 
 const VOTING_PERIOD: u64 = 172_800;
 const APPROVAL_THRESHOLD: u64 = 66;
@@ -8336,7 +8336,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* propose_new_pair */ }
@@ -8358,7 +8358,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8371,13 +8371,13 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Rewards ═══════
 // Trading rewards: Tier-based multipliers (Bronze 1x → Diamond 3x)
 // LP Mining: Proportional to in-range liquidity
-// Referrals: 10% of referee fees (15% for MoltyID-verified)
-// Fee Mining: 1:1 MOLT per shell spent in fees
+// Referrals: 10% of referee fees (15% for LichenID-verified)
+// Fee Mining: 1:1 LICN per spore spent in fees
 
 const TIER_BRONZE: u64 = 0;
 const TIER_SILVER: u64 = 1;
@@ -8449,7 +8449,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* record_trade */ }
@@ -8470,7 +8470,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8483,7 +8483,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Margin Trading ═══════
 // Isolated margin: up to 100x leverage (tiered)
@@ -8572,7 +8572,7 @@ fn load_u64(key: &[u8]) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* open_position */ }
@@ -8593,7 +8593,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8606,7 +8606,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ DEX Analytics ═══════
 // OHLCV Candles: 6 intervals (1m, 5m, 15m, 1h, 4h, 1d)
@@ -8682,7 +8682,7 @@ fn get_last_price(pair_id: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         1 => { /* record_trade */ }
@@ -8703,7 +8703,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8716,7 +8716,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ Prediction Market ═══════
 // Binary outcome markets with CPMM AMM pricing
@@ -8772,7 +8772,7 @@ fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         0 => { /* create_market */ }
@@ -8794,36 +8794,36 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
 
-    musd_token: {
-        name: 'mUSD Stablecoin',
+    lusd_token: {
+        name: 'lUSD Stablecoin',
         description: 'Treasury-backed stablecoin with reserve attestation and circuit breaker',
         files: {
             'lib.rs': `#![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
-// ═══════ mUSD Stablecoin ═══════
+// ═══════ lUSD Stablecoin ═══════
 // Treasury-backed 1:1 USD stablecoin
 // Epoch rate-limited minting with circuit breaker
 
-const NAME: &[u8] = b"mUSD";
-const SYMBOL: &[u8] = b"mUSD";
+const NAME: &[u8] = b"lUSD";
+const SYMBOL: &[u8] = b"lUSD";
 const DECIMALS: u8 = 9;
-const EPOCH_RATE_LIMIT: u64 = 100_000_000_000_000; // 100k mUSD
-const CIRCUIT_BREAKER_THRESHOLD: u64 = 50_000_000_000_000; // 50k mUSD
+const EPOCH_RATE_LIMIT: u64 = 100_000_000_000_000; // 100k lUSD
+const CIRCUIT_BREAKER_THRESHOLD: u64 = 50_000_000_000_000; // 50k lUSD
 
 fn initialize(admin: &[u8]) {
     storage_set(b"admin", admin);
     store_u64(b"total_supply", 0);
     store_u64(b"epoch_minted", 0);
-    emit_event(b"Initialized", b"mUSD stablecoin ready");
+    emit_event(b"Initialized", b"lUSD stablecoin ready");
 }
 
 fn mint(to: &[u8], amount: u64) {
@@ -8872,7 +8872,7 @@ fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         0 => { /* initialize */ }
@@ -8889,7 +8889,7 @@ pub extern "C" fn call() {
 }
 `,
             'Cargo.toml': `[package]
-name = "musd-token"
+name = "lusd-token"
 version = "0.1.0"
 edition = "2021"
 
@@ -8897,7 +8897,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -8910,10 +8910,10 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ Wrapped ETH (wETH) ═══════
-// Bridge token representing ETH on MoltChain
+// Bridge token representing ETH on Lichen
 // Epoch rate-limited minting with reserve attestation
 
 const NAME: &[u8] = b"Wrapped ETH";
@@ -8973,7 +8973,7 @@ fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         0 => { /* initialize */ }
@@ -8998,7 +8998,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -9011,10 +9011,10 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ Wrapped SOL (wSOL) ═══════
-// Bridge token representing SOL on MoltChain
+// Bridge token representing SOL on Lichen
 // Epoch rate-limited minting with reserve attestation
 
 const NAME: &[u8] = b"Wrapped SOL";
@@ -9074,7 +9074,7 @@ fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         0 => { /* initialize */ }
@@ -9099,7 +9099,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -9112,10 +9112,10 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ Wrapped BNB (wBNB) ═══════
-// Bridge token representing BNB on MoltChain
+// Bridge token representing BNB on Lichen
 // Epoch rate-limited minting with reserve attestation
 
 const NAME: &[u8] = b"Wrapped BNB";
@@ -9175,7 +9175,7 @@ fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
 
 #[no_mangle]
 pub extern "C" fn call() {
-    let input = moltchain_sdk::get_call_data();
+    let input = lichen_sdk::get_call_data();
     if input.is_empty() { return; }
     match input[0] {
         0 => { /* initialize */ }
@@ -9200,7 +9200,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     },
@@ -9213,7 +9213,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
 #![cfg_attr(target_arch = "wasm32", no_main)]
 extern crate alloc;
 use alloc::{vec, vec::Vec, format};
-use moltchain_sdk::*;
+use lichen_sdk::*;
 
 // ═══════ Shielded Pool ═══════
 // Privacy-preserving transaction pool
@@ -9360,7 +9360,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
 `
         }
     }

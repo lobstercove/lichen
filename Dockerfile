@@ -57,24 +57,24 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN groupadd -r moltchain && useradd -r -g moltchain -d /home/moltchain -m moltchain
+RUN groupadd -r lichen && useradd -r -g lichen -d /home/lichen -m lichen
 
 # Copy binaries
-COPY --from=builder /build/target/release/moltchain-validator /usr/local/bin/
-COPY --from=builder /build/target/release/moltchain-genesis /usr/local/bin/
-COPY --from=builder /build/target/release/molt /usr/local/bin/
-COPY --from=builder /build/target/release/moltchain-faucet /usr/local/bin/
-COPY --from=builder /build/target/release/moltchain-custody /usr/local/bin/
+COPY --from=builder /build/target/release/lichen-validator /usr/local/bin/
+COPY --from=builder /build/target/release/lichen-genesis /usr/local/bin/
+COPY --from=builder /build/target/release/lichen /usr/local/bin/
+COPY --from=builder /build/target/release/lichen-faucet /usr/local/bin/
+COPY --from=builder /build/target/release/lichen-custody /usr/local/bin/
 COPY --from=builder /build/target/release/zk-setup /usr/local/bin/
 
 # Copy default config
-COPY config.toml /etc/moltchain/config.toml
+COPY config.toml /etc/lichen/config.toml
 
 # Data directory
-RUN mkdir -p /var/lib/moltchain && chown moltchain:moltchain /var/lib/moltchain
+RUN mkdir -p /var/lib/lichen && chown lichen:lichen /var/lib/lichen
 
-USER moltchain
-WORKDIR /home/moltchain
+USER lichen
+WORKDIR /home/lichen
 
 # P2P port
 EXPOSE 7001
@@ -84,17 +84,17 @@ EXPOSE 8899
 EXPOSE 8900
 # Validator Metrics port
 EXPOSE 9100
-# Faucet port (when running moltchain-faucet entrypoint)
+# Faucet port (when running lichen-faucet entrypoint)
 EXPOSE 9101
 
-ENV MOLTCHAIN_DATA_DIR=/var/lib/moltchain
-ENV MOLTCHAIN_CONFIG=/etc/moltchain/config.toml
+ENV LICHEN_DATA_DIR=/var/lib/lichen
+ENV LICHEN_CONFIG=/etc/lichen/config.toml
 ENV RUST_LOG=info
 
-VOLUME ["/var/lib/moltchain"]
+VOLUME ["/var/lib/lichen"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:8899/ -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' -H 'Content-Type: application/json' || exit 1
 
-ENTRYPOINT ["moltchain-validator"]
-CMD ["--data-dir", "/var/lib/moltchain"]
+ENTRYPOINT ["lichen-validator"]
+CMD ["--data-dir", "/var/lib/lichen"]

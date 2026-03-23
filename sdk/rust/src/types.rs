@@ -5,35 +5,35 @@ use serde::{Deserialize, Serialize};
 /// Account balance
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Balance {
-    shells: u64,
+    spores: u64,
 }
 
 impl Balance {
-    /// Create from shells
-    pub fn from_shells(shells: u64) -> Self {
-        Self { shells }
+    /// Create from spores
+    pub fn from_spores(spores: u64) -> Self {
+        Self { spores }
     }
     
-    /// Create from MOLT (handles negative, NaN, and overflow gracefully)
-    /// J-3: Uses rounding instead of truncation to avoid systematic 1-shell loss
-    pub fn from_molt(molt: f64) -> Self {
-        if molt.is_nan() || molt < 0.0 {
-            return Self { shells: 0 };
+    /// Create from LICN (handles negative, NaN, and overflow gracefully)
+    /// J-3: Uses rounding instead of truncation to avoid systematic 1-spore loss
+    pub fn from_licn(licn: f64) -> Self {
+        if licn.is_nan() || licn < 0.0 {
+            return Self { spores: 0 };
         }
-        let shells = (molt * 1_000_000_000.0).round();
+        let spores = (licn * 1_000_000_000.0).round();
         Self {
-            shells: shells.min(u64::MAX as f64) as u64,
+            spores: spores.min(u64::MAX as f64) as u64,
         }
     }
     
-    /// Get shells
-    pub fn shells(&self) -> u64 {
-        self.shells
+    /// Get spores
+    pub fn spores(&self) -> u64 {
+        self.spores
     }
     
-    /// Get MOLT
-    pub fn molt(&self) -> f64 {
-        self.shells as f64 / 1_000_000_000.0
+    /// Get LICN
+    pub fn licn(&self) -> f64 {
+        self.spores as f64 / 1_000_000_000.0
     }
 }
 
@@ -61,7 +61,7 @@ pub struct NetworkInfo {
 }
 
 /// Re-export transaction from core
-pub use moltchain_core::Transaction;
+pub use lichen_core::Transaction;
 
 #[cfg(test)]
 mod tests {
@@ -69,93 +69,93 @@ mod tests {
 
     #[test]
     fn test_balance_roundtrip() {
-        let b = Balance::from_shells(1_500_000_000);
-        assert_eq!(b.shells(), 1_500_000_000);
-        assert!((b.molt() - 1.5).abs() < 1e-9);
+        let b = Balance::from_spores(1_500_000_000);
+        assert_eq!(b.spores(), 1_500_000_000);
+        assert!((b.licn() - 1.5).abs() < 1e-9);
     }
 
     #[test]
-    fn test_balance_from_molt_normal() {
-        let b = Balance::from_molt(2.5);
-        assert_eq!(b.shells(), 2_500_000_000);
+    fn test_balance_from_licn_normal() {
+        let b = Balance::from_licn(2.5);
+        assert_eq!(b.spores(), 2_500_000_000);
     }
 
     #[test]
-    fn test_balance_from_molt_negative() {
-        let b = Balance::from_molt(-1.0);
-        assert_eq!(b.shells(), 0);
+    fn test_balance_from_licn_negative() {
+        let b = Balance::from_licn(-1.0);
+        assert_eq!(b.spores(), 0);
     }
 
     #[test]
-    fn test_balance_from_molt_nan() {
-        let b = Balance::from_molt(f64::NAN);
-        assert_eq!(b.shells(), 0);
+    fn test_balance_from_licn_nan() {
+        let b = Balance::from_licn(f64::NAN);
+        assert_eq!(b.spores(), 0);
     }
 
     #[test]
-    fn test_balance_from_molt_infinity() {
-        let b = Balance::from_molt(f64::INFINITY);
-        assert_eq!(b.shells(), u64::MAX);
+    fn test_balance_from_licn_infinity() {
+        let b = Balance::from_licn(f64::INFINITY);
+        assert_eq!(b.spores(), u64::MAX);
     }
 
     #[test]
-    fn test_balance_from_molt_zero() {
-        let b = Balance::from_molt(0.0);
-        assert_eq!(b.shells(), 0);
+    fn test_balance_from_licn_zero() {
+        let b = Balance::from_licn(0.0);
+        assert_eq!(b.spores(), 0);
     }
 
     #[test]
     fn test_balance_neg_infinity() {
-        let b = Balance::from_molt(f64::NEG_INFINITY);
-        assert_eq!(b.shells(), 0);
+        let b = Balance::from_licn(f64::NEG_INFINITY);
+        assert_eq!(b.spores(), 0);
     }
 
     #[test]
-    fn test_balance_from_molt_tiny_fraction() {
-        // 0.000000001 MOLT = 1 shell (rounding)
-        let b = Balance::from_molt(0.000_000_001);
-        assert_eq!(b.shells(), 1);
+    fn test_balance_from_licn_tiny_fraction() {
+        // 0.000000001 LICN = 1 spore (rounding)
+        let b = Balance::from_licn(0.000_000_001);
+        assert_eq!(b.spores(), 1);
     }
 
     #[test]
-    fn test_balance_from_molt_sub_shell() {
-        // 0.0000000001 MOLT < 1 shell → rounds to 0
-        let b = Balance::from_molt(0.000_000_000_1);
-        assert_eq!(b.shells(), 0);
+    fn test_balance_from_licn_sub_spore() {
+        // 0.0000000001 LICN < 1 spore → rounds to 0
+        let b = Balance::from_licn(0.000_000_000_1);
+        assert_eq!(b.spores(), 0);
     }
 
     #[test]
-    fn test_balance_from_shells_max() {
-        let b = Balance::from_shells(u64::MAX);
-        assert_eq!(b.shells(), u64::MAX);
+    fn test_balance_from_spores_max() {
+        let b = Balance::from_spores(u64::MAX);
+        assert_eq!(b.spores(), u64::MAX);
     }
 
     #[test]
     fn test_balance_eq() {
-        let a = Balance::from_shells(100);
-        let b = Balance::from_shells(100);
+        let a = Balance::from_spores(100);
+        let b = Balance::from_spores(100);
         assert_eq!(a, b);
     }
 
     #[test]
     fn test_balance_copy() {
-        let a = Balance::from_shells(42);
+        let a = Balance::from_spores(42);
         let b = a;
-        assert_eq!(a.shells(), b.shells());
+        assert_eq!(a.spores(), b.spores());
     }
 
     #[test]
     fn test_balance_debug() {
-        let b = Balance::from_shells(0);
+        let b = Balance::from_spores(0);
         let s = format!("{:?}", b);
         assert!(s.contains("Balance"));
     }
 
     #[test]
-    fn test_balance_molt_precision() {
-        // 1 MOLT exactly
-        let b = Balance::from_molt(1.0);
-        assert_eq!(b.shells(), 1_000_000_000);
-        assert!((b.molt() - 1.0).abs() < 1e-15);
+    fn test_balance_licn_precision() {
+        // 1 LICN exactly
+        let b = Balance::from_licn(1.0);
+        assert_eq!(b.spores(), 1_000_000_000);
+        assert!((b.licn() - 1.0).abs() < 1e-15);
     }
 }

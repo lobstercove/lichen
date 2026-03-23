@@ -1,5 +1,5 @@
 use axum::{routing::get, routing::post, Json, Router};
-use moltchain_core::Keypair;
+use lichen_core::Keypair;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -62,13 +62,13 @@ pub async fn start_signer_server(bind: SocketAddr, data_dir: &Path) {
 
     // T2.2 fix: Require authentication for signing requests.
     // Read token from env or generate a random one.
-    let auth_token = std::env::var("MOLTCHAIN_SIGNER_AUTH_TOKEN").unwrap_or_else(|_| {
+    let auth_token = std::env::var("LICHEN_SIGNER_AUTH_TOKEN").unwrap_or_else(|_| {
         use sha2::{Digest, Sha256};
         let seed = format!("signer-auth-{}-{}", pubkey_base58, std::process::id());
         let hash = Sha256::digest(seed.as_bytes());
         hex::encode(&hash[..16])
     });
-    info!("threshold signer auth token configured (set MOLTCHAIN_SIGNER_AUTH_TOKEN to override)");
+    info!("threshold signer auth token configured (set LICHEN_SIGNER_AUTH_TOKEN to override)");
 
     let state = SignerState {
         keypair: Arc::new(keypair),
@@ -157,7 +157,7 @@ fn build_signing_payload(req: &SignRequest) -> String {
 }
 
 fn resolve_signer_keypair_path(data_dir: &Path) -> PathBuf {
-    if let Ok(path) = std::env::var("MOLTCHAIN_SIGNER_KEYPAIR") {
+    if let Ok(path) = std::env::var("LICHEN_SIGNER_KEYPAIR") {
         return PathBuf::from(path);
     }
     data_dir.join("signer-keypair.json")
@@ -254,8 +254,8 @@ mod tests {
     fn test_build_signing_payload_defaults() {
         let req = SignRequest {
             job_id: "job2".to_string(),
-            chain: "moltchain".to_string(),
-            asset: "MOLT".to_string(),
+            chain: "lichen".to_string(),
+            asset: "LICN".to_string(),
             from_address: "X".to_string(),
             to_address: "Y".to_string(),
             amount: None,
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn test_signer_keypair_roundtrip() {
         let dir =
-            std::env::temp_dir().join(format!("moltchain_signer_test_{}", std::process::id()));
+            std::env::temp_dir().join(format!("lichen_signer_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("test-signer-keypair.json");
         let _ = fs::remove_file(&path);
@@ -288,14 +288,14 @@ mod tests {
     #[test]
     fn test_resolve_signer_keypair_path_default() {
         // Without env var, should use data_dir
-        std::env::remove_var("MOLTCHAIN_SIGNER_KEYPAIR");
+        std::env::remove_var("LICHEN_SIGNER_KEYPAIR");
         let path = resolve_signer_keypair_path(Path::new("/tmp/data"));
         assert_eq!(path, PathBuf::from("/tmp/data/signer-keypair.json"));
     }
 
     #[test]
     fn test_load_or_generate_creates_new() {
-        let dir = std::env::temp_dir().join(format!("molt_signer_gen_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("licn_signer_gen_{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("new-signer.json");
         let _ = fs::remove_file(&path);

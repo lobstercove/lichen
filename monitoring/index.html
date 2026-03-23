@@ -1,25 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltChain Mission Control</title>
+    <title>Lichen Mission Control — Network Monitoring</title>
+    <meta name="description"
+        content="Real-time monitoring dashboard for the Lichen blockchain. Track validators, block production, network health, and DeFi metrics.">
+    <meta property="og:title" content="Lichen Mission Control — Network Monitoring">
+    <meta property="og:description"
+        content="Real-time monitoring dashboard for the Lichen blockchain. Track validators, block production, and network health.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://monitoring.lichen.network">
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/monitoring.css">
 </head>
+
 <body>
     <!-- Navigation -->
     <nav class="nav">
         <div class="nav-container">
             <a href="/" class="nav-logo">
                 <i class="fas fa-shield-halved"></i>
-                <span>MoltChain <strong>Mission Control</strong></span>
+                <span>Lichen <strong>Mission Control</strong></span>
             </a>
             <div class="nav-actions">
                 <div class="status-beacon" id="statusBeacon">
@@ -156,7 +167,8 @@
                             <span class="supply-value" id="supplyTotal">--</span>
                         </div>
                         <div class="supply-item">
-                            <span class="supply-label">Effective Supply <small style="opacity:0.5;">(Minted − Burned)</small></span>
+                            <span class="supply-label">Effective Supply <small style="opacity:0.5;">(Minted −
+                                    Burned)</small></span>
                             <span class="supply-value success" id="supplyEffective">--</span>
                         </div>
                         <div class="supply-item">
@@ -188,8 +200,8 @@
                             <span class="supply-value info" id="supplyBuilderGrants">--</span>
                         </div>
                         <div class="supply-item">
-                            <span class="supply-label">Founding Moltys (10%)</span>
-                            <span class="supply-value accent" id="supplyFoundingMoltys">--</span>
+                            <span class="supply-label">Founding Symbionts (10%)</span>
+                            <span class="supply-value accent" id="supplyFoundingSymbionts">--</span>
                         </div>
                         <div class="supply-item">
                             <span class="supply-label">Ecosystem Partners (10%)</span>
@@ -209,11 +221,16 @@
                     </div>
                     <div class="supply-bar-container">
                         <div class="supply-bar">
-                            <div class="supply-segment treasury" id="segTreasury" style="width:10%" title="Validator Rewards"></div>
-                            <div class="supply-segment community" id="segCommunity" style="width:25%" title="Community Treasury"></div>
-                            <div class="supply-segment builder" id="segBuilder" style="width:35%" title="Builder Grants"></div>
-                            <div class="supply-segment founding" id="segFounding" style="width:10%" title="Founding Moltys"></div>
-                            <div class="supply-segment ecosystem" id="segEcosystem" style="width:10%" title="Ecosystem"></div>
+                            <div class="supply-segment treasury" id="segTreasury" style="width:10%"
+                                title="Validator Rewards"></div>
+                            <div class="supply-segment community" id="segCommunity" style="width:25%"
+                                title="Community Treasury"></div>
+                            <div class="supply-segment builder" id="segBuilder" style="width:35%"
+                                title="Builder Grants"></div>
+                            <div class="supply-segment founding" id="segFounding" style="width:10%"
+                                title="Founding Symbionts"></div>
+                            <div class="supply-segment ecosystem" id="segEcosystem" style="width:10%" title="Ecosystem">
+                            </div>
                             <div class="supply-segment reserve" id="segReserve" style="width:10%" title="Reserve"></div>
                         </div>
                         <div class="supply-legend">
@@ -313,8 +330,10 @@
                         <div class="perf-item" title="TPS relative to theoretical 500 TPS maximum">
                             <div class="perf-ring" id="perfCPU">
                                 <svg viewBox="0 0 36 36">
-                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
-                                    <path class="ring-fill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-bg"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                    <path class="ring-fill" stroke-dasharray="0, 100"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
@@ -323,8 +342,10 @@
                         <div class="perf-item" title="Account count relative to 100k capacity">
                             <div class="perf-ring" id="perfMem">
                                 <svg viewBox="0 0 36 36">
-                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
-                                    <path class="ring-fill info" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-bg"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                    <path class="ring-fill info" stroke-dasharray="0, 100"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
@@ -333,8 +354,10 @@
                         <div class="perf-item" title="Chain size derived from slot height (~1.2M slots = 100%)">
                             <div class="perf-ring" id="perfDisk">
                                 <svg viewBox="0 0 36 36">
-                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
-                                    <path class="ring-fill success" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-bg"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                    <path class="ring-fill success" stroke-dasharray="0, 100"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
@@ -343,8 +366,10 @@
                         <div class="perf-item" title="Block production rate (3s target = 100%)">
                             <div class="perf-ring" id="perfNet">
                                 <svg viewBox="0 0 36 36">
-                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
-                                    <path class="ring-fill accent" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-bg"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                    <path class="ring-fill accent" stroke-dasharray="0, 100"
+                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                                 </svg>
                                 <span class="ring-value">--%</span>
                             </div>
@@ -498,10 +523,14 @@
                 <!-- Deployment progress -->
                 <div style="margin-bottom:1rem;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
-                        <span id="contractDeployText" style="font-size:0.75rem;color:var(--text-muted);">Loading...</span>
+                        <span id="contractDeployText"
+                            style="font-size:0.75rem;color:var(--text-muted);">Loading...</span>
                     </div>
-                    <div style="height:6px;background:var(--bg-darker);border-radius:3px;overflow:hidden;border:1px solid var(--border);">
-                        <div id="contractDeployProgress" style="height:100%;width:0%;border-radius:3px;background:var(--gradient-1);transition:width 0.6s ease;"></div>
+                    <div
+                        style="height:6px;background:var(--bg-darker);border-radius:3px;overflow:hidden;border:1px solid var(--border);">
+                        <div id="contractDeployProgress"
+                            style="height:100%;width:0%;border-radius:3px;background:var(--gradient-1);transition:width 0.6s ease;">
+                        </div>
                     </div>
                 </div>
                 <!-- Category filters -->
@@ -521,11 +550,11 @@
             </div>
         </div>
 
-        <!-- Row 8: MoltyID Identity Monitor -->
+        <!-- Row 8: LichenID Identity Monitor -->
         <div class="panel full-width">
             <div class="panel-header">
                 <div class="panel-title">
-                    <i class="fas fa-fingerprint"></i> MoltyID Identity Monitor
+                    <i class="fas fa-fingerprint"></i> LichenID Identity Monitor
                 </div>
                 <span class="panel-badge" id="identityMonitorBadge">--</span>
             </div>
@@ -639,8 +668,8 @@
                         <span class="dex-stat-value" id="tradeRoutes">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">MoltSwap Swaps</span>
-                        <span class="dex-stat-value" id="tradeMoltSwaps">--</span>
+                        <span class="dex-stat-label">LichenSwap Swaps</span>
+                        <span class="dex-stat-value" id="tradeLichenSwaps">--</span>
                     </div>
                     <div class="dex-stat-item">
                         <span class="dex-stat-label">Analytics Records</span>
@@ -738,15 +767,15 @@
                 <!-- Token Stats -->
                 <div class="dex-stats-bar" id="tokenStatsBar">
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">mUSD Supply</span>
+                        <span class="dex-stat-label">lUSD Supply</span>
                         <span class="dex-stat-value" id="ecoMusdSupply">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">mUSD Minted</span>
+                        <span class="dex-stat-label">lUSD Minted</span>
                         <span class="dex-stat-value" id="ecoMusdMinted">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">mUSD Transfers</span>
+                        <span class="dex-stat-label">lUSD Transfers</span>
                         <span class="dex-stat-value" id="ecoMusdTransfers">--</span>
                     </div>
                     <div class="dex-stat-item">
@@ -761,23 +790,23 @@
                 <!-- Platform Services -->
                 <div class="dex-stats-bar" style="margin-top:0.75rem;" id="platformStatsBar">
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">LobsterLend Deposits</span>
+                        <span class="dex-stat-label">ThallLend Deposits</span>
                         <span class="dex-stat-value" id="ecoLendDeposits">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">LobsterLend Borrows</span>
+                        <span class="dex-stat-label">ThallLend Borrows</span>
                         <span class="dex-stat-value" id="ecoLendBorrows">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">ClawPay Streams</span>
-                        <span class="dex-stat-value" id="ecoClawPayStreams">--</span>
+                        <span class="dex-stat-label">SporePay Streams</span>
+                        <span class="dex-stat-value" id="ecoSporePayStreams">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">ClawVault Assets</span>
+                        <span class="dex-stat-label">SporeVault Assets</span>
                         <span class="dex-stat-value" id="ecoVaultAssets">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">ClawPump Tokens</span>
+                        <span class="dex-stat-label">SporePump Tokens</span>
                         <span class="dex-stat-value" id="ecoPumpTokens">--</span>
                     </div>
                 </div>
@@ -800,8 +829,8 @@
                         <span class="dex-stat-value" id="ecoOracleFeeds">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">Reef Data Blobs</span>
-                        <span class="dex-stat-value" id="ecoReefData">--</span>
+                        <span class="dex-stat-label">Moss Data Blobs</span>
+                        <span class="dex-stat-value" id="ecoMossData">--</span>
                     </div>
                 </div>
                 <!-- NFT & Marketplace -->
@@ -815,7 +844,7 @@
                         <span class="dex-stat-value" id="ecoAuctionVolume">--</span>
                     </div>
                     <div class="dex-stat-item">
-                        <span class="dex-stat-label">MoltPunks Minted</span>
+                        <span class="dex-stat-label">LichenPunks Minted</span>
                         <span class="dex-stat-value" id="ecoPunksMinted">--</span>
                     </div>
                     <div class="dex-stat-item">
@@ -892,7 +921,9 @@
 
                 <!-- Kill Switch Controls (AUDIT-FIX I8-01: Requires admin token authentication) -->
                 <div class="ir-section">
-                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches <span style="font-size:0.7rem;opacity:0.6;margin-left:8px;"><i class="fas fa-lock"></i> Admin auth required</span></h4>
+                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches <span
+                            style="font-size:0.7rem;opacity:0.6;margin-left:8px;"><i class="fas fa-lock"></i> Admin auth
+                            required</span></h4>
                     <div class="killswitch-grid">
                         <button class="killswitch" onclick="killswitchBanIP()">
                             <i class="fas fa-ban"></i>
@@ -919,7 +950,8 @@
                             <span>Deny All</span>
                         </button>
                     </div>
-                    <button class="killswitch" onclick="clearAdminSession()" style="margin-top:8px;width:100%;opacity:0.6;font-size:0.75rem;">
+                    <button class="killswitch" onclick="clearAdminSession()"
+                        style="margin-top:8px;width:100%;opacity:0.6;font-size:0.75rem;">
                         <i class="fas fa-sign-out-alt"></i>
                         <span>Clear Admin Session</span>
                     </button>
@@ -931,7 +963,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-        <span>MoltChain Mission Control v1.0</span>
+        <span>Lichen Mission Control v1.0</span>
         <span class="footer-sep">|</span>
         <span>Refresh: <span id="refreshRate">3s</span></span>
         <span class="footer-sep">|</span>
@@ -942,4 +974,5 @@
     <script src="shared-config.js"></script>
     <script src="js/monitoring.js"></script>
 </body>
+
 </html>

@@ -1,14 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// MoltChain Production Readiness Test Suite
+// Lichen Production Readiness Test Suite
 // Comprehensive coverage for edge cases, adversarial scenarios, and state
 // machine correctness required for mainnet deployment.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use moltchain_core::{
+use lichen_core::{
     Account, Block, FeeConfig, ForkChoice, Hash, Instruction, Keypair, Mempool, Message, Pubkey,
     SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, StateStore, Transaction,
     TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE,
-    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, GENESIS_SUPPLY_SHELLS, MIN_VALIDATOR_STAKE,
+    BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, GENESIS_SUPPLY_SPORES, MIN_VALIDATOR_STAKE,
     SYSTEM_PROGRAM_ID,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,7 +22,7 @@ fn create_test_state() -> (StateStore, TempDir, Hash) {
     let temp_dir = TempDir::new().unwrap();
     let state = StateStore::open(temp_dir.path()).unwrap();
     let treasury = Keypair::new();
-    let treasury_account = account_with_shells(treasury.pubkey(), 10_000_000_000_000);
+    let treasury_account = account_with_spores(treasury.pubkey(), 10_000_000_000_000);
     state
         .put_account(&treasury.pubkey(), &treasury_account)
         .unwrap();
@@ -41,10 +41,10 @@ fn create_test_state() -> (StateStore, TempDir, Hash) {
     (state, temp_dir, genesis_hash)
 }
 
-fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
+fn account_with_spores(owner: Pubkey, spores: u64) -> Account {
     Account {
-        shells,
-        spendable: shells,
+        spores,
+        spendable: spores,
         staked: 0,
         locked: 0,
         data: Vec::new(),
@@ -96,10 +96,10 @@ fn make_block(slot: u64, parent_hash: Hash, validator: &Keypair, txs: Vec<Transa
     )
 }
 
-fn transfer_instruction(from: Pubkey, to: Pubkey, amount_shells: u64) -> Instruction {
+fn transfer_instruction(from: Pubkey, to: Pubkey, amount_spores: u64) -> Instruction {
     let mut data = Vec::with_capacity(9);
     data.push(0); // Transfer opcode
-    data.extend_from_slice(&amount_shells.to_le_bytes());
+    data.extend_from_slice(&amount_spores.to_le_bytes());
     Instruction {
         program_id: SYSTEM_PROGRAM_ID,
         accounts: vec![from, to],
@@ -168,7 +168,7 @@ fn test_block_with_transactions() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), 5_000_000_000),
+            &account_with_spores(sender.pubkey(), 5_000_000_000),
         )
         .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
@@ -191,7 +191,7 @@ fn test_account_zero_balance() {
     let acct = Account::new(0, kp.pubkey());
     state.put_account(&kp.pubkey(), &acct).unwrap();
     let loaded = state.get_account(&kp.pubkey()).unwrap().unwrap();
-    assert_eq!(loaded.shells, 0);
+    assert_eq!(loaded.spores, 0);
     assert_eq!(loaded.spendable, 0);
 }
 
@@ -199,10 +199,10 @@ fn test_account_zero_balance() {
 fn test_account_max_balance() {
     let (state, _tmp, _) = create_test_state();
     let kp = Keypair::new();
-    let acct = account_with_shells(kp.pubkey(), u64::MAX);
+    let acct = account_with_spores(kp.pubkey(), u64::MAX);
     state.put_account(&kp.pubkey(), &acct).unwrap();
     let loaded = state.get_account(&kp.pubkey()).unwrap().unwrap();
-    assert_eq!(loaded.shells, u64::MAX);
+    assert_eq!(loaded.spores, u64::MAX);
 }
 
 #[test]
@@ -210,13 +210,13 @@ fn test_account_overwrite() {
     let (state, _tmp, _) = create_test_state();
     let kp = Keypair::new();
     state
-        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 100))
+        .put_account(&kp.pubkey(), &account_with_spores(kp.pubkey(), 100))
         .unwrap();
     state
-        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 200))
+        .put_account(&kp.pubkey(), &account_with_spores(kp.pubkey(), 200))
         .unwrap();
     let loaded = state.get_account(&kp.pubkey()).unwrap().unwrap();
-    assert_eq!(loaded.shells, 200);
+    assert_eq!(loaded.spores, 200);
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn test_account_nonexistent_returns_none() {
 fn test_account_with_data() {
     let (state, _tmp, _) = create_test_state();
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 1000);
+    let mut acct = account_with_spores(kp.pubkey(), 1000);
     acct.data = vec![1, 2, 3, 4, 5];
     acct.executable = true;
     state.put_account(&kp.pubkey(), &acct).unwrap();
@@ -246,17 +246,17 @@ fn test_account_with_data() {
 #[test]
 fn test_stake_exact_balance() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 1000);
+    let mut acct = account_with_spores(kp.pubkey(), 1000);
     assert!(acct.stake(1000).is_ok());
     assert_eq!(acct.spendable, 0);
     assert_eq!(acct.staked, 1000);
-    assert_eq!(acct.shells, 1000); // total unchanged
+    assert_eq!(acct.spores, 1000); // total unchanged
 }
 
 #[test]
 fn test_stake_overflow_protection() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 100);
+    let mut acct = account_with_spores(kp.pubkey(), 100);
     assert!(acct.stake(101).is_err());
     assert_eq!(acct.spendable, 100); // unchanged
     assert_eq!(acct.staked, 0);
@@ -265,7 +265,7 @@ fn test_stake_overflow_protection() {
 #[test]
 fn test_unstake_overflow_protection() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 1000);
+    let mut acct = account_with_spores(kp.pubkey(), 1000);
     acct.stake(500).unwrap();
     assert!(acct.unstake(501).is_err());
     assert_eq!(acct.staked, 500); // unchanged
@@ -274,7 +274,7 @@ fn test_unstake_overflow_protection() {
 #[test]
 fn test_lock_unlock_roundtrip() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 1000);
+    let mut acct = account_with_spores(kp.pubkey(), 1000);
     assert!(acct.lock(400).is_ok());
     assert_eq!(acct.spendable, 600);
     assert_eq!(acct.locked, 400);
@@ -286,14 +286,14 @@ fn test_lock_unlock_roundtrip() {
 #[test]
 fn test_lock_more_than_spendable() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 100);
+    let mut acct = account_with_spores(kp.pubkey(), 100);
     assert!(acct.lock(101).is_err());
 }
 
 #[test]
 fn test_unlock_more_than_locked() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 100);
+    let mut acct = account_with_spores(kp.pubkey(), 100);
     acct.lock(50).unwrap();
     assert!(acct.unlock(51).is_err());
 }
@@ -301,14 +301,14 @@ fn test_unlock_more_than_locked() {
 #[test]
 fn test_stake_then_lock_independence() {
     let kp = Keypair::new();
-    let mut acct = account_with_shells(kp.pubkey(), 1000);
+    let mut acct = account_with_spores(kp.pubkey(), 1000);
     acct.stake(400).unwrap();
     assert_eq!(acct.spendable, 600);
     acct.lock(300).unwrap();
     assert_eq!(acct.spendable, 300);
     assert_eq!(acct.staked, 400);
     assert_eq!(acct.locked, 300);
-    assert_eq!(acct.shells, 1000);
+    assert_eq!(acct.spores, 1000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -326,7 +326,7 @@ fn test_fee_deduction_basic_transfer() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), initial),
+            &account_with_spores(sender.pubkey(), initial),
         )
         .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
@@ -336,7 +336,7 @@ fn test_fee_deduction_basic_transfer() {
     let result = processor.process_transaction(&tx, &validator.pubkey());
     assert!(result.success, "Transaction failed: {:?}", result.error);
     let sender_acct = state.get_account(&sender.pubkey()).unwrap().unwrap();
-    assert_eq!(sender_acct.shells, initial - 1_000_000_000 - fee);
+    assert_eq!(sender_acct.spores, initial - 1_000_000_000 - fee);
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn test_fee_insufficient_for_fee_plus_amount() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), 1_000_000_000),
+            &account_with_spores(sender.pubkey(), 1_000_000_000),
         )
         .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
@@ -370,7 +370,7 @@ fn test_multiple_instructions_in_one_tx() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), 10_000_000_000),
+            &account_with_spores(sender.pubkey(), 10_000_000_000),
         )
         .unwrap();
     let ix1 = transfer_instruction(sender.pubkey(), r1.pubkey(), 1_000_000_000);
@@ -390,8 +390,8 @@ fn test_multiple_instructions_in_one_tx() {
     );
     let r1_acct = state.get_account(&r1.pubkey()).unwrap().unwrap();
     let r2_acct = state.get_account(&r2.pubkey()).unwrap().unwrap();
-    assert_eq!(r1_acct.shells, 1_000_000_000);
-    assert_eq!(r2_acct.shells, 2_000_000_000);
+    assert_eq!(r1_acct.spores, 1_000_000_000);
+    assert_eq!(r2_acct.spores, 2_000_000_000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -687,22 +687,22 @@ fn test_state_batch_commit_atomicity() {
     let a = Keypair::new();
     let b = Keypair::new();
     state
-        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 1000))
+        .put_account(&a.pubkey(), &account_with_spores(a.pubkey(), 1000))
         .unwrap();
     state
-        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .put_account(&b.pubkey(), &account_with_spores(b.pubkey(), 0))
         .unwrap();
     let mut batch = state.begin_batch();
-    let a_acct = account_with_shells(a.pubkey(), 500);
-    let b_acct = account_with_shells(b.pubkey(), 500);
+    let a_acct = account_with_spores(a.pubkey(), 500);
+    let b_acct = account_with_spores(b.pubkey(), 500);
     batch.put_account(&a.pubkey(), &a_acct).unwrap();
     batch.put_account(&b.pubkey(), &b_acct).unwrap();
     batch.add_burned(100);
     state.commit_batch(batch).unwrap();
     let a_loaded = state.get_account(&a.pubkey()).unwrap().unwrap();
     let b_loaded = state.get_account(&b.pubkey()).unwrap().unwrap();
-    assert_eq!(a_loaded.shells, 500);
-    assert_eq!(b_loaded.shells, 500);
+    assert_eq!(a_loaded.spores, 500);
+    assert_eq!(b_loaded.spores, 500);
     assert_eq!(state.get_total_burned().unwrap(), 100);
 }
 
@@ -793,7 +793,7 @@ fn test_replay_protection_stale_blockhash() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), 10_000_000_000),
+            &account_with_spores(sender.pubkey(), 10_000_000_000),
         )
         .unwrap();
     let stale_hash = Hash::new([0xDE; 32]);
@@ -853,7 +853,7 @@ fn test_hash_different_inputs() {
 
 #[test]
 fn test_hash_hex_roundtrip() {
-    let h = Hash::hash(b"moltchain");
+    let h = Hash::hash(b"lichen");
     let hex = h.to_hex();
     let decoded = Hash::from_hex(&hex).unwrap();
     assert_eq!(h, decoded);
@@ -955,7 +955,7 @@ fn test_transfer_to_self_only_deducts_fee() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), initial),
+            &account_with_spores(sender.pubkey(), initial),
         )
         .unwrap();
     let ix = transfer_instruction(sender.pubkey(), sender.pubkey(), 1_000_000_000);
@@ -966,7 +966,7 @@ fn test_transfer_to_self_only_deducts_fee() {
     assert!(result.success);
     let acct = state.get_account(&sender.pubkey()).unwrap().unwrap();
     assert_eq!(
-        acct.shells,
+        acct.spores,
         initial - fee,
         "Self-transfer should only deduct fee"
     );
@@ -982,7 +982,7 @@ fn test_zero_amount_transfer() {
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), 5_000_000_000),
+            &account_with_spores(sender.pubkey(), 5_000_000_000),
         )
         .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 0);
@@ -1036,7 +1036,7 @@ fn test_recent_blockhashes_bounded() {
 #[test]
 fn test_keypair_sign_verify() {
     let kp = Keypair::new();
-    let data = b"hello moltchain";
+    let data = b"hello lichen";
     let sig = kp.sign(data);
     assert!(Keypair::verify(&kp.pubkey(), data, &sig));
 }
@@ -1044,7 +1044,7 @@ fn test_keypair_sign_verify() {
 #[test]
 fn test_keypair_wrong_data_fails_verify() {
     let kp = Keypair::new();
-    let data = b"hello moltchain";
+    let data = b"hello lichen";
     let sig = kp.sign(data);
     assert!(!Keypair::verify(&kp.pubkey(), b"tampered", &sig));
 }
@@ -1179,7 +1179,7 @@ fn test_state_root_changes_on_mutation() {
     let r1 = state.compute_state_root();
     let kp = Keypair::new();
     state
-        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 42))
+        .put_account(&kp.pubkey(), &account_with_spores(kp.pubkey(), 42))
         .unwrap();
     let r2 = state.compute_state_root();
     assert_ne!(r1, r2, "State root must change after mutation");
@@ -1217,7 +1217,7 @@ fn test_double_spend_sequential() {
     state
         .put_account(
             &attacker.pubkey(),
-            &account_with_shells(attacker.pubkey(), balance),
+            &account_with_spores(attacker.pubkey(), balance),
         )
         .unwrap();
     let tx1 = build_signed_tx(
@@ -1240,20 +1240,20 @@ fn test_double_spend_sequential() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 29. MOLT/SHELLS CONVERSION
+// 29. LICN/SPORES CONVERSION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_molt_to_shells_conversion() {
-    assert_eq!(Account::molt_to_shells(1), 1_000_000_000);
-    assert_eq!(Account::molt_to_shells(0), 0);
+fn test_licn_to_spores_conversion() {
+    assert_eq!(Account::licn_to_spores(1), 1_000_000_000);
+    assert_eq!(Account::licn_to_spores(0), 0);
 }
 
 #[test]
-fn test_balance_molt_utility() {
+fn test_balance_licn_utility() {
     let kp = Keypair::new();
     let acct = Account::new(100, kp.pubkey());
-    assert_eq!(acct.balance_molt(), 100);
+    assert_eq!(acct.balance_licn(), 100);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1267,13 +1267,13 @@ fn test_stakepool_block_reward_distribution() {
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
-    let reward = pool.distribute_block_reward(&v1.pubkey(), 1, false, GENESIS_SUPPLY_SHELLS);
+    let reward = pool.distribute_block_reward(&v1.pubkey(), 1, false, GENESIS_SUPPLY_SPORES);
     assert_eq!(
         reward, 0,
         "Per-slot block reward should be zero in epoch model"
     );
     // Epoch-based distribution should produce positive rewards
-    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SPORES);
     assert!(total_minted > 0, "Epoch staker rewards should be positive");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, v1.pubkey());
@@ -1286,7 +1286,7 @@ fn test_stakepool_claim_rewards() {
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
-    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+    let (total_minted, results) = pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SPORES);
     assert!(total_minted > 0, "Should have epoch rewards");
     // The liquid portion was already claimed inside distribute_epoch_staker_rewards
     let (_pubkey, reward, liquid, _debt) = results[0];
@@ -1358,7 +1358,7 @@ fn test_stakepool_delegation_after_graduation() {
         .unwrap();
     // Produce many blocks and distribute rewards to fully vest the validator
     for slot in 1..=500 {
-        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SHELLS);
+        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SPORES);
         pool.record_block_produced(&validator.pubkey());
     }
     // Try delegation — should succeed once fully vested
@@ -1379,7 +1379,7 @@ fn test_stakepool_undelegate() {
         .unwrap();
     // Fully vest validator through block production
     for slot in 1..=500 {
-        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SHELLS);
+        pool.distribute_block_reward(&validator.pubkey(), slot, false, GENESIS_SUPPLY_SPORES);
         pool.record_block_produced(&validator.pubkey());
     }
     let delegate_result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);
@@ -1585,16 +1585,16 @@ fn test_state_transfer_utility() {
     let a = Keypair::new();
     let b = Keypair::new();
     state
-        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 10_000))
+        .put_account(&a.pubkey(), &account_with_spores(a.pubkey(), 10_000))
         .unwrap();
     state
-        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .put_account(&b.pubkey(), &account_with_spores(b.pubkey(), 0))
         .unwrap();
     state.transfer(&a.pubkey(), &b.pubkey(), 3_000).unwrap();
     let a_acct = state.get_account(&a.pubkey()).unwrap().unwrap();
     let b_acct = state.get_account(&b.pubkey()).unwrap().unwrap();
-    assert_eq!(a_acct.shells, 7_000);
-    assert_eq!(b_acct.shells, 3_000);
+    assert_eq!(a_acct.spores, 7_000);
+    assert_eq!(b_acct.spores, 3_000);
 }
 
 #[test]
@@ -1603,10 +1603,10 @@ fn test_state_transfer_insufficient() {
     let a = Keypair::new();
     let b = Keypair::new();
     state
-        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 100))
+        .put_account(&a.pubkey(), &account_with_spores(a.pubkey(), 100))
         .unwrap();
     state
-        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .put_account(&b.pubkey(), &account_with_spores(b.pubkey(), 0))
         .unwrap();
     let result = state.transfer(&a.pubkey(), &b.pubkey(), 200);
     assert!(result.is_err(), "Transfer more than balance should fail");
@@ -1614,41 +1614,41 @@ fn test_state_transfer_insufficient() {
 
 #[test]
 fn test_genesis_auto_fund_from_treasury() {
-    // Verify the auto-fund mechanism: debit treasury, credit deployer with 10K MOLT.
+    // Verify the auto-fund mechanism: debit treasury, credit deployer with 10K LICN.
     let (state, _tmp, _) = create_test_state();
     let treasury_pk = Pubkey([0x01; 32]);
     let deployer_pk = Pubkey([0x02; 32]);
 
-    // Create treasury with 100M MOLT
-    let treasury_shells = Account::molt_to_shells(100_000_000);
+    // Create treasury with 100M LICN
+    let treasury_spores = Account::licn_to_spores(100_000_000);
     let mut treasury_acct = Account::new(0, treasury_pk);
-    treasury_acct.shells = treasury_shells;
-    treasury_acct.spendable = treasury_shells;
+    treasury_acct.spores = treasury_spores;
+    treasury_acct.spendable = treasury_spores;
     state.put_account(&treasury_pk, &treasury_acct).unwrap();
 
     // Create deployer with 0 balance (post-distribution state)
     let deployer_acct = Account::new(0, deployer_pk);
     state.put_account(&deployer_pk, &deployer_acct).unwrap();
 
-    // Simulate auto-fund: 10K MOLT
-    let ops_fund_molt: u64 = 10_000;
-    let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
+    // Simulate auto-fund: 10K LICN
+    let ops_fund_licn: u64 = 10_000;
+    let ops_fund_spores = Account::licn_to_spores(ops_fund_licn);
 
     let mut t = state.get_account(&treasury_pk).unwrap().unwrap();
-    assert!(t.spendable >= ops_fund_shells);
-    t.deduct_spendable(ops_fund_shells).unwrap();
+    assert!(t.spendable >= ops_fund_spores);
+    t.deduct_spendable(ops_fund_spores).unwrap();
     state.put_account(&treasury_pk, &t).unwrap();
 
     let mut d = state.get_account(&deployer_pk).unwrap().unwrap();
-    d.add_spendable(ops_fund_shells).unwrap();
+    d.add_spendable(ops_fund_spores).unwrap();
     state.put_account(&deployer_pk, &d).unwrap();
 
-    // Verify deployer has exactly 10K MOLT
+    // Verify deployer has exactly 10K LICN
     let deployer_final = state.get_account(&deployer_pk).unwrap().unwrap();
-    assert_eq!(deployer_final.spendable, ops_fund_shells);
-    assert_eq!(deployer_final.shells, ops_fund_shells);
+    assert_eq!(deployer_final.spendable, ops_fund_spores);
+    assert_eq!(deployer_final.spores, ops_fund_spores);
 
     // Verify treasury deducted
     let treasury_final = state.get_account(&treasury_pk).unwrap().unwrap();
-    assert_eq!(treasury_final.spendable, treasury_shells - ops_fund_shells);
+    assert_eq!(treasury_final.spendable, treasury_spores - ops_fund_spores);
 }

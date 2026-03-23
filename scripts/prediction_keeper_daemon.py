@@ -6,7 +6,7 @@ Sweeps:
 - close expired ACTIVE markets (opcode 22: close_market)
 - finalize RESOLVING markets after dispute window (opcode 10: finalize_resolution)
 
-Default mode is dry-run. Enable live submissions with MOLT_KEEPER_DRY_RUN=false.
+Default mode is dry-run. Enable live submissions with LICHEN_KEEPER_DRY_RUN=false.
 """
 
 import asyncio
@@ -23,21 +23,21 @@ SDK_PY = ROOT / "sdk" / "python"
 if str(SDK_PY) not in sys.path:
     sys.path.insert(0, str(SDK_PY))
 
-from moltchain.connection import Connection  # noqa: E402  # type: ignore[import-not-found]
-from moltchain.keypair import Keypair  # noqa: E402  # type: ignore[import-not-found]
-from moltchain.publickey import PublicKey  # noqa: E402  # type: ignore[import-not-found]
-from moltchain.transaction import Instruction, TransactionBuilder  # noqa: E402  # type: ignore[import-not-found]
+from lichen.connection import Connection  # noqa: E402  # type: ignore[import-not-found]
+from lichen.keypair import Keypair  # noqa: E402  # type: ignore[import-not-found]
+from lichen.publickey import PublicKey  # noqa: E402  # type: ignore[import-not-found]
+from lichen.transaction import Instruction, TransactionBuilder  # noqa: E402  # type: ignore[import-not-found]
 
 CONTRACT_PROGRAM_ID = PublicKey(bytes([0xFF] * 32))
 
-RPC_URL = os.getenv("MOLT_RPC_URL", "http://127.0.0.1:8899").rstrip("/")
-API_BASE = os.getenv("MOLT_API_BASE", f"{RPC_URL}/api/v1").rstrip("/")
-INTERVAL_SECS = max(5, int(os.getenv("MOLT_KEEPER_INTERVAL_SECS", "15")))
-MAX_ACTIONS_PER_TICK = max(1, int(os.getenv("MOLT_KEEPER_MAX_ACTIONS_PER_TICK", "20")))
-DRY_RUN = os.getenv("MOLT_KEEPER_DRY_RUN", "true").strip().lower() not in {"0", "false", "no", "off"}
-KEYPAIR_PATH = Path(os.path.expanduser(os.getenv("MOLT_KEEPER_KEYPAIR", "~/.moltchain/keypairs/id.json")))
-KEYPAIR_PASSWORD = os.getenv("MOLT_KEEPER_KEYPAIR_PASSWORD")
-HTTP_TIMEOUT_SECS = float(os.getenv("MOLT_KEEPER_HTTP_TIMEOUT", "12"))
+RPC_URL = os.getenv("LICHEN_RPC_URL", "http://127.0.0.1:8899").rstrip("/")
+API_BASE = os.getenv("LICHEN_API_BASE", f"{RPC_URL}/api/v1").rstrip("/")
+INTERVAL_SECS = max(5, int(os.getenv("LICHEN_KEEPER_INTERVAL_SECS", "15")))
+MAX_ACTIONS_PER_TICK = max(1, int(os.getenv("LICHEN_KEEPER_MAX_ACTIONS_PER_TICK", "20")))
+DRY_RUN = os.getenv("LICHEN_KEEPER_DRY_RUN", "true").strip().lower() not in {"0", "false", "no", "off"}
+KEYPAIR_PATH = Path(os.path.expanduser(os.getenv("LICHEN_KEEPER_KEYPAIR", "~/.lichen/keypairs/id.json")))
+KEYPAIR_PASSWORD = os.getenv("LICHEN_KEEPER_KEYPAIR_PASSWORD")
+HTTP_TIMEOUT_SECS = float(os.getenv("LICHEN_KEEPER_HTTP_TIMEOUT", "12"))
 
 
 def log(msg: str) -> None:

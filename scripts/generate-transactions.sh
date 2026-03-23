@@ -3,24 +3,24 @@
 
 set -e
 
-MOLT_CLI="./target/release/molt"
+LICN_CLI="./target/release/licn"
 RPC_URL="http://localhost:8899"
 
-echo "🦞 MoltChain Transaction Generator"
+echo "🦞 Lichen Transaction Generator"
 echo "===================================="
 echo ""
 
 # Create 2 test wallets
 echo "🔑 Creating test wallets..."
-WALLET_A=~/.moltchain/wallet-a.json
-WALLET_B=~/.moltchain/wallet-b.json
+WALLET_A=~/.lichen/wallet-a.json
+WALLET_B=~/.lichen/wallet-b.json
 
 if [ ! -f "$WALLET_A" ]; then
-    $MOLT_CLI identity new --output $WALLET_A > /dev/null
+    $LICN_CLI identity new --output $WALLET_A > /dev/null
 fi
 
 if [ ! -f "$WALLET_B" ]; then
-    $MOLT_CLI identity new --output $WALLET_B > /dev/null
+    $LICN_CLI identity new --output $WALLET_B > /dev/null
 fi
 
 # Get pubkeys
@@ -90,8 +90,8 @@ cd sdk/rust
 cat > examples/generate_txs.rs << 'EOF'
 //! Generate test transactions
 
-use moltchain_sdk::{Client, Keypair, TransactionBuilder};
-use moltchain_core::{Instruction, Pubkey, Hash};
+use lichen_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::{Instruction, Pubkey, Hash};
 use std::fs;
 use serde_json::Value;
 
@@ -100,8 +100,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🦞 Generating transactions...\n");
     
     // Load wallets
-    let wallet_a_path = std::env::var("HOME")? + "/.moltchain/wallet-a.json";
-    let wallet_b_path = std::env::var("HOME")? + "/.moltchain/wallet-b.json";
+    let wallet_a_path = std::env::var("HOME")? + "/.lichen/wallet-a.json";
+    let wallet_b_path = std::env::var("HOME")? + "/.lichen/wallet-b.json";
     
     // For now, just create keypairs (real wallet loading would need full deserialization)
     let keypair_a = Keypair::new();

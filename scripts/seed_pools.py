@@ -6,9 +6,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tools'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sdk', 'python'))
 
 from deploy_dex import load_or_create_deployer, call_contract_raw
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
-RPC = os.environ.get('CUSTODY_MOLT_RPC_URL', 'http://127.0.0.1:8899')
+RPC = os.environ.get('CUSTODY_LICHEN_RPC_URL', 'http://127.0.0.1:8899')
 MANIFEST = os.path.join(os.path.dirname(__file__), '..', 'deploy-manifest.json')
 
 # ── Price helpers ────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ def price_to_sqrt_price(price: float) -> int:
 
 def fetch_binance_prices() -> dict:
     """Fetch current USD prices from Binance (or Binance US).
-    Returns dict like {'SOL': 145.50, 'ETH': 2650.0, 'BNB': 620.0, 'MOLT': 0.10}
+    Returns dict like {'SOL': 145.50, 'ETH': 2650.0, 'BNB': 620.0, 'LICN': 0.10}
     """
     # Try Binance US first (geo-unblocked), fall back to global
     binance_urls = [
@@ -34,7 +34,7 @@ def fetch_binance_prices() -> dict:
 
     for url in binance_urls:
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'MoltChain/1.0'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Lichen/1.0'})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
                 for item in data:
@@ -51,8 +51,8 @@ def fetch_binance_prices() -> dict:
         print('  ERROR: Could not fetch any prices from Binance, using fallback')
         prices = {'SOL': 145.0, 'ETH': 2600.0, 'BNB': 620.0}
 
-    # MOLT doesn't trade on Binance — use env var or default
-    prices['MOLT'] = float(os.environ.get('MOLT_USD_PRICE', '0.10'))
+    # LICN doesn't trade on Binance — use env var or default
+    prices['LICN'] = float(os.environ.get('LICHEN_USD_PRICE', '0.10'))
 
     return prices
 
@@ -72,8 +72,8 @@ async def seed_pools():
     deployer_bytes = bytes(deployer.public_key().to_bytes())
 
     token_names = {
-        'MOLT': 'moltcoin',
-        'mUSD': 'musd_token',
+        'LICN': 'lichencoin',
+        'lUSD': 'lusd_token',
         'wSOL': 'wsol_token',
         'wETH': 'weth_token',
         'wBNB': 'wbnb_token',
@@ -95,19 +95,19 @@ async def seed_pools():
 
     # ── Build pool list with live sqrt_prices ────────────────────────
     # Price = how many of token_b you get per 1 token_a
-    # For X/mUSD pools: price = USD price of X (since mUSD ≈ $1)
-    # For X/MOLT pools: price = USD price of X / USD price of MOLT
-    molt_usd = prices['MOLT']
+    # For X/lUSD pools: price = USD price of X (since lUSD ≈ $1)
+    # For X/LICN pools: price = USD price of X / USD price of LICN
+    licn_usd = prices['LICN']
 
     pools = [
         # token_a / token_b pools (price = token_a denominated in token_b)
-        ('MOLT', 'mUSD', 30, price_to_sqrt_price(molt_usd)),
-        ('wSOL', 'mUSD', 30, price_to_sqrt_price(prices['SOL'])),
-        ('wETH', 'mUSD', 30, price_to_sqrt_price(prices['ETH'])),
-        ('wBNB', 'mUSD', 30, price_to_sqrt_price(prices['BNB'])),
-        ('wSOL', 'MOLT', 30, price_to_sqrt_price(prices['SOL'] / molt_usd)),
-        ('wETH', 'MOLT', 30, price_to_sqrt_price(prices['ETH'] / molt_usd)),
-        ('wBNB', 'MOLT', 30, price_to_sqrt_price(prices['BNB'] / molt_usd)),
+        ('LICN', 'lUSD', 30, price_to_sqrt_price(licn_usd)),
+        ('wSOL', 'lUSD', 30, price_to_sqrt_price(prices['SOL'])),
+        ('wETH', 'lUSD', 30, price_to_sqrt_price(prices['ETH'])),
+        ('wBNB', 'lUSD', 30, price_to_sqrt_price(prices['BNB'])),
+        ('wSOL', 'LICN', 30, price_to_sqrt_price(prices['SOL'] / licn_usd)),
+        ('wETH', 'LICN', 30, price_to_sqrt_price(prices['ETH'] / licn_usd)),
+        ('wBNB', 'LICN', 30, price_to_sqrt_price(prices['BNB'] / licn_usd)),
     ]
 
     for (sym_a, sym_b, fee_tier, sqrt_p) in pools:

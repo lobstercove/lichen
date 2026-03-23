@@ -1,12 +1,12 @@
 [package]
-name = "moltchain-p2p"
+name = "lichen-p2p"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
-description = "MoltChain P2P networking with QUIC"
+authors = ["Lichen Labs <trading.lobster@lichen.network>"]
+description = "Lichen P2P networking with QUIC"
 
 [dependencies]
-moltchain-core = { path = "../core" }
+lichen-core = { path = "../core" }
 tokio = { version = "1.35", features = ["full"] }
 quinn = { version = "0.11", features = ["ring"] }
 rustls = { version = "0.23", features = ["ring"] }

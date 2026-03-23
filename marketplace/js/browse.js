@@ -1,10 +1,10 @@
-// Molt Market — Browse / Explore Page
+// Lichen Market — Browse / Explore Page
 // Wallet-gated buy actions, filter/sort/search, loads from RPC
 
 (function () {
     'use strict';
 
-    var RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
@@ -24,7 +24,7 @@
     var statusHasOffers = false;
     var urlFilterMode = '';
 
-    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatMoltPrice) || function(v, isMolt) { return Number(isMolt ? v : v/1e9).toFixed(2); };
+    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function(v, isLicn) { return Number(isLicn ? v : v/1e9).toFixed(2); };
 
     function lazyAddresses() {
         if (!CONTRACT_PROGRAM_ID) CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
@@ -253,7 +253,7 @@
 
         if (currentView === 'grid') {
             grid.innerHTML = pageItems.map(function (nft) {
-                var priceInMolt = nft.price_molt !== undefined ? fmp(nft.price_molt, true) : fmp(nft.price || 0, false);
+                var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
                 var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
                 var imgHtml = normalizedImage && normalizedImage.indexOf('http') === 0
                     ? '<img src="' + escapeHtml(normalizedImage) + '" style="width:100%;height:100%;object-fit:cover;" alt="' + escapeHtml(nft.name || '') + '">'
@@ -272,7 +272,7 @@
                     '<div class="nft-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
                     '<div class="nft-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
                     '<div class="nft-footer">' +
-                    '<div class="nft-price">Price <span class="nft-price-value">' + priceInMolt + ' MOLT</span></div>' +
+                    '<div class="nft-price">Price <span class="nft-price-value">' + priceInLicn + ' LICN</span></div>' +
                     actionHtml +
                     '</div></div></div>';
             }).join('');
@@ -287,7 +287,7 @@
                 '<div class="nft-list-col nft-list-col-action"></div>' +
                 '</div>' +
                 pageItems.map(function (nft) {
-                var priceInMolt = nft.price_molt !== undefined ? fmp(nft.price_molt, true) : fmp(nft.price || 0, false);
+                var priceInLicn = nft.price_licn !== undefined ? fmp(nft.price_licn, true) : fmp(nft.price || 0, false);
                 var normalizedImage = normalizeImage(nft.image, nft.id || nft.name || '');
                 var imgStyle = normalizedImage && normalizedImage.indexOf('http') === 0
                     ? 'background-image:url(' + encodeURI(normalizedImage) + ');background-size:cover;background-position:center;'
@@ -308,7 +308,7 @@
                     '<div class="nft-list-col nft-list-col-name">' + escapeHtml(nft.name || 'NFT #' + (nft.token_id || nft.id || '?')) + '</div>' +
                     '<div class="nft-list-col nft-list-col-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
                     '<div class="nft-list-col nft-list-col-rarity"><span class="rarity ' + rarityClass + '">' + rarityLabel + '</span></div>' +
-                    '<div class="nft-list-col nft-list-col-price">' + escapeHtml(priceInMolt) + ' MOLT</div>' +
+                    '<div class="nft-list-col nft-list-col-price">' + escapeHtml(priceInLicn) + ' LICN</div>' +
                     '<div class="nft-list-col nft-list-col-action">' + actionHtml + '</div>' +
                     '</div>';
             }).join('');
@@ -389,7 +389,7 @@
     };
 
     window._browseConnect = function () {
-        if (window.moltWallet) window.moltWallet._openWalletModal();
+        if (window.lichenWallet) window.lichenWallet._openWalletModal();
     };
 
     window._browseSetPage = function (page) {
@@ -439,15 +439,15 @@
 
     // ===== Events =====
     function setupEvents() {
-        if (window.MoltWallet) {
-            window.moltWallet = window.moltWallet || new MoltWallet({ rpcUrl: RPC_URL });
-            window.moltWallet.bindConnectButton('#connectWallet');
-            window.moltWallet.onConnect(function (info) {
+        if (window.LichenWallet) {
+            window.lichenWallet = window.lichenWallet || new LichenWallet({ rpcUrl: RPC_URL });
+            window.lichenWallet.bindConnectButton('#connectWallet');
+            window.lichenWallet.onConnect(function (info) {
                 currentWallet = info;
                 updateNav();
                 loadListings(); // reload + re-render to refresh wallet-dependent content
             });
-            window.moltWallet.onDisconnect(function () {
+            window.lichenWallet.onDisconnect(function () {
                 currentWallet = null;
                 updateNav();
                 loadListings();
@@ -580,11 +580,11 @@
 
     // ===== Init =====
     document.addEventListener('DOMContentLoaded', function () {
-        console.log('Molt Market Browse loading...');
+        console.log('Lichen Market Browse loading...');
         setupEvents();
         updateNav();
         loadCollections();
         loadListings();
-        console.log('Molt Market Browse ready');
+        console.log('Lichen Market Browse ready');
     });
 })();

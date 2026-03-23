@@ -15,13 +15,13 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
-/// Fixed generator G for value component (hash-to-curve of "MoltChain-Pedersen-G")
+/// Fixed generator G for value component (hash-to-curve of "Lichen-Pedersen-G")
 /// Uses deterministic try-and-increment with domain-separated hash, matching H.
 fn generator_g() -> G1Affine {
     // AUDIT-FIX CORE-02: Use hash-to-curve instead of standard generator.
     // Domain separation ensures G and H are provably independent.
     let mut hasher = Sha256::new();
-    hasher.update(b"MoltChain-Pedersen-G-generator-v1");
+    hasher.update(b"Lichen-Pedersen-G-generator-v1");
     let hash = hasher.finalize();
 
     let mut seed = [0u8; 32];
@@ -46,12 +46,12 @@ fn generator_g() -> G1Affine {
     }
 }
 
-/// Fixed generator H for blinding component (hash-to-curve of "MoltChain-Pedersen-H")
+/// Fixed generator H for blinding component (hash-to-curve of "Lichen-Pedersen-H")
 /// Must be independent of G (no known discrete log relationship)
 fn generator_h() -> G1Affine {
-    // Hash "MoltChain-Pedersen-H" to get a deterministic but independent generator
+    // Hash "Lichen-Pedersen-H" to get a deterministic but independent generator
     let mut hasher = Sha256::new();
-    hasher.update(b"MoltChain-Pedersen-H-generator-v1");
+    hasher.update(b"Lichen-Pedersen-H-generator-v1");
     let hash = hasher.finalize();
 
     // Use hash as x-coordinate seed, find valid point via try-and-increment
@@ -99,7 +99,7 @@ pub struct PedersenCommitment {
 /// Opening of a Pedersen commitment (private data)
 #[derive(Clone, Debug)]
 pub struct CommitmentOpening {
-    /// The committed value (in shells)
+    /// The committed value (in spores)
     pub value: u64,
     /// The blinding factor (random scalar)
     pub blinding: Fr,
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_commit_and_verify() {
-        let value = 1_000_000_000u64; // 1 MOLT in shells
+        let value = 1_000_000_000u64; // 1 LICN in spores
         let (commitment, opening) = PedersenCommitment::commit_random(value);
         assert!(commitment.verify(&opening));
     }

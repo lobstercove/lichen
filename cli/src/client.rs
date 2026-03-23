@@ -1,7 +1,7 @@
-// RPC client for communicating with MoltChain validator
+// RPC client for communicating with Lichen validator
 
 use anyhow::{Context, Result};
-use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
+use lichen_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -48,9 +48,9 @@ pub struct BlockInfo {
 
 #[derive(Deserialize)]
 pub struct BurnedInfo {
-    pub shells: u64,
+    pub spores: u64,
     #[allow(dead_code)]
-    pub molt: u64,
+    pub lichen: u64,
 }
 
 #[derive(Deserialize)]
@@ -154,7 +154,7 @@ pub struct ValidatorPerformance {
 
 #[derive(Deserialize)]
 pub struct BalanceInfo {
-    pub shells: u64,
+    pub spores: u64,
     pub spendable: u64,
     pub staked: u64,
     pub locked: u64,
@@ -178,7 +178,7 @@ pub struct StakingRewards {
 pub struct AccountInfo {
     pub pubkey: String,
     pub balance: u64,
-    pub molt: f64,
+    pub lichen: f64,
     pub exists: bool,
     pub is_executable: bool,
     pub is_validator: bool,
@@ -256,7 +256,7 @@ impl RpcClient {
         let params = json!([pubkey.to_base58()]);
         let result = self.call("getBalance", params).await?;
 
-        let shells = result.get("shells").and_then(|v| v.as_u64()).unwrap_or(0);
+        let spores = result.get("spores").and_then(|v| v.as_u64()).unwrap_or(0);
         let spendable = result
             .get("spendable")
             .and_then(|v| v.as_u64())
@@ -265,7 +265,7 @@ impl RpcClient {
         let locked = result.get("locked").and_then(|v| v.as_u64()).unwrap_or(0);
 
         Ok(BalanceInfo {
-            shells,
+            spores,
             spendable,
             staked,
             locked,
@@ -330,9 +330,9 @@ impl RpcClient {
     }
 
     /// AUDIT-FIX I-1: Request airdrop from the faucet via requestAirdrop RPC
-    pub async fn request_airdrop(&self, to: &Pubkey, amount_molt: f64) -> Result<String> {
-        // The RPC accepts whole MOLT amounts as u64
-        let amount_u64 = amount_molt.ceil() as u64;
+    pub async fn request_airdrop(&self, to: &Pubkey, amount_licn: f64) -> Result<String> {
+        // The RPC accepts whole LICN amounts as u64
+        let amount_u64 = amount_licn.ceil() as u64;
         let params = json!([to.to_base58(), amount_u64]);
         let result = self.call("requestAirdrop", params).await?;
         let sig = result
@@ -342,8 +342,8 @@ impl RpcClient {
         Ok(sig.to_string())
     }
 
-    /// Transfer shells from one account to another
-    pub async fn transfer(&self, from: &Keypair, to: &Pubkey, shells: u64) -> Result<String> {
+    /// Transfer spores from one account to another
+    pub async fn transfer(&self, from: &Keypair, to: &Pubkey, spores: u64) -> Result<String> {
         let recent_blockhash = self.get_recent_blockhash().await?;
 
         // Create transfer instruction
@@ -352,7 +352,7 @@ impl RpcClient {
             accounts: vec![from.pubkey(), *to],
             data: {
                 let mut data = vec![0u8]; // Opcode 0 = transfer
-                data.extend_from_slice(&shells.to_le_bytes());
+                data.extend_from_slice(&spores.to_le_bytes());
                 data
             },
         };
@@ -399,7 +399,7 @@ impl RpcClient {
         contract_address: &Pubkey,
         init_data: Vec<u8>,
     ) -> Result<String> {
-        use moltchain_core::ContractInstruction;
+        use lichen_core::ContractInstruction;
 
         let recent_blockhash = self.get_recent_blockhash().await?;
 
@@ -453,7 +453,7 @@ impl RpcClient {
         wasm_code: Vec<u8>,
         contract_address: &Pubkey,
     ) -> Result<String> {
-        use moltchain_core::ContractInstruction;
+        use lichen_core::ContractInstruction;
 
         let recent_blockhash = self.get_recent_blockhash().await?;
 
@@ -570,7 +570,7 @@ impl RpcClient {
         args: Vec<u8>,
         value: u64,
     ) -> Result<String> {
-        use moltchain_core::ContractInstruction;
+        use lichen_core::ContractInstruction;
 
         let recent_blockhash = self.get_recent_blockhash().await?;
 
@@ -628,7 +628,7 @@ impl RpcClient {
         Ok(block)
     }
 
-    /// Get total burned MOLT
+    /// Get total burned LICN
     pub async fn get_total_burned(&self) -> Result<BurnedInfo> {
         let params = json!([]);
         let result = self.call("getTotalBurned", params).await?;
@@ -733,7 +733,7 @@ impl RpcClient {
         Ok(perf)
     }
 
-    /// Stake MOLT tokens
+    /// Stake LICN tokens
     pub async fn stake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
         let recent_blockhash = self.get_recent_blockhash().await?;
 
@@ -776,7 +776,7 @@ impl RpcClient {
         Ok(signature_hex)
     }
 
-    /// Unstake MOLT tokens
+    /// Unstake LICN tokens
     pub async fn unstake(&self, keypair: &Keypair, amount: u64) -> Result<String> {
         let recent_blockhash = self.get_recent_blockhash().await?;
 
@@ -900,7 +900,7 @@ impl RpcClient {
         Ok(contracts)
     }
 
-    /// Resolve a symbol (e.g., "DAO", "MOLT", "DEX") to its on-chain contract address
+    /// Resolve a symbol (e.g., "DAO", "LICN", "DEX") to its on-chain contract address
     /// via the symbol registry. Returns None if the symbol is not registered.
     pub async fn resolve_symbol(&self, symbol: &str) -> Result<Option<Pubkey>> {
         let params = json!([symbol]);

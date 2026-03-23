@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Validator Guide - MoltChain Developer Portal</title>
+    <title>Validator Guide - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -76,7 +76,7 @@
                 <div class="sidebar-heading">More Guides</div>
                 <a href="architecture.html" class="sidebar-link">Architecture</a>
                 <a href="validator.html" class="sidebar-link active">Validator Setup</a>
-                <a href="moltyid.html" class="sidebar-link">MoltyID</a>
+                <a href="lichenid.html" class="sidebar-link">LichenID</a>
             </div>
         </aside>
 
@@ -89,7 +89,7 @@
             </div>
 
             <h1>Validator Guide</h1>
-            <p>Run a MoltChain validator node to participate in consensus, produce blocks, and earn staking rewards.
+            <p>Run a Lichen validator node to participate in consensus, produce blocks, and earn staking rewards.
                 This guide covers hardware requirements, installation, configuration, staking, monitoring, and
                 production deployment.</p>
 
@@ -169,7 +169,7 @@
 
             <h3>Option A: Binary Quick Start (Recommended for Agents)</h3>
 
-            <p>If the machine already has a <code>moltchain-validator</code> binary from a release bundle or prior
+            <p>If the machine already has a <code>lichen-validator</code> binary from a release bundle or prior
                 build, you can start a validator immediately without cloning the repository.</p>
 
             <p>The intended agent workflow is: download the latest signed release artifact for the host platform,
@@ -184,20 +184,20 @@
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
-curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-linux-x86_64.tar.gz"
-curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
-grep 'moltchain-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
-tar xzf moltchain-validator-linux-x86_64.tar.gz --strip-components=1
-chmod +x moltchain-validator
-mkdir -p "$HOME/.moltchain/state-mainnet"
-./moltchain-validator \
+                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-linux-x86_64.tar.gz"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+grep 'lichen-validator-linux-x86_64.tar.gz' SHA256SUMS | sha256sum -c -
+tar xzf lichen-validator-linux-x86_64.tar.gz --strip-components=1
+chmod +x lichen-validator
+mkdir -p "$HOME/.lichen/state-mainnet"
+./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
+    --db-path "$HOME/.lichen/state-mainnet" \
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply</code></pre>
             </div>
 
@@ -208,20 +208,20 @@ mkdir -p "$HOME/.moltchain/state-mainnet"
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/moltchain/releases/latest | jq -r .tag_name)
-curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/moltchain-validator-darwin-aarch64.tar.gz"
-curl -LO "https://github.com/lobstercove/moltchain/releases/download/${VERSION}/SHA256SUMS"
-grep 'moltchain-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
-tar xzf moltchain-validator-darwin-aarch64.tar.gz --strip-components=1
-chmod +x moltchain-validator
-mkdir -p "$HOME/.moltchain/state-mainnet"
-./moltchain-validator \
+                <pre><code>VERSION=$(curl -fsSL https://api.github.com/repos/lobstercove/lichen/releases/latest | jq -r .tag_name)
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/lichen-validator-darwin-aarch64.tar.gz"
+curl -LO "https://github.com/lobstercove/lichen/releases/download/${VERSION}/SHA256SUMS"
+grep 'lichen-validator-darwin-aarch64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+tar xzf lichen-validator-darwin-aarch64.tar.gz --strip-components=1
+chmod +x lichen-validator
+mkdir -p "$HOME/.lichen/state-mainnet"
+./lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
+    --db-path "$HOME/.lichen/state-mainnet" \
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply</code></pre>
             </div>
 
@@ -232,17 +232,17 @@ mkdir -p "$HOME/.moltchain/state-mainnet"
                     <span class="code-lang">PowerShell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/moltchain/releases/latest).tag_name
-Invoke-WebRequest -Uri "https://github.com/lobstercove/moltchain/releases/download/$version/moltchain-validator-windows-x86_64.tar.gz" -OutFile "moltchain-validator-windows-x86_64.tar.gz"
-tar -xzf .\moltchain-validator-windows-x86_64.tar.gz --strip-components=1
-New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out-Null
-.\moltchain-validator.exe `
+                <pre><code>$version = (Invoke-RestMethod https://api.github.com/repos/lobstercove/lichen/releases/latest).tag_name
+Invoke-WebRequest -Uri "https://github.com/lobstercove/lichen/releases/download/$version/lichen-validator-windows-x86_64.tar.gz" -OutFile "lichen-validator-windows-x86_64.tar.gz"
+tar -xzf .\lichen-validator-windows-x86_64.tar.gz --strip-components=1
+New-Item -ItemType Directory -Force -Path "$HOME\.lichen\state-mainnet" | Out-Null
+.\lichen-validator.exe `
     --network mainnet `
     --rpc-port 9899 `
     --ws-port 9900 `
     --p2p-port 8001 `
-    --db-path "$HOME\.moltchain\state-mainnet" `
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 `
+    --db-path "$HOME\.lichen\state-mainnet" `
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 `
     --auto-update=apply</code></pre>
             </div>
 
@@ -254,18 +254,18 @@ New-Item -ItemType Directory -Force -Path "$HOME\.moltchain\state-mainnet" | Out
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>mkdir -p "$HOME/.moltchain/state-mainnet"
+                <pre><code>mkdir -p "$HOME/.lichen/state-mainnet"
 
-mkdir -p "$HOME/.moltchain/state-mainnet/home"
+mkdir -p "$HOME/.lichen/state-mainnet/home"
 
-env HOME="$HOME/.moltchain/state-mainnet/home" \
-moltchain-validator \
+env HOME="$HOME/.lichen/state-mainnet/home" \
+lichen-validator \
     --network mainnet \
     --rpc-port 9899 \
     --ws-port 9900 \
     --p2p-port 8001 \
-    --db-path "$HOME/.moltchain/state-mainnet" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
+    --db-path "$HOME/.lichen/state-mainnet" \
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply</code></pre>
             </div>
 
@@ -279,15 +279,15 @@ moltchain-validator \
                 <li>It creates the chosen state directory if needed.</li>
                 <li>It generates or reuses the validator identity in that directory.</li>
                 <li>It stores signer material, peer cache, and chain state under the same path.</li>
-                <li>It connects to <code>seed-01.moltchain.network</code> and <code>seed-02.moltchain.network</code>,
-                    and <code>seed-03.moltchain.network</code>.</li>
+                <li>It connects to <code>seed-01.lichen.network</code> and <code>seed-02.lichen.network</code>,
+                    and <code>seed-03.lichen.network</code>.</li>
                 <li>It syncs the network, then resumes or starts validating from the preserved local state.</li>
                 <li>If <code>--auto-update=apply</code> is enabled, it checks GitHub Releases in the background, stages
                     a newer signed binary, and requests a restart to apply it.</li>
             </ol>
 
             <p>Typical files under the state path include validator identity files, signer material, RocksDB chain
-                state, <code>known-peers.json</code>, and <code>home/.moltchain/</code> for the persistent P2P TLS
+                state, <code>known-peers.json</code>, and <code>home/.lichen/</code> for the persistent P2P TLS
                 identity and TOFU fingerprint store. Preserving that directory preserves the validator identity and
                 local progress.</p>
             <p>For new or state-scoped installs, the validator prefers <code>--db-path/home</code> for those P2P runtime
@@ -299,8 +299,8 @@ moltchain-validator \
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Why domains instead of IPs?</div>
-                Use <code>seed-01.moltchain.network</code> and <code>seed-02.moltchain.network</code>, and
-                <code>seed-03.moltchain.network</code> for bootstrap peers. Domains let MoltChain rotate seed
+                Use <code>seed-01.lichen.network</code> and <code>seed-02.lichen.network</code>, and
+                <code>seed-03.lichen.network</code> for bootstrap peers. Domains let Lichen rotate seed
                 infrastructure without forcing operators or agents to change commands or wait for a new binary.
             </div>
 
@@ -314,9 +314,9 @@ moltchain-validator \
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>git clone https://github.com/lobstercove/moltchain.git
-cd moltchain
-./moltchain-start.sh testnet</code></pre>
+                <pre><code>git clone https://github.com/lobstercove/lichen.git
+cd lichen
+./lichen-start.sh testnet</code></pre>
             </div>
 
             <p>The start script will automatically build the binary, create genesis (if this is the first validator),
@@ -366,7 +366,7 @@ cd moltchain
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>./moltchain-start.sh testnet --bootstrap seed-01.moltchain.network:7001</code></pre>
+                <pre><code>./lichen-start.sh testnet --bootstrap seed-01.lichen.network:7001</code></pre>
             </div>
 
             <h4>Stop / Restart</h4>
@@ -377,11 +377,11 @@ cd moltchain
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Stop
-./moltchain-stop.sh testnet
+./lichen-stop.sh testnet
 
 # Full reset (wipe all state and start fresh)
 ./reset-blockchain.sh testnet
-./moltchain-start.sh testnet</code></pre>
+./lichen-start.sh testnet</code></pre>
             </div>
 
             <h3>Option C: Build from Source (Manual)</h3>
@@ -394,23 +394,23 @@ cd moltchain
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>git clone https://github.com/lobstercove/moltchain.git
-cd moltchain
+                <pre><code>git clone https://github.com/lobstercove/lichen.git
+cd lichen
 cargo build --release
 
 # Start — the built-in supervisor auto-restarts on stalls/crashes
-./target/release/moltchain-validator \
+./target/release/lichen-validator \
     --network testnet \
     --rpc-port 8899 \
     --ws-port 8900 \
     --p2p-port 7001 \
     --db-path ./data/state-testnet \
-    --bootstrap-peers seed-01.moltchain.network:7001,seed-02.moltchain.network:7001,seed-03.moltchain.network:7001
+    --bootstrap-peers seed-01.lichen.network:7001,seed-02.lichen.network:7001,seed-03.lichen.network:7001
 
 # Disable the supervisor (e.g. when using systemd Restart=on-failure)
-./target/release/moltchain-validator --no-watchdog \
+./target/release/lichen-validator --no-watchdog \
     --network testnet --rpc-port 8899 --p2p-port 7001 \
-    --bootstrap-peers seed-01.moltchain.network:7001,seed-02.moltchain.network:7001</code></pre>
+    --bootstrap-peers seed-01.lichen.network:7001,seed-02.lichen.network:7001</code></pre>
             </div>
 
             <h3>Option D: Docker</h3>
@@ -435,11 +435,11 @@ cargo build --release
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>molt init --output ~/.moltchain/validator-keypair.json
+                <pre><code>lichen init --output ~/.lichen/validator-keypair.json
 
 <i class="fa-solid fa-shrimp"></i> New validator keypair generated
   Identity: Mo1tVa1idAtoR...xYz789
-  Saved to: ~/.moltchain/validator-keypair.json</code></pre>
+  Saved to: ~/.lichen/validator-keypair.json</code></pre>
             </div>
 
             <div class="callout callout-warning">
@@ -451,7 +451,7 @@ cargo build --release
             <!-- ========== 3. CONFIGURATION ========== -->
             <h2 id="configuration">Configuration</h2>
 
-            <p>MoltChain validators are currently configured via <strong>CLI flags</strong> when starting the binary.
+            <p>Lichen validators are currently configured via <strong>CLI flags</strong> when starting the binary.
                 The section labels below (for example <code>[network]</code> and <code>[rpc]</code>) are conceptual
                 groupings for readability, not literal TOML sections consumed by the validator today. A real
                 <code>config.toml</code> input format is planned for a future release.
@@ -484,13 +484,13 @@ cargo build --release
                     <tr>
                         <td><code>keypair_path</code></td>
                         <td>String</td>
-                        <td><code>~/.moltchain/validator-keypair.json</code></td>
-                        <td>Path to the validator Ed25519 keypair JSON file. Generate with <code>molt init</code>.</td>
+                        <td><code>~/.lichen/validator-keypair.json</code></td>
+                        <td>Path to the validator Ed25519 keypair JSON file. Generate with <code>lichen init</code>.</td>
                     </tr>
                     <tr>
                         <td><code>data_dir</code></td>
                         <td>String</td>
-                        <td><code>~/.moltchain/data</code></td>
+                        <td><code>~/.lichen/data</code></td>
                         <td>Directory for blockchain state, ledger, and snapshots.</td>
                     </tr>
                     <tr>
@@ -534,7 +534,7 @@ cargo build --release
                         <td>Array</td>
                         <td><code>[]</code></td>
                         <td>Bootstrap peers. Testnet:
-                            <code>["seed-01.moltchain.network:7001", "seed-02.moltchain.network:7001", "seed-03.moltchain.network:7001"]</code>
+                            <code>["seed-01.lichen.network:7001", "seed-02.lichen.network:7001", "seed-03.lichen.network:7001"]</code>
                         </td>
                     </tr>
                     <tr>
@@ -576,9 +576,9 @@ cargo build --release
                         <td><code>min_validator_stake</code></td>
                         <td>Integer</td>
                         <td><code>75000000000000</code></td>
-                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). Mainnet uses 75,000 MOLT
-                            (75K); testnet genesis uses 75 MOLT to keep validator onboarding accessible. Bootstrap
-                            validators receive a 100,000 MOLT grant on the contributory-stake path.</td>
+                        <td>Minimum stake in spores (1 LICN = 1,000,000,000 spores). Mainnet uses 75,000 LICN
+                            (75K); testnet genesis uses 75 LICN to keep validator onboarding accessible. Bootstrap
+                            validators receive a 100,000 LICN grant on the contributory-stake path.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -708,7 +708,7 @@ cargo build --release
                     <tr>
                         <td><code>log_file_path</code></td>
                         <td>String</td>
-                        <td><code>~/.moltchain/validator.log</code></td>
+                        <td><code>~/.lichen/validator.log</code></td>
                         <td>Path to the log file (when <code>log_to_file = true</code>).</td>
                     </tr>
                     <tr>
@@ -778,7 +778,7 @@ cargo build --release
                     <tr>
                         <td><code>chain_id</code></td>
                         <td>String</td>
-                        <td><code>"moltchain-testnet-1"</code></td>
+                        <td><code>"lichen-testnet-1"</code></td>
                         <td>Chain identifier. Must match the genesis file exactly.</td>
                     </tr>
                 </tbody>
@@ -927,7 +927,7 @@ cargo build --release
             <!-- ========== 4. STAKING ========== -->
             <h2 id="staking">Staking</h2>
 
-            <p>Validators must stake MOLT tokens to participate in consensus. Stake weight determines your share of
+            <p>Validators must stake LICN tokens to participate in consensus. Stake weight determines your share of
                 block production slots and epoch-settled staking rewards. Transaction-fee share is earned as you
                 produce blocks; inflationary staking rewards settle at epoch boundaries.</p>
 
@@ -938,13 +938,13 @@ cargo build --release
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt stake add 75000000000 --rpc-url https://testnet-rpc.moltchain.network
+                <pre><code>$ lichen stake add 75000000000 --rpc-url https://testnet-rpc.lichen.network
 
-<i class="fa-solid fa-shrimp"></i> Staking 75 MOLT for validator Mo1tVa1idAtoR...xYz789
+<i class="fa-solid fa-shrimp"></i> Staking 75 LICN for validator Mo1tVa1idAtoR...xYz789
 
   Transaction: 5bN2...kQrT
-  Bootstrap:   100,000.000000000 MOLT (granted, #47 of 200)
-    Debt:        100,000.000000000 MOLT (repaid from settled epoch rewards: 50% standard, 75% at ≥95% uptime)
+  Bootstrap:   100,000.000000000 LICN (granted, #47 of 200)
+    Debt:        100,000.000000000 LICN (repaid from settled epoch rewards: 50% standard, 75% at ≥95% uptime)
   Uptime:      98.5% (≥ 95% → 75/25 debt/liquid split)
   Status:      Finalized (slot 1,204,817)
 
@@ -953,10 +953,10 @@ cargo build --release
 
             <h3>Minimum Stake</h3>
             <ul>
-                <li><strong>Bootstrap Grant (first 200 validators):</strong> 100,000 MOLT
-                    (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost from the treasury
+                <li><strong>Bootstrap Grant (first 200 validators):</strong> 100,000 LICN
+                    (<code>100,000,000,000,000</code> spores) — new validators receive this at $0 cost from the treasury
                 </li>
-                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 75,000 MOLT minimum —
+                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 75,000 LICN minimum —
                     immediately fully vested, no debt</li>
                 <li><strong>Vesting (standard):</strong> 50% of settled epoch rewards go to debt repayment, 50% liquid
                     — this is the default split for all bootstrap validators</li>
@@ -1034,10 +1034,10 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                 restricted by fingerprint.</p>
 
             <h3>Liquid Staking Mechanism</h3>
-            <p>MoltChain uses a delegated proof-of-stake liquid staking model inspired by coral reef ecosystems:</p>
+            <p>Lichen uses a delegated proof-of-stake liquid staking model inspired by moss ecosystems:</p>
             <ul>
                 <li><strong>Validator Coral:</strong> Each validator is a "coral head." Delegators attach stake to a
-                    validator, growing the reef.</li>
+                    validator, growing the moss.</li>
                 <li><strong>Epoch Activation:</strong> Validator-set changes settle at epoch boundaries (about 2 days on
                     the live chain).
                     Membership is applied by the protocol's epoch-transition rules, not a simple top-N stake
@@ -1046,7 +1046,7 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                     blocks, while staking inflation is distributed proportionally to validators and delegators when the
                     epoch boundary settlement runs.</li>
                 <li><strong>Slashing:</strong> Double-signing or extended downtime results in a percentage of staked
-                    MOLT being burned. With <code>enable_slashing = true</code>, evidence is gossiped via P2P and
+                    LICN being burned. With <code>enable_slashing = true</code>, evidence is gossiped via P2P and
                     processed by the <code>SlashingTracker</code>.</li>
             </ul>
 
@@ -1057,12 +1057,12 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt stake status --rpc-url https://testnet-rpc.moltchain.network
+                <pre><code>$ lichen stake status --rpc-url https://testnet-rpc.lichen.network
 
   Identity:    Mo1tVa1idAtoR...xYz789
-  Stake:       100,000.000000000 MOLT (bootstrap)
-  Delegated:   450.000000000 MOLT
-  Total:       100,450.000000000 MOLT
+  Stake:       100,000.000000000 LICN (bootstrap)
+  Delegated:   450.000000000 LICN
+  Total:       100,450.000000000 LICN
   Active:      Yes (rank #7 of 21)
   Commission:  10%
   Last Vote:   slot 1,205,142</code></pre>
@@ -1089,37 +1089,37 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                 </thead>
                 <tbody>
                     <tr>
-                        <td><code>moltchain_block_height</code></td>
+                        <td><code>lichen_block_height</code></td>
                         <td>Gauge</td>
                         <td>Current finalized block height</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_tps</code></td>
+                        <td><code>lichen_tps</code></td>
                         <td>Gauge</td>
                         <td>Transactions per second (rolling 10s window)</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_peer_count</code></td>
+                        <td><code>lichen_peer_count</code></td>
                         <td>Gauge</td>
                         <td>Number of connected P2P peers</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_mempool_size</code></td>
+                        <td><code>lichen_mempool_size</code></td>
                         <td>Gauge</td>
                         <td>Pending transactions in the mempool</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_slot_duration_ms</code></td>
+                        <td><code>lichen_slot_duration_ms</code></td>
                         <td>Histogram</td>
                         <td>Actual slot processing time</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_vote_count</code></td>
+                        <td><code>lichen_vote_count</code></td>
                         <td>Counter</td>
                         <td>Total votes cast by this validator</td>
                     </tr>
                     <tr>
-                        <td><code>moltchain_blocks_produced</code></td>
+                        <td><code>lichen_blocks_produced</code></td>
                         <td>Counter</td>
                         <td>Blocks produced by this validator</td>
                     </tr>
@@ -1132,13 +1132,13 @@ uptime_bps      = min(10000, blocks_produced × 10000 / expected_blocks)</code><
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Fetch metrics
-curl -s http://localhost:9100/metrics | grep moltchain_
+curl -s http://localhost:9100/metrics | grep lichen_
 
 # Example output
-moltchain_block_height 1205247
-moltchain_tps 842
-moltchain_peer_count 18
-moltchain_mempool_size 127</code></pre>
+lichen_block_height 1205247
+lichen_tps 842
+lichen_peer_count 18
+lichen_mempool_size 127</code></pre>
             </div>
 
             <h3>Health Check</h3>
@@ -1168,7 +1168,7 @@ moltchain_mempool_size 127</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Per-module granularity via RUST_LOG
-RUST_LOG=info,moltchain_p2p=debug,moltchain_rpc=warn moltchain-validator
+RUST_LOG=info,lichen_p2p=debug,lichen_rpc=warn lichen-validator
 
 # Or set in config.toml
 # [logging]
@@ -1194,7 +1194,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: moltchain-validator
+    container_name: lichen-validator
     restart: unless-stopped
     ports:
       - "7001:7001"   # P2P (testnet)
@@ -1202,17 +1202,17 @@ services:
       - "8900:8900"   # WebSocket (testnet)
       - "9100:9100"   # Metrics
     volumes:
-      - moltchain-data:/var/lib/moltchain
+      - lichen-data:/var/lib/lichen
     environment:
       - RUST_LOG=info
-      - MOLTCHAIN_NETWORK=testnet
-      - MOLTCHAIN_RPC_PORT=8899
-      - MOLTCHAIN_WS_PORT=8900
-      - MOLTCHAIN_P2P_PORT=7001
-      - MOLTCHAIN_SIGNER_BIND=0.0.0.0:9201
-      - MOLTCHAIN_ADMIN_TOKEN=${MOLTCHAIN_ADMIN_TOKEN:-}
+      - LICHEN_NETWORK=testnet
+      - LICHEN_RPC_PORT=8899
+      - LICHEN_WS_PORT=8900
+      - LICHEN_P2P_PORT=7001
+      - LICHEN_SIGNER_BIND=0.0.0.0:9201
+      - LICHEN_ADMIN_TOKEN=${LICHEN_ADMIN_TOKEN:-}
     networks:
-      - moltchain
+      - lichen
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
       interval: 30s
@@ -1221,11 +1221,11 @@ services:
       start_period: 15s
 
 volumes:
-  moltchain-data:
+  lichen-data:
     driver: local
 
 networks:
-  moltchain:
+  lichen:
     driver: bridge</code></pre>
             </div>
 
@@ -1240,11 +1240,11 @@ networks:
                 </thead>
                 <tbody>
                     <tr>
-                        <td><code>moltchain-data:/var/lib/moltchain</code></td>
+                        <td><code>lichen-data:/var/lib/lichen</code></td>
                         <td>Persistent blockchain state — survives container restarts and upgrades.</td>
                     </tr>
                     <tr>
-                        <td><code>./config.toml:/etc/moltchain/config.toml:ro</code></td>
+                        <td><code>./config.toml:/etc/lichen/config.toml:ro</code></td>
                         <td>Optional configuration file (future). Currently all settings are passed as CLI flags /
                             environment variables in docker-compose.</td>
                     </tr>
@@ -1302,46 +1302,46 @@ sudo bash deploy/setup.sh testnet mainnet</code></pre>
 
             <p>The script performs:</p>
             <ul>
-                <li>Creates a dedicated <code>moltchain</code> system user/group (no login shell)</li>
-                <li>Creates directories: <code>/etc/moltchain</code>, <code>/var/lib/moltchain</code>,
-                    <code>/var/log/moltchain</code>
+                <li>Creates a dedicated <code>lichen</code> system user/group (no login shell)</li>
+                <li>Creates directories: <code>/etc/lichen</code>, <code>/var/lib/lichen</code>,
+                    <code>/var/log/lichen</code>
                 </li>
                 <li>Copies binaries to <code>/usr/local/bin/</code></li>
-                <li>Generates <code>/etc/moltchain/env-testnet</code> and/or <code>/etc/moltchain/env-mainnet</code>
+                <li>Generates <code>/etc/lichen/env-testnet</code> and/or <code>/etc/lichen/env-mainnet</code>
                     with correct port assignments</li>
-                <li>Installs per-network systemd services: <code>moltchain-validator-testnet</code> and
-                    <code>moltchain-validator-mainnet</code>
+                <li>Installs per-network systemd services: <code>lichen-validator-testnet</code> and
+                    <code>lichen-validator-mainnet</code>
                 </li>
             </ul>
 
             <h3>Systemd Unit File</h3>
 
             <p>The service reads its port configuration from the environment file. Key flags match
-                <code>moltchain-start.sh</code>:
+                <code>lichen-start.sh</code>:
             </p>
 
             <div class="code-block">
                 <div class="code-block-header">
-                    <span class="code-lang">INI — moltchain-validator.service</span>
+                    <span class="code-lang">INI — lichen-validator.service</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>[Unit]
-Description=MoltChain Validator Node
-Documentation=https://developers.moltchain.network/validator.html
+Description=Lichen Validator Node
+Documentation=https://developers.lichen.network/validator.html
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=moltchain
-Group=moltchain
+User=lichen
+Group=lichen
 # --no-watchdog: systemd handles restarts via Restart=on-failure
-ExecStart=/usr/local/bin/moltchain-validator --no-watchdog \
-    --network ${MOLTCHAIN_NETWORK} \
-    --rpc-port ${MOLTCHAIN_RPC_PORT} \
-    --ws-port ${MOLTCHAIN_WS_PORT} \
-    --p2p-port ${MOLTCHAIN_P2P_PORT} \
-    --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK}
+ExecStart=/usr/local/bin/lichen-validator --no-watchdog \
+    --network ${LICHEN_NETWORK} \
+    --rpc-port ${LICHEN_RPC_PORT} \
+    --ws-port ${LICHEN_WS_PORT} \
+    --p2p-port ${LICHEN_P2P_PORT} \
+    --db-path /var/lib/lichen/state-${LICHEN_NETWORK}
 
 Restart=on-failure
 RestartSec=10
@@ -1351,7 +1351,7 @@ LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/moltchain /var/log/moltchain
+ReadWritePaths=/var/lib/lichen /var/log/lichen
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -1359,12 +1359,12 @@ ProtectControlGroups=true
 
 # Environment
 Environment=RUST_LOG=info
-EnvironmentFile=/etc/moltchain/env
+EnvironmentFile=/etc/lichen/env
 
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=moltchain-validator
+SyslogIdentifier=lichen-validator
 
 [Install]
 WantedBy=multi-user.target</code></pre>
@@ -1374,8 +1374,8 @@ WantedBy=multi-user.target</code></pre>
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Security Hardening</div>
                 The unit file includes Linux security features: <code>NoNewPrivileges</code>,
                 <code>ProtectSystem=strict</code>, <code>ProtectHome</code>, <code>PrivateTmp</code>, and kernel
-                protection directives. The process runs as the unprivileged <code>moltchain</code> user with write
-                access only to <code>/var/lib/moltchain</code> and <code>/var/log/moltchain</code>.
+                protection directives. The process runs as the unprivileged <code>lichen</code> user with write
+                access only to <code>/var/lib/lichen</code> and <code>/var/log/lichen</code>.
             </div>
 
             <h3>Service Management</h3>
@@ -1386,22 +1386,22 @@ WantedBy=multi-user.target</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Start the testnet validator
-sudo systemctl start moltchain-validator-testnet
+sudo systemctl start lichen-validator-testnet
 
 # Enable on boot
-sudo systemctl enable moltchain-validator-testnet
+sudo systemctl enable lichen-validator-testnet
 
 # Check status
-sudo systemctl status moltchain-validator-testnet
+sudo systemctl status lichen-validator-testnet
 
 # Follow logs
-journalctl -u moltchain-validator-testnet -f
+journalctl -u lichen-validator-testnet -f
 
 # Restart after config change
-sudo systemctl restart moltchain-validator-testnet
+sudo systemctl restart lichen-validator-testnet
 
 # Mainnet uses the same commands with -mainnet suffix
-sudo systemctl start moltchain-validator-mainnet</code></pre>
+sudo systemctl start lichen-validator-mainnet</code></pre>
             </div>
 
             <!-- ========== 7b. macOS LaunchAgent ========== -->
@@ -1422,23 +1422,23 @@ sudo systemctl start moltchain-validator-mainnet</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>mkdir -p ~/.moltchain/bin ~/.moltchain/state-mainnet ~/.moltchain/logs
+                <pre><code>mkdir -p ~/.lichen/bin ~/.lichen/state-mainnet ~/.lichen/logs
 
-cat &gt; ~/.moltchain/bin/moltchain-service.sh &lt;&lt; 'WRAPPER'
+cat &gt; ~/.lichen/bin/lichen-service.sh &lt;&lt; 'WRAPPER'
 #!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR="$HOME/.moltchain/bin"
-BINARY="$INSTALL_DIR/moltchain-validator"
-STATE_DIR="$HOME/.moltchain/state-mainnet"
-LOG_DIR="$HOME/.moltchain/logs"
-REPO="lobstercove/moltchain"
+INSTALL_DIR="$HOME/.lichen/bin"
+BINARY="$INSTALL_DIR/lichen-validator"
+STATE_DIR="$HOME/.lichen/state-mainnet"
+LOG_DIR="$HOME/.lichen/logs"
+REPO="lobstercove/lichen"
 
 # Set ASSET based on architecture
 ARCH=$(uname -m)
 case "$ARCH" in
-    arm64|aarch64) ASSET="moltchain-validator-darwin-aarch64.tar.gz" ;;
-    x86_64)        ASSET="moltchain-validator-darwin-x86_64.tar.gz" ;;
+    arm64|aarch64) ASSET="lichen-validator-darwin-aarch64.tar.gz" ;;
+    x86_64)        ASSET="lichen-validator-darwin-x86_64.tar.gz" ;;
     *)             echo "Unsupported arch: $ARCH"; exit 1 ;;
 esac
 
@@ -1468,11 +1468,11 @@ print(releases[0]['tag_name'])
     cd "$TMPDIR"
     grep "$ASSET" SHA256SUMS | shasum -a 256 -c -
     tar xzf "$ASSET" --strip-components=1
-    mv moltchain-validator "$BINARY"
+    mv lichen-validator "$BINARY"
     chmod +x "$BINARY"
 
     # Install bundled ZK verification keys to the shared cache
-    ZK_SHARED="$HOME/.moltchain/zk"
+    ZK_SHARED="$HOME/.lichen/zk"
     if [ -d "zk" ]; then
         mkdir -p "$ZK_SHARED"
         cp zk/*.bin "$ZK_SHARED/"
@@ -1480,24 +1480,24 @@ print(releases[0]['tag_name'])
     fi
     cd /
 
-    echo "$(date): Installed moltchain-validator $VERSION"
+    echo "$(date): Installed lichen-validator $VERSION"
     trap - EXIT
     rm -rf "$TMPDIR"
 fi
 
 # Start the validator
-echo "$(date): Starting moltchain-validator..."
+echo "$(date): Starting lichen-validator..."
 exec "$BINARY" \
     --network mainnet \
     --p2p-port 8001 \
     --rpc-port 9899 \
     --ws-port 9900 \
     --db-path "$STATE_DIR" \
-    --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 \
+    --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 \
     --auto-update=apply
 WRAPPER
 
-chmod +x ~/.moltchain/bin/moltchain-service.sh</code></pre>
+chmod +x ~/.lichen/bin/lichen-service.sh</code></pre>
             </div>
 
             <h3>Install the LaunchAgent</h3>
@@ -1507,19 +1507,19 @@ chmod +x ~/.moltchain/bin/moltchain-service.sh</code></pre>
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>cat &gt; ~/Library/LaunchAgents/network.moltchain.validator.plist &lt;&lt; EOF
+                <pre><code>cat &gt; ~/Library/LaunchAgents/network.lichen.validator.plist &lt;&lt; EOF
 &lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
     &lt;key&gt;Label&lt;/key&gt;
-    &lt;string&gt;network.moltchain.validator&lt;/string&gt;
+    &lt;string&gt;network.lichen.validator&lt;/string&gt;
 
     &lt;key&gt;ProgramArguments&lt;/key&gt;
     &lt;array&gt;
         &lt;string&gt;/bin/bash&lt;/string&gt;
-        &lt;string&gt;$HOME/.moltchain/bin/moltchain-service.sh&lt;/string&gt;
+        &lt;string&gt;$HOME/.lichen/bin/lichen-service.sh&lt;/string&gt;
     &lt;/array&gt;
 
     &lt;key&gt;RunAtLoad&lt;/key&gt;
@@ -1532,10 +1532,10 @@ chmod +x ~/.moltchain/bin/moltchain-service.sh</code></pre>
     &lt;integer&gt;15&lt;/integer&gt;
 
     &lt;key&gt;StandardOutPath&lt;/key&gt;
-    &lt;string&gt;$HOME/.moltchain/logs/validator.log&lt;/string&gt;
+    &lt;string&gt;$HOME/.lichen/logs/validator.log&lt;/string&gt;
 
     &lt;key&gt;StandardErrorPath&lt;/key&gt;
-    &lt;string&gt;$HOME/.moltchain/logs/validator.log&lt;/string&gt;
+    &lt;string&gt;$HOME/.lichen/logs/validator.log&lt;/string&gt;
 
     &lt;key&gt;EnvironmentVariables&lt;/key&gt;
     &lt;dict&gt;
@@ -1555,26 +1555,26 @@ EOF</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Load and start (runs immediately and on every login)
-launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist
+launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist
 
 # Stop the validator
-launchctl unload ~/Library/LaunchAgents/network.moltchain.validator.plist
+launchctl unload ~/Library/LaunchAgents/network.lichen.validator.plist
 
 # Restart (stop then start)
-launchctl unload ~/Library/LaunchAgents/network.moltchain.validator.plist
+launchctl unload ~/Library/LaunchAgents/network.lichen.validator.plist
 sleep 2
-launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist
+launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist
 
 # Follow logs
-tail -f ~/.moltchain/logs/validator.log
+tail -f ~/.lichen/logs/validator.log
 
 # Check if running
-launchctl list | grep moltchain
+launchctl list | grep lichen
 
 # Force re-download of the binary (e.g. after a new release)
-launchctl unload ~/Library/LaunchAgents/network.moltchain.validator.plist
-rm ~/.moltchain/bin/moltchain-validator
-launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist</code></pre>
+launchctl unload ~/Library/LaunchAgents/network.lichen.validator.plist
+rm ~/.lichen/bin/lichen-validator
+launchctl load ~/Library/LaunchAgents/network.lichen.validator.plist</code></pre>
             </div>
 
             <div class="callout callout-info">
@@ -1582,27 +1582,27 @@ launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist</code></
                 <table>
                     <tbody>
                         <tr>
-                            <td><code>~/.moltchain/bin/moltchain-validator</code></td>
+                            <td><code>~/.lichen/bin/lichen-validator</code></td>
                             <td>Binary</td>
                         </tr>
                         <tr>
-                            <td><code>~/.moltchain/bin/moltchain-service.sh</code></td>
+                            <td><code>~/.lichen/bin/lichen-service.sh</code></td>
                             <td>Wrapper script</td>
                         </tr>
                         <tr>
-                            <td><code>~/.moltchain/state-mainnet/</code></td>
+                            <td><code>~/.lichen/state-mainnet/</code></td>
                             <td>Blockchain state DB</td>
                         </tr>
                         <tr>
-                            <td><code>~/.moltchain/zk/</code></td>
+                            <td><code>~/.lichen/zk/</code></td>
                             <td>ZK verification &amp; proving keys</td>
                         </tr>
                         <tr>
-                            <td><code>~/.moltchain/logs/validator.log</code></td>
+                            <td><code>~/.lichen/logs/validator.log</code></td>
                             <td>Stdout/stderr log</td>
                         </tr>
                         <tr>
-                            <td><code>~/Library/LaunchAgents/network.moltchain.validator.plist</code></td>
+                            <td><code>~/Library/LaunchAgents/network.lichen.validator.plist</code></td>
                             <td>LaunchAgent plist</td>
                         </tr>
                     </tbody>
@@ -1624,12 +1624,12 @@ launchctl load ~/Library/LaunchAgents/network.moltchain.validator.plist</code></
                 </div>
                 <pre><code># 1. Download and extract the release
 $Version = "v0.2.14"  # Update to latest
-$Url = "https://github.com/lobstercove/moltchain/releases/download/$Version/moltchain-validator-windows-x86_64.tar.gz"
-$InstallDir = "$env:LOCALAPPDATA\MoltChain"
+$Url = "https://github.com/lobstercove/lichen/releases/download/$Version/lichen-validator-windows-x86_64.tar.gz"
+$InstallDir = "$env:LOCALAPPDATA\Lichen"
 New-Item -ItemType Directory -Force -Path "$InstallDir\bin", "$InstallDir\state-mainnet", "$InstallDir\logs", "$InstallDir\zk"
 
-Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\moltchain.tar.gz"
-tar -xzf "$env:TEMP\moltchain.tar.gz" -C "$InstallDir\bin" --strip-components=1
+Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\lichen.tar.gz"
+tar -xzf "$env:TEMP\lichen.tar.gz" -C "$InstallDir\bin" --strip-components=1
 
 # Copy ZK keys if bundled
 if (Test-Path "$InstallDir\bin\zk") {
@@ -1640,17 +1640,17 @@ if (Test-Path "$InstallDir\bin\zk") {
 # Extract nssm.exe to a directory in your PATH
 
 # 3. Create the service
-nssm install MoltChainValidator "$InstallDir\bin\moltchain-validator.exe"
-nssm set MoltChainValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 --auto-update=apply"
-nssm set MoltChainValidator AppDirectory "$InstallDir"
-nssm set MoltChainValidator AppStdout "$InstallDir\logs\validator.log"
-nssm set MoltChainValidator AppStderr "$InstallDir\logs\validator.log"
-nssm set MoltChainValidator AppEnvironmentExtra "RUST_LOG=info" "USERPROFILE=$InstallDir"
-nssm set MoltChainValidator Start SERVICE_AUTO_START
-nssm set MoltChainValidator AppRestartDelay 10000
+nssm install LichenValidator "$InstallDir\bin\lichen-validator.exe"
+nssm set LichenValidator AppParameters "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 --auto-update=apply"
+nssm set LichenValidator AppDirectory "$InstallDir"
+nssm set LichenValidator AppStdout "$InstallDir\logs\validator.log"
+nssm set LichenValidator AppStderr "$InstallDir\logs\validator.log"
+nssm set LichenValidator AppEnvironmentExtra "RUST_LOG=info" "USERPROFILE=$InstallDir"
+nssm set LichenValidator Start SERVICE_AUTO_START
+nssm set LichenValidator AppRestartDelay 10000
 
 # 4. Start
-nssm start MoltChainValidator</code></pre>
+nssm start LichenValidator</code></pre>
             </div>
 
             <h3>Option B: PowerShell Scheduled Task</h3>
@@ -1660,20 +1660,20 @@ nssm start MoltChainValidator</code></pre>
                     <span class="code-lang">PowerShell (Admin)</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$InstallDir = "$env:LOCALAPPDATA\MoltChain"
+                <pre><code>$InstallDir = "$env:LOCALAPPDATA\Lichen"
 $Action = New-ScheduledTaskAction `
-    -Execute "$InstallDir\bin\moltchain-validator.exe" `
-    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001 --auto-update=apply" `
+    -Execute "$InstallDir\bin\lichen-validator.exe" `
+    -Argument "--network mainnet --p2p-port 8001 --rpc-port 9899 --ws-port 9900 --db-path $InstallDir\state-mainnet --bootstrap-peers seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001 --auto-update=apply" `
     -WorkingDirectory "$InstallDir"
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Seconds 15)
 
-Register-ScheduledTask -TaskName "MoltChainValidator" `
+Register-ScheduledTask -TaskName "LichenValidator" `
     -Action $Action -Trigger $Trigger -Settings $Settings `
     -RunLevel Highest -User "SYSTEM"
 
 # Start immediately
-Start-ScheduledTask -TaskName "MoltChainValidator"</code></pre>
+Start-ScheduledTask -TaskName "LichenValidator"</code></pre>
             </div>
 
             <h3>Service Management (Windows)</h3>
@@ -1684,17 +1684,17 @@ Start-ScheduledTask -TaskName "MoltChainValidator"</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># NSSM commands
-nssm status MoltChainValidator
-nssm start MoltChainValidator
-nssm stop MoltChainValidator
-nssm restart MoltChainValidator
+nssm status LichenValidator
+nssm start LichenValidator
+nssm stop LichenValidator
+nssm restart LichenValidator
 
 # View logs
-Get-Content "$env:LOCALAPPDATA\MoltChain\logs\validator.log" -Tail 50 -Wait
+Get-Content "$env:LOCALAPPDATA\Lichen\logs\validator.log" -Tail 50 -Wait
 
 # Remove service
-nssm stop MoltChainValidator
-nssm remove MoltChainValidator confirm</code></pre>
+nssm stop LichenValidator
+nssm remove LichenValidator confirm</code></pre>
             </div>
 
             <div class="callout callout-info">
@@ -1702,19 +1702,19 @@ nssm remove MoltChainValidator confirm</code></pre>
                 <table>
                     <tbody>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\MoltChain\bin\</code></td>
+                            <td><code>%LOCALAPPDATA%\Lichen\bin\</code></td>
                             <td>Binary + ZK setup tool</td>
                         </tr>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\MoltChain\state-mainnet\</code></td>
+                            <td><code>%LOCALAPPDATA%\Lichen\state-mainnet\</code></td>
                             <td>Blockchain state DB</td>
                         </tr>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\MoltChain\zk\</code></td>
+                            <td><code>%LOCALAPPDATA%\Lichen\zk\</code></td>
                             <td>ZK verification &amp; proving keys</td>
                         </tr>
                         <tr>
-                            <td><code>%LOCALAPPDATA%\MoltChain\logs\</code></td>
+                            <td><code>%LOCALAPPDATA%\Lichen\logs\</code></td>
                             <td>Validator log files</td>
                         </tr>
                     </tbody>
@@ -1729,11 +1729,11 @@ nssm remove MoltChainValidator confirm</code></pre>
 
             <p>On first run, the validator checks these locations in order:</p>
             <ol>
-                <li>Environment variables: <code>MOLTCHAIN_ZK_SHIELD_VK_PATH</code>,
-                    <code>MOLTCHAIN_ZK_UNSHIELD_VK_PATH</code>, <code>MOLTCHAIN_ZK_TRANSFER_VK_PATH</code>
+                <li>Environment variables: <code>LICHEN_ZK_SHIELD_VK_PATH</code>,
+                    <code>LICHEN_ZK_UNSHIELD_VK_PATH</code>, <code>LICHEN_ZK_TRANSFER_VK_PATH</code>
                 </li>
-                <li>Shared cache: <code>~/.moltchain/zk/</code> (Linux/macOS) or
-                    <code>%LOCALAPPDATA%\MoltChain\zk\</code> (Windows)
+                <li>Shared cache: <code>~/.lichen/zk/</code> (Linux/macOS) or
+                    <code>%LOCALAPPDATA%\Lichen\zk\</code> (Windows)
                 </li>
                 <li>Bundled: <code>zk/</code> directory next to the binary (auto-copied to shared cache)</li>
             </ol>
@@ -1749,11 +1749,11 @@ nssm remove MoltChainValidator confirm</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Copy from the release tarball's zk/ directory
-mkdir -p ~/.moltchain/zk
-cp /path/to/release/zk/*.bin ~/.moltchain/zk/
+mkdir -p ~/.lichen/zk
+cp /path/to/release/zk/*.bin ~/.lichen/zk/
 
 # Verify keys (SHA-256 hashes must match across all validators)
-sha256sum ~/.moltchain/zk/vk_*.bin
+sha256sum ~/.lichen/zk/vk_*.bin
 # Expected:
 # af980fb4...  vk_shield.bin
 # e368eeaf...  vk_transfer.bin
@@ -1793,8 +1793,8 @@ sudo lsof -i :8899   # RPC
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>molt balance --rpc-url https://testnet-rpc.moltchain.network
-molt stake status --rpc-url https://testnet-rpc.moltchain.network</code></pre>
+                <pre><code>lichen balance --rpc-url https://testnet-rpc.lichen.network
+lichen stake status --rpc-url https://testnet-rpc.lichen.network</code></pre>
             </div>
 
             <h3>Sync Failures</h3>
@@ -1804,7 +1804,7 @@ molt stake status --rpc-url https://testnet-rpc.moltchain.network</code></pre>
                 <li>Check that the P2P port is open in your firewall (<code>sudo ufw allow 7001/tcp</code> for testnet)
                 </li>
                 <li>Ensure <code>chain_id</code> matches the network you're connecting to</li>
-                <li>Try increasing log level: <code>RUST_LOG=debug,moltchain_p2p=trace</code></li>
+                <li>Try increasing log level: <code>RUST_LOG=debug,lichen_p2p=trace</code></li>
             </ul>
 
             <div class="code-block">
@@ -1813,7 +1813,7 @@ molt stake status --rpc-url https://testnet-rpc.moltchain.network</code></pre>
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Test connectivity to seed nodes
-nc -zv seed-01.moltchain.network 7001
+nc -zv seed-01.lichen.network 7001
 
 # Check current block height via RPC (testnet port 8899)
 curl -s http://localhost:8899 \
@@ -1830,10 +1830,10 @@ curl -s http://localhost:8899 \
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code># Check data directory size
-du -sh /var/lib/moltchain/
+du -sh /var/lib/lichen/
 
 # Check available disk
-df -h /var/lib/moltchain/
+df -h /var/lib/lichen/
 
 # Set up monitoring alert (example with Prometheus Alertmanager)
 # Alert when disk usage > 80%</code></pre>
@@ -1862,16 +1862,16 @@ curl -s http://localhost:8899 \
   -d '{"jsonrpc":"2.0","id":1,"method":"getValidators"}' | jq
 
 # Check systemd logs for crash details
-journalctl -u moltchain-validator-testnet --since "1 hour ago" --no-pager
+journalctl -u lichen-validator-testnet --since "1 hour ago" --no-pager
 
 # Run validator with maximum verbosity (testnet)
-RUST_LOG=trace moltchain-validator --network testnet --rpc-port 8899 --ws-port 8900 --p2p-port 7001 --db-path /var/lib/moltchain/state-testnet 2>&1 | head -200</code></pre>
+RUST_LOG=trace lichen-validator --network testnet --rpc-port 8899 --ws-port 8900 --p2p-port 7001 --db-path /var/lib/lichen/state-testnet 2>&1 | head -200</code></pre>
             </div>
 
             <div class="callout callout-tip">
                 <div class="callout-title"><i class="fas fa-lightbulb"></i> Need Help?</div>
-                Join the MoltChain Discord <code>#validators</code> channel or open an issue on <a
-                    href="https://github.com/lobstercove/moltchain/issues">GitHub</a> with your logs and config (redact
+                Join the Lichen Discord <code>#validators</code> channel or open an issue on <a
+                    href="https://github.com/lobstercove/lichen/issues">GitHub</a> with your logs and config (redact
                 your keypair and admin token).
             </div>
 

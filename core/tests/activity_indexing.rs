@@ -1,4 +1,4 @@
-use moltchain_core::{
+use lichen_core::{
     Hash, MarketActivity, MarketActivityKind, NftActivity, NftActivityKind, ProgramCallActivity,
     Pubkey, StateStore,
 };

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Run 3 MoltChain validators for multi-validator testing
+# Run 3 Lichen validators for multi-validator testing
 
-echo "🦞 MoltChain Multi-Validator Test"
+echo "🦞 Lichen Multi-Validator Test"
 echo "=================================="
 echo ""
 
@@ -15,7 +15,7 @@ echo ""
 
 # Start validator 1 (seed) in background
 echo "🦞 Starting Validator 1 on port 7001 (seed)..."
-cargo run --package moltchain-validator -- 7001 > validator1.log 2>&1 &
+cargo run --package lichen-validator -- 7001 > validator1.log 2>&1 &
 VALIDATOR1_PID=$!
 echo "   PID: $VALIDATOR1_PID"
 
@@ -24,7 +24,7 @@ sleep 3
 
 # Start validator 2 (connects to seed)
 echo "🦞 Starting Validator 2 on port 7002..."
-cargo run --package moltchain-validator -- 7002 127.0.0.1:7001 > validator2.log 2>&1 &
+cargo run --package lichen-validator -- 7002 127.0.0.1:7001 > validator2.log 2>&1 &
 VALIDATOR2_PID=$!
 echo "   PID: $VALIDATOR2_PID"
 
@@ -33,7 +33,7 @@ sleep 2
 
 # Start validator 3 (connects to both)
 echo "🦞 Starting Validator 3 on port 7003..."
-cargo run --package moltchain-validator -- 7003 127.0.0.1:7001 127.0.0.1:7002 > validator3.log 2>&1 &
+cargo run --package lichen-validator -- 7003 127.0.0.1:7001 127.0.0.1:7002 > validator3.log 2>&1 &
 VALIDATOR3_PID=$!
 echo "   PID: $VALIDATOR3_PID"
 

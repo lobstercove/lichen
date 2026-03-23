@@ -1,12 +1,12 @@
-"""Test MoltChain Python SDK against live validator"""
+"""Test Lichen Python SDK against live validator"""
 
 import asyncio
 import sys
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
 
 async def test_sdk():
-    print('🦞 MoltChain Python SDK Test\n')
+    print('🦞 Lichen Python SDK Test\n')
     print('=' * 60)
     
     # Connect to running validator
@@ -55,7 +55,7 @@ async def test_sdk():
         validators = await connection.get_validators()
         print(f'   Total Validators: {len(validators)}')
         for i, v in enumerate(validators[:3], 1):
-            print(f'   {i}. {v["pubkey"][:20]}... (Stake: {v["stake"] / 1e9:.2f} MOLT)')
+            print(f'   {i}. {v["pubkey"][:20]}... (Stake: {v["stake"] / 1e9:.2f} LICN)')
         
         # Test 7: Health check
         print('\n✅ Test 7: Health Check')
@@ -71,7 +71,7 @@ async def test_sdk():
         # Test 9: Get total burned
         print('\n✅ Test 9: Get Total Burned')
         burned = await connection.get_total_burned()
-        print(f'   Total Burned: {burned["molt"] / 1e9:.6f} MOLT')
+        print(f'   Total Burned: {burned["licn"] / 1e9:.6f} LICN')
         
         # Test 10: Get balance (will likely fail for non-existent account)
         print('\n✅ Test 10: Get Balance')
@@ -80,7 +80,7 @@ async def test_sdk():
             validator_pubkey = PublicKey(validators[0]["pubkey"])
             try:
                 balance = await connection.get_balance(validator_pubkey)
-                print(f'   Validator Balance: {balance["molt"] / 1e9:.6f} MOLT')
+                print(f'   Validator Balance: {balance["licn"] / 1e9:.6f} LICN')
             except Exception as e:
                 print(f'   Expected error for query: {e}')
         

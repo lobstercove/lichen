@@ -1,4 +1,4 @@
-// MoltChain BFT Consensus Engine
+// Lichen BFT Consensus Engine
 //
 // Tendermint-style consensus: Propose → Prevote → Precommit → Commit.
 //
@@ -15,7 +15,7 @@
 // unlock). This guarantees that two honest validators never commit
 // different values at the same height.
 
-use moltchain_core::{
+use lichen_core::{
     Block, CommitSignature, Hash, Keypair, Precommit, Prevote, Proposal, Pubkey, RoundStep,
     StakePool, ValidatorSet, MIN_VALIDATOR_STAKE,
 };
@@ -1438,7 +1438,7 @@ impl ConsensusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_core::{
+    use lichen_core::{
         Hash, Keypair, Pubkey, StakeInfo, StakePool, ValidatorInfo, ValidatorSet,
     };
 
@@ -1665,7 +1665,7 @@ mod tests {
         let mut vs = ValidatorSet::new();
         let mut sp = StakePool::new();
         for (_kp, pk) in [(&kp1, &pk1), (&kp2, &pk2), (&kp3, &pk3)] {
-            let vi = moltchain_core::ValidatorInfo {
+            let vi = lichen_core::ValidatorInfo {
                 pubkey: *pk,
                 reputation: 100,
                 blocks_proposed: 0,
@@ -1777,7 +1777,7 @@ mod tests {
 
         let mut vs = ValidatorSet::new();
         let mut sp = StakePool::new();
-        let vi = moltchain_core::ValidatorInfo {
+        let vi = lichen_core::ValidatorInfo {
             pubkey: pk1,
             reputation: 100,
             blocks_proposed: 0,

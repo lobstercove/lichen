@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Send test transactions to MoltChain"""
+"""Send test transactions to Lichen"""
 
 import asyncio
 import sys
 from pathlib import Path
 
-from moltchain import Connection, PublicKey, Keypair, TransactionBuilder
+from lichen import Connection, PublicKey, Keypair, TransactionBuilder
 
 
 async def send_test_txs():
-    print('🦞 Sending Test Transactions to MoltChain\n')
+    print('🦞 Sending Test Transactions to Lichen\n')
     print('=' * 60)
     
     # Connect to validator

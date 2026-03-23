@@ -5,7 +5,7 @@
  * Tests all findings fixed during Phase 16 Faucet audit:
  *  F16.1  — XSS prevention in addRecentRequest (escapeHtml on shortAddress + amount)
  *  F16.2  — XSS prevention in success message (escapeHtml on amount, encodeURIComponent on sig)
- *  F16.3  — docker-compose env var mismatch (MOLTCHAIN_RPC_URL → RPC_URL)
+ *  F16.3  — docker-compose env var mismatch (LICHEN_RPC_URL → RPC_URL)
  *  F16.4  — Address validation tightened (32-44 chars, base58 only)
  */
 'use strict';
@@ -119,8 +119,8 @@ const path = require('path');
 const composePath = path.join(__dirname, '..', 'docker-compose.yml');
 if (fs.existsSync(composePath)) {
     const composeContent = fs.readFileSync(composePath, 'utf-8');
-    assert(!composeContent.includes('MOLTCHAIN_RPC_URL'),
-        'docker-compose: no MOLTCHAIN_RPC_URL (was mismatched var name)');
+    assert(!composeContent.includes('LICHEN_RPC_URL'),
+        'docker-compose: no LICHEN_RPC_URL (was mismatched var name)');
     assert(composeContent.includes('RPC_URL=http://validator:8899'),
         'docker-compose: uses RPC_URL matching main.rs env::var("RPC_URL")');
 } else {

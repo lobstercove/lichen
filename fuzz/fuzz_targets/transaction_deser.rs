@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::Transaction;
+use lichen_core::Transaction;
 
 fuzz_target!(|data: &[u8]| {
     // Try to deserialize arbitrary bytes as a Transaction.

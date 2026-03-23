@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_token_transfer_accepts_moltcoin_zero_code() {
+    fn test_call_token_transfer_accepts_lichencoin_zero_code() {
         test_mock::reset();
         test_mock::set_cross_call_response(Some(0u32.to_le_bytes().to_vec()));
 

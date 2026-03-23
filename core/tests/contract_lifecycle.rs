@@ -1,14 +1,14 @@
 // Contract lifecycle integration test
 // Tests: deploy WASM → init → call → query
 
-use moltchain_core::*;
+use lichen_core::*;
 use tempfile::TempDir;
 
 fn create_test_state() -> (StateStore, TempDir, Hash) {
     let temp_dir = TempDir::new().unwrap();
     let state = StateStore::open(temp_dir.path()).unwrap();
     let treasury = Keypair::new();
-    let treasury_account = account_with_shells(treasury.pubkey(), 10_000_000_000_000);
+    let treasury_account = account_with_spores(treasury.pubkey(), 10_000_000_000_000);
     state
         .put_account(&treasury.pubkey(), &treasury_account)
         .unwrap();
@@ -30,10 +30,10 @@ fn create_test_state() -> (StateStore, TempDir, Hash) {
     (state, temp_dir, genesis_hash)
 }
 
-fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
+fn account_with_spores(owner: Pubkey, spores: u64) -> Account {
     Account {
-        shells,
-        spendable: shells,
+        spores,
+        spendable: spores,
         staked: 0,
         locked: 0,
         data: Vec::new(),
@@ -77,7 +77,7 @@ fn test_contract_deploy_lifecycle() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), deploy_cost),
+            &account_with_spores(deployer.pubkey(), deploy_cost),
         )
         .unwrap();
 
@@ -130,7 +130,7 @@ fn test_contract_call_nonexistent() {
     state
         .put_account(
             &caller.pubkey(),
-            &account_with_shells(caller.pubkey(), 1_000_000_000),
+            &account_with_spores(caller.pubkey(), 1_000_000_000),
         )
         .unwrap();
 
@@ -200,19 +200,19 @@ fn test_system_transfer_lifecycle() {
     let receiver = Keypair::new();
     let validator = Keypair::new();
 
-    let initial_balance = 10_000_000_000u64; // 10 MOLT in shells
-    let transfer_amount = 2_000_000_000u64; // 2 MOLT
+    let initial_balance = 10_000_000_000u64; // 10 LICN in spores
+    let transfer_amount = 2_000_000_000u64; // 2 LICN
 
     state
         .put_account(
             &sender.pubkey(),
-            &account_with_shells(sender.pubkey(), initial_balance),
+            &account_with_spores(sender.pubkey(), initial_balance),
         )
         .unwrap();
     state
         .put_account(
             &receiver.pubkey(),
-            &account_with_shells(receiver.pubkey(), 0),
+            &account_with_spores(receiver.pubkey(), 0),
         )
         .unwrap();
 
@@ -239,9 +239,9 @@ fn test_system_transfer_lifecycle() {
     let sender_account = state.get_account(&sender.pubkey()).unwrap().unwrap();
     let receiver_account = state.get_account(&receiver.pubkey()).unwrap().unwrap();
 
-    assert_eq!(receiver_account.shells, transfer_amount);
+    assert_eq!(receiver_account.spores, transfer_amount);
     // Sender lost transfer_amount + fee
-    assert!(sender_account.shells < initial_balance - transfer_amount);
+    assert!(sender_account.spores < initial_balance - transfer_amount);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn test_insufficient_funds_for_deploy() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), 100),
+            &account_with_spores(deployer.pubkey(), 100),
         )
         .unwrap();
 
@@ -298,7 +298,7 @@ fn test_contract_upgrade_lifecycle() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), fund),
+            &account_with_spores(deployer.pubkey(), fund),
         )
         .unwrap();
 
@@ -374,13 +374,13 @@ fn test_upgrade_non_owner_rejected() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), fund_deploy),
+            &account_with_spores(deployer.pubkey(), fund_deploy),
         )
         .unwrap();
     state
         .put_account(
             &attacker.pubkey(),
-            &account_with_shells(attacker.pubkey(), fund_attack),
+            &account_with_spores(attacker.pubkey(), fund_attack),
         )
         .unwrap();
 
@@ -427,7 +427,7 @@ fn test_upgrade_version_increments_correctly() {
     state
         .put_account(
             &deployer.pubkey(),
-            &account_with_shells(deployer.pubkey(), fund),
+            &account_with_spores(deployer.pubkey(), fund),
         )
         .unwrap();
 

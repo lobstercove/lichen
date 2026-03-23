@@ -1,19 +1,19 @@
-// wBNB Token — Wrapped BNB on MoltChain
+// wBNB Token — Wrapped BNB on Lichen
 //
 // Architecture:
 //   wBNB is a 1:1 receipt token backed by native BNB reserves held in the
-//   MoltChain treasury (BNB Chain wallet). Users deposit BNB on BNB Chain,
-//   custody service sweeps to treasury, then mints wBNB on MoltChain.
+//   Lichen treasury (BNB Chain wallet). Users deposit BNB on BNB Chain,
+//   custody service sweeps to treasury, then mints wBNB on Lichen.
 //
-// Identical security model to musd_token / wsol_token:
+// Identical security model to lusd_token / wsol_token:
 //   - Treasury multisig (3-of-5) is the sole minting authority
 //   - Reserve attestation with proof hashes
 //   - Circuit breaker: no minting beyond attested reserves
 //   - Epoch rate limiting, reentrancy guard, emergency pause
 //
 // DEX Integration:
-//   wBNB/mUSD — BNB priced in USD
-//   wBNB/MOLT — BNB priced in MOLT (direct, no stablecoin needed)
+//   wBNB/lUSD — BNB priced in USD
+//   wBNB/LICN — BNB priced in LICN (direct, no stablecoin needed)
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -24,7 +24,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
 };
 
@@ -735,7 +735,7 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn addr(id: u8) -> [u8; 32] {
         let mut a = [0u8; 32];

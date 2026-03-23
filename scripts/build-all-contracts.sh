@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# Build All MoltChain Smart Contracts to WASM
+# Build All Lichen Smart Contracts to WASM
 # ============================================================================
 #
 # Compiles all 29 smart contracts to
@@ -33,22 +33,22 @@ NC='\033[0m'
 
 # All 26 contracts in dependency order
 CORE_CONTRACTS=(
-    moltcoin
-    moltdao
-    moltswap
-    moltbridge
-    moltmarket
-    moltoracle
-    moltauction
-    moltpunks
-    moltyid
-    lobsterlend
-    clawpay
-    clawpump
-    clawvault
+    lichencoin
+    lichendao
+    lichenswap
+    lichenbridge
+    lichenmarket
+    lichenoracle
+    lichenauction
+    lichenpunks
+    lichenid
+    thalllend
+    sporepay
+    sporepump
+    sporevault
     bountyboard
     compute_market
-    reef_storage
+    moss_storage
     shielded_pool
 )
 
@@ -64,7 +64,7 @@ DEX_CONTRACTS=(
 )
 
 WRAPPED_TOKEN_CONTRACTS=(
-    musd_token
+    lusd_token
     wsol_token
     weth_token
         wbnb_token
@@ -99,7 +99,7 @@ case "$BUILD_SCOPE" in
 esac
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  🦞 MoltChain Contract Builder                          ║${NC}"
+echo -e "${CYAN}║  🦞 Lichen Contract Builder                          ║${NC}"
 echo -e "${CYAN}║  Building ${#CONTRACTS[@]} contracts to WASM                         ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 

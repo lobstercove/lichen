@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Covers every JSON-RPC method across all three dispatch planes:
-//   - Native Molt RPC (108 methods on /)
+//   - Native Lichen RPC (108 methods on /)
 //   - Solana-compat RPC (13 methods on /solana)
 //   - EVM-compat RPC (20 methods on /evm)
 // Plus all REST API endpoints on /api/v1/*.
@@ -15,12 +15,12 @@ use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
 use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
-use moltchain_core::{
+use lichen_core::{
     contract::ContractAccount, Account, Block, CommitSignature, FeeConfig, FinalityTracker, Hash,
     Instruction, Keypair, Message, Precommit, Pubkey, StakeInfo, StakePool, StateStore,
     SymbolRegistryEntry, Transaction, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_PROGRAM_ID,
 };
-use moltchain_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
+use lichen_rpc::{build_rpc_router, build_rpc_router_with_min_validator_stake};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -113,8 +113,8 @@ fn fresh_app() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -133,8 +133,8 @@ fn fresh_app_with_min_validator_stake(min_validator_stake: u64) -> axum::Router 
         None,
         Some(Arc::new(RwLock::new(stake_pool))),
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         min_validator_stake,
         None,
         None,
@@ -160,8 +160,8 @@ fn fresh_app_with_runtime_settings(
         None,
         Some(Arc::new(RwLock::new(stake_pool))),
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         min_validator_stake,
         None,
         None,
@@ -180,8 +180,8 @@ fn public_network_app_with_admin_token() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-testnet".to_string(),
-        "molt-testnet".to_string(),
+        "lichen-testnet".to_string(),
+        "lichen-testnet".to_string(),
         Some("test-admin-token".to_string()),
         None,
         None,
@@ -199,8 +199,8 @@ fn dev_network_app_with_admin_token() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-local".to_string(),
-        "molt-dev".to_string(),
+        "lichen-local".to_string(),
+        "lichen-dev".to_string(),
         Some("test-admin-token".to_string()),
         None,
         None,
@@ -216,8 +216,8 @@ fn app_with_consensus_oracle_prices() -> axum::Router {
 
     state.set_last_slot(100).expect("set slot");
     state
-        .put_oracle_consensus_price("MOLT", 12_500_000, 8, 95, 3)
-        .expect("put MOLT oracle price");
+        .put_oracle_consensus_price("LICN", 12_500_000, 8, 95, 3)
+        .expect("put LICN oracle price");
     state
         .put_oracle_consensus_price("wSOL", 14_875_000_000, 8, 96, 3)
         .expect("put wSOL oracle price");
@@ -227,8 +227,8 @@ fn app_with_consensus_oracle_prices() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -284,8 +284,8 @@ fn app_with_state() -> (axum::Router, String) {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -347,8 +347,8 @@ fn app_with_anchored_account_proof() -> (axum::Router, String) {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         Some(FinalityTracker::new(1, 1)),
         None,
@@ -369,7 +369,7 @@ fn assert_valid_rpc(resp: &serde_json::Value) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 1: NATIVE MOLT RPC — Basic Query Methods
+//  SECTION 1: NATIVE LICN RPC — Basic Query Methods
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
@@ -395,10 +395,10 @@ async fn test_native_get_account_existing() {
     if let Some(result) = resp.get("result") {
         if !result.is_null() {
             assert!(
-                result.get("shells").is_some()
+                result.get("spores").is_some()
                     || result.get("balance").is_some()
                     || result.get("lamports").is_some(),
-                "account should have balance/shells: {result}"
+                "account should have balance/spores: {result}"
             );
         }
     }
@@ -530,7 +530,7 @@ async fn test_native_get_total_burned() {
     let app = fresh_app();
     let resp = rpc(&app, "/", "getTotalBurned").await.unwrap();
     assert_valid_rpc(&resp);
-    // Returns an object with shells/molt fields
+    // Returns an object with spores/licn fields
     if let Some(result) = resp.get("result") {
         assert!(
             !result.is_null(),
@@ -739,9 +739,9 @@ async fn test_native_get_staking_rewards_reports_liquid_claims_separately() {
 }
 
 #[tokio::test]
-async fn test_native_get_reefstake_pool_info() {
+async fn test_native_get_mossstake_pool_info() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getReefStakePoolInfo").await.unwrap();
+    let resp = rpc(&app, "/", "getMossStakePoolInfo").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -909,7 +909,7 @@ async fn test_native_legacy_admin_rpcs_disabled_on_public_networks() {
     let app = public_network_app_with_admin_token();
 
     for (method, params) in [
-        ("setFeeConfig", json!([{"base_fee_shells": 100}])),
+        ("setFeeConfig", json!([{"base_fee_spores": 100}])),
         ("setRentParams", json!([{"rent_free_kb": 100}])),
         (
             "setContractAbi",
@@ -938,7 +938,7 @@ async fn test_native_legacy_admin_rpcs_accept_bearer_header_on_dev_networks() {
         &app,
         "/",
         "setFeeConfig",
-        json!({"base_fee_shells": 1000}),
+        json!({"base_fee_spores": 1000}),
         Some("Bearer test-admin-token"),
         Some("127.0.0.1:9000".parse().unwrap()),
     )
@@ -956,7 +956,7 @@ async fn test_native_legacy_admin_rpcs_require_loopback_on_dev_networks() {
         &app,
         "/",
         "setFeeConfig",
-        json!({"base_fee_shells": 1000, "admin_token": "test-admin-token"}),
+        json!({"base_fee_spores": 1000, "admin_token": "test-admin-token"}),
         None,
         Some("203.0.113.10:9000".parse().unwrap()),
     )
@@ -1470,23 +1470,23 @@ async fn test_native_get_dex_governance_stats() {
 }
 
 #[tokio::test]
-async fn test_native_get_moltswap_stats() {
+async fn test_native_get_lichenswap_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getMoltswapStats").await.unwrap();
+    let resp = rpc(&app, "/", "getLichenSwapStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
-async fn test_native_get_lobsterlend_stats() {
+async fn test_native_get_thalllend_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getLobsterLendStats").await.unwrap();
+    let resp = rpc(&app, "/", "getThallLendStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
-async fn test_native_get_clawpay_stats() {
+async fn test_native_get_sporepay_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getClawPayStats").await.unwrap();
+    let resp = rpc(&app, "/", "getSporePayStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -1505,30 +1505,30 @@ async fn test_native_get_compute_market_stats() {
 }
 
 #[tokio::test]
-async fn test_native_get_reef_storage_stats() {
+async fn test_native_get_moss_storage_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getReefStorageStats").await.unwrap();
+    let resp = rpc(&app, "/", "getMossStorageStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
-async fn test_native_get_moltmarket_stats() {
+async fn test_native_get_lichenmarket_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getMoltMarketStats").await.unwrap();
+    let resp = rpc(&app, "/", "getLichenMarketStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
-async fn test_native_get_moltauction_stats() {
+async fn test_native_get_lichenauction_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getMoltAuctionStats").await.unwrap();
+    let resp = rpc(&app, "/", "getLichenAuctionStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
 #[tokio::test]
-async fn test_native_get_moltpunks_stats() {
+async fn test_native_get_lichenpunks_stats() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getMoltPunksStats").await.unwrap();
+    let resp = rpc(&app, "/", "getLichenPunksStats").await.unwrap();
     assert_valid_rpc(&resp);
 }
 
@@ -1537,9 +1537,9 @@ async fn test_native_get_moltpunks_stats() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_native_search_molt_names() {
+async fn test_native_search_licn_names() {
     let app = fresh_app();
-    let resp = rpc_p(&app, "/", "searchMoltNames", json!(["test"]))
+    let resp = rpc_p(&app, "/", "searchLichenNames", json!(["test"]))
         .await
         .unwrap();
     assert_valid_rpc(&resp);
@@ -1634,16 +1634,16 @@ async fn test_native_unstake_no_sender() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SECTION 18: ReefStake liquid staking write endpoints
+//  SECTION 18: MossStake liquid staking write endpoints
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_native_stake_to_reefstake() {
+async fn test_native_stake_to_mossstake() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
         "/",
-        "stakeToReefStake",
+        "stakeToMossStake",
         json!(["11111111111111111111111111111111", 1000]),
     )
     .await
@@ -1652,12 +1652,12 @@ async fn test_native_stake_to_reefstake() {
 }
 
 #[tokio::test]
-async fn test_native_unstake_from_reefstake() {
+async fn test_native_unstake_from_mossstake() {
     let app = fresh_app();
     let resp = rpc_p(
         &app,
         "/",
-        "unstakeFromReefStake",
+        "unstakeFromMossStake",
         json!(["11111111111111111111111111111111", 1000]),
     )
     .await
@@ -2022,8 +2022,8 @@ async fn test_evm_web3_client_version() {
     assert_valid_rpc(&resp);
     let ver = resp["result"].as_str().unwrap();
     assert!(
-        ver.starts_with("MoltChain/"),
-        "should start with MoltChain/: {ver}"
+        ver.starts_with("Lichen/"),
+        "should start with Lichen/: {ver}"
     );
 }
 
@@ -2095,15 +2095,15 @@ async fn test_rest_dex_oracle_prices() {
     let resp = rest_get(&app, "/api/v1/oracle/prices").await;
     let body = resp.expect("oracle prices response");
     let feeds = body["data"]["feeds"].as_array().expect("feeds array");
-    let molt = feeds
+    let licn_feed = feeds
         .iter()
-        .find(|entry| entry["asset"] == "MOLT")
-        .expect("MOLT feed");
-    assert_eq!(molt["source"], "native_consensus");
-    assert_eq!(molt["priceRaw"], 12_500_000u64);
-    assert_eq!(molt["decimals"], 8u64);
-    assert_eq!(molt["slot"], 95u64);
-    assert_eq!(molt["stale"], false);
+        .find(|entry| entry["asset"] == "LICN")
+        .expect("LICN feed");
+    assert_eq!(licn_feed["source"], "native_consensus");
+    assert_eq!(licn_feed["priceRaw"], 12_500_000u64);
+    assert_eq!(licn_feed["decimals"], 8u64);
+    assert_eq!(licn_feed["slot"], 95u64);
+    assert_eq!(licn_feed["stale"], false);
 }
 
 #[tokio::test]
@@ -2114,7 +2114,7 @@ async fn test_native_get_oracle_prices_uses_consensus_oracle() {
         .expect("rpc response");
     let result = resp["result"].as_object().expect("result object");
     assert_eq!(result["source"], json!("native_consensus"));
-    assert_eq!(result["MOLT"], json!(0.125));
+    assert_eq!(result["LICN"], json!(0.125));
     assert_eq!(result["wSOL"], json!(148.75));
 }
 
@@ -2248,15 +2248,15 @@ async fn test_all_stats_endpoints_return_valid_json() {
         "getDexRouterStats",
         "getDexAnalyticsStats",
         "getDexGovernanceStats",
-        "getMoltswapStats",
-        "getLobsterLendStats",
-        "getClawPayStats",
+        "getLichenSwapStats",
+        "getThallLendStats",
+        "getSporePayStats",
         "getBountyBoardStats",
         "getComputeMarketStats",
-        "getReefStorageStats",
-        "getMoltMarketStats",
-        "getMoltAuctionStats",
-        "getMoltPunksStats",
+        "getMossStorageStats",
+        "getLichenMarketStats",
+        "getLichenAuctionStats",
+        "getLichenPunksStats",
         "getPredictionMarketStats",
     ];
     for method in stats_methods {
@@ -2311,7 +2311,7 @@ async fn test_all_solana_methods_no_panic() {
 // (accounts, blocks, transactions, validators) and verify the returned JSON
 // contains correct, meaningful values.
 
-use moltchain_core::consensus::ValidatorInfo;
+use lichen_core::consensus::ValidatorInfo;
 
 /// Helper: build an app backed by a StateStore pre-populated with a funded
 /// account, a stored block at slot 1, a validator, and a transaction.
@@ -2321,10 +2321,10 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
 
-    // 1. Funded account: 5 MOLT = 5_000_000_000 shells
+    // 1. Funded account: 5 LICN = 5_000_000_000 spores
     let funded = Pubkey([42u8; 32]);
     let funded_b58 = funded.to_base58();
-    let acct = Account::new(5, Pubkey([0u8; 32])); // 5 MOLT
+    let acct = Account::new(5, Pubkey([0u8; 32])); // 5 LICN
     state.put_account(&funded, &acct).expect("put funded");
 
     // 2. Validator
@@ -2332,10 +2332,10 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
     let val_b58 = val_pk.to_base58();
     let mut vi = ValidatorInfo::new(val_pk, 0);
     vi.blocks_proposed = 3;
-    vi.stake = 100_000_000_000_000; // 100k MOLT
+    vi.stake = 100_000_000_000_000; // 100k LICN
     state.put_validator(&vi).expect("put validator");
 
-    // 3. A minimal transaction (transfer 1 MOLT from funded → treasury)
+    // 3. A minimal transaction (transfer 1 LICN from funded → treasury)
     let treasury = Pubkey([0u8; 32]);
     let ix = Instruction {
         program_id: Pubkey([0u8; 32]),
@@ -2407,8 +2407,8 @@ fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, S
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -2448,8 +2448,8 @@ fn app_with_bootstrap_staking_rewards() -> (axum::Router, String) {
         None,
         Some(Arc::new(RwLock::new(stake_pool))),
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -2472,13 +2472,13 @@ async fn test_native_get_balance_funded_account() {
         !result.is_null(),
         "funded account balance should not be null"
     );
-    // Account::new(5, ..) → shells = 5_000_000_000, spendable = 5_000_000_000
+    // Account::new(5, ..) → spores = 5_000_000_000, spendable = 5_000_000_000
     assert_eq!(
-        result["shells"], 5_000_000_000u64,
-        "shells = 5 MOLT in shells"
+        result["spores"], 5_000_000_000u64,
+        "spores = 5 LICN in spores"
     );
-    assert_eq!(result["spendable"], 5_000_000_000u64, "spendable = 5 MOLT");
-    assert_eq!(result["molt"], "5.0000", "molt = 5.0000");
+    assert_eq!(result["spendable"], 5_000_000_000u64, "spendable = 5 LICN");
+    assert_eq!(result["licn"], "5.0000", "licn = 5.0000");
     assert_eq!(result["staked"], 0, "staked = 0");
 }
 
@@ -2497,7 +2497,7 @@ async fn test_native_get_balance_unfunded_returns_zero() {
     // Handler may return zero-balance result OR error for nonexistent accounts
     if let Some(result) = resp.get("result") {
         if !result.is_null() {
-            assert_eq!(result["shells"], 0, "unfunded shells should be 0");
+            assert_eq!(result["spores"], 0, "unfunded spores should be 0");
         }
     }
     // Either result or error is acceptable for nonexistent
@@ -2607,7 +2607,7 @@ async fn test_native_get_account_info_funded() {
     let result = &resp["result"];
     assert!(!result.is_null(), "account info should not be null");
     assert_eq!(result["exists"], true, "funded account should exist");
-    // balance should be 5 MOLT = 5_000_000_000 shells
+    // balance should be 5 LICN = 5_000_000_000 spores
     assert_eq!(result["balance"], 5_000_000_000u64);
 }
 
@@ -2710,14 +2710,14 @@ async fn test_solana_get_balance_funded() {
         .unwrap();
     assert_valid_rpc(&resp);
     let result = &resp["result"];
-    // Solana format: { "context": { "slot": N }, "value": shells }
+    // Solana format: { "context": { "slot": N }, "value": spores }
     assert!(
         result["context"]["slot"].is_number(),
         "should have context.slot"
     );
     assert_eq!(
         result["value"], 5_000_000_000u64,
-        "solana getBalance value should be 5B shells"
+        "solana getBalance value should be 5B spores"
     );
 }
 
@@ -2804,7 +2804,7 @@ async fn test_evm_eth_chain_id_value() {
     assert_valid_rpc(&resp);
     let chain = resp["result"].as_str().expect("chainId should be string");
     assert!(chain.starts_with("0x"), "chainId should be hex: {chain}");
-    // "molt-test" → evm_chain_id_from_chain_id hash
+    // "lichen-test" → evm_chain_id_from_chain_id hash
     assert!(!chain.is_empty());
 }
 
@@ -2972,16 +2972,16 @@ async fn test_native_get_symbol_registry_found() {
     }
 }
 
-// ── getReefStakePoolInfo returns pool data ───────────────────────────────────
+// ── getMossStakePoolInfo returns pool data ───────────────────────────────────
 
 #[tokio::test]
-async fn test_native_get_reefstake_pool_info_returns_data() {
+async fn test_native_get_mossstake_pool_info_returns_data() {
     let app = fresh_app();
-    let resp = rpc(&app, "/", "getReefStakePoolInfo").await.unwrap();
+    let resp = rpc(&app, "/", "getMossStakePoolInfo").await.unwrap();
     assert_valid_rpc(&resp);
     // Should return pool info (possibly empty/defaults), not null
     let result = &resp["result"];
-    assert!(!result.is_null(), "reefstake pool info should return data");
+    assert!(!result.is_null(), "mossstake pool info should return data");
 }
 
 // ── getTreasuryInfo returns treasury data ────────────────────────────────────
@@ -3004,11 +3004,11 @@ async fn test_native_get_fee_config_returns_object() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(!result.is_null(), "fee config should return data");
-    // Should have base_fee_shells field
+    // Should have base_fee_spores field
     if result.is_object() {
         assert!(
-            result.get("base_fee_shells").is_some(),
-            "fee config should have base_fee_shells: {result}"
+            result.get("base_fee_spores").is_some(),
+            "fee config should have base_fee_spores: {result}"
         );
     }
 }
@@ -3147,7 +3147,7 @@ async fn test_evm_web3_client_version_full() {
     let resp = rpc(&app, "/evm", "web3_clientVersion").await.unwrap();
     assert_valid_rpc(&resp);
     let ver = resp["result"].as_str().unwrap();
-    assert!(ver.starts_with("MoltChain/"), "starts with MoltChain/");
+    assert!(ver.starts_with("Lichen/"), "starts with Lichen/");
     assert!(ver.contains('/'), "should contain version separator");
 }
 
@@ -3284,7 +3284,7 @@ async fn test_batch_native_reads_with_rich_state() {
         "getRentParams",
         "getGenesisAccounts",
         "getTotalBurned",
-        "getReefStakePoolInfo",
+        "getMossStakePoolInfo",
         "getRewardAdjustmentInfo",
         "getPredictionMarketStats",
         "getPredictionTrending",
@@ -3437,7 +3437,7 @@ async fn test_native_estimate_transaction_fee_invalid_base64() {
 async fn test_evm_eth_get_logs_with_stored_evm_logs() {
     // Store structured EVM logs and verify eth_getLogs retrieves them
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let logs = vec![EvmLogEntry {
         tx_hash: [0xAA; 32],
@@ -3478,7 +3478,7 @@ async fn test_evm_eth_get_logs_with_stored_evm_logs() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_address_filter() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let addr_a = [0xAA; 20];
     let addr_b = [0xBB; 20];
@@ -3537,7 +3537,7 @@ async fn test_evm_eth_get_logs_address_filter() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_address_array_filter() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let addr_a = [0xAA; 20];
     let addr_b = [0xBB; 20];
@@ -3609,7 +3609,7 @@ async fn test_evm_eth_get_logs_address_array_filter() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_topic_filter() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let topic_transfer = [0xDD; 32]; // Fake Transfer topic
     let topic_approval = [0xEE; 32]; // Fake Approval topic
@@ -3672,7 +3672,7 @@ async fn test_evm_eth_get_logs_topic_filter() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_topic_or_filter() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let topic_a = [0xAA; 32];
     let topic_b = [0xBB; 32];
@@ -3748,7 +3748,7 @@ async fn test_evm_eth_get_logs_topic_or_filter() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_wildcard_topic() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let topic_sig = [0xDD; 32];
     let topic_from = [0xAA; 32];
@@ -3798,7 +3798,7 @@ async fn test_evm_eth_get_logs_wildcard_topic() {
 #[tokio::test]
 async fn test_evm_eth_get_logs_block_range() {
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     // Put logs in slot 1 only (slot 0 is genesis)
     let logs = vec![EvmLogEntry {
@@ -3835,7 +3835,7 @@ async fn test_evm_eth_get_logs_block_range() {
 async fn test_evm_eth_get_logs_log_format_complete() {
     // Verify all EIP-1474 required fields are present in each log entry
     let (app, state, _, _, _, _) = app_with_rich_state();
-    use moltchain_core::evm::{EvmLog, EvmLogEntry};
+    use lichen_core::evm::{EvmLog, EvmLogEntry};
 
     let logs = vec![EvmLogEntry {
         tx_hash: [0x42; 32],
@@ -3893,7 +3893,7 @@ async fn test_evm_eth_get_logs_log_format_complete() {
 #[tokio::test]
 async fn test_evm_precompile_addresses_discoverable() {
     // Verify the supported_precompiles() function returns standard Ethereum precompiles
-    use moltchain_core::{
+    use lichen_core::{
         supported_precompiles, PRECOMPILE_BLAKE2F, PRECOMPILE_BN256_ADD, PRECOMPILE_BN256_MUL,
         PRECOMPILE_BN256_PAIRING, PRECOMPILE_ECRECOVER, PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP,
         PRECOMPILE_RIPEMD160, PRECOMPILE_SHA256,
@@ -3929,7 +3929,7 @@ async fn test_evm_precompile_addresses_discoverable() {
 #[tokio::test]
 async fn test_evm_topics_match_integration() {
     // Verify topics_match() works correctly as used by handle_eth_get_logs
-    use moltchain_core::topics_match;
+    use lichen_core::topics_match;
 
     let transfer_topic = [0xDD; 32];
     let from_topic = [0xAA; 32];
@@ -3993,8 +3993,8 @@ async fn test_native_get_account_at_slot_not_found() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4020,7 +4020,7 @@ async fn test_native_get_account_at_slot_found() {
     state.set_archive_mode(true);
 
     let pk = Pubkey([0x42; 32]);
-    let acc = Account::new(5, Pubkey([0u8; 32])); // 5 MOLT = 5_000_000_000 shells
+    let acc = Account::new(5, Pubkey([0u8; 32])); // 5 LICN = 5_000_000_000 spores
     state.put_account_snapshot(&pk, &acc, 100).unwrap();
 
     let _ = Box::leak(Box::new(dir));
@@ -4029,8 +4029,8 @@ async fn test_native_get_account_at_slot_found() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4042,7 +4042,7 @@ async fn test_native_get_account_at_slot_found() {
         .unwrap();
     assert_valid_rpc(&resp);
     let result = resp.get("result").expect("should have result");
-    assert_eq!(result["shells"], 5_000_000_000u64);
+    assert_eq!(result["spores"], 5_000_000_000u64);
     assert_eq!(result["slot"], 100);
 }
 
@@ -4057,8 +4057,8 @@ async fn test_native_get_account_at_slot_missing_params() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4090,10 +4090,10 @@ async fn test_send_transaction_wire_envelope() {
     let _ = Box::leak(Box::new(dir));
 
     // Fund a sender
-    let kp = moltchain_core::Keypair::generate();
+    let kp = lichen_core::Keypair::generate();
     let pk = kp.pubkey();
-    let mut sender = moltchain_core::Account::new(100, pk);
-    sender.spendable = sender.shells;
+    let mut sender = lichen_core::Account::new(100, pk);
+    sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
     let _ = state.set_last_slot(1);
 
@@ -4102,8 +4102,8 @@ async fn test_send_transaction_wire_envelope() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4112,26 +4112,26 @@ async fn test_send_transaction_wire_envelope() {
     );
 
     // Build a transfer transaction
-    let receiver = moltchain_core::Pubkey([0x42; 32]);
-    let blockhash = moltchain_core::Hash::default();
+    let receiver = lichen_core::Pubkey([0x42; 32]);
+    let blockhash = lichen_core::Hash::default();
     let mut data = vec![0u8]; // transfer opcode
-    data.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // 1 MOLT
-    let ix = moltchain_core::Instruction {
-        program_id: moltchain_core::Pubkey([0; 32]),
+    data.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // 1 LICN
+    let ix = lichen_core::Instruction {
+        program_id: lichen_core::Pubkey([0; 32]),
         accounts: vec![pk, receiver],
         data,
     };
-    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let msg = lichen_core::Message::new(vec![ix], blockhash);
     let sig = kp.sign(&msg.serialize());
-    let tx = moltchain_core::Transaction {
+    let tx = lichen_core::Transaction {
         signatures: vec![sig],
         message: msg,
-        tx_type: moltchain_core::TransactionType::Native,
+        tx_type: lichen_core::TransactionType::Native,
     };
 
     // Encode with wire envelope
     let wire = tx.to_wire();
-    assert_eq!(&wire[0..2], &moltchain_core::TX_WIRE_MAGIC);
+    assert_eq!(&wire[0..2], &lichen_core::TX_WIRE_MAGIC);
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wire);
 
     // Send via RPC — should decode successfully
@@ -4158,10 +4158,10 @@ async fn test_send_transaction_legacy_bincode() {
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
 
-    let kp = moltchain_core::Keypair::generate();
+    let kp = lichen_core::Keypair::generate();
     let pk = kp.pubkey();
-    let mut sender = moltchain_core::Account::new(100, pk);
-    sender.spendable = sender.shells;
+    let mut sender = lichen_core::Account::new(100, pk);
+    sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
     let _ = state.set_last_slot(1);
 
@@ -4170,8 +4170,8 @@ async fn test_send_transaction_legacy_bincode() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4179,21 +4179,21 @@ async fn test_send_transaction_legacy_bincode() {
         None,
     );
 
-    let receiver = moltchain_core::Pubkey([0x42; 32]);
-    let blockhash = moltchain_core::Hash::default();
+    let receiver = lichen_core::Pubkey([0x42; 32]);
+    let blockhash = lichen_core::Hash::default();
     let mut data = vec![0u8];
     data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
-    let ix = moltchain_core::Instruction {
-        program_id: moltchain_core::Pubkey([0; 32]),
+    let ix = lichen_core::Instruction {
+        program_id: lichen_core::Pubkey([0; 32]),
         accounts: vec![pk, receiver],
         data,
     };
-    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let msg = lichen_core::Message::new(vec![ix], blockhash);
     let sig = kp.sign(&msg.serialize());
-    let tx = moltchain_core::Transaction {
+    let tx = lichen_core::Transaction {
         signatures: vec![sig],
         message: msg,
-        tx_type: moltchain_core::TransactionType::Native,
+        tx_type: lichen_core::TransactionType::Native,
     };
 
     // Encode as legacy bincode (no envelope)
@@ -4221,10 +4221,10 @@ async fn test_simulate_transaction_wire_envelope() {
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
 
-    let kp = moltchain_core::Keypair::generate();
+    let kp = lichen_core::Keypair::generate();
     let pk = kp.pubkey();
-    let mut sender = moltchain_core::Account::new(100, pk);
-    sender.spendable = sender.shells;
+    let mut sender = lichen_core::Account::new(100, pk);
+    sender.spendable = sender.spores;
     let _ = state.put_account(&pk, &sender);
     let _ = state.set_last_slot(1);
 
@@ -4233,8 +4233,8 @@ async fn test_simulate_transaction_wire_envelope() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -4242,21 +4242,21 @@ async fn test_simulate_transaction_wire_envelope() {
         None,
     );
 
-    let receiver = moltchain_core::Pubkey([0x42; 32]);
-    let blockhash = moltchain_core::Hash::default();
+    let receiver = lichen_core::Pubkey([0x42; 32]);
+    let blockhash = lichen_core::Hash::default();
     let mut data = vec![0u8];
     data.extend_from_slice(&1_000_000_000u64.to_le_bytes());
-    let ix = moltchain_core::Instruction {
-        program_id: moltchain_core::Pubkey([0; 32]),
+    let ix = lichen_core::Instruction {
+        program_id: lichen_core::Pubkey([0; 32]),
         accounts: vec![pk, receiver],
         data,
     };
-    let msg = moltchain_core::Message::new(vec![ix], blockhash);
+    let msg = lichen_core::Message::new(vec![ix], blockhash);
     let sig = kp.sign(&msg.serialize());
-    let tx = moltchain_core::Transaction {
+    let tx = lichen_core::Transaction {
         signatures: vec![sig],
         message: msg,
-        tx_type: moltchain_core::TransactionType::Native,
+        tx_type: lichen_core::TransactionType::Native,
     };
 
     let wire = tx.to_wire();

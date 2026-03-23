@@ -1,12 +1,12 @@
 [package]
-name = "molt-cli"
+name = "lichen-cli"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
-description = "MoltChain command-line interface"
+authors = ["Lichen Labs <trading.lobster@lichen.network>"]
+description = "Lichen command-line interface"
 
 [[bin]]
-name = "molt"
+name = "lichen"
 path = "src/main.rs"
 
 [[bin]]
@@ -22,7 +22,7 @@ name = "zk-setup"
 path = "src/zk_setup.rs"
 
 [dependencies]
-moltchain-core = { path = "../core" }
+lichen-core = { path = "../core" }
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

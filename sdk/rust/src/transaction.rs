@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::Keypair;
-use moltchain_core::{Transaction as CoreTransaction, Message, Instruction, Hash};
+use lichen_core::{Transaction as CoreTransaction, Message, Instruction, Hash};
 
 /// Transaction builder
 pub struct TransactionBuilder {
@@ -66,7 +66,7 @@ impl Default for TransactionBuilder {
 mod tests {
     use super::*;
     use crate::Keypair;
-    use moltchain_core::{Instruction, SYSTEM_PROGRAM_ID};
+    use lichen_core::{Instruction, SYSTEM_PROGRAM_ID};
 
     fn dummy_instruction() -> Instruction {
         Instruction {

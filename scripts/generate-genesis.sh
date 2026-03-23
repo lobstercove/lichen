@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoltChain Genesis Generator
+# Lichen Genesis Generator
 # Production-ready genesis creation for testnet and mainnet
 
 set -e
@@ -34,7 +34,7 @@ print_error() {
 # Show usage
 usage() {
     cat <<EOF
-🦞 MoltChain Genesis Generator
+🦞 Lichen Genesis Generator
 
 Usage: $0 [OPTIONS]
 
@@ -43,7 +43,7 @@ OPTIONS:
     --chain-id <ID>               Custom chain ID (optional)
     --output <PATH>               Output file path (default: genesis.json)
     --validators <N>              Number of initial validators (default: 3)
-    --treasury <MOLT>             Treasury amount in MOLT (default: 500M)
+    --treasury <LICN>             Treasury amount in LICN (default: 500M)
     --help                        Show this help message
 
 EXAMPLES:
@@ -51,7 +51,7 @@ EXAMPLES:
     $0 --network testnet
 
     # Generate mainnet genesis with custom chain ID
-    $0 --network mainnet --chain-id moltchain-mainnet-1
+    $0 --network mainnet --chain-id lichen-mainnet-1
 
     # Generate testnet with 5 validators
     $0 --network testnet --validators 5
@@ -112,14 +112,14 @@ fi
 
 # Set default chain ID if not provided
 if [ -z "$CHAIN_ID" ]; then
-    CHAIN_ID="moltchain-${NETWORK}-1"
+    CHAIN_ID="lichen-${NETWORK}-1"
 fi
 
 print_info "Generating genesis for ${NETWORK}"
 print_info "Chain ID: ${CHAIN_ID}"
 print_info "Output: ${OUTPUT}"
 print_info "Validators: ${NUM_VALIDATORS}"
-print_info "Treasury: ${TREASURY} MOLT"
+print_info "Treasury: ${TREASURY} LICN"
 echo ""
 
 # Generate validator keypairs
@@ -127,13 +127,13 @@ print_info "Generating validator keypairs..."
 VALIDATORS_JSON="[]"
 
 for i in $(seq 1 $NUM_VALIDATORS); do
-    KEYPAIR_FILE="/tmp/moltchain-genesis-validator-${i}.json"
+    KEYPAIR_FILE="/tmp/lichen-genesis-validator-${i}.json"
     
     if [ "$NETWORK" == "testnet" ]; then
-        # For testnet: generate a real keypair using molt CLI or openssl
-        if command -v molt &> /dev/null; then
-            print_info "  Validator $i: Generating keypair via molt CLI..."
-            molt keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
+        # For testnet: generate a real keypair using licn CLI or openssl
+        if command -v licn &> /dev/null; then
+            print_info "  Validator $i: Generating keypair via licn CLI..."
+            licn keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
             PUBKEY=$(grep -o '"publicKeyBase58":"[^"]*"' "$KEYPAIR_FILE" | cut -d'"' -f4)
         elif command -v openssl &> /dev/null; then
             # Generate Ed25519 keypair via openssl, extract raw pubkey as Base58
@@ -149,14 +149,14 @@ for i in $(seq 1 $NUM_VALIDATORS); do
                 print_warning "  Install basenc (coreutils 8.31+) for proper Base58 keys"
             fi
         else
-            print_error "  Validator $i: Neither molt CLI nor openssl available"
-            print_error "  Cannot generate real keypairs. Install molt CLI: cargo install --path cli"
+            print_error "  Validator $i: Neither licn CLI nor openssl available"
+            print_error "  Cannot generate real keypairs. Install licn CLI: cargo install --path cli"
             exit 1
         fi
     else
         # For mainnet: REQUIRE real keypair files — never generate placeholder keys
         print_error "  Mainnet genesis REQUIRES pre-generated validator keypairs"
-        print_error "  Generate keypairs securely: molt keygen --output validator-${i}.json"
+        print_error "  Generate keypairs securely: licn keygen --output validator-${i}.json"
         print_error "  Then re-run with: --validator-keys validator-1.json,validator-2.json,..."
         exit 1
     fi
@@ -176,7 +176,7 @@ for i in $(seq 1 $NUM_VALIDATORS); do
 [
     {
         "pubkey": "$PUBKEY",
-        "stake_molt": 1000000,
+        "stake_licn": 1000000,
         "reputation": 100,
         "comment": "Genesis validator $i"
     }
@@ -187,7 +187,7 @@ EOF
 $VALIDATORS_JSON,
     {
         "pubkey": "$PUBKEY",
-        "stake_molt": 1000000,
+        "stake_licn": 1000000,
         "reputation": 100,
         "comment": "Genesis validator $i"
     }
@@ -224,10 +224,10 @@ fi
 
 # Set consensus parameters based on network
 if [ "$NETWORK" == "testnet" ]; then
-    MIN_VALIDATOR_STAKE="75000000000"  # 75 MOLT
+    MIN_VALIDATOR_STAKE="75000000000"  # 75 LICN
     SLOT_DURATION_MS="400"
 else
-    MIN_VALIDATOR_STAKE="1000000000000"  # 1000 MOLT  
+    MIN_VALIDATOR_STAKE="1000000000000"  # 1000 LICN  
     SLOT_DURATION_MS="400"
 fi
 
@@ -254,7 +254,7 @@ cat > "$OUTPUT" <<EOF
   "initial_accounts": [
     {
       "address": "$TREASURY_ADDR",
-      "balance_molt": $TREASURY,
+      "balance_licn": $TREASURY,
       "comment": "Genesis treasury"
     }
   ],
@@ -269,7 +269,7 @@ cat > "$OUTPUT" <<EOF
   "features": {
     "fee_burn_percentage": 40,
     "fee_community_percentage": 10,
-    "base_fee_shells": 100000,
+    "base_fee_spores": 100000,
     "enable_smart_contracts": true,
     "enable_staking": true,
     "enable_slashing": true
@@ -295,7 +295,7 @@ fi
 
 # Calculate total supply
 TOTAL_SUPPLY=$TREASURY
-print_info "Total supply: ${TOTAL_SUPPLY} MOLT"
+print_info "Total supply: ${TOTAL_SUPPLY} LICN"
 
 # Show next steps
 echo ""
@@ -312,7 +312,7 @@ echo "2. Start validator with genesis:"
 echo "   ./scripts/setup-validator.sh --genesis $OUTPUT"
 echo ""
 echo "3. Or manually start validator:"
-echo "   cargo run --release --bin moltchain-validator -- --genesis $OUTPUT"
+echo "   cargo run --release --bin lichen-validator -- --genesis $OUTPUT"
 echo ""
 
 if [ "$NETWORK" == "mainnet" ]; then
@@ -327,4 +327,4 @@ if [ "$NETWORK" == "mainnet" ]; then
 fi
 
 echo ""
-print_success "🦞 Ready to molt! 🦞"
+print_success "🦞 Ready to grow! 🦞"

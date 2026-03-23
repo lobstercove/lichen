@@ -1,21 +1,31 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="MoltWallet">
-    <title>MoltWallet - Your Gateway to MoltChain</title>
-    <meta name="description" content="Secure, fast, and agent-friendly wallet for MoltChain. Create, import, send, and receive MOLT tokens.">
+    <meta name="apple-mobile-web-app-title" content="LichenWallet">
+    <title>Lichen Wallet — Your Gateway to Lichen</title>
+    <meta name="description"
+        content="Secure, fast, and agent-friendly wallet for Lichen. Create, import, send, and receive LICN tokens.">
+    <meta property="og:title" content="Lichen Wallet — Your Gateway to Lichen">
+    <meta property="og:description"
+        content="Secure, fast, and agent-friendly wallet for Lichen. Create, import, send, and receive LICN tokens.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://wallet.lichen.network">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="wallet.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#FF6B35">
+    <meta name="theme-color" content="#00C9DB">
     <script src="shared/utils.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.9.3/sha3.min.js"></script>
@@ -23,11 +33,11 @@
     <script>
         // Native Base58 implementation (Bitcoin alphabet, compatible with Rust bs58 crate)
         const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-        
+
         const bs58 = {
-            encode: function(buffer) {
+            encode: function (buffer) {
                 if (!buffer || buffer.length === 0) return '';
-                
+
                 const digits = [0];
                 for (let i = 0; i < buffer.length; i++) {
                     let carry = buffer[i];
@@ -41,7 +51,7 @@
                         carry = (carry / 58) | 0;
                     }
                 }
-                
+
                 let output = '';
                 // Leading zeros
                 for (let i = 0; buffer[i] === 0 && i < buffer.length - 1; i++) {
@@ -51,20 +61,20 @@
                 for (let i = digits.length - 1; i >= 0; i--) {
                     output += BASE58_ALPHABET[digits[i]];
                 }
-                
+
                 return output;
             },
-            
-            decode: function(string) {
+
+            decode: function (string) {
                 if (!string || string.length === 0) return new Uint8Array(0);
-                
+
                 const bytes = [0];
                 for (let i = 0; i < string.length; i++) {
                     const value = BASE58_ALPHABET.indexOf(string[i]);
                     if (value === -1) {
                         throw new Error(`Invalid base58 character: ${string[i]}`);
                     }
-                    
+
                     let carry = value;
                     for (let j = 0; j < bytes.length; j++) {
                         carry += bytes[j] * 58;
@@ -76,29 +86,30 @@
                         carry >>= 8;
                     }
                 }
-                
+
                 // Leading zeros
                 for (let i = 0; string[i] === BASE58_ALPHABET[0] && i < string.length - 1; i++) {
                     bytes.push(0);
                 }
-                
+
                 return new Uint8Array(bytes.reverse());
             }
         };
-        
+
         // Base58 implementation loaded (compatible with Rust bs58 crate)
     </script>
 </head>
+
 <body class="wallet-body">
     <!-- Welcome Screen (First Visit) -->
     <div id="welcomeScreen" class="wallet-screen welcome-screen">
         <div class="wallet-container welcome-container">
             <div class="welcome-logo">
-                <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-                <h1>MoltWallet</h1>
+                <img src="LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet">
+                <h1>LichenWallet</h1>
             </div>
-            <p class="welcome-subtitle">Your gateway to the MoltChain ecosystem</p>
-            
+            <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
+
             <div class="welcome-carousel">
                 <div class="carousel-track">
                     <div class="carousel-slide active">
@@ -125,8 +136,8 @@
                     <div class="carousel-slide">
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
-                            <h3>MoltyID Identity</h3>
-                            <p>.molt naming, skill attestations, 0–100K reputation score</p>
+                            <h3>LichenID Identity</h3>
+                            <p>.lichen naming, skill attestations, 0–100K reputation score</p>
                         </div>
                     </div>
                     <div class="carousel-slide">
@@ -184,12 +195,12 @@
                 <div class="create-step active" data-step="1">
                     <h3>Set a Password</h3>
                     <p class="step-description">This password encrypts your wallet on this device.</p>
-                    
+
                     <div class="form-group">
                         <label>Password</label>
                         <input type="password" id="createPassword" class="form-input" placeholder="Enter password">
                     </div>
-                    
+
                     <div class="form-group">
                         <label>Confirm Password</label>
                         <input type="password" id="confirmPassword" class="form-input" placeholder="Confirm password">
@@ -204,7 +215,7 @@
                 <div class="create-step" data-step="2">
                     <h3>Your Recovery Phrase</h3>
                     <p class="step-description">Write down these 12 words in order. Keep them safe and secret!</p>
-                    
+
                     <div class="seed-phrase" id="seedPhraseDisplay">
                         <!-- Generated seed words -->
                     </div>
@@ -230,7 +241,7 @@
                 <div class="create-step" data-step="3">
                     <h3>Confirm Your Phrase</h3>
                     <p class="step-description">Select the words in the correct order to verify.</p>
-                    
+
                     <div class="seed-confirm" id="seedConfirm">
                         <!-- Confirm interface -->
                     </div>
@@ -273,7 +284,8 @@
                     <p class="step-description">Enter your 12-word recovery phrase.</p>
 
                     <div class="mnemonic-import-grid" id="importSeedGrid"></div>
-                    <p class="step-description mnemonic-import-hint">Paste your full phrase into any word box to auto-fill.</p>
+                    <p class="step-description mnemonic-import-hint">Paste your full phrase into any word box to
+                        auto-fill.</p>
 
                     <div class="form-group">
                         <label>Set Password</label>
@@ -289,12 +301,13 @@
                 <div class="import-method" data-method="private">
                     <h3>Enter Private Key</h3>
                     <p class="step-description">Import using your private key (hex format).</p>
-                    
+
                     <input type="text" id="importPrivateKey" class="form-input" placeholder="0x...">
 
                     <div class="form-group">
                         <label>Set Password</label>
-                        <input type="password" id="importPasswordPrivate" class="form-input" placeholder="Encrypt wallet">
+                        <input type="password" id="importPasswordPrivate" class="form-input"
+                            placeholder="Encrypt wallet">
                     </div>
 
                     <button class="btn btn-primary btn-large" onclick="importWalletPrivateKey()">
@@ -306,10 +319,11 @@
                 <div class="import-method" data-method="json">
                     <h3>Upload Keystore File</h3>
                     <p class="step-description">Import from a JSON keystore file.</p>
-                    
+
                     <div class="file-upload">
                         <input type="file" id="importJsonFile" accept=".json" style="display: none;">
-                        <button class="btn btn-secondary btn-large" onclick="document.getElementById('importJsonFile').click()">
+                        <button class="btn btn-secondary btn-large"
+                            onclick="document.getElementById('importJsonFile').click()">
                             <i class="fas fa-upload"></i> Choose File
                         </button>
                         <span id="fileName" class="file-name"></span>
@@ -317,7 +331,8 @@
 
                     <div class="form-group">
                         <label>Keystore Password</label>
-                        <input type="password" id="importPasswordJson" class="form-input" placeholder="Decrypt keystore">
+                        <input type="password" id="importPasswordJson" class="form-input"
+                            placeholder="Decrypt keystore">
                     </div>
 
                     <button class="btn btn-primary btn-large" onclick="importWalletJson()">
@@ -338,10 +353,10 @@
         <nav class="wallet-nav">
             <div class="nav-container">
                 <div class="nav-logo">
-                    <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-                    <span class="logo-text">MoltWallet</span>
+                    <img src="LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet">
+                    <span class="logo-text">LichenWallet</span>
                 </div>
-                
+
                 <div class="nav-selectors">
                     <!-- Wallet Selector -->
                     <div class="wallet-selector">
@@ -382,10 +397,10 @@
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
-                    <div class="balance-amount" id="totalBalance">0.00 MOLT</div>
+                    <div class="balance-amount" id="totalBalance">0.00 LICN</div>
                     <div class="balance-usd" id="balanceUsd">$0.00 USD</div>
                     <div id="balanceBreakdown" class="balance-breakdown"></div>
-                    
+
                     <div class="balance-actions">
                         <button class="action-btn" onclick="showSend()">
                             <i class="fas fa-arrow-up"></i>
@@ -442,7 +457,7 @@
                         <div class="tab-banner-icon"><i class="fas fa-gem"></i></div>
                         <div class="tab-banner-text">
                             <h3>NFT Collection</h3>
-                            <p>Collect, trade, and showcase your digital collectibles on MoltChain.</p>
+                            <p>Collect, trade, and showcase your digital collectibles on Lichen.</p>
                         </div>
                     </div>
 
@@ -481,7 +496,7 @@
 
                 <div class="tab-content" data-tab="identity">
                     <div id="identityContent">
-                        <!-- MoltyID identity loaded dynamically -->
+                        <!-- LichenID identity loaded dynamically -->
                     </div>
                 </div>
 
@@ -494,7 +509,8 @@
                         <div class="tab-banner-icon"><i class="fas fa-user-shield"></i></div>
                         <div class="tab-banner-text">
                             <h3>Zero-Knowledge Privacy <span class="shield-badge">Groth16/BN254</span></h3>
-                            <p>Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
+                            <p>Shield LICN to make transactions fully private. Amounts, senders and recipients are
+                                hidden using zero-knowledge proofs.</p>
                         </div>
                     </div>
 
@@ -503,8 +519,8 @@
                         <div class="shield-balance-row">
                             <div>
                                 <div class="shield-label">Shielded Balance</div>
-                                <div class="shield-balance-value" id="shieldedBalanceValue">0.0000 MOLT</div>
-                                <div class="shield-balance-sub" id="shieldedBalanceShellsValue">0 shells</div>
+                                <div class="shield-balance-value" id="shieldedBalanceValue">0.0000 LICN</div>
+                                <div class="shield-balance-sub" id="shieldedBalanceSporesValue">0 spores</div>
                             </div>
                             <div class="shield-balance-actions">
                                 <button class="btn btn-shield btn-small" onclick="openShieldModal()">
@@ -529,7 +545,8 @@
                             <label class="shield-key-label">Shielded Address</label>
                             <div class="address-display">
                                 <code id="shieldedAddressDisplay" class="shield-key-value">Not initialized</code>
-                                <button class="btn-icon" onclick="copyShieldedAddress(this)" title="Copy shielded address">
+                                <button class="btn-icon" onclick="copyShieldedAddress(this)"
+                                    title="Copy shielded address">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -538,7 +555,8 @@
                             <label class="shield-key-label">Viewing Key</label>
                             <div class="address-display">
                                 <code id="viewingKeyDisplay" class="shield-key-value">Click eye icon to reveal</code>
-                                <button class="btn-icon" onclick="toggleViewingKey(this)" title="Show / hide viewing key">
+                                <button class="btn-icon" onclick="toggleViewingKey(this)"
+                                    title="Show / hide viewing key">
                                     <i class="fas fa-eye-slash"></i>
                                 </button>
                                 <button class="btn-icon" onclick="copyViewingKey(this)" title="Copy viewing key">
@@ -548,7 +566,8 @@
                         </div>
                         <div class="shield-info-box">
                             <i class="fas fa-info-circle"></i>
-                            Your spending key never leaves this device. Viewing key enables auditors to see your shielded activity without spending.
+                            Your spending key never leaves this device. Viewing key enables auditors to see your
+                            shielded activity without spending.
                         </div>
                     </div>
 
@@ -581,7 +600,7 @@
                             <div class="shield-empty-state">
                                 <i class="fas fa-shield-alt"></i>
                                 <p>No shielded notes yet</p>
-                                <p class="shield-empty-sub">Shield MOLT to create your first private note</p>
+                                <p class="shield-empty-sub">Shield LICN to create your first private note</p>
                             </div>
                         </div>
                     </div>
@@ -613,12 +632,13 @@
                 <div class="form-group">
                     <label>Token</label>
                     <select id="sendToken" class="form-input" onchange="updateSendTokenUI()">
-                        <option value="MOLT">MOLT</option>
+                        <option value="LICN">LICN</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label>Recipient Address</label>
-                    <input type="text" id="sendTo" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)">
+                    <input type="text" id="sendTo" class="form-input"
+                        placeholder="Enter Base58 address (e.g. 5Qd7x...)">
                 </div>
                 <div class="form-group">
                     <label>Amount</label>
@@ -661,60 +681,72 @@
 
                 <!-- Receive Tab -->
                 <div class="receive-tab-content active" id="receiveTabContent" data-tab="receive">
-                    <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.5rem; font-size: 0.95rem;">
-                        Receive MOLT and all MoltChain tokens
+                    <p
+                        style="text-align: center; color: var(--text-secondary); margin-bottom: 1.5rem; font-size: 0.95rem;">
+                        Receive LICN and all Lichen tokens
                     </p>
-                    
+
                     <div class="qr-code" id="qrCode">
                         <!-- QR code generated here -->
                     </div>
-                    
+
                     <!-- Native Address (Base58) -->
                     <div style="margin-bottom: 1rem;">
-                        <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
+                        <label
+                            style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
                             <i class="fas fa-fingerprint"></i> Native Address (Base58)
                         </label>
                         <div class="address-display">
-                            <input type="text" id="walletAddress" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-                            <button class="btn-circle" onclick="copyAddress('native', this)" title="Copy native address">
+                            <input type="text" id="walletAddress" class="form-input" readonly
+                                style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+                            <button class="btn-circle" onclick="copyAddress('native', this)"
+                                title="Copy native address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
-                    
+
                     <!-- EVM Address (0x) -->
                     <div id="evmAddressSection" style="margin-bottom: 1rem;">
-                        <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
+                        <label
+                            style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem; font-weight: 600;">
                             <i class="fab fa-ethereum"></i> EVM Address (MetaMask Compatible)
                         </label>
                         <div class="address-display">
-                            <input type="text" id="walletAddressEVM" class="form-input" readonly style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+                            <input type="text" id="walletAddressEVM" class="form-input" readonly
+                                style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
                             <button class="btn-circle" onclick="copyAddress('evm', this)" title="Copy EVM address">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>
                     </div>
 
-                    <div id="evmAddressInfo" style="display:none; margin-bottom:1rem; padding:0.65rem 0.75rem; border-radius:8px; background: rgba(148, 163, 184, 0.1); color: var(--text-secondary); font-size: 0.85rem;">
-                        <i class="fas fa-info-circle"></i> EVM address appears here after on-chain registration confirms.
+                    <div id="evmAddressInfo"
+                        style="display:none; margin-bottom:1rem; padding:0.65rem 0.75rem; border-radius:8px; background: rgba(148, 163, 184, 0.1); color: var(--text-secondary); font-size: 0.85rem;">
+                        <i class="fas fa-info-circle"></i> EVM address appears here after on-chain registration
+                        confirms.
                     </div>
-                    
-                    <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+
+                    <div
+                        style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
                         <i class="fas fa-info-circle" style="color: #4ade80;"></i>
-                        Both addresses work! Use Base58 for MoltChain/Solana wallets, 0x for MetaMask/Ethereum wallets
+                        Both addresses work! Use Base58 for Lichen/Solana wallets, 0x for MetaMask/Ethereum wallets
                     </div>
                 </div>
 
                 <!-- Deposit Tab -->
                 <div class="receive-tab-content" id="depositTabContent" data-tab="deposit" style="display: none;">
-                    <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem;">
-                        Deposit assets to your MoltChain wallet via bridge
+                    <p
+                        style="text-align: center; color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem;">
+                        Deposit assets to your Lichen wallet via bridge
                     </p>
 
                     <div class="deposit-options">
                         <div class="deposit-card" onclick="showDepositInfo('SOL')">
-                            <div class="deposit-card-icon" style="background: rgba(153, 69, 255, 0.12); color: #9945FF;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" alt="Solana" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                            <div class="deposit-card-icon"
+                                style="background: rgba(153, 69, 255, 0.12); color: #9945FF;">
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png" alt="Solana"
+                                    style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Solana</strong>
@@ -724,8 +756,10 @@
                         </div>
 
                         <div class="deposit-card" onclick="showDepositInfo('ETH')">
-                            <div class="deposit-card-icon" style="background: rgba(98, 126, 234, 0.12); color: #627EEA;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" alt="Ethereum" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                            <div class="deposit-card-icon"
+                                style="background: rgba(98, 126, 234, 0.12); color: #627EEA;">
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png" alt="Ethereum"
+                                    style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from Ethereum</strong>
@@ -735,8 +769,10 @@
                         </div>
 
                         <div class="deposit-card" onclick="showDepositInfo('BNB')">
-                            <div class="deposit-card-icon" style="background: rgba(240, 185, 11, 0.12); color: #F0B90B;">
-                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" alt="BNB" style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
+                            <div class="deposit-card-icon"
+                                style="background: rgba(240, 185, 11, 0.12); color: #F0B90B;">
+                                <img src="https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png" alt="BNB"
+                                    style="width:20px;height:20px;border-radius:50%;object-fit:cover;">
                             </div>
                             <div class="deposit-card-info">
                                 <strong>Bridge from BNB Chain</strong>
@@ -746,7 +782,8 @@
                         </div>
 
                         <div class="deposit-card disabled">
-                            <div class="deposit-card-icon" style="background: rgba(255, 107, 53, 0.12); color: var(--primary);">
+                            <div class="deposit-card-icon"
+                                style="background: rgba(0, 201, 219, 0.12); color: var(--primary);">
                                 <i class="fas fa-credit-card"></i>
                             </div>
                             <div class="deposit-card-info">
@@ -757,7 +794,8 @@
                         </div>
                     </div>
 
-                    <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(255, 107, 53, 0.08); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+                    <div
+                        style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(0, 201, 219, 0.08); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
                         <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
                         Bridge contracts are audited. Deposits typically confirm in 2-5 minutes.
                     </div>
@@ -775,7 +813,7 @@
                 </button>
             </div>
             <div class="modal-body settings-modal-body">
-                
+
                 <!-- Export & Backup -->
                 <div class="settings-card">
                     <div class="settings-card-header">
@@ -840,13 +878,13 @@
                         </div>
                         <div class="form-group">
                             <label>Mainnet RPC</label>
-                            <input type="text" id="mainnetRPC" class="form-input" 
-                                   placeholder="https://rpc.moltchain.network">
+                            <input type="text" id="mainnetRPC" class="form-input"
+                                placeholder="https://rpc.lichen.network">
                         </div>
                         <div class="form-group">
                             <label>Testnet RPC</label>
-                            <input type="text" id="testnetRPC" class="form-input" 
-                                   placeholder="https://testnet-rpc.moltchain.network">
+                            <input type="text" id="testnetRPC" class="form-input"
+                                placeholder="https://testnet-rpc.lichen.network">
                         </div>
                         <button class="btn btn-primary" onclick="saveNetworkSettings()">
                             <i class="fas fa-save"></i> Save Changes
@@ -909,7 +947,9 @@
                         <div class="form-group">
                             <label>
                                 Display Decimals
-                                <span class="tooltip-icon" title="MoltChain uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i class="fas fa-info-circle"></i></span>
+                                <span class="tooltip-icon"
+                                    title="Lichen uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i
+                                        class="fas fa-info-circle"></i></span>
                             </label>
                             <select id="decimalPlaces" class="form-input" onchange="saveDecimalPlaces()">
                                 <option value="2">2 decimals (0.00)</option>
@@ -917,7 +957,7 @@
                                 <option value="6" selected>6 decimals (0.000000)</option>
                                 <option value="9">9 decimals (0.000000000)</option>
                             </select>
-                            <small class="form-hint">Controls UI display only. MoltChain has 9-decimal precision.</small>
+                            <small class="form-hint">Controls UI display only. Lichen has 9-decimal precision.</small>
                         </div>
                     </div>
                 </div>
@@ -981,14 +1021,14 @@
                             </div>
                             <div class="settings-info-item">
                                 <span>Network</span>
-                                <strong>MoltChain</strong>
+                                <strong>Lichen</strong>
                             </div>
                             <div class="settings-info-item">
                                 <span>License</span>
                                 <strong>MIT</strong>
                             </div>
                         </div>
-                        <a href="https://github.com/lobstercove/moltchain" target="_blank" class="settings-link">
+                        <a href="https://github.com/lobstercove/lichen" target="_blank" class="settings-link">
                             <i class="fas fa-external-link-alt"></i> View on GitHub
                         </a>
                     </div>
@@ -1002,7 +1042,7 @@
     <div id="shieldModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-arrow-down"></i> Shield MOLT</h3>
+                <h3><i class="fas fa-arrow-down"></i> Shield LICN</h3>
                 <button class="modal-close" onclick="closeModal('shieldModal')">
                     <i class="fas fa-times"></i>
                 </button>
@@ -1010,14 +1050,16 @@
             <div class="modal-body">
                 <div class="shield-modal-info">
                     <i class="fas fa-lock"></i>
-                    Move MOLT from your transparent balance into the shielded pool.
+                    Move LICN from your transparent balance into the shielded pool.
                     A ZK proof is generated client-side to protect your privacy.
                 </div>
                 <div class="form-group">
-                    <label>Amount (MOLT)</label>
+                    <label>Amount (LICN)</label>
                     <div class="amount-input">
-                        <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
-                        <span class="amount-max" onclick="document.getElementById('shieldAmount').value = (window.walletBalance || 0).toFixed(4)">MAX</span>
+                        <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001"
+                            min="0">
+                        <span class="amount-max"
+                            onclick="document.getElementById('shieldAmount').value = (window.walletBalance || 0).toFixed(4)">MAX</span>
                     </div>
                 </div>
                 <div class="fee-estimate">
@@ -1038,7 +1080,7 @@
     <div id="unshieldModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-arrow-up"></i> Unshield MOLT</h3>
+                <h3><i class="fas fa-arrow-up"></i> Unshield LICN</h3>
                 <button class="modal-close" onclick="closeModal('unshieldModal')">
                     <i class="fas fa-times"></i>
                 </button>
@@ -1046,18 +1088,20 @@
             <div class="modal-body">
                 <div class="shield-modal-info unshield">
                     <i class="fas fa-unlock"></i>
-                    Withdraw MOLT from the shielded pool to a transparent address.
+                    Withdraw LICN from the shielded pool to a transparent address.
                     Requires a ZK proof verifying note ownership.
                 </div>
                 <div class="form-group">
-                    <label>Amount (MOLT)</label>
+                    <label>Amount (LICN)</label>
                     <div class="amount-input">
-                        <input type="number" id="unshieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
+                        <input type="number" id="unshieldAmount" class="form-input" placeholder="0.00" step="0.0001"
+                            min="0">
                     </div>
                 </div>
                 <div class="form-group">
                     <label>Recipient Address</label>
-                    <input type="text" id="unshieldRecipient" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)">
+                    <input type="text" id="unshieldRecipient" class="form-input"
+                        placeholder="Enter Base58 address (e.g. 5Qd7x...)">
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>
@@ -1085,20 +1129,23 @@
             <div class="modal-body">
                 <div class="shield-modal-info">
                     <i class="fas fa-user-shield"></i>
-                    Send MOLT privately. Neither the amount, sender, nor recipient is revealed on-chain.
+                    Send LICN privately. Neither the amount, sender, nor recipient is revealed on-chain.
                     Both parties maintain full privacy.
                 </div>
                 <div class="form-group">
-                    <label>Amount (MOLT)</label>
+                    <label>Amount (LICN)</label>
                     <div class="amount-input">
-                        <input type="number" id="shieldedTransferAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
+                        <input type="number" id="shieldedTransferAmount" class="form-input" placeholder="0.00"
+                            step="0.0001" min="0">
                     </div>
                 </div>
                 <div class="form-group">
                     <label>Recipient Viewing Key (hex)</label>
-                    <input type="text" id="shieldedTransferRecipientVK" class="form-input shield-vk-input" placeholder="64-character hex viewing key" maxlength="64">
+                    <input type="text" id="shieldedTransferRecipientVK" class="form-input shield-vk-input"
+                        placeholder="64-character hex viewing key" maxlength="64">
                     <div class="shield-vk-hint">
-                        <i class="fas fa-info-circle"></i> Ask the recipient for their viewing key (not their spending key)
+                        <i class="fas fa-info-circle"></i> Ask the recipient for their viewing key (not their spending
+                        key)
                     </div>
                 </div>
                 <div class="fee-estimate">
@@ -1122,43 +1169,77 @@
     <script src="js/crypto.js?v=20260306"></script>
     <script src="js/shielded.js?v=20260306"></script>
     <script>
-    /* Welcome carousel */
-    (function() {
-        const slides = document.querySelectorAll('.carousel-slide');
-        const dots   = document.querySelectorAll('.carousel-dot');
-        if (!slides.length) return;
+        /* Welcome carousel */
+        (function () {
+            const slides = document.querySelectorAll('.carousel-slide');
+            const dots = document.querySelectorAll('.carousel-dot');
+            if (!slides.length) return;
 
-        let current  = 0;
-        let timer    = null;
-        const INTERVAL = 4000;
+            let current = 0;
+            let timer = null;
+            const INTERVAL = 4000;
 
-        function goTo(idx) {
-            slides[current].classList.remove('active');
-            dots[current].classList.remove('active');
-            current = (idx + slides.length) % slides.length;
-            slides[current].classList.add('active');
-            dots[current].classList.add('active');
-        }
+            function goTo(idx) {
+                slides[current].classList.remove('active');
+                dots[current].classList.remove('active');
+                current = (idx + slides.length) % slides.length;
+                slides[current].classList.add('active');
+                dots[current].classList.add('active');
+            }
 
-        function startAuto() { timer = setInterval(function() { goTo(current + 1); }, INTERVAL); }
-        function stopAuto()  { clearInterval(timer); }
+            function startAuto() { timer = setInterval(function () { goTo(current + 1); }, INTERVAL); }
+            function stopAuto() { clearInterval(timer); }
 
-        dots.forEach(function(dot) {
-            dot.addEventListener('click', function() {
-                stopAuto();
-                goTo(Number(this.dataset.slide));
-                startAuto();
+            dots.forEach(function (dot) {
+                dot.addEventListener('click', function () {
+                    stopAuto();
+                    goTo(Number(this.dataset.slide));
+                    startAuto();
+                });
             });
-        });
 
-        var track = document.querySelector('.carousel-track');
-        if (track) {
-            track.addEventListener('mouseenter', stopAuto);
-            track.addEventListener('mouseleave', startAuto);
+            var track = document.querySelector('.carousel-track');
+            if (track) {
+                track.addEventListener('mouseenter', stopAuto);
+                track.addEventListener('mouseleave', startAuto);
+            }
+
+            startAuto();
+        })();
+    </script>
+    <script>
+        // Service Worker registration with auto-update
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js').then(function (reg) {
+                // Check for updates every 30 minutes
+                setInterval(function () { reg.update(); }, 30 * 60 * 1000);
+                reg.addEventListener('updatefound', function () {
+                    var newWorker = reg.installing;
+                    if (newWorker) {
+                        newWorker.addEventListener('statechange', function () {
+                            if (newWorker.state === 'activated') {
+                                // New version installed — reload to apply
+                                window.location.reload();
+                            }
+                        });
+                    }
+                });
+            });
+            // Listen for SW update notifications
+            navigator.serviceWorker.addEventListener('message', function (e) {
+                if (e.data && e.data.type === 'SW_UPDATED') {
+                    // Clear any stale application caches
+                    if (window.caches) {
+                        window.caches.keys().then(function (keys) {
+                            keys.forEach(function (k) {
+                                if (k !== e.data.version) window.caches.delete(k);
+                            });
+                        });
+                    }
+                }
+            });
         }
-
-        startAuto();
-    })();
     </script>
 </body>
+
 </html>

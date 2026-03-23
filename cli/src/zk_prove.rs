@@ -5,8 +5,8 @@
 //! proofs that the validator can verify.
 //!
 //! Usage:
-//!   zk-prove shield   --amount <shells> --pk-dir <path>
-//!   zk-prove unshield --amount <shells> --pk-dir <path> --merkle-root <hex> --recipient <hex>
+//!   zk-prove shield   --amount <spores> --pk-dir <path>
+//!   zk-prove unshield --amount <spores> --pk-dir <path> --merkle-root <hex> --recipient <hex>
 //!                     --blinding <hex> --serial <hex> [--spending-key <hex>]
 //!                     [--merkle-path-json <file>] [--path-bits-json <file>]
 //!   zk-prove transfer --pk-dir <path> --transfer-json <file>
@@ -29,7 +29,7 @@
 //! Outputs a JSON object to stdout with all values needed to build the
 //! on-chain transaction.
 
-use moltchain_core::zk::{
+use lichen_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
     circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr,
     setup::load_verification_key, Prover, Verifier, TREE_DEPTH,
@@ -313,8 +313,8 @@ fn find_arg(args: &[String], flag: &str) -> Option<String> {
 fn usage() -> ! {
     eprintln!(
         "Usage:\n  \
-         zk-prove shield   --amount <shells> --pk-dir <path>\n  \
-         zk-prove unshield --amount <shells> --pk-dir <path> --merkle-root <hex> \
+         zk-prove shield   --amount <spores> --pk-dir <path>\n  \
+         zk-prove unshield --amount <spores> --pk-dir <path> --merkle-root <hex> \
                            --recipient <hex> --blinding <hex> --serial <hex>\n  \
          zk-prove transfer --pk-dir <path> --transfer-json <file>"
     );

@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "lusd-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

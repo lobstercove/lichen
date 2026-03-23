@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-MoltChain Financial Attack Test Suite
+Lichen Financial Attack Test Suite
 ======================================
 Deep financial and contract-level attack simulations:
 
-  STABLECOIN ATTACKS (mUSD)
+  STABLECOIN ATTACKS (lUSD)
     - Unauthorized minting
     - Supply manipulation via direct storage writes
     - Fake collateral backing
@@ -29,7 +29,7 @@ Deep financial and contract-level attack simulations:
     - Fee redirection
 
   STAKING ATTACKS
-    - Steal staked MOLT
+    - Steal staked LICN
     - Fake unstake from other validators
     - Manipulate stake rewards
     - Slash innocent validators
@@ -63,7 +63,7 @@ import concurrent.futures
 import urllib.request
 import urllib.error
 
-RPC = os.environ.get("MOLTCHAIN_RPC", "http://127.0.0.1:8000")
+RPC = os.environ.get("LICHEN_RPC", "http://127.0.0.1:8000")
 HOST = "127.0.0.1"
 
 # Contract addresses (resolved at runtime)
@@ -114,8 +114,8 @@ def result(name, passed, detail="", warn=False):
 
 def resolve_contracts():
     """Resolve all critical contract addresses from the symbol registry."""
-    symbols = ["MOLT", "MUSD", "WETH", "WSOL", "DEX", "DEXAMM", "BRIDGE",
-               "DAO", "CLAWVAULT", "ORACLE", "LEND", "CLAWPAY"]
+    symbols = ["LICN", "LUSD", "WETH", "WSOL", "DEX", "DEXAMM", "BRIDGE",
+               "DAO", "SPOREVAULT", "ORACLE", "LEND", "SPOREPAY"]
     for sym in symbols:
         r = rpc("getSymbolRegistry", [sym])
         if "result" in r:
@@ -124,11 +124,11 @@ def resolve_contracts():
 
 
 def get_balance(addr):
-    """Get native MOLT balance for an address."""
+    """Get native LICN balance for an address."""
     r = rpc("getBalance", [addr])
     bal = r.get("result", 0)
     if isinstance(bal, dict):
-        return bal.get("balance", bal.get("shells", 0))
+        return bal.get("balance", bal.get("spores", 0))
     return bal
 
 
@@ -145,28 +145,28 @@ def get_account(addr):
 
 
 # ============================================================
-# SECTION 1: mUSD STABLECOIN ATTACKS
+# SECTION 1: lUSD STABLECOIN ATTACKS
 # ============================================================
 
 def test_musd_unauthorized_mint():
-    """Try to mint mUSD without authority."""
-    musd = CONTRACTS.get("MUSD", {})
+    """Try to mint lUSD without authority."""
+    musd = CONTRACTS.get("LUSD", {})
     program = musd.get("program", "")
     if not program:
-        result("mUSD unauthorized mint", True, "Skipped (no MUSD contract)")
+        result("lUSD unauthorized mint", True, "Skipped (no LUSD contract)")
         return
 
     # Create an attacker wallet
     r = rpc("createWallet", ["musd_mint_attacker"])
     attacker = r.get("result", {}).get("address", "")
     if not attacker:
-        result("mUSD unauthorized mint", True, "Skipped (wallet creation failed)")
+        result("lUSD unauthorized mint", True, "Skipped (wallet creation failed)")
         return
 
     rpc("requestAirdrop", [attacker, 10000000000])
     time.sleep(2)
 
-    # Try to call mint on MUSD contract as non-owner
+    # Try to call mint on LUSD contract as non-owner
     r = rpc("callContract", [program, "mint", [attacker, "1000000000000"], "musd_mint_attacker"], timeout=5)
     has_error = "error" in r or (isinstance(r.get("result"), dict) and r["result"].get("error"))
 
@@ -175,17 +175,17 @@ def test_musd_unauthorized_mint():
     has_error_2 = "error" in r2
 
     if has_error and has_error_2:
-        result("mUSD unauthorized mint", True, "Correctly rejected unauthorized mint")
+        result("lUSD unauthorized mint", True, "Correctly rejected unauthorized mint")
     else:
-        result("mUSD unauthorized mint", False, "CRITICAL: Unauthorized mUSD minting succeeded!")
+        result("lUSD unauthorized mint", False, "CRITICAL: Unauthorized lUSD minting succeeded!")
 
 
 def test_musd_supply_manipulation():
-    """Try to manipulate mUSD total supply via various vectors."""
-    musd = CONTRACTS.get("MUSD", {})
+    """Try to manipulate lUSD total supply via various vectors."""
+    musd = CONTRACTS.get("LUSD", {})
     program = musd.get("program", "")
     if not program:
-        result("mUSD supply manipulation", True, "Skipped")
+        result("lUSD supply manipulation", True, "Skipped")
         return
 
     # Get initial contract state
@@ -205,25 +205,25 @@ def test_musd_supply_manipulation():
 
     all_rejected = rejected_1 and rejected_2 and rejected_3
     if all_rejected:
-        result("mUSD supply manipulation", True, "All supply manipulation vectors rejected")
+        result("lUSD supply manipulation", True, "All supply manipulation vectors rejected")
     else:
-        result("mUSD supply manipulation", False,
+        result("lUSD supply manipulation", False,
                f"CRITICAL: Supply manipulation possible! "
                f"storage={not rejected_1}, account={not rejected_2}, contract={not rejected_3}")
 
 
 def test_musd_infinite_mint_loop():
     """Try a rapid-fire mint loop to see if rate limits kick in."""
-    musd = CONTRACTS.get("MUSD", {})
+    musd = CONTRACTS.get("LUSD", {})
     program = musd.get("program", "")
     if not program:
-        result("mUSD infinite mint loop", True, "Skipped")
+        result("lUSD infinite mint loop", True, "Skipped")
         return
 
     r = rpc("createWallet", ["musd_loop_attacker"])
     attacker = r.get("result", {}).get("address", "")
     if not attacker:
-        result("mUSD infinite mint loop", True, "Skipped")
+        result("lUSD infinite mint loop", True, "Skipped")
         return
 
     rpc("requestAirdrop", [attacker, 5000000000])
@@ -238,25 +238,25 @@ def test_musd_infinite_mint_loop():
 
     alive = server_alive()
     if alive and success_count == 0:
-        result("mUSD infinite mint loop", True, "All 50 unauthorized mints rejected")
+        result("lUSD infinite mint loop", True, "All 50 unauthorized mints rejected")
     elif alive:
-        result("mUSD infinite mint loop", False, f"WARN: {success_count}/50 mints succeeded", warn=True)
+        result("lUSD infinite mint loop", False, f"WARN: {success_count}/50 mints succeeded", warn=True)
     else:
-        result("mUSD infinite mint loop", False, "Server crashed during mint loop!")
+        result("lUSD infinite mint loop", False, "Server crashed during mint loop!")
 
 
 def test_musd_fake_burn():
-    """Try to burn mUSD from another user's account."""
-    musd = CONTRACTS.get("MUSD", {})
+    """Try to burn lUSD from another user's account."""
+    musd = CONTRACTS.get("LUSD", {})
     program = musd.get("program", "")
     if not program:
-        result("mUSD fake burn", True, "Skipped")
+        result("lUSD fake burn", True, "Skipped")
         return
 
     r = rpc("createWallet", ["musd_burn_attacker"])
     attacker = r.get("result", {}).get("address", "")
     if not attacker:
-        result("mUSD fake burn", True, "Skipped")
+        result("lUSD fake burn", True, "Skipped")
         return
 
     # Try to burn from genesis owner (who we don't control)
@@ -264,9 +264,9 @@ def test_musd_fake_burn():
     has_error = "error" in r or (isinstance(r.get("result"), dict) and r["result"].get("error"))
 
     if has_error:
-        result("mUSD fake burn", True, "Cannot burn from other users' accounts")
+        result("lUSD fake burn", True, "Cannot burn from other users' accounts")
     else:
-        result("mUSD fake burn", False, "CRITICAL: Burned mUSD from another user's account!")
+        result("lUSD fake burn", False, "CRITICAL: Burned lUSD from another user's account!")
 
 
 # ============================================================
@@ -306,7 +306,7 @@ def test_genesis_balance_modify():
     rejected_1 = "error" in r1
 
     # Try updateAccount
-    r2 = rpc("updateAccount", [GENESIS_OWNER, {"shells": 0}], timeout=3)
+    r2 = rpc("updateAccount", [GENESIS_OWNER, {"spores": 0}], timeout=3)
     rejected_2 = "error" in r2
 
     # Try writeAccount
@@ -332,8 +332,8 @@ def test_genesis_privilege_escalation():
         return
 
     # Try to set ourselves as owner of a genesis contract
-    molt = CONTRACTS.get("MOLT", {})
-    program = molt.get("program", "")
+    licn = CONTRACTS.get("LICN", {})
+    program = licn.get("program", "")
     if program:
         r1 = rpc("callContract", [program, "transfer_ownership", [attacker], "escalation_attacker"], timeout=5)
         r2 = rpc("setContractOwner", [program, attacker], timeout=3)
@@ -347,7 +347,7 @@ def test_genesis_privilege_escalation():
         else:
             result("Genesis privilege escalation", False, f"CRITICAL: Ownership changed to {owner}")
     else:
-        result("Genesis privilege escalation", True, "Skipped (no MOLT contract)")
+        result("Genesis privilege escalation", True, "Skipped (no LICN contract)")
 
 
 def test_genesis_impersonate_transfer():
@@ -358,7 +358,7 @@ def test_genesis_impersonate_transfer():
         result("Genesis impersonation", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [impersonator, 1000000000])  # 1 MOLT
+    rpc("requestAirdrop", [impersonator, 1000000000])  # 1 LICN
     time.sleep(2)
 
     genesis_before = get_balance(GENESIS_OWNER)
@@ -367,7 +367,7 @@ def test_genesis_impersonate_transfer():
     fake_tx = {
         "from": GENESIS_OWNER,
         "to": impersonator,
-        "amount": 100000000000,  # 100 MOLT
+        "amount": 100000000000,  # 100 LICN
         "signer": "genesis_impersonator"
     }
     r = rpc("sendTransaction", [fake_tx], timeout=5)
@@ -497,7 +497,7 @@ def test_wrapped_cross_confusion():
 
 def test_treasury_drain():
     """Try to drain the treasury via various attack vectors."""
-    vault = CONTRACTS.get("CLAWVAULT", {})
+    vault = CONTRACTS.get("SPOREVAULT", {})
     program = vault.get("program", "")
     if not program:
         result("Treasury drain attempt", True, "Skipped")
@@ -538,8 +538,8 @@ def test_treasury_drain():
 
 
 def test_vault_unauthorized_withdrawal():
-    """Try to withdraw from CLAWVAULT without authorization."""
-    vault = CONTRACTS.get("CLAWVAULT", {})
+    """Try to withdraw from SPOREVAULT without authorization."""
+    vault = CONTRACTS.get("SPOREVAULT", {})
     program = vault.get("program", "")
     if not program:
         result("Vault unauthorized withdrawal", True, "Skipped")
@@ -630,14 +630,14 @@ def test_dao_unauthorized_proposal():
 # SECTION 5: STAKING ATTACKS
 # ============================================================
 
-def test_steal_staked_molt():
-    """Try to unstake MOLT from another validator's account."""
+def test_steal_staked_licn():
+    """Try to unstake LICN from another validator's account."""
     validators = rpc("getValidators")
     val_list = validators.get("result", {})
     if isinstance(val_list, dict):
         val_list = val_list.get("validators", [])
     if not val_list:
-        result("Steal staked MOLT", True, "Skipped (no validators)")
+        result("Steal staked LICN", True, "Skipped (no validators)")
         return
 
     # Get first validator address
@@ -646,7 +646,7 @@ def test_steal_staked_molt():
     r = rpc("createWallet", ["stake_thief"])
     thief = r.get("result", {}).get("address", "")
     if not thief:
-        result("Steal staked MOLT", True, "Skipped")
+        result("Steal staked LICN", True, "Skipped")
         return
 
     # Try to unstake from the validator to our account
@@ -659,10 +659,10 @@ def test_steal_staked_molt():
     # Check thief didn't receive any funds
     thief_bal = get_balance(thief)
 
-    if all_rejected and thief_bal < 1000000000:  # less than 1 MOLT (only airdrop dust)
-        result("Steal staked MOLT", True, "Staked MOLT protected from theft")
+    if all_rejected and thief_bal < 1000000000:  # less than 1 LICN (only airdrop dust)
+        result("Steal staked LICN", True, "Staked LICN protected from theft")
     else:
-        result("Steal staked MOLT", False, f"CRITICAL: Staked MOLT stolen! Thief balance: {thief_bal}")
+        result("Steal staked LICN", False, f"CRITICAL: Staked LICN stolen! Thief balance: {thief_bal}")
 
 
 def test_fake_unstake():
@@ -761,7 +761,7 @@ def test_concurrent_balance_drain():
         result("Concurrent balance drain", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [victim, 10000000000])  # 10 MOLT
+    rpc("requestAirdrop", [victim, 10000000000])  # 10 LICN
     time.sleep(2)
 
     # Create 10 recipient wallets
@@ -776,7 +776,7 @@ def test_concurrent_balance_drain():
         result("Concurrent balance drain", True, "Skipped (not enough recipients)")
         return
 
-    # Try to send 5 MOLT to each of 10 recipients simultaneously (50 MOLT total from 10 MOLT balance)
+    # Try to send 5 LICN to each of 10 recipients simultaneously (50 LICN total from 10 LICN balance)
     results_list = []
     def drain_race(recv_addr, idx):
         r = rpc("transfer", [victim, recv_addr, 5000000000, "race_victim"], timeout=5)
@@ -793,7 +793,7 @@ def test_concurrent_balance_drain():
     total_received = sum(get_balance(r) for r in recipients)
     success_count = sum(1 for s, _ in results_list if s)
 
-    # Only 1-2 should succeed (10 MOLT / 5 MOLT each)
+    # Only 1-2 should succeed (10 LICN / 5 LICN each)
     if success_count <= 2 and victim_bal >= 0:
         result("Concurrent balance drain", True,
                f"Race condition protected. {success_count} succeeded, victim bal: {victim_bal}")
@@ -811,7 +811,7 @@ def test_dust_attack_flood():
         result("Dust attack flood", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [attacker, 50000000000])  # 50 MOLT
+    rpc("requestAirdrop", [attacker, 50000000000])  # 50 LICN
     time.sleep(2)
 
     r = rpc("createWallet", ["dust_victim"])
@@ -820,7 +820,7 @@ def test_dust_attack_flood():
         result("Dust attack flood", True, "Skipped")
         return
 
-    # Send 200 tiny transactions (1 shell each)
+    # Send 200 tiny transactions (1 spore each)
     sent = 0
     for i in range(200):
         r = rpc("transfer", [attacker, victim, 1, "dust_attacker"], timeout=2)
@@ -842,7 +842,7 @@ def test_balance_consistency_under_attack():
         result("Balance consistency", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [addr, 10000000000])  # 10 MOLT
+    rpc("requestAirdrop", [addr, 10000000000])  # 10 LICN
     time.sleep(2)
 
     initial = get_balance(addr)
@@ -957,7 +957,7 @@ def test_contract_ownership_hijack():
     time.sleep(1)
 
     hijack_count = 0
-    for sym in ["MOLT", "MUSD", "DEX", "BRIDGE", "CLAWVAULT"]:
+    for sym in ["LICN", "LUSD", "DEX", "BRIDGE", "SPOREVAULT"]:
         contract = CONTRACTS.get(sym, {})
         program = contract.get("program", "")
         if not program:
@@ -982,8 +982,8 @@ def test_contract_ownership_hijack():
 
 def test_contract_code_replacement():
     """Try to replace contract code without authorization."""
-    molt = CONTRACTS.get("MOLT", {})
-    program = molt.get("program", "")
+    licn = CONTRACTS.get("LICN", {})
+    program = licn.get("program", "")
     if not program:
         result("Contract code replacement", True, "Skipped")
         return
@@ -995,7 +995,7 @@ def test_contract_code_replacement():
     # Try to replace code
     evil_code = base64.b64encode(b'\x00asm\x01\x00\x00\x00' + b'\x00' * 100).decode()
 
-    r1 = rpc("deployContract", [evil_code, "hijack_atk", "MOLT"], timeout=5)
+    r1 = rpc("deployContract", [evil_code, "hijack_atk", "LICN"], timeout=5)
     r2 = rpc("upgradeContract", [program, evil_code], timeout=5)
     r3 = rpc("updateContract", [program, {"code": evil_code}], timeout=5)
 
@@ -1031,10 +1031,10 @@ def test_oracle_price_manipulation():
 
     # Try to push a fake price update
     attacks = [
-        ("update_price", ["MOLT/USD", "0.001"]),  # Tank the price
-        ("set_price", ["MOLT/USD", "999999"]),     # Pump the price
-        ("push_feed", [{"pair": "MOLT/USD", "price": "0", "timestamp": int(time.time())}]),
-        ("override_price", ["MOLT/USD", "0.00001"]),
+        ("update_price", ["LICN/USD", "0.001"]),  # Tank the price
+        ("set_price", ["LICN/USD", "999999"]),     # Pump the price
+        ("push_feed", [{"pair": "LICN/USD", "price": "0", "timestamp": int(time.time())}]),
+        ("override_price", ["LICN/USD", "0.00001"]),
     ]
 
     all_rejected = True
@@ -1117,7 +1117,7 @@ def test_unauthorized_fee_change():
 
 
 def test_supply_inflation_attack():
-    """Try to inflate total MOLT supply."""
+    """Try to inflate total LICN supply."""
     metrics_before = rpc("getMetrics")
     supply_before = metrics_before.get("result", {}).get("total_supply", 0)
 
@@ -1235,13 +1235,13 @@ def test_dex_sandwich_attack():
 
     # Try front-running: submit swap, immediately submit another with higher gas
     def victim_swap():
-        return rpc("callContract", [program, "swap", [victim, "MOLT", "MUSD", "1000000000"], "sandwich_victim"], timeout=10)
+        return rpc("callContract", [program, "swap", [victim, "LICN", "LUSD", "1000000000"], "sandwich_victim"], timeout=10)
 
     def attacker_frontrun():
-        return rpc("callContract", [program, "swap", [attacker, "MOLT", "MUSD", "5000000000", {"priority": 999}], "sandwich_atk"], timeout=10)
+        return rpc("callContract", [program, "swap", [attacker, "LICN", "LUSD", "5000000000", {"priority": 999}], "sandwich_atk"], timeout=10)
 
     def attacker_backrun():
-        return rpc("callContract", [program, "swap", [attacker, "MUSD", "MOLT", "5000000000"], "sandwich_atk"], timeout=10)
+        return rpc("callContract", [program, "swap", [attacker, "LUSD", "LICN", "5000000000"], "sandwich_atk"], timeout=10)
 
     # Execute sandwich: frontrun -> victim -> backrun
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
@@ -1265,7 +1265,7 @@ def test_dex_sandwich_attack():
 
 def main():
     print("=" * 70)
-    print("  MoltChain Financial Attack Test Suite")
+    print("  Lichen Financial Attack Test Suite")
     print("=" * 70)
     print(f"  RPC: {RPC}")
     print()
@@ -1283,7 +1283,7 @@ def main():
     print()
 
     sections = [
-        ("mUSD STABLECOIN ATTACKS", [
+        ("lUSD STABLECOIN ATTACKS", [
             test_musd_unauthorized_mint,
             test_musd_supply_manipulation,
             test_musd_infinite_mint_loop,
@@ -1307,7 +1307,7 @@ def main():
             test_dao_unauthorized_proposal,
         ]),
         ("STAKING ATTACKS", [
-            test_steal_staked_molt,
+            test_steal_staked_licn,
             test_fake_unstake,
             test_stake_reward_manipulation,
             test_slash_innocent_validator,

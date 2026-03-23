@@ -1,4 +1,4 @@
-// MoltChain SDK - Keypair utilities
+// Lichen SDK - Keypair utilities
 // AUDIT-FIX H1-01: Private key protected from accidental exposure via
 // toString(), toJSON(), and console.log(). Use getSecretKey() explicitly.
 

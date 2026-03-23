@@ -21,7 +21,7 @@
   function postProviderEvent(event, payload) {
     window.postMessage(
       {
-        target: 'MOLT_INPAGE_EVENT',
+        target: 'LICHEN_INPAGE_EVENT',
         event,
         payload
       },
@@ -40,8 +40,8 @@
 
   async function fetchProviderState() {
     const response = await chrome.runtime.sendMessage({
-      type: 'MOLT_PROVIDER_REQUEST',
-      payload: { method: 'molt_getProviderState' }
+      type: 'LICHEN_PROVIDER_REQUEST',
+      payload: { method: 'licn_getProviderState' }
     });
 
     if (!response?.ok) {
@@ -86,7 +86,7 @@
     await checkProviderStateAndEmit();
 
     chrome.runtime.onMessage.addListener((message) => {
-      if (message?.type === 'MOLT_PROVIDER_STATE_DIRTY' || message?.type === 'MOLT_WS_EVENT') {
+      if (message?.type === 'LICHEN_PROVIDER_STATE_DIRTY' || message?.type === 'LICHEN_WS_EVENT') {
         scheduleProviderStateRefresh(0);
       }
     });
@@ -102,7 +102,7 @@
 
     while (Date.now() - started < timeoutMs) {
       const result = await chrome.runtime.sendMessage({
-        type: 'MOLT_PROVIDER_RESULT',
+        type: 'LICHEN_PROVIDER_RESULT',
         requestId
       });
 
@@ -131,13 +131,13 @@
 
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
-    if (!event.data || event.data.target !== 'MOLT_EXTENSION') return;
+    if (!event.data || event.data.target !== 'LICHEN_EXTENSION') return;
 
     const { id, payload } = event.data;
 
     try {
       let response = await chrome.runtime.sendMessage({
-        type: 'MOLT_PROVIDER_REQUEST',
+        type: 'LICHEN_PROVIDER_REQUEST',
         payload
       });
 
@@ -147,7 +147,7 @@
 
       window.postMessage(
         {
-          target: 'MOLT_INPAGE',
+          target: 'LICHEN_INPAGE',
           id,
           response
         },
@@ -156,7 +156,7 @@
     } catch (error) {
       window.postMessage(
         {
-          target: 'MOLT_INPAGE',
+          target: 'LICHEN_INPAGE',
           id,
           response: { ok: false, error: String(error?.message || error) }
         },

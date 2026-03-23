@@ -1,19 +1,19 @@
-// wETH Token — Wrapped ETH on MoltChain
+// wETH Token — Wrapped ETH on Lichen
 //
 // Architecture:
 //   wETH is a 1:1 receipt token backed by native ETH reserves held in the
-//   MoltChain treasury (Ethereum wallet). Users deposit ETH on Ethereum,
-//   custody service sweeps to treasury, then mints wETH on MoltChain.
+//   Lichen treasury (Ethereum wallet). Users deposit ETH on Ethereum,
+//   custody service sweeps to treasury, then mints wETH on Lichen.
 //
-// Identical security model to musd_token / wsol_token:
+// Identical security model to lusd_token / wsol_token:
 //   - Treasury multisig (3-of-5) is the sole minting authority
 //   - Reserve attestation with proof hashes
 //   - Circuit breaker: no minting beyond attested reserves
 //   - Epoch rate limiting, reentrancy guard, emergency pause
 //
 // DEX Integration:
-//   wETH/mUSD — ETH priced in USD
-//   wETH/MOLT — ETH priced in MOLT (direct, no stablecoin needed)
+//   wETH/lUSD — ETH priced in USD
+//   wETH/LICN — ETH priced in LICN (direct, no stablecoin needed)
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -24,7 +24,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
 };
 
@@ -735,7 +735,7 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn addr(id: u8) -> [u8; 32] {
         let mut a = [0u8; 32];

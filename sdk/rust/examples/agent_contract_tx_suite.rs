@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use moltchain_core::{ContractInstruction, Hash, Instruction, Keypair, Message, Pubkey, Transaction};
+use lichen_core::{ContractInstruction, Hash, Instruction, Keypair, Message, Pubkey, Transaction};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -75,8 +75,8 @@ fn parse_cli_arg(flag: &str, default: &str) -> String {
 
 fn default_wallet_path() -> String {
     std::env::var("HOME")
-        .map(|home| format!("{}/.moltchain/wallets/agent.json", home))
-        .unwrap_or_else(|_| ".moltchain/wallets/agent.json".to_string())
+        .map(|home| format!("{}/.lichen/wallets/agent.json", home))
+        .unwrap_or_else(|_| ".lichen/wallets/agent.json".to_string())
 }
 
 fn default_arg_for_type(t: &str, caller: &str) -> Value {

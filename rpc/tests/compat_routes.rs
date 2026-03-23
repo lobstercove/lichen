@@ -1,7 +1,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use moltchain_core::StateStore;
-use moltchain_rpc::build_rpc_router;
+use lichen_core::StateStore;
+use lichen_rpc::build_rpc_router;
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -46,8 +46,8 @@ async fn test_solana_health_route() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -68,8 +68,8 @@ async fn test_solana_legacy_alias_route() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -90,8 +90,8 @@ async fn test_evm_chain_id_route() {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,

@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# MoltChain — Master Makefile
+# Lichen — Master Makefile
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Usage:
@@ -24,7 +24,7 @@ build: build-node build-contracts-wasm build-cli build-sdk
 	@echo "✅ Full build complete"
 
 build-node:
-	@echo "🔨 Building MoltChain node (validator + RPC + P2P)..."
+	@echo "🔨 Building Lichen node (validator + RPC + P2P)..."
 	cargo build --release --workspace
 
 build-contracts:
@@ -57,7 +57,7 @@ build-contracts-wasm:
 
 build-cli:
 	@echo "🔨 Building CLI..."
-	cargo build --release -p moltchain-cli 2>/dev/null || cargo build --release -p cli 2>/dev/null || echo "⚠️  CLI package not found"
+	cargo build --release -p lichen-cli 2>/dev/null || cargo build --release -p cli 2>/dev/null || echo "⚠️  CLI package not found"
 
 build-sdk:
 	@echo "🔨 Building TypeScript SDKs..."
@@ -274,7 +274,7 @@ sync-shared:
 
 .PHONY: help
 help:
-	@echo "MoltChain Makefile"
+	@echo "Lichen Makefile"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build              Build everything"

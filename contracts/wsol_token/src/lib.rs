@@ -1,19 +1,19 @@
-// wSOL Token — Wrapped SOL on MoltChain
+// wSOL Token — Wrapped SOL on Lichen
 //
 // Architecture:
 //   wSOL is a 1:1 receipt token backed by native SOL reserves held in the
-//   MoltChain treasury (Solana wallet). Users deposit SOL on Solana,
-//   custody service sweeps to treasury, then mints wSOL on MoltChain.
+//   Lichen treasury (Solana wallet). Users deposit SOL on Solana,
+//   custody service sweeps to treasury, then mints wSOL on Lichen.
 //
-// Identical security model to musd_token:
+// Identical security model to lusd_token:
 //   - Treasury multisig (3-of-5) is the sole minting authority
 //   - Reserve attestation with proof hashes
 //   - Circuit breaker: no minting beyond attested reserves
 //   - Epoch rate limiting, reentrancy guard, emergency pause
 //
 // DEX Integration:
-//   wSOL/mUSD — SOL priced in USD
-//   wSOL/MOLT — SOL priced in MOLT (direct, no stablecoin needed)
+//   wSOL/lUSD — SOL priced in USD
+//   wSOL/LICN — SOL priced in LICN (direct, no stablecoin needed)
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -24,7 +24,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
 };
 
@@ -40,7 +40,7 @@ const TOKEN_SYMBOL: &[u8] = b"wSOL";
 const DECIMALS: u8 = 9; // Same as native SOL (9 decimals / lamports)
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 50_000_000_000_000; // 50K SOL per epoch (in lamports)
+const MINT_CAP_PER_EPOCH: u64 = 50_000_000_000_000; // 50K SOL per epoch (in spores)
 const EPOCH_SLOTS: u64 = 86_400;
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000;
@@ -735,7 +735,7 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn addr(id: u8) -> [u8; 32] {
         let mut a = [0u8; 32];

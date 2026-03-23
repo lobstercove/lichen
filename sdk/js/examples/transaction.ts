@@ -1,16 +1,16 @@
-// Transaction example for MoltChain SDK
+// Transaction example for Lichen SDK
 
 import { Connection, PublicKey, TransactionBuilder } from '../dist/index';
 
 async function main() {
   const connection = new Connection('http://localhost:8899');
 
-  console.log('🦞 MoltChain Transaction Example\n');
+  console.log('🦞 Lichen Transaction Example\n');
 
   // Create a transfer transaction
   const from = new PublicKey('FromPublicKeyHere...');
   const to = new PublicKey('ToPublicKeyHere...');
-  const amount = 1_000_000_000; // 1 MOLT
+  const amount = 1_000_000_000; // 1 LICN
 
   console.log('Building transaction...');
   
@@ -23,7 +23,7 @@ async function main() {
     .setRecentBlockhash(latestBlock.hash)
     .build();
 
-  console.log(`Transfer: ${amount / 1e9} MOLT`);
+  console.log(`Transfer: ${amount / 1e9} LICN`);
   console.log(`From: ${from.toBase58()}`);
   console.log(`To: ${to.toBase58()}`);
   console.log(`Blockhash: ${latestBlock.hash.substring(0, 16)}...`);

@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🦞 MoltChain - Transaction Generation"
+echo "🦞 Lichen - Transaction Generation"
 echo "========================================================================"
 echo ""
 
@@ -54,8 +54,8 @@ cd sdk/rust
 cat > examples/generate_transactions.rs << 'EOF'
 //! Generate test transactions
 
-use moltchain_sdk::{Client, Keypair, TransactionBuilder};
-use moltchain_core::{Instruction, Pubkey, Hash};
+use lichen_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::{Instruction, Pubkey, Hash};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,7 +143,7 @@ import asyncio
 import sys
 sys.path.insert(0, '..')
 
-from moltchain import Connection, Keypair, TransactionBuilder, Instruction, PublicKey
+from lichen import Connection, Keypair, TransactionBuilder, Instruction, PublicKey
 
 async def main():
     print("🐍 Python SDK: Generating transactions...\n")
@@ -318,5 +318,5 @@ echo "   ✅ Serialized correctly"
 echo "   ✅ Ready for submission"
 echo ""
 echo "📝 Note: Actual transaction submission requires accounts with token balances."
-echo "   To submit transactions, use: molt airdrop <amount> --keypair <wallet>"
+echo "   To submit transactions, use: licn airdrop <amount> --keypair <wallet>"
 echo ""

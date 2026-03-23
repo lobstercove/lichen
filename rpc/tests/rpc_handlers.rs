@@ -3,11 +3,11 @@
 
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use moltchain_core::{
+use lichen_core::{
     contract::ContractAccount, Account, Pubkey, StateStore, SymbolRegistryEntry,
     CONTRACT_PROGRAM_ID,
 };
-use moltchain_rpc::build_rpc_router;
+use lichen_rpc::build_rpc_router;
 use serde_json::json;
 use tower::util::ServiceExt;
 
@@ -88,8 +88,8 @@ fn create_test_app() -> axum::Router {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -148,13 +148,13 @@ fn skill_hash(name: &str) -> [u8; 8] {
     out
 }
 
-fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
+fn create_test_app_with_lichenid() -> (axum::Router, String, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
 
     let mut contract = ContractAccount::new(vec![1, 2, 3], Pubkey([2u8; 32]));
-    let moltyid_program = Pubkey([7u8; 32]);
+    let lichenid_program = Pubkey([7u8; 32]);
     let alice = Pubkey([10u8; 32]);
     let bob = Pubkey([11u8; 32]);
     let alice_hex = hex::encode(alice.0);
@@ -231,7 +231,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
 
     contract.storage.insert(
         format!("endpoint:{}", alice_hex).into_bytes(),
-        b"https://alice-agent.molt/api".to_vec(),
+        b"https://alice-agent.licn/api".to_vec(),
     );
     contract.storage.insert(
         format!("metadata:{}", alice_hex).into_bytes(),
@@ -258,14 +258,14 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
         .insert(b"mid_identity_count".to_vec(), 2u64.to_le_bytes().to_vec());
     contract
         .storage
-        .insert(b"molt_name_count".to_vec(), 1u64.to_le_bytes().to_vec());
+        .insert(b"licn_name_count".to_vec(), 1u64.to_le_bytes().to_vec());
 
     let mut account = Account::new(0, CONTRACT_PROGRAM_ID);
     account.owner = CONTRACT_PROGRAM_ID;
     account.executable = true;
     account.data = serde_json::to_vec(&contract).expect("serialize contract");
     state
-        .put_account(&moltyid_program, &account)
+        .put_account(&lichenid_program, &account)
         .expect("put program account");
 
     state
@@ -273,9 +273,9 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
             "YID",
             SymbolRegistryEntry {
                 symbol: "YID".to_string(),
-                program: moltyid_program,
+                program: lichenid_program,
                 owner: Pubkey([2u8; 32]),
-                name: Some("MoltyID Identity".to_string()),
+                name: Some("LichenID Identity".to_string()),
                 template: Some("identity".to_string()),
                 metadata: None,
                 decimals: None,
@@ -287,7 +287,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
     // handlers return the same values as the embedded storage.
     for (key, value) in &contract.storage {
         state
-            .put_contract_storage(&moltyid_program, key, value)
+            .put_contract_storage(&lichenid_program, key, value)
             .expect("put CF storage");
     }
 
@@ -296,8 +296,8 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
         None,
         None,
         None,
-        "moltchain-test".to_string(),
-        "molt-test".to_string(),
+        "lichen-test".to_string(),
+        "lichen-test".to_string(),
         None,
         None,
         None,
@@ -458,30 +458,30 @@ async fn test_evm_block_number() {
 }
 
 #[tokio::test]
-async fn test_get_moltyid_identity_existing() {
-    let (app, alice, _) = create_test_app_with_moltyid();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdIdentity", json!([alice]))
+async fn test_get_lichenid_identity_existing() {
+    let (app, alice, _) = create_test_app_with_lichenid();
+    let response = rpc_call_with_params(&app, "/", "getLichenIdIdentity", json!([alice]))
         .await
         .unwrap();
     assert_eq!(response["result"]["agent_type_name"], "Trading");
     assert_eq!(response["result"]["trust_tier_name"], "Trusted");
-    assert_eq!(response["result"]["molt_name"], "alice.molt");
+    assert_eq!(response["result"]["licn_name"], "alice.lichen");
 }
 
 #[tokio::test]
-async fn test_get_moltyid_identity_nonexistent() {
-    let (app, _, _) = create_test_app_with_moltyid();
+async fn test_get_lichenid_identity_nonexistent() {
+    let (app, _, _) = create_test_app_with_lichenid();
     let missing = Pubkey([250u8; 32]).to_base58();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdIdentity", json!([missing]))
+    let response = rpc_call_with_params(&app, "/", "getLichenIdIdentity", json!([missing]))
         .await
         .unwrap();
     assert!(response["result"].is_null());
 }
 
 #[tokio::test]
-async fn test_get_moltyid_reputation() {
-    let (app, alice, _) = create_test_app_with_moltyid();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdReputation", json!([alice]))
+async fn test_get_lichenid_reputation() {
+    let (app, alice, _) = create_test_app_with_lichenid();
+    let response = rpc_call_with_params(&app, "/", "getLichenIdReputation", json!([alice]))
         .await
         .unwrap();
     assert_eq!(response["result"]["score"], 742);
@@ -489,9 +489,9 @@ async fn test_get_moltyid_reputation() {
 }
 
 #[tokio::test]
-async fn test_get_moltyid_skills_with_attestations() {
-    let (app, alice, _) = create_test_app_with_moltyid();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdSkills", json!([alice]))
+async fn test_get_lichenid_skills_with_attestations() {
+    let (app, alice, _) = create_test_app_with_lichenid();
+    let response = rpc_call_with_params(&app, "/", "getLichenIdSkills", json!([alice]))
         .await
         .unwrap();
     assert_eq!(response["result"][0]["name"], "rust");
@@ -499,24 +499,24 @@ async fn test_get_moltyid_skills_with_attestations() {
 }
 
 #[tokio::test]
-async fn test_get_moltyid_vouches_bidirectional() {
-    let (app, alice, bob) = create_test_app_with_moltyid();
+async fn test_get_lichenid_vouches_bidirectional() {
+    let (app, alice, bob) = create_test_app_with_lichenid();
 
-    let bob_vouches = rpc_call_with_params(&app, "/", "getMoltyIdVouches", json!([bob]))
+    let bob_vouches = rpc_call_with_params(&app, "/", "getLichenIdVouches", json!([bob]))
         .await
         .unwrap();
     assert_eq!(bob_vouches["result"]["received"][0]["voucher"], alice);
 
-    let alice_vouches = rpc_call_with_params(&app, "/", "getMoltyIdVouches", json!([alice]))
+    let alice_vouches = rpc_call_with_params(&app, "/", "getLichenIdVouches", json!([alice]))
         .await
         .unwrap();
     assert_eq!(alice_vouches["result"]["given"][0]["vouchee"], bob);
 }
 
 #[tokio::test]
-async fn test_get_moltyid_achievements() {
-    let (app, alice, _) = create_test_app_with_moltyid();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdAchievements", json!([alice]))
+async fn test_get_lichenid_achievements() {
+    let (app, alice, _) = create_test_app_with_lichenid();
+    let response = rpc_call_with_params(&app, "/", "getLichenIdAchievements", json!([alice]))
         .await
         .unwrap();
     assert_eq!(response["result"][0]["id"], 4);
@@ -524,23 +524,23 @@ async fn test_get_moltyid_achievements() {
 }
 
 #[tokio::test]
-async fn test_molt_name_resolution_endpoints() {
-    let (app, alice, _) = create_test_app_with_moltyid();
+async fn test_licn_name_resolution_endpoints() {
+    let (app, alice, _) = create_test_app_with_lichenid();
 
-    let resolve = rpc_call_with_params(&app, "/", "resolveMoltName", json!(["alice.molt"]))
+    let resolve = rpc_call_with_params(&app, "/", "resolveLichenName", json!(["alice.lichen"]))
         .await
         .unwrap();
     assert_eq!(resolve["result"]["owner"], alice);
 
-    let reverse = rpc_call_with_params(&app, "/", "reverseMoltName", json!([alice.clone()]))
+    let reverse = rpc_call_with_params(&app, "/", "reverseLichenName", json!([alice.clone()]))
         .await
         .unwrap();
-    assert_eq!(reverse["result"]["name"], "alice.molt");
+    assert_eq!(reverse["result"]["name"], "alice.lichen");
 
     let batch = rpc_call_with_params(
         &app,
         "/",
-        "batchReverseMoltNames",
+        "batchReverseLichenNames",
         json!([alice, "11111111111111111111111111111111"]),
     )
     .await
@@ -552,10 +552,10 @@ async fn test_molt_name_resolution_endpoints() {
 }
 
 #[tokio::test]
-async fn test_get_moltyid_profile_and_directory() {
-    let (app, alice, _) = create_test_app_with_moltyid();
+async fn test_get_lichenid_profile_and_directory() {
+    let (app, alice, _) = create_test_app_with_lichenid();
 
-    let profile = rpc_call_with_params(&app, "/", "getMoltyIdProfile", json!([alice]))
+    let profile = rpc_call_with_params(&app, "/", "getLichenIdProfile", json!([alice]))
         .await
         .unwrap();
     assert_eq!(profile["result"]["agent"]["availability_name"], "available");
@@ -564,7 +564,7 @@ async fn test_get_moltyid_profile_and_directory() {
     let directory = rpc_call_with_params(
         &app,
         "/",
-        "getMoltyIdAgentDirectory",
+        "getLichenIdAgentDirectory",
         json!([{ "available": true, "limit": 10 }]),
     )
     .await
@@ -573,17 +573,17 @@ async fn test_get_moltyid_profile_and_directory() {
 }
 
 #[tokio::test]
-async fn test_get_moltyid_stats() {
-    let (app, _, _) = create_test_app_with_moltyid();
-    let response = rpc_call(&app, "/", "getMoltyIdStats").await.unwrap();
+async fn test_get_lichenid_stats() {
+    let (app, _, _) = create_test_app_with_lichenid();
+    let response = rpc_call(&app, "/", "getLichenIdStats").await.unwrap();
     assert_eq!(response["result"]["total_identities"], 2);
     assert_eq!(response["result"]["total_names"], 1);
 }
 
 #[tokio::test]
-async fn test_moltyid_invalid_pubkey_rejected() {
-    let (app, _, _) = create_test_app_with_moltyid();
-    let response = rpc_call_with_params(&app, "/", "getMoltyIdIdentity", json!(["not-a-pubkey"]))
+async fn test_lichenid_invalid_pubkey_rejected() {
+    let (app, _, _) = create_test_app_with_lichenid();
+    let response = rpc_call_with_params(&app, "/", "getLichenIdIdentity", json!(["not-a-pubkey"]))
         .await
         .unwrap();
     assert!(response.get("error").is_some());

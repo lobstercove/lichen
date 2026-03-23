@@ -1,7 +1,7 @@
-// MoltChain Adversarial & Security Tests
+// Lichen Adversarial & Security Tests
 // Attack simulations and edge case testing
 
-use moltchain_core::{
+use lichen_core::{
     Account, Block, BlockHeader, Hash, Instruction, Keypair, Message, Pubkey, SlashingEvidence,
     SlashingOffense, SlashingTracker, StateStore, Transaction, TxProcessor, ValidatorInfo,
     ValidatorSet, Vote, BASE_FEE, SYSTEM_PROGRAM_ID,
@@ -13,7 +13,7 @@ fn create_test_state() -> (StateStore, TempDir, Hash) {
     let temp_dir = TempDir::new().unwrap();
     let state = StateStore::open(temp_dir.path()).unwrap();
     let treasury = Keypair::new();
-    let treasury_account = account_with_shells(treasury.pubkey(), 10_000_000_000_000);
+    let treasury_account = account_with_spores(treasury.pubkey(), 10_000_000_000_000);
     state
         .put_account(&treasury.pubkey(), &treasury_account)
         .unwrap();
@@ -56,10 +56,10 @@ fn build_signed_tx(
     }
 }
 
-fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
+fn account_with_spores(owner: Pubkey, spores: u64) -> Account {
     Account {
-        shells,
-        spendable: shells,
+        spores,
+        spendable: spores,
         staked: 0,
         locked: 0,
         data: Vec::new(),
@@ -96,12 +96,12 @@ fn test_double_spend_attack() {
     let victim2 = Keypair::new();
     let validator = Keypair::new();
 
-    // Attacker starts with 2 MOLT
+    // Attacker starts with 2 LICN
     let attacker_balance = 2_000_000_000 + BASE_FEE * 2;
     state
         .put_account(
             &attacker.pubkey(),
-            &account_with_shells(attacker.pubkey(), attacker_balance),
+            &account_with_spores(attacker.pubkey(), attacker_balance),
         )
         .unwrap();
     state
@@ -111,10 +111,10 @@ fn test_double_spend_attack() {
         .put_account(&victim2.pubkey(), &Account::new(0, victim2.pubkey()))
         .unwrap();
 
-    // Try to spend 2 MOLT twice to different victims
+    // Try to spend 2 LICN twice to different victims
     let amount = 2_000_000_000u64;
 
-    // Transaction 1: Send 2 MOLT to victim1
+    // Transaction 1: Send 2 LICN to victim1
     let mut data1 = vec![0u8];
     data1.extend_from_slice(&amount.to_le_bytes());
     let tx1 = build_signed_tx(
@@ -127,7 +127,7 @@ fn test_double_spend_attack() {
         genesis_hash,
     );
 
-    // Transaction 2: Try to send same 2 MOLT to victim2
+    // Transaction 2: Try to send same 2 LICN to victim2
     let mut data2 = vec![0u8];
     data2.extend_from_slice(&amount.to_le_bytes());
     let tx2 = build_signed_tx(
@@ -193,7 +193,7 @@ fn test_invalid_signature_attack() {
     // Victim's funds untouched
     assert_eq!(
         state.get_balance(&victim.pubkey()).unwrap(),
-        Account::molt_to_shells(10)
+        Account::licn_to_spores(10)
     );
     assert_eq!(state.get_balance(&attacker.pubkey()).unwrap(), 0);
 }
@@ -212,7 +212,7 @@ fn test_overflow_attack() {
         .put_account(&attacker.pubkey(), &Account::new(1, attacker.pubkey()))
         .unwrap();
     let target_account = Account {
-        shells: u64::MAX - 100,
+        spores: u64::MAX - 100,
         spendable: u64::MAX - 100,
         staked: 0,
         locked: 0,
@@ -268,7 +268,7 @@ fn test_zero_amount_transaction() {
         .put_account(&receiver.pubkey(), &Account::new(0, receiver.pubkey()))
         .unwrap();
 
-    // Try to send 0 shells
+    // Try to send 0 spores
     let mut data = vec![0u8];
     data.extend_from_slice(&0u64.to_le_bytes());
 
@@ -302,10 +302,10 @@ fn test_self_transfer() {
     let user = Keypair::new();
     let validator = Keypair::new();
 
-    let initial_molt = 10;
-    let initial_balance = Account::molt_to_shells(initial_molt);
+    let initial_licn = 10;
+    let initial_balance = Account::licn_to_spores(initial_licn);
     state
-        .put_account(&user.pubkey(), &Account::new(initial_molt, user.pubkey()))
+        .put_account(&user.pubkey(), &Account::new(initial_licn, user.pubkey()))
         .unwrap();
 
     // Transfer to self
@@ -384,18 +384,18 @@ fn test_rapid_transaction_spam() {
     let validator = Keypair::new();
 
     // Fund spammer heavily
-    let initial_molt = 1u64;
+    let initial_licn = 1u64;
     state
         .put_account(
             &spammer.pubkey(),
-            &Account::new(initial_molt, spammer.pubkey()),
+            &Account::new(initial_licn, spammer.pubkey()),
         )
         .unwrap();
     state
         .put_account(&target.pubkey(), &Account::new(0, target.pubkey()))
         .unwrap();
 
-    let base_amount = 100_000_000u64; // 0.1 MOLT in shells
+    let base_amount = 100_000_000u64; // 0.1 LICN in spores
 
     // Try to spam 100 transactions rapidly
     let mut successful_txs = 0;

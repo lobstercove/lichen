@@ -1,7 +1,7 @@
-// MoltChain Explorer - Address Detail Page
+// Lichen Explorer - Address Detail Page
 // Displays detailed information about a specific address/account
 // NOTE: bs58decode, formatHash, formatAddress, escapeHtml, copyToClipboard,
-//       safeCopy, getMoltRpcUrl are provided by shared/utils.js
+//       safeCopy, getLichenRpcUrl are provided by shared/utils.js
 
 let currentAddress = null;
 let txNextCursor = null;    // before_slot for next page
@@ -9,9 +9,9 @@ let txCursorStack = [];     // stack for previous pages
 let txCurrentBeforeSlot = undefined;
 const TX_PAGE_SIZE = 50;
 let activeAddressTab = 'overview';
-let currentMoltyProfile = null;
+let currentLichenProfile = null;
 let currentAccountData = null;
-let moltyIdProgramAddress = null;
+let lichenIdProgramAddress = null;
 let addressPolling = null;
 let addressRefreshTimer = null;
 let addressRefreshInFlight = false;
@@ -37,8 +37,8 @@ function isSystemProgramOwner(owner) {
         || owner === SYS;
 }
 
-// ===== MoltChain Address to EVM Conversion =====
-function moltchainToEvmAddress(base58Pubkey) {
+// ===== Lichen Address to EVM Conversion =====
+function lichenToEvmAddress(base58Pubkey) {
     try {
         if (!base58Pubkey || base58Pubkey.trim() === '' ||
             base58Pubkey === '11111111111111111111111111111111') {
@@ -56,13 +56,13 @@ function moltchainToEvmAddress(base58Pubkey) {
 }
 
 // ===== RPC helper =====
-// Delegates to the shared MoltChainRPC instance from explorer.js.
+// Delegates to the shared LichenRPC instance from explorer.js.
 // Falls back to direct fetch if rpc is unavailable (standalone testing).
 async function rpcCall(method, params = []) {
     if (typeof rpc !== 'undefined' && rpc && typeof rpc.call === 'function') {
         return rpc.call(method, params);
     }
-    const response = await fetch(getMoltRpcUrl(), {
+    const response = await fetch(getLichenRpcUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
@@ -175,7 +175,7 @@ async function loadAddressData() {
         displayAddressData(accountData);
         // Pre-fetch current slot for accurate expiry display
         fetchCurrentSlot().catch(() => { });
-        await loadMoltyIdentityData(currentAddress);
+        await loadLichenIdentityData(currentAddress);
 
         // If it's a validator, load staking rewards
         const accountTypeLabel = String(accountData.type || '').toLowerCase();
@@ -273,32 +273,32 @@ function enforceAddressViewOnlyMode() {
     });
 }
 
-// ===== MoltyID =====
-async function loadMoltyIdentityData(address) {
+// ===== LichenID =====
+async function loadLichenIdentityData(address) {
     try {
         const [profileResult, nameResult] = await Promise.all([
-            rpcCall('getMoltyIdProfile', [address]).catch(() => null),
-            rpcCall('reverseMoltName', [address]).catch(() => null)
+            rpcCall('getLichenIdProfile', [address]).catch(() => null),
+            rpcCall('reverseLichenName', [address]).catch(() => null)
         ]);
         await fetchCurrentSlot().catch(() => 0);
 
         const profile = profileResult || {};
         // RPC returns identity fields at the top level of the profile, not nested
-        const identity = profile.identity || (profile.name || profile.molt_name ? profile : null);
+        const identity = profile.identity || (profile.name || profile.licn_name ? profile : null);
         const reputation = profile.reputation || {};
         const skills = Array.isArray(profile.skills) ? profile.skills : [];
         const vouches = profile.vouches || { received: [], given: [] };
         const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
-        const moltName = typeof nameResult === 'string'
+        const lichenName = typeof nameResult === 'string'
             ? nameResult
             : (nameResult?.name || null);
 
         let nameDetails = null;
-        if (moltName) {
-            nameDetails = await rpcCall('resolveMoltName', [moltName]).catch(() => null);
+        if (lichenName) {
+            nameDetails = await rpcCall('resolveLichenName', [lichenName]).catch(() => null);
         }
 
-        currentMoltyProfile = {
+        currentLichenProfile = {
             identity,
             reputation,
             skills,
@@ -306,15 +306,15 @@ async function loadMoltyIdentityData(address) {
             achievements,
             agent: profile.agent || {},
             contributions: profile.contributions || {},
-            moltName,
+            lichenName,
             nameDetails
         };
-        renderSummaryIdentity(currentMoltyProfile);
-        renderIdentityPane(currentMoltyProfile);
+        renderSummaryIdentity(currentLichenProfile);
+        renderIdentityPane(currentLichenProfile);
         bindIdentityActionButtons();
     } catch (error) {
-        console.warn('Failed to load MoltyID data:', error);
-        currentMoltyProfile = null;
+        console.warn('Failed to load LichenID data:', error);
+        currentLichenProfile = null;
         renderSummaryIdentity(null);
         renderIdentityPane(null);
         bindIdentityActionButtons();
@@ -336,7 +336,7 @@ function renderSummaryIdentity(profile) {
 
     displayNameEl.textContent = hasIdentity
         ? (identityName || 'Identity Registered')
-        : 'No MoltyID Identity';
+        : 'No LichenID Identity';
 
     if (hasIdentity) {
         const tierLabel = getTrustTierLabel(reputationScore);
@@ -362,9 +362,9 @@ function renderIdentityPane(profile) {
                 <div class="detail-card-body">
                     <div class="empty-state">
                         <i class="fas fa-user-plus"></i>
-                        <div>No MoltyID Found</div>
+                        <div>No LichenID Found</div>
                         <small style="color: var(--text-muted); font-size: 0.9rem; display:block; margin-top:0.5rem;">
-                            Register your identity to unlock .molt names, reputation, skills, and agent discovery.
+                            Register your identity to unlock .lichen names, reputation, skills, and agent discovery.
                         </small>
                     </div>
                 </div>
@@ -394,7 +394,7 @@ function renderIdentityPane(profile) {
     const displayName = escapeHtml(rawName);
     const agentType = escapeHtml(String(identity.agent_type_name || identity.agent_type || 'Unknown'));
     const availability = escapeHtml(String(profile?.agent?.availability_name || 'offline'));
-    const rateMolt = formatMoltExact(Number(profile?.agent?.rate || 0) / SHELLS_PER_MOLT);
+    const rateLicn = formatLicnExact(Number(profile?.agent?.rate || 0) / SPORES_PER_LICN);
     const metadataText = escapeHtml(JSON.stringify(profile?.agent?.metadata || {}, null, 2));
 
     const contributions = profile?.contributions || {};
@@ -430,14 +430,14 @@ function renderIdentityPane(profile) {
 
     const vouchReceivedHtml = vouchesReceived.length
         ? vouchesReceived.slice(0, 20).map(v => {
-            const name = v.voucher_name ? `${escapeHtml(v.voucher_name)}.molt` : formatAddress(v.voucher);
+            const name = v.voucher_name ? `${escapeHtml(v.voucher_name)}.lichen` : formatAddress(v.voucher);
             return `<span class="identity-chip"><strong>${name}</strong></span>`;
         }).join('')
         : `<span class="identity-chip">No received vouches</span>`;
 
     const vouchGivenHtml = vouchesGiven.length
         ? vouchesGiven.slice(0, 20).map(v => {
-            const name = v.vouchee_name ? `${escapeHtml(v.vouchee_name)}.molt` : formatAddress(v.vouchee);
+            const name = v.vouchee_name ? `${escapeHtml(v.vouchee_name)}.lichen` : formatAddress(v.vouchee);
             return `<span class="identity-chip"><strong>${name}</strong></span>`;
         }).join('')
         : `<span class="identity-chip">No given vouches</span>`;
@@ -453,13 +453,13 @@ function renderIdentityPane(profile) {
         .map(a => `<span class="identity-chip" style="opacity:0.5;"><i class="fas ${a.icon}" style="font-size:0.7em;margin-right:4px;"></i>${a.name}</span>`)
         .join(' ');
 
-    const primaryName = profile?.moltName
-        ? escapeHtml(profile.moltName.endsWith('.molt') ? profile.moltName : profile.moltName + '.molt')
+    const primaryName = profile?.lichenName
+        ? escapeHtml(profile.lichenName.endsWith('.lichen') ? profile.lichenName : profile.lichenName + '.lichen')
         : displayName;
     const expirySlot = profile?.nameDetails?.expiry_slot;
     const registeredSlot = profile?.nameDetails?.registered_slot || 0;
     const expiryDisplay = expirySlot ? formatSlotExpiry(expirySlot, registeredSlot) : 'Unknown';
-    const hasName = !!profile?.moltName;
+    const hasName = !!profile?.lichenName;
     const namesHtml = hasName
         ? `<div class="identity-kv-grid">
         <div class="identity-kv">
@@ -471,9 +471,9 @@ function renderIdentityPane(profile) {
             <div class="identity-kv-value">${expiryDisplay}</div>
         </div>
     </div>
-    <small style="color:var(--text-muted);display:block;margin-top:0.5rem;">Each address holds one .molt name. Names can be released and re-registered. Registration: 1–10 years.</small>`
-        : `<div class="empty-state" style="padding:1rem;"><i class="fas fa-at"></i><div>No .molt name registered</div>
-    <small style="color:var(--text-muted);margin-top:0.3rem;display:block;">Each address can hold one .molt name (1–10 year registration).</small></div>`;
+    <small style="color:var(--text-muted);display:block;margin-top:0.5rem;">Each address holds one .lichen name. Names can be released and re-registered. Registration: 1–10 years.</small>`
+        : `<div class="empty-state" style="padding:1rem;"><i class="fas fa-at"></i><div>No .lichen name registered</div>
+    <small style="color:var(--text-muted);margin-top:0.3rem;display:block;">Each address can hold one .lichen name (1–10 year registration).</small></div>`;
 
     content.innerHTML = `
         <div class="identity-card-stack">
@@ -586,7 +586,7 @@ function renderIdentityPane(profile) {
 
             <div class="detail-card">
                 <div class="detail-card-header">
-                    <h2><i class="fas fa-at"></i> .molt Names</h2>
+                    <h2><i class="fas fa-at"></i> .lichen Names</h2>
                 </div>
                 <div class="detail-card-body">
                     ${namesHtml}
@@ -610,7 +610,7 @@ function renderIdentityPane(profile) {
                         </div>
                         <div class="identity-kv">
                             <div class="identity-kv-label">Rate</div>
-                            <div class="identity-kv-value">${rateMolt} MOLT/request</div>
+                            <div class="identity-kv-value">${rateLicn} LICN/request</div>
                         </div>
                         <div class="identity-kv">
                             <div class="identity-kv-label">Metadata</div>
@@ -782,7 +782,7 @@ function openActionModal({ title, icon = 'fas fa-pen', bodyHtml, confirmText = '
 
 function getWalletStateFromStorage() {
     try {
-        const raw = localStorage.getItem('moltWalletState');
+        const raw = localStorage.getItem('lichenWalletState');
         if (!raw) return null;
         return JSON.parse(raw);
     } catch (error) {
@@ -840,33 +840,33 @@ async function requestWalletPassword(actionText) {
     });
 }
 
-async function getMoltyIdProgramAddress() {
-    if (moltyIdProgramAddress) return moltyIdProgramAddress;
-    const symbols = ['YID', 'yid', 'MOLTYID'];
+async function getLichenIdProgramAddress() {
+    if (lichenIdProgramAddress) return lichenIdProgramAddress;
+    const symbols = ['YID', 'yid', 'LICHENID'];
     for (const symbol of symbols) {
         try {
             const result = await rpcCall('getSymbolRegistry', [symbol]);
             const program = result?.program || result?.address || result?.pubkey;
             if (program) {
-                moltyIdProgramAddress = program;
-                return moltyIdProgramAddress;
+                lichenIdProgramAddress = program;
+                return lichenIdProgramAddress;
             }
         } catch (error) {
             continue;
         }
     }
-    throw new Error('MoltyID program not found in symbol registry');
+    throw new Error('LichenID program not found in symbol registry');
 }
 
-function buildTransferInstruction(fromAddress, toAddress, amountMolt) {
+function buildTransferInstruction(fromAddress, toAddress, amountLicn) {
     const fromPubkey = bs58decode(fromAddress);
     const toPubkey = bs58decode(toAddress);
     const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
-    const amountShells = Math.floor(Number(amountMolt) * 1_000_000_000);
+    const amountSpores = Math.floor(Number(amountLicn) * 1_000_000_000);
     const instructionData = new Uint8Array(9);
     instructionData[0] = 0;
     const view = new DataView(instructionData.buffer);
-    view.setBigUint64(1, BigInt(amountShells), true);
+    view.setBigUint64(1, BigInt(amountSpores), true);
 
     return {
         program_id: Array.from(systemProgram),
@@ -912,9 +912,9 @@ async function signAndSendInstructions(wallet, password, instructions) {
         blockhash: latestBlock.hash
     };
 
-    const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+    const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
     const messageBytes = serializeMessageBincode(message);
-    const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+    const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
     const transaction = {
         signatures: [Array.from(signature)],
@@ -928,13 +928,13 @@ async function signAndSendInstructions(wallet, password, instructions) {
 async function resolveRecipient(value) {
     const input = String(value || '').trim();
     if (!input) throw new Error('Recipient is required');
-    if (input.endsWith('.molt')) {
+    if (input.endsWith('.lichen')) {
         const label = input.slice(0, -5);
-        const result = await rpcCall('resolveMoltName', [label]);
+        const result = await rpcCall('resolveLichenName', [label]);
         if (!result?.owner) throw new Error('Name could not be resolved');
         return { address: result.owner, display: input };
     }
-    if (!MoltCrypto.isValidAddress(input)) throw new Error('Invalid recipient address');
+    if (!LichenCrypto.isValidAddress(input)) throw new Error('Invalid recipient address');
     return { address: input, display: input };
 }
 
@@ -943,16 +943,16 @@ async function openSendModal() {
     if (!wallet) return;
 
     openActionModal({
-        title: 'Send MOLT',
+        title: 'Send LICN',
         icon: 'fas fa-paper-plane',
         confirmText: 'Sign & Send',
         bodyHtml: `
             <div class="form-group">
-                <label for="sendRecipientInput">Recipient (.molt or address)</label>
-                <input id="sendRecipientInput" placeholder="alice.molt or MoLT...">
+                <label for="sendRecipientInput">Recipient (.lichen or address)</label>
+                <input id="sendRecipientInput" placeholder="alice.lichen or LiCN...">
             </div>
             <div class="form-group">
-                <label for="sendAmountInput">Amount (MOLT)</label>
+                <label for="sendAmountInput">Amount (LICN)</label>
                 <input id="sendAmountInput" type="number" min="0" step="0.000001" placeholder="0.0">
             </div>
             <div class="form-group">
@@ -968,7 +968,7 @@ async function openSendModal() {
                 if (!amount || amount <= 0) throw new Error('Enter a valid amount');
 
                 const recipient = await resolveRecipient(recipientInput);
-                const password = await requestWalletPassword(`Send ${amount} MOLT to ${recipient.display}`);
+                const password = await requestWalletPassword(`Send ${amount} LICN to ${recipient.display}`);
                 if (!password) return false;
 
                 const instruction = buildTransferInstruction(wallet.address, recipient.address, amount);
@@ -998,7 +998,7 @@ async function openRegisterIdentityModal() {
     ).join('');
 
     openActionModal({
-        title: 'Create Your MoltyID Identity',
+        title: 'Create Your LichenID Identity',
         icon: 'fas fa-id-badge',
         confirmText: 'Create Identity',
         bodyHtml: `
@@ -1011,12 +1011,12 @@ async function openRegisterIdentityModal() {
                 <select id="identityTypeInput">${agentTypeOptions}</select>
             </div>
             <div class="form-group">
-                <label for="identityMoltNameInput">Optional .molt name</label>
-                <input id="identityMoltNameInput" placeholder="trading_bot">
+                <label for="identityLichenNameInput">Optional .lichen name</label>
+                <input id="identityLichenNameInput" placeholder="trading_bot">
             </div>
             <div class="form-group">
-                <label for="identityMoltYearsInput">Name Duration</label>
-                <select id="identityMoltYearsInput">
+                <label for="identityLicnYearsInput">Name Duration</label>
+                <select id="identityLicnYearsInput">
                     <option value="1">1 year</option>
                     <option value="2">2 years</option>
                     <option value="5">5 years</option>
@@ -1028,20 +1028,20 @@ async function openRegisterIdentityModal() {
             try {
                 const name = String(document.getElementById('identityNameInput')?.value || '').trim();
                 const agentType = Number(document.getElementById('identityTypeInput')?.value || 0);
-                const optionalName = String(document.getElementById('identityMoltNameInput')?.value || '').trim().toLowerCase();
-                const years = Number(document.getElementById('identityMoltYearsInput')?.value || 1);
+                const optionalName = String(document.getElementById('identityLichenNameInput')?.value || '').trim().toLowerCase();
+                const years = Number(document.getElementById('identityLicnYearsInput')?.value || 1);
 
                 if (name.length < 3 || name.length > 64) {
                     throw new Error('Display name must be 3-64 characters');
                 }
 
-                const moltyIdAddress = await getMoltyIdProgramAddress();
+                const lichenIdAddress = await getLichenIdProgramAddress();
                 const password = await requestWalletPassword(`Register identity for ${wallet.address}`);
                 if (!password) return false;
 
                 const registerInstruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'register_identity',
                     args: {
                         owner: wallet.address,
@@ -1055,22 +1055,22 @@ async function openRegisterIdentityModal() {
                 await signAndSendInstructions(wallet, password, [registerInstruction]);
 
                 if (optionalName) {
-                    // Name cost: 20 MOLT/yr for 5+ chars, 100 for 4, 500 for ≤3
+                    // Name cost: 20 LICN/yr for 5+ chars, 100 for 4, 500 for ≤3
                     const nameLen = optionalName.length;
-                    const costPerYearMolt = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
-                    const totalCostShells = costPerYearMolt * years * 1_000_000_000;
+                    const costPerYearLicn = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
+                    const totalCostSpores = costPerYearLicn * years * 1_000_000_000;
 
                     const nameInstruction = buildContractCallInstruction({
                         callerAddress: wallet.address,
-                        contractAddress: moltyIdAddress,
+                        contractAddress: lichenIdAddress,
                         functionName: 'register_name',
                         args: {
                             name: optionalName,
                             duration_years: years
                         },
-                        value: totalCostShells
+                        value: totalCostSpores
                     });
-                    showAddressToast(`Registering ${optionalName}.molt...`);
+                    showAddressToast(`Registering ${optionalName}.lichen...`);
                     await signAndSendInstructions(wallet, password, [nameInstruction]);
                 }
 
@@ -1094,7 +1094,7 @@ async function openRegisterNameModal() {
     }
 
     openActionModal({
-        title: 'Register .molt Name',
+        title: 'Register .lichen Name',
         icon: 'fas fa-at',
         confirmText: 'Register Name',
         bodyHtml: `
@@ -1121,31 +1121,31 @@ async function openRegisterNameModal() {
                 const years = Number(document.getElementById('nameYearsInput')?.value || 1);
                 if (!label || label.length < 3 || label.length > 64) throw new Error('Name must be 3-64 characters');
 
-                const availability = await rpcCall('resolveMoltName', [label]).catch(() => null);
-                if (availability?.owner) throw new Error(`${label}.molt is already registered`);
+                const availability = await rpcCall('resolveLichenName', [label]).catch(() => null);
+                if (availability?.owner) throw new Error(`${label}.lichen is already registered`);
 
-                const moltyIdAddress = await getMoltyIdProgramAddress();
-                const password = await requestWalletPassword(`Register ${label}.molt`);
+                const lichenIdAddress = await getLichenIdProgramAddress();
+                const password = await requestWalletPassword(`Register ${label}.lichen`);
                 if (!password) return false;
 
-                // Name cost: 20 MOLT/yr for 5+ chars, 100 for 4, 500 for ≤3
+                // Name cost: 20 LICN/yr for 5+ chars, 100 for 4, 500 for ≤3
                 const nameLen = label.length;
-                const costPerYearMolt = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
-                const totalCostShells = costPerYearMolt * years * 1_000_000_000;
+                const costPerYearLicn = nameLen <= 3 ? 500 : nameLen === 4 ? 100 : 20;
+                const totalCostSpores = costPerYearLicn * years * 1_000_000_000;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'register_name',
                     args: {
                         name: label,
                         duration_years: years
                     },
-                    value: totalCostShells
+                    value: totalCostSpores
                 });
 
                 await signAndSendInstructions(wallet, password, [instruction]);
-                showAddressToast(`Submitted registration for ${label}.molt`);
+                showAddressToast(`Submitted registration for ${label}.lichen`);
                 await loadAddressData();
                 return true;
             } catch (error) {
@@ -1166,12 +1166,12 @@ async function openRegisterNameModal() {
         }
         resultEl.textContent = 'Checking...';
         try {
-            const result = await rpcCall('resolveMoltName', [label]);
+            const result = await rpcCall('resolveLichenName', [label]);
             resultEl.textContent = result?.owner
                 ? `Taken by ${formatHash(result.owner)}`
-                : `${label}.molt is available`;
+                : `${label}.lichen is available`;
         } catch (error) {
-            resultEl.textContent = `${label}.molt is available`;
+            resultEl.textContent = `${label}.lichen is available`;
         }
     });
 }
@@ -1191,13 +1191,13 @@ async function openVouchModal() {
         bodyHtml: `<p class="modal-note">This submits a vouch from <span title="${escapeHtml(wallet.address)}">${escapeHtml(formatHash(wallet.address))}</span> to <span title="${escapeHtml(currentAddress)}">${escapeHtml(formatHash(currentAddress))}</span>.</p>`,
         onConfirm: async () => {
             try {
-                const moltyIdAddress = await getMoltyIdProgramAddress();
+                const lichenIdAddress = await getLichenIdProgramAddress();
                 const password = await requestWalletPassword('Sign vouch transaction');
                 if (!password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'vouch',
                     args: {
                         voucher: wallet.address,
@@ -1226,7 +1226,7 @@ async function openAttestSkillModal(initialSkillName = '') {
         return;
     }
 
-    const knownSkills = (currentMoltyProfile?.skills || []).map(skill => String(skill.name || skill.skill || '').trim()).filter(Boolean);
+    const knownSkills = (currentLichenProfile?.skills || []).map(skill => String(skill.name || skill.skill || '').trim()).filter(Boolean);
     const skillOptions = knownSkills.map(skill => `<option value="${escapeHtml(skill)}">${escapeHtml(skill)}</option>`).join('');
 
     openActionModal({
@@ -1250,13 +1250,13 @@ async function openAttestSkillModal(initialSkillName = '') {
                 if (!skill) throw new Error('Skill is required');
                 if (level < 1 || level > 5) throw new Error('Level must be between 1 and 5');
 
-                const moltyIdAddress = await getMoltyIdProgramAddress();
+                const lichenIdAddress = await getLichenIdProgramAddress();
                 const password = await requestWalletPassword(`Attest ${skill} at level ${level}`);
                 if (!password) return false;
 
                 const instruction = buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'attest_skill',
                     args: {
                         attester: wallet.address,
@@ -1293,12 +1293,12 @@ async function openEditProfileModal() {
     }
 
     const agentTypeOptions = AGENT_TYPE_OPTIONS.map(option => {
-        const selected = Number(currentMoltyProfile?.identity?.agent_type || 0) === option.value ? 'selected' : '';
+        const selected = Number(currentLichenProfile?.identity?.agent_type || 0) === option.value ? 'selected' : '';
         return `<option value="${option.value}" ${selected}>${escapeHtml(option.label)}</option>`;
     }).join('');
 
-    const metadataDefault = JSON.stringify(currentMoltyProfile?.agent?.metadata || {}, null, 2);
-    const availabilityValue = Number(currentMoltyProfile?.agent?.availability || 0);
+    const metadataDefault = JSON.stringify(currentLichenProfile?.agent?.metadata || {}, null, 2);
+    const availabilityValue = Number(currentLichenProfile?.agent?.availability || 0);
 
     openActionModal({
         title: 'Edit Identity Profile',
@@ -1311,7 +1311,7 @@ async function openEditProfileModal() {
             </div>
             <div class="form-group">
                 <label for="profileEndpointInput">Endpoint</label>
-                <input id="profileEndpointInput" value="${escapeHtml(currentMoltyProfile?.agent?.endpoint || '')}" placeholder="https://api.example.com/agent">
+                <input id="profileEndpointInput" value="${escapeHtml(currentLichenProfile?.agent?.endpoint || '')}" placeholder="https://api.example.com/agent">
             </div>
             <div class="form-group">
                 <label for="profileAvailabilityInput">Availability</label>
@@ -1321,8 +1321,8 @@ async function openEditProfileModal() {
                 </select>
             </div>
             <div class="form-group">
-                <label for="profileRateInput">Rate (MOLT/request)</label>
-                <input id="profileRateInput" type="number" min="0" step="0.000001" value="${Number(currentMoltyProfile?.agent?.rate || 0) / 1_000_000_000}">
+                <label for="profileRateInput">Rate (LICN/request)</label>
+                <input id="profileRateInput" type="number" min="0" step="0.000001" value="${Number(currentLichenProfile?.agent?.rate || 0) / 1_000_000_000}">
             </div>
             <div class="form-group">
                 <label for="profileMetadataInput">Metadata (JSON)</label>
@@ -1334,16 +1334,16 @@ async function openEditProfileModal() {
                 const type = Number(document.getElementById('profileTypeInput')?.value || 0);
                 const endpoint = String(document.getElementById('profileEndpointInput')?.value || '').trim();
                 const availability = Number(document.getElementById('profileAvailabilityInput')?.value || 0);
-                const rateMolt = Number(document.getElementById('profileRateInput')?.value || 0);
+                const rateLicn = Number(document.getElementById('profileRateInput')?.value || 0);
                 const metadataText = String(document.getElementById('profileMetadataInput')?.value || '{}').trim();
                 const metadata = metadataText ? JSON.parse(metadataText) : {};
 
-                const moltyIdAddress = await getMoltyIdProgramAddress();
+                const lichenIdAddress = await getLichenIdProgramAddress();
                 const instructions = [];
 
                 instructions.push(buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'update_agent_type',
                     args: { owner: wallet.address, agent_type: type },
                     value: 0
@@ -1351,7 +1351,7 @@ async function openEditProfileModal() {
 
                 instructions.push(buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'set_endpoint',
                     args: { owner: wallet.address, endpoint },
                     value: 0
@@ -1359,7 +1359,7 @@ async function openEditProfileModal() {
 
                 instructions.push(buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'set_metadata',
                     args: { owner: wallet.address, metadata },
                     value: 0
@@ -1367,7 +1367,7 @@ async function openEditProfileModal() {
 
                 instructions.push(buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'set_availability',
                     args: { owner: wallet.address, availability },
                     value: 0
@@ -1375,9 +1375,9 @@ async function openEditProfileModal() {
 
                 instructions.push(buildContractCallInstruction({
                     callerAddress: wallet.address,
-                    contractAddress: moltyIdAddress,
+                    contractAddress: lichenIdAddress,
                     functionName: 'set_rate',
-                    args: { owner: wallet.address, rate: Math.floor(rateMolt * 1_000_000_000) },
+                    args: { owner: wallet.address, rate: Math.floor(rateLicn * 1_000_000_000) },
                     value: 0
                 }));
 
@@ -1561,27 +1561,27 @@ async function loadValidatorRewards(address) {
         const displayPending = Number(pending) > 0 ? pending : projectedPending;
         const displayTotal = Number(totalEarned) > 0 ? totalEarned : projectedPending;
 
-        document.getElementById('rewardsTotalEarned').textContent = formatMolt(displayTotal);
+        document.getElementById('rewardsTotalEarned').textContent = formatLicn(displayTotal);
         const pendingLabel = document.getElementById('rewardsPendingLabel');
         if (Number(pending) > 0) {
-            document.getElementById('rewardsPending').textContent = formatMolt(pending);
-            if (pendingLabel) pendingLabel.innerHTML = '<i class="fas fa-hourglass-half" style="color: #FF9800;"></i> Settled Unclaimed Rewards';
+            document.getElementById('rewardsPending').textContent = formatLicn(pending);
+            if (pendingLabel) pendingLabel.innerHTML = '<i class="fas fa-hourglass-half" style="color: #00B8CC;"></i> Settled Unclaimed Rewards';
         } else {
-            document.getElementById('rewardsPending').textContent = '~' + formatMolt(projectedPending) + ' (projected)';
-            if (pendingLabel) pendingLabel.innerHTML = '<i class="fas fa-chart-line" style="color: #FF9800;"></i> Estimated Pending (settles at epoch)';
+            document.getElementById('rewardsPending').textContent = '~' + formatLicn(projectedPending) + ' (projected)';
+            if (pendingLabel) pendingLabel.innerHTML = '<i class="fas fa-chart-line" style="color: #00B8CC;"></i> Estimated Pending (settles at epoch)';
         }
-        document.getElementById('rewardsClaimed').textContent = formatMolt(claimed);
+        document.getElementById('rewardsClaimed').textContent = formatLicn(claimed);
 
         // Reward rate is a projected base accrual signal, not a continuously minted payout.
-        const rateLabel = Number(debt) > 0 ? ' MOLT/slot (base estimate)' : ' MOLT/slot base estimate';
-        document.getElementById('rewardsRate').textContent = formatMoltExact(parseFloat(rate) || 0) + rateLabel;
+        const rateLabel = Number(debt) > 0 ? ' LICN/slot (base estimate)' : ' LICN/slot base estimate';
+        document.getElementById('rewardsRate').textContent = formatLicnExact(parseFloat(rate) || 0) + rateLabel;
 
         const blocksEl = document.getElementById('rewardsBlocksProduced');
         if (blocksEl) blocksEl.textContent = blocksProduced.toLocaleString();
 
         // Debt section
-        document.getElementById('rewardsDebt').textContent = formatMolt(debt);
-        document.getElementById('rewardsDebtRepaid').textContent = formatMolt(earned);
+        document.getElementById('rewardsDebt').textContent = formatLicn(debt);
+        document.getElementById('rewardsDebtRepaid').textContent = formatLicn(earned);
 
         const vestingPct = Math.min(100, Math.max(0, (typeof vesting === 'number' ? vesting * 100 : parseFloat(vesting) * 100) || 0));
         const vestingLabel = vestingPct > 0 && vestingPct < 0.1 ? '< 0.1%' : vestingPct.toFixed(1) + '%';
@@ -1638,9 +1638,9 @@ async function loadTreasuryStats(address) {
                 <div class="detail-card-body">
                     <div class="detail-row"><span class="detail-label">Role</span><span class="detail-value">Network treasury - receives fee revenue, funds faucet airdrops</span></div>
                     <div class="detail-row"><span class="detail-label">Faucet Airdrops</span><span class="detail-value" id="treasuryAirdrops">${airdropCount}</span></div>
-                    <div class="detail-row"><span class="detail-label">Total Airdropped</span><span class="detail-value" id="treasuryTotalAirdropped">${formatMoltExact(totalAirdropped)} MOLT</span></div>
+                    <div class="detail-row"><span class="detail-label">Total Airdropped</span><span class="detail-value" id="treasuryTotalAirdropped">${formatLicnExact(totalAirdropped)} LICN</span></div>
                     <div class="detail-row"><span class="detail-label">Unique Recipients</span><span class="detail-value" id="treasuryRecipients">${uniqueRecipients.size}</span></div>
-                    <div class="detail-row"><span class="detail-label">Fee Revenue (est.)</span><span class="detail-value" id="treasuryFeeRevenue">${formatMoltExact(feeRevenue)} MOLT</span></div>
+                    <div class="detail-row"><span class="detail-label">Fee Revenue (est.)</span><span class="detail-value" id="treasuryFeeRevenue">${formatLicnExact(feeRevenue)} LICN</span></div>
                 </div>
             `;
             // Insert after the first detail card
@@ -1674,18 +1674,18 @@ async function fetchAccountFromRPC(address) {
     return {
         address: accountData?.pubkey || address,
         base58: accountData?.pubkey || address,
-        evm: accountData?.evm_address || moltchainToEvmAddress(address),
-        shells: balanceData.shells,
-        molt: parseFloat(balanceData.molt),
-        spendable: parseFloat(balanceData.spendable_molt),
-        staked: parseFloat(balanceData.staked_molt),
-        locked: parseFloat(balanceData.locked_molt),
-        reefStaked: parseFloat(balanceData.reef_staked_molt || '0'),
-        reefValue: parseFloat(balanceData.reef_value_molt || '0'),
+        evm: accountData?.evm_address || lichenToEvmAddress(address),
+        spores: balanceData.spores,
+        licn: parseFloat(balanceData.licn),
+        spendable: parseFloat(balanceData.spendable_licn),
+        staked: parseFloat(balanceData.staked_licn),
+        locked: parseFloat(balanceData.locked_licn),
+        mossStaked: parseFloat(balanceData.moss_staked_licn || '0'),
+        mossValue: parseFloat(balanceData.moss_value_licn || '0'),
         owner: accountData?.owner || (typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111'),
         executable: accountData?.executable || false,
         data_len: accountData?.data_len || 0,
-        active: balanceData.shells > 0,
+        active: balanceData.spores > 0,
         txCount,
         tokens,
         type: accountData?.executable ? 'Program' : 'User'
@@ -1695,9 +1695,9 @@ async function fetchAccountFromRPC(address) {
 function createEmptyAccountData(address) {
     return {
         address, base58: address,
-        evm: moltchainToEvmAddress(address) || 'Unavailable',
-        shells: 0, molt: 0, spendable: 0, staked: 0, locked: 0,
-        reefStaked: 0, reefValue: 0,
+        evm: lichenToEvmAddress(address) || 'Unavailable',
+        spores: 0, licn: 0, spendable: 0, staked: 0, locked: 0,
+        mossStaked: 0, mossValue: 0,
         data: [], owner: typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111',
         executable: false, rentEpoch: 0, txCount: 0, tokens: [], type: 'User', active: false
     };
@@ -1716,7 +1716,7 @@ function displayAddressData(data) {
         }
     }
 
-    document.getElementById('addressBalance').textContent = `${formatMoltExact(data.molt)} MOLT`;
+    document.getElementById('addressBalance').textContent = `${formatLicnExact(data.licn)} LICN`;
     document.getElementById('tokenBalance').textContent =
         data.tokens?.length > 0 ? `${data.tokens.length} tokens` : '0 tokens';
     document.getElementById('txCount').textContent = formatNumber(data.txCount);
@@ -1730,35 +1730,35 @@ function displayAddressData(data) {
         document.getElementById('addressEVM').setAttribute('data-full', data.evm);
         document.getElementById('addressEVM').title = data.evm;
     }
-    document.getElementById('balanceMolt').textContent = `${formatMoltExact(data.molt)} MOLT`;
-    document.getElementById('balanceShells').textContent = `${formatNumber(data.shells)} shells`;
+    document.getElementById('balanceLicn').textContent = `${formatLicnExact(data.licn)} LICN`;
+    document.getElementById('balanceSpores').textContent = `${formatNumber(data.spores)} spores`;
 
-    document.getElementById('spendableMolt').textContent = `${formatMoltExact(data.spendable)} MOLT`;
-    document.getElementById('stakedMolt').textContent = `${formatMoltExact(data.staked)} MOLT`;
-    document.getElementById('lockedMolt').textContent = `${formatMoltExact(data.locked)} MOLT`;
+    document.getElementById('spendableLicn').textContent = `${formatLicnExact(data.spendable)} LICN`;
+    document.getElementById('stakedLicn').textContent = `${formatLicnExact(data.staked)} LICN`;
+    document.getElementById('lockedLicn').textContent = `${formatLicnExact(data.locked)} LICN`;
 
-    // ReefStake liquid staking display
-    let reefStakedEl = document.getElementById('reefStakedMolt');
-    if (!reefStakedEl) {
-        // Inject ReefStake row after staked row
-        const stakedEl = document.getElementById('stakedMolt');
+    // MossStake liquid staking display
+    let mossStakedEl = document.getElementById('mossStakedLicn');
+    if (!mossStakedEl) {
+        // Inject MossStake row after staked row
+        const stakedEl = document.getElementById('stakedLicn');
         if (stakedEl) {
             const parentRow = stakedEl.closest('.detail-row') || stakedEl.parentElement;
             if (parentRow && parentRow.parentElement) {
-                const reefRow = document.createElement('div');
-                reefRow.className = parentRow.className;
-                reefRow.innerHTML = `
-                    <div class="detail-label">ReefStake (Liquid)</div>
-                    <div class="detail-value" id="reefStakedMolt">0 MOLT</div>
+                const mossRow = document.createElement('div');
+                mossRow.className = parentRow.className;
+                mossRow.innerHTML = `
+                    <div class="detail-label">MossStake (Liquid)</div>
+                    <div class="detail-value" id="mossStakedLicn">0 LICN</div>
                 `;
-                parentRow.parentElement.insertBefore(reefRow, parentRow.nextSibling);
-                reefStakedEl = document.getElementById('reefStakedMolt');
+                parentRow.parentElement.insertBefore(mossRow, parentRow.nextSibling);
+                mossStakedEl = document.getElementById('mossStakedLicn');
             }
         }
     }
-    if (reefStakedEl) {
-        const reefVal = data.reefValue || data.reefStaked || 0;
-        reefStakedEl.textContent = reefVal > 0 ? `${formatMoltExact(reefVal)} MOLT` : '0 MOLT';
+    if (mossStakedEl) {
+        const mossVal = data.mossValue || data.mossStaked || 0;
+        mossStakedEl.textContent = mossVal > 0 ? `${formatLicnExact(mossVal)} LICN` : '0 LICN';
     }
 
     const ownerEl = document.getElementById('ownerProgram');
@@ -1932,10 +1932,10 @@ function displayTransactions(transactions) {
         const txType = tx.type || tx.kind || 'Unknown';
         // Display-friendly type names
         const txTypeDisplayMap = {
-            'ReefStakeDeposit': 'ReefStake',
-            'ReefStakeUnstake': 'ReefStake Unstake',
-            'ReefStakeClaim': 'ReefStake Claim',
-            'ReefStakeTransfer': 'stMOLT Transfer',
+            'MossStakeDeposit': 'MossStake',
+            'MossStakeUnstake': 'MossStake Unstake',
+            'MossStakeClaim': 'MossStake Claim',
+            'MossStakeTransfer': 'stLICN Transfer',
             'Shield': 'Shield',
             'Unshield': 'Unshield',
             'ShieldedTransfer': 'Shielded Transfer',
@@ -1954,7 +1954,7 @@ function displayTransactions(transactions) {
             'GenesisMint': 'Mint',
         };
         const txTypeDisplay = txTypeDisplayMap[txType] || txType;
-        const rawAmount = tx.amount ?? tx.value ?? (tx.amount_shells !== undefined ? Number(tx.amount_shells) / 1_000_000_000 : 0);
+        const rawAmount = tx.amount ?? tx.value ?? (tx.amount_spores !== undefined ? Number(tx.amount_spores) / 1_000_000_000 : 0);
         const txAmount = Number(rawAmount || 0);
         let effectiveOutgoing = isOutgoing;
         if (txType === 'Unshield') {
@@ -1978,7 +1978,7 @@ function displayTransactions(transactions) {
             ? 'Hidden'
             : tx.token_symbol
                 ? `${signedPrefix}${formatNumber(tx.token_amount || 0)} ${tx.token_symbol}`
-                : `${signedPrefix}${formatMoltExact(txAmount)} MOLT`;
+                : `${signedPrefix}${formatLicnExact(txAmount)} LICN`;
         const success = tx.success !== undefined
             ? !!tx.success
             : String(tx.status || '').toLowerCase() !== 'failed';

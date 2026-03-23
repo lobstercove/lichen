@@ -4,7 +4,7 @@
 
 set -e
 
-echo "🦞 MoltChain - Complete SDK Coverage Test"
+echo "🦞 Lichen - Complete SDK Coverage Test"
 echo "========================================================================"
 echo ""
 

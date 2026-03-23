@@ -48,13 +48,13 @@ function formatNum(n) {
     return n.toLocaleString();
 }
 
-const SHELLS_PER_MOLT = 1000000000;
-function formatMolt(shells) {
-    const molt = shells / SHELLS_PER_MOLT;
-    if (molt >= 1e9) return (molt / 1e9).toFixed(2) + 'B';
-    if (molt >= 1e6) return (molt / 1e6).toFixed(2) + 'M';
-    if (molt >= 1e3) return (molt / 1e3).toFixed(1) + 'K';
-    return molt.toFixed(2);
+const SPORES_PER_LICN = 1000000000;
+function formatLicn(spores) {
+    const licn = spores / SPORES_PER_LICN;
+    if (licn >= 1e9) return (licn / 1e9).toFixed(2) + 'B';
+    if (licn >= 1e6) return (licn / 1e6).toFixed(2) + 'M';
+    if (licn >= 1e3) return (licn / 1e3).toFixed(1) + 'K';
+    return licn.toFixed(2);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

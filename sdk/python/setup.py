@@ -4,17 +4,17 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="moltchain-sdk",
+    name="lichen-sdk",
     version="0.1.0",
-    author="Trading Lobster",
-    author_email="trading.lobster@moltchain.io",
-    description="Official Python SDK for MoltChain blockchain",
+    author="Lichen Labs",
+    author_email="hello@lichen.network",
+    description="Official Python SDK for Lichen blockchain",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/lobstercove/moltchain",
+    url="https://github.com/lobstercove/lichen",
     project_urls={
-        "Bug Tracker": "https://github.com/lobstercove/moltchain/issues",
-        "Documentation": "https://developers.moltchain.network",
+        "Bug Tracker": "https://github.com/lobstercove/lichen/issues",
+        "Documentation": "https://developers.lichen.network",
     },
     classifiers=[
         "Development Status :: 4 - Beta",

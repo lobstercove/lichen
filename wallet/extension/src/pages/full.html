@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>MoltWallet — Full View</title>
+    <title>LichenWallet — Full View</title>
     <link rel="stylesheet" href="../styles/shared-base-styles.css">
     <link rel="stylesheet" href="../styles/shared-theme.css">
     <link rel="stylesheet" href="../styles/wallet.css">
@@ -16,10 +16,10 @@
     <div id="welcomeScreen" class="wallet-screen welcome-screen">
         <div class="wallet-container welcome-container">
             <div class="welcome-logo">
-                <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-                <h1>MoltWallet</h1>
+                <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet">
+                <h1>LichenWallet</h1>
             </div>
-            <p class="welcome-subtitle">Your gateway to the MoltChain ecosystem</p>
+            <p class="welcome-subtitle">Your gateway to the Lichen ecosystem</p>
 
             <div class="welcome-carousel">
                 <div class="carousel-track">
@@ -47,8 +47,8 @@
                     <div class="carousel-slide">
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
-                            <h3>MoltyID Identity</h3>
-                            <p>.molt naming, skill attestations, 0–100K reputation score</p>
+                            <h3>LichenID Identity</h3>
+                            <p>.lichen naming, skill attestations, 0–100K reputation score</p>
                         </div>
                     </div>
                     <div class="carousel-slide">
@@ -84,8 +84,8 @@
         <div class="wallet-container" style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
             <div class="unlock-card">
                 <div class="welcome-logo">
-                    <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet" style="width:64px;height:64px;">
-                    <h1>MoltWallet</h1>
+                    <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet" style="width:64px;height:64px;">
+                    <h1>LichenWallet</h1>
                 </div>
                 <p class="unlock-greeting">Welcome back!</p>
                 <div class="unlock-form">
@@ -292,8 +292,8 @@
         <nav class="wallet-nav">
             <div class="nav-container">
                 <div class="nav-logo">
-                    <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-                    <span class="logo-text">MoltWallet</span>
+                    <img src="../../LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet">
+                    <span class="logo-text">LichenWallet</span>
                 </div>
 
                 <div class="nav-selectors">
@@ -332,7 +332,7 @@
                             <i class="fas fa-sync-alt"></i>
                         </button>
                     </div>
-                    <div class="balance-amount" id="totalBalance">0.00 MOLT</div>
+                    <div class="balance-amount" id="totalBalance">0.00 LICN</div>
                     <div class="balance-usd" id="balanceUsd">$0.00 USD</div>
 
                     <div class="balance-actions">
@@ -388,7 +388,7 @@
                             <i class="fas fa-gem" style="color: #a855f7;"></i>
                             NFT Collection
                         </h3>
-                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Collect, trade, and showcase your digital collectibles on MoltChain.</p>
+                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Collect, trade, and showcase your digital collectibles on Lichen.</p>
                     </div>
 
                     <div class="nfts-header">
@@ -426,7 +426,7 @@
 
                 <div class="tab-content" data-tab="identity">
                     <div id="identityContent">
-                        <!-- MoltyID identity loaded dynamically -->
+                        <!-- LichenID identity loaded dynamically -->
                     </div>
                 </div>
 
@@ -446,7 +446,7 @@
                 <div class="form-group">
                     <label>Token</label>
                     <select id="sendToken" class="form-input">
-                        <option value="MOLT">MOLT</option>
+                        <option value="LICN">LICN</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -467,7 +467,7 @@
                 </div>
                 <div class="fee-estimate">
                     <span>Network Fee</span>
-                    <span>0.001 MOLT</span>
+                    <span>0.001 LICN</span>
                 </div>
             </div>
             <div class="modal-footer">
@@ -498,7 +498,7 @@
                 <!-- Receive Tab -->
                 <div class="receive-tab-content active" id="receiveTabContent" data-tab="receive">
                     <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.5rem; font-size: 0.95rem;">
-                        Receive MOLT and all MoltChain tokens
+                        Receive LICN and all Lichen tokens
                     </p>
 
                     <div class="qr-code" id="qrCode"></div>
@@ -531,14 +531,14 @@
 
                     <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
                         <i class="fas fa-info-circle" style="color: #4ade80;"></i>
-                        Both addresses work! Use Base58 for MoltChain/Solana wallets, 0x for MetaMask/Ethereum wallets
+                        Both addresses work! Use Base58 for Lichen/Solana wallets, 0x for MetaMask/Ethereum wallets
                     </div>
                 </div>
 
                 <!-- Deposit Tab -->
                 <div class="receive-tab-content" id="depositTabContent" data-tab="deposit" style="display: none;">
                     <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem;">
-                        Deposit assets to your MoltChain wallet via bridge
+                        Deposit assets to your Lichen wallet via bridge
                     </p>
 
                     <div class="deposit-options">
@@ -576,7 +576,7 @@
                         </div>
 
                         <div class="deposit-card disabled">
-                            <div class="deposit-card-icon" style="background: rgba(255, 107, 53, 0.12); color: var(--primary);">
+                            <div class="deposit-card-icon" style="background: rgba(0, 201, 219, 0.12); color: var(--primary);">
                                 <i class="fas fa-credit-card"></i>
                             </div>
                             <div class="deposit-card-info">
@@ -587,7 +587,7 @@
                         </div>
                     </div>
 
-                    <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(255, 107, 53, 0.08); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+                    <div style="text-align: center; margin-top: 1.5rem; padding: 0.75rem; background: rgba(0, 201, 219, 0.08); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
                         <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
                         Bridge contracts are audited. Deposits typically confirm in 2-5 minutes.
                     </div>
@@ -658,11 +658,11 @@
                         </div>
                         <div class="form-group">
                             <label>Mainnet RPC</label>
-                            <input type="text" id="mainnetRPC" class="form-input" placeholder="https://rpc.moltchain.network">
+                            <input type="text" id="mainnetRPC" class="form-input" placeholder="https://rpc.lichen.network">
                         </div>
                         <div class="form-group">
                             <label>Testnet RPC</label>
-                            <input type="text" id="testnetRPC" class="form-input" placeholder="https://testnet-rpc.moltchain.network">
+                            <input type="text" id="testnetRPC" class="form-input" placeholder="https://testnet-rpc.lichen.network">
                         </div>
                         <button class="btn btn-primary" id="saveNetworkBtn">
                             <i class="fas fa-save"></i> Save Changes
@@ -719,7 +719,7 @@
                         <div class="form-group">
                             <label>
                                 Display Decimals
-                                <span class="tooltip-icon" title="MoltChain uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i class="fas fa-info-circle"></i></span>
+                                <span class="tooltip-icon" title="Lichen uses 9 decimals (like Solana), but you can choose how many to show in the UI for readability"><i class="fas fa-info-circle"></i></span>
                             </label>
                             <select id="decimalPlaces" class="form-input">
                                 <option value="2">2 decimals (0.00)</option>
@@ -727,7 +727,7 @@
                                 <option value="6" selected>6 decimals (0.000000)</option>
                                 <option value="9">9 decimals (0.000000000)</option>
                             </select>
-                            <small class="form-hint">Controls UI display only. MoltChain has 9-decimal precision.</small>
+                            <small class="form-hint">Controls UI display only. Lichen has 9-decimal precision.</small>
                         </div>
                     </div>
                 </div>
@@ -780,10 +780,10 @@
                     <div class="settings-card-body">
                         <div class="settings-info-list">
                             <div class="settings-info-item"><span>Version</span><strong>1.0.0</strong></div>
-                            <div class="settings-info-item"><span>Network</span><strong>MoltChain</strong></div>
+                            <div class="settings-info-item"><span>Network</span><strong>Lichen</strong></div>
                             <div class="settings-info-item"><span>License</span><strong>MIT</strong></div>
                         </div>
-                        <a href="https://github.com/lobstercove/moltchain" target="_blank" class="settings-link">
+                        <a href="https://github.com/lobstercove/lichen" target="_blank" class="settings-link">
                             <i class="fas fa-external-link-alt"></i> View on GitHub
                         </a>
                     </div>

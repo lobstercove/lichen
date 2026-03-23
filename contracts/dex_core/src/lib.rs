@@ -9,7 +9,7 @@
 //   - Maker rebates (-1 bps), taker fees (5 bps default)
 //   - Emergency pause, reentrancy guard, admin controls
 //   - Order expiry enforcement, dust order filtering
-//   - MoltyID integration for identity verification
+//   - LichenID integration for identity verification
 //
 // Storage layout:
 //   dex_admin                              → [u8; 32]
@@ -28,7 +28,7 @@
 //   dex_trade_count                        → u64
 //   dex_trade_{id}                         → Trade (80 bytes)
 //   dex_fee_treasury                       → u64 (accumulated protocol fees)
-//   dex_moltyid_address                    → [u8; 32]
+//   dex_lichenid_address                    → [u8; 32]
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -42,7 +42,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
     u64_to_bytes, Address, CrossCall,
 };
@@ -52,8 +52,8 @@ use moltchain_sdk::{
 // ============================================================================
 
 const MAX_PAIRS: u64 = 50;
-const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M MOLT max order ($1M at $0.10)
-const MIN_ORDER_VALUE: u64 = 1_000; // minimum 1000 shells
+const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M LICN max order ($1M at $0.10)
+const MIN_ORDER_VALUE: u64 = 1_000; // minimum 1000 spores
 const MAX_OPEN_ORDERS_PER_USER: u64 = 100;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate
 const DEFAULT_TAKER_FEE_BPS: u64 = 5; // 0.05%
@@ -61,7 +61,7 @@ const MAX_FEE_BPS: u64 = 100; // 1% max
 const FEE_PROTOCOL_SHARE: u64 = 60; // 60% to protocol
 const FEE_LP_SHARE: u64 = 20; // 20% to LPs
 const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
-const MIN_FEE_PER_TRADE: u64 = 1; // 1 shell minimum
+const MIN_FEE_PER_TRADE: u64 = 1; // 1 spore minimum
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
                                          // F18.2: Analytics cross-contract call — record trades after settlement
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
@@ -1011,7 +1011,7 @@ fn is_allowed_quote(addr: &[u8; 32]) -> bool {
 
 /// Set the preferred quote token address (admin only).
 /// Legacy API — clears allowed quotes list and sets a single allowed quote.
-/// Use add_allowed_quote() for multi-quote support (e.g. mUSD + MOLT).
+/// Use add_allowed_quote() for multi-quote support (e.g. lUSD + LICN).
 /// Returns: 0=success, 1=not admin, 2=zero address
 pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -1189,7 +1189,7 @@ pub fn create_pair(
         }
     }
 
-    // Enforce allowed quote tokens (supports multiple: e.g. mUSD + MOLT)
+    // Enforce allowed quote tokens (supports multiple: e.g. lUSD + LICN)
     if !is_allowed_quote(&qt) {
         reentrancy_exit();
         log_info("create_pair rejected: quote token not in allowed quotes list");
@@ -1790,7 +1790,7 @@ pub fn swap_exact_in(
     let trade_end = load_u64(TRADE_COUNT_KEY);
     let actual_out = sum_taker_output(trade_start, trade_end, pair_id, &trader_addr, side);
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(actual_out));
+    lichen_sdk::set_return_data(&u64_to_bytes(actual_out));
     log_info("DEX Core exact-input swap executed");
     reentrancy_exit();
     0
@@ -2426,7 +2426,7 @@ pub fn get_order(order_id: u64) -> u64 {
     let ok = order_key(order_id);
     match storage_get(&ok) {
         Some(d) if d.len() >= ORDER_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             decode_order_id(&d)
         }
         _ => 0,
@@ -2463,7 +2463,7 @@ pub fn get_pair_info(pair_id: u64) -> u64 {
     let pk = pair_key(pair_id);
     match storage_get(&pk) {
         Some(d) if d.len() >= PAIR_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             pair_id
         }
         _ => 0,
@@ -2488,7 +2488,7 @@ pub fn get_fee_treasury() -> u64 {
 /// Get the preferred quote token address (returns all zeros if not set)
 pub fn get_preferred_quote() -> u64 {
     let addr = load_addr(PREFERRED_QUOTE_KEY);
-    moltchain_sdk::set_return_data(&addr);
+    lichen_sdk::set_return_data(&addr);
     if is_zero(&addr) {
         0
     } else {
@@ -2603,7 +2603,7 @@ pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -2613,7 +2613,7 @@ pub extern "C" fn call() {
             // initialize
             if args.len() >= 33 {
                 let result = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         1 => {
@@ -2627,7 +2627,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[105..113]),
                     bytes_to_u64(&args[113..121]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         2 => {
@@ -2648,26 +2648,26 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[59..67]),
                     trigger_price,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         3 => {
             // cancel_order
             if args.len() >= 1 + 32 + 8 {
                 let result = cancel_order(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         4 => {
             // set_preferred_quote
             if args.len() >= 1 + 32 + 32 {
                 let result = set_preferred_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         5 => {
             // get_pair_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_pair_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_pair_count()));
         }
         6 => {
             // get_preferred_quote
@@ -2684,27 +2684,27 @@ pub extern "C" fn call() {
                     maker,
                     taker,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         8 => {
             // emergency_pause
             if args.len() >= 33 {
                 let result = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         9 => {
             // emergency_unpause
             if args.len() >= 33 {
                 let result = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         10 => {
             // get_best_bid
             if args.len() >= 9 {
-                moltchain_sdk::set_return_data(&u64_to_bytes(get_best_bid(bytes_to_u64(
+                lichen_sdk::set_return_data(&u64_to_bytes(get_best_bid(bytes_to_u64(
                     &args[1..9],
                 ))));
             }
@@ -2712,7 +2712,7 @@ pub extern "C" fn call() {
         11 => {
             // get_best_ask
             if args.len() >= 9 {
-                moltchain_sdk::set_return_data(&u64_to_bytes(get_best_ask(bytes_to_u64(
+                lichen_sdk::set_return_data(&u64_to_bytes(get_best_ask(bytes_to_u64(
                     &args[1..9],
                 ))));
             }
@@ -2720,7 +2720,7 @@ pub extern "C" fn call() {
         12 => {
             // get_spread
             if args.len() >= 9 {
-                moltchain_sdk::set_return_data(&u64_to_bytes(get_spread(bytes_to_u64(
+                lichen_sdk::set_return_data(&u64_to_bytes(get_spread(bytes_to_u64(
                     &args[1..9],
                 ))));
             }
@@ -2733,11 +2733,11 @@ pub extern "C" fn call() {
         }
         14 => {
             // get_trade_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_trade_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_trade_count()));
         }
         15 => {
             // get_fee_treasury
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_fee_treasury()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_fee_treasury()));
         }
         16 => {
             // modify_order
@@ -2748,28 +2748,28 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                     bytes_to_u64(&args[49..57]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         17 => {
             // cancel_all_orders
             if args.len() >= 1 + 32 + 8 {
                 let result = cancel_all_orders(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         18 => {
             // pause_pair
             if args.len() >= 1 + 32 + 8 {
                 let result = pause_pair(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         19 => {
             // unpause_pair
             if args.len() >= 1 + 32 + 8 {
                 let result = unpause_pair(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         20 => {
@@ -2782,31 +2782,31 @@ pub extern "C" fn call() {
             // add_allowed_quote(caller[32] + quote_addr[32])
             if args.len() >= 1 + 32 + 32 {
                 let result = add_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         22 => {
             // remove_allowed_quote(caller[32] + quote_addr[32])
             if args.len() >= 1 + 32 + 32 {
                 let result = remove_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         23 => {
             // get_allowed_quote_count
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
         }
         24 => {
             // AUDIT-FIX M12: execute_unpause — completes a previously scheduled unpause
             // after the timelock (UNPAUSE_TIMELOCK_SLOTS) has elapsed.
             if args.len() >= 33 {
                 let result = execute_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         25 => {
             // get_total_volume — returns cumulative total notional volume traded
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         26 => {
             // get_user_orders — returns all open order IDs for a user address
@@ -2822,7 +2822,7 @@ pub extern "C" fn call() {
                         .unwrap_or(0);
                     result.extend_from_slice(&u64_to_bytes(oid));
                 }
-                moltchain_sdk::set_return_data(&result);
+                lichen_sdk::set_return_data(&result);
             }
         }
         27 => {
@@ -2830,14 +2830,14 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
                 let count = load_u64(&user_order_count_key(&addr));
-                moltchain_sdk::set_return_data(&u64_to_bytes(count));
+                lichen_sdk::set_return_data(&u64_to_bytes(count));
             }
         }
         // 28 = F18.2: set_analytics_address(caller[32], analytics_addr[32])
         28 => {
             if args.len() >= 65 {
                 let r = set_analytics_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         29 => {
@@ -2846,14 +2846,14 @@ pub extern "C" fn call() {
             if args.len() >= 17 {
                 let triggered =
                     check_triggers(bytes_to_u64(&args[1..9]), bytes_to_u64(&args[9..17]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(triggered));
+                lichen_sdk::set_return_data(&u64_to_bytes(triggered));
             }
         }
         // 30 = G2-04: set_margin_address(caller[32], margin_addr[32])
         30 => {
             if args.len() >= 65 {
                 let r = set_margin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         31 => {
@@ -2867,11 +2867,11 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[81..89]),
                     bytes_to_u64(&args[89..97]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -2884,7 +2884,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();
@@ -3268,7 +3268,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
-        // min_order = 1000 shells notional
+        // min_order = 1000 spores notional
         // notional = 1000 * 100 / 1e9 = 0 — below min
         assert_eq!(
             place_order(
@@ -3854,9 +3854,9 @@ mod tests {
 
     #[test]
     fn test_fee_calculation() {
-        // 1000 shells notional at 5 bps = 0.5 → rounds to MIN_FEE_PER_TRADE = 1
+        // 1000 spores notional at 5 bps = 0.5 → rounds to MIN_FEE_PER_TRADE = 1
         assert_eq!(calculate_taker_fee(1000, 5), 1);
-        // 1_000_000 shells notional at 5 bps = 500
+        // 1_000_000 spores notional at 5 bps = 500
         assert_eq!(calculate_taker_fee(1_000_000, 5), 500);
         // Maker rebate: 1_000_000 at -1 bps = 100
         assert_eq!(calculate_maker_rebate(1_000_000, -1), 100);
@@ -4130,7 +4130,7 @@ mod tests {
         assert_eq!(get_pair_count(), 1);
     }
 
-    // --- Preferred quote currency (mUSD enforcement) ---
+    // --- Preferred quote currency (lUSD enforcement) ---
 
     #[test]
     fn test_set_preferred_quote() {
@@ -4195,9 +4195,9 @@ mod tests {
     fn test_add_allowed_quote() {
         let admin = setup();
         let musd = [42u8; 32];
-        let molt = [43u8; 32];
+        let licn = [43u8; 32];
         assert_eq!(add_allowed_quote(admin.as_ptr(), musd.as_ptr()), 0);
-        assert_eq!(add_allowed_quote(admin.as_ptr(), molt.as_ptr()), 0);
+        assert_eq!(add_allowed_quote(admin.as_ptr(), licn.as_ptr()), 0);
         assert_eq!(get_allowed_quote_count(), 2);
         // Duplicate rejected
         assert_eq!(add_allowed_quote(admin.as_ptr(), musd.as_ptr()), 3);
@@ -4207,9 +4207,9 @@ mod tests {
     fn test_remove_allowed_quote() {
         let admin = setup();
         let musd = [42u8; 32];
-        let molt = [43u8; 32];
+        let licn = [43u8; 32];
         add_allowed_quote(admin.as_ptr(), musd.as_ptr());
-        add_allowed_quote(admin.as_ptr(), molt.as_ptr());
+        add_allowed_quote(admin.as_ptr(), licn.as_ptr());
         assert_eq!(get_allowed_quote_count(), 2);
         assert_eq!(remove_allowed_quote(admin.as_ptr(), musd.as_ptr()), 0);
         assert_eq!(get_allowed_quote_count(), 1);
@@ -4221,15 +4221,15 @@ mod tests {
     fn test_dual_quote_enforcement() {
         let admin = setup();
         let musd = [42u8; 32];
-        let molt = [43u8; 32];
+        let licn = [43u8; 32];
         let wrong = [99u8; 32];
-        // Add both mUSD and MOLT as allowed quotes
+        // Add both lUSD and LICN as allowed quotes
         add_allowed_quote(admin.as_ptr(), musd.as_ptr());
-        add_allowed_quote(admin.as_ptr(), molt.as_ptr());
+        add_allowed_quote(admin.as_ptr(), licn.as_ptr());
         let base1 = [10u8; 32];
         let base2 = [11u8; 32];
         let base3 = [12u8; 32];
-        // TOKEN/mUSD → OK
+        // TOKEN/lUSD → OK
         assert_eq!(
             create_pair(
                 admin.as_ptr(),
@@ -4241,12 +4241,12 @@ mod tests {
             ),
             0
         );
-        // TOKEN/MOLT → OK
+        // TOKEN/LICN → OK
         assert_eq!(
             create_pair(
                 admin.as_ptr(),
                 base2.as_ptr(),
-                molt.as_ptr(),
+                licn.as_ptr(),
                 1000,
                 100,
                 1000

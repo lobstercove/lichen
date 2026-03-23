@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoltChain Seed Node Setup
+# Lichen Seed Node Setup
 # Deploy and configure a seed node for network bootstrapping
 
 set -e
@@ -16,7 +16,7 @@ PURPLE='\033[0;35m'
 NC='\033[0m'
 
 # Default values
-SEED_HOME="$HOME/.moltchain-seed"
+SEED_HOME="$HOME/.lichen-seed"
 NETWORK="testnet"
 DOMAIN=""
 PUBLIC_IP=""
@@ -29,7 +29,7 @@ ENABLE_MONITORING=true
 print_header() {
     echo -e "${PURPLE}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🦞 MoltChain Seed Node Setup"
+    echo "🦞 Lichen Seed Node Setup"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo -e "${NC}"
 }
@@ -45,15 +45,15 @@ print_step() {
 
 usage() {
     cat <<EOF
-🦞 MoltChain Seed Node Setup
+🦞 Lichen Seed Node Setup
 
 USAGE:
     $0 [OPTIONS]
 
 OPTIONS:
     --network <testnet|mainnet>    Network (default: testnet)
-    --home <PATH>                  Seed node home directory (default: ~/.moltchain-seed)
-    --domain <DOMAIN>              Public domain name (e.g., seed1.moltchain.network)
+    --home <PATH>                  Seed node home directory (default: ~/.lichen-seed)
+    --domain <DOMAIN>              Public domain name (e.g., seed1.lichen.network)
     --public-ip <IP>               Public IP address (auto-detected if not provided)
     --p2p-port <PORT>              P2P port (default: 7001)
     --rpc-port <PORT>              RPC port (default: 8899)
@@ -64,10 +64,10 @@ OPTIONS:
 
 EXAMPLES:
     # Basic seed node
-    $0 --network testnet --domain seed1.testnet.moltchain.network
+    $0 --network testnet --domain seed1.testnet.lichen.network
 
     # Production seed with monitoring
-    $0 --network mainnet --domain seed1.moltchain.network --enable-public-rpc --install-service
+    $0 --network mainnet --domain seed1.lichen.network --enable-public-rpc --install-service
 
 EOF
     exit 0
@@ -121,7 +121,7 @@ echo ""
 print_step "Prerequisites check"
 
 # Check if validator binary exists
-if [ ! -f "$PROJECT_ROOT/target/release/moltchain-validator" ]; then
+if [ ! -f "$PROJECT_ROOT/target/release/lichen-validator" ]; then
     print_error "Validator binary not found. Run: cargo build --release"
     exit 1
 fi
@@ -154,13 +154,13 @@ KEYPAIR_PATH="$SEED_HOME/seed-keypair.json"
 if [ -f "$KEYPAIR_PATH" ]; then
     print_warning "Keypair already exists: $KEYPAIR_PATH"
 else
-    "$PROJECT_ROOT/target/release/molt" init --output "$KEYPAIR_PATH"
+    "$PROJECT_ROOT/target/release/licn" init --output "$KEYPAIR_PATH"
     chmod 600 "$KEYPAIR_PATH"
     print_success "Seed keypair generated"
 fi
 
 # Get public key
-PUBKEY=$("$PROJECT_ROOT/target/release/molt" pubkey --keypair "$KEYPAIR_PATH" | grep "📍" | awk '{print $3}')
+PUBKEY=$("$PROJECT_ROOT/target/release/licn" pubkey --keypair "$KEYPAIR_PATH" | grep "📍" | awk '{print $3}')
 print_info "Seed node pubkey: $PUBKEY"
 
 # ============================================================================
@@ -201,7 +201,7 @@ if [ "$ENABLE_RPC_PUBLIC" = true ]; then
 fi
 
 cat > "$CONFIG_PATH" <<EOF
-# MoltChain Seed Node Configuration
+# Lichen Seed Node Configuration
 # Generated: $(date)
 # Network: ${NETWORK}
 
@@ -243,7 +243,7 @@ enable_health_check = true
 
 [genesis]
 genesis_path = "${GENESIS_PATH}"
-chain_id = "moltchain-${NETWORK}-1"
+chain_id = "lichen-${NETWORK}-1"
 
 [performance]
 worker_threads = 0  # Auto-detect
@@ -264,11 +264,11 @@ print_success "Configuration written"
 if [ "$INSTALL_SERVICE" = true ] && [ "$(uname)" = "Linux" ]; then
     print_step "Installing systemd service"
 
-    SERVICE_FILE="/etc/systemd/system/moltchain-seed.service"
+    SERVICE_FILE="/etc/systemd/system/lichen-seed.service"
     
     sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 [Unit]
-Description=MoltChain Seed Node (${NETWORK})
+Description=Lichen Seed Node (${NETWORK})
 After=network-online.target
 Wants=network-online.target
 
@@ -276,7 +276,7 @@ Wants=network-online.target
 Type=simple
 User=$USER
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$PROJECT_ROOT/target/release/moltchain-validator --genesis $GENESIS_PATH $P2P_PORT
+ExecStart=$PROJECT_ROOT/target/release/lichen-validator --genesis $GENESIS_PATH $P2P_PORT
 Restart=always
 RestartSec=5
 StandardOutput=append:$SEED_HOME/logs/seed.log
@@ -374,17 +374,17 @@ print_info "📋 Next Steps:"
 echo ""
 echo "1. Start the seed node:"
 if [ "$INSTALL_SERVICE" = true ]; then
-    echo "   sudo systemctl start moltchain-seed"
-    echo "   sudo systemctl enable moltchain-seed"
+    echo "   sudo systemctl start lichen-seed"
+    echo "   sudo systemctl enable lichen-seed"
 else
     echo "   cd $PROJECT_ROOT"
-    echo "   ./target/release/moltchain-validator --genesis $GENESIS_PATH $P2P_PORT"
+    echo "   ./target/release/lichen-validator --genesis $GENESIS_PATH $P2P_PORT"
 fi
 echo ""
 echo "2. Check status:"
 if [ "$INSTALL_SERVICE" = true ]; then
-    echo "   sudo systemctl status moltchain-seed"
-    echo "   sudo journalctl -u moltchain-seed -f"
+    echo "   sudo systemctl status lichen-seed"
+    echo "   sudo journalctl -u lichen-seed -f"
 else
     echo "   tail -f $SEED_HOME/logs/seed.log"
 fi

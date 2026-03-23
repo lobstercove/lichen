@@ -1,11 +1,11 @@
 {
-  "name": "MoltWallet",
-  "short_name": "MoltWallet",
-  "description": "Secure wallet for MoltChain - the agent-first blockchain",
+  "name": "LichenWallet",
+  "short_name": "LichenWallet",
+  "description": "Secure wallet for Lichen - the agent-first blockchain",
   "start_url": "/wallet/index.html",
   "display": "standalone",
   "background_color": "#0A0E27",
-  "theme_color": "#FF6B35",
+  "theme_color": "#00C9DB",
   "orientation": "portrait-primary",
   "icons": [
     {

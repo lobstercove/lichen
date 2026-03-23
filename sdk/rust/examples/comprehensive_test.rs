@@ -1,12 +1,12 @@
 //! Comprehensive Rust SDK test - All features
 //! Tests every RPC method and SDK capability
 
-use moltchain_client_sdk::{Client, Keypair, TransactionBuilder};
-use moltchain_core::{Instruction, Pubkey, Hash};
+use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::{Instruction, Pubkey, Hash};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🦞 MoltChain Rust SDK - Comprehensive Test");
+    println!("🦞 Lichen Rust SDK - Comprehensive Test");
     println!("==========================================\n");
     
     // Create client
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test getBalance
     print!("getBalance... ");
     match client.get_balance(&keypair.pubkey()).await {
-        Ok(balance) => println!("✅ Balance: {} MOLT", balance.molt()),
+        Ok(balance) => println!("✅ Balance: {} LICN", balance.licn()),
         Err(e) => println!("❌ ERROR: {}", e),
     }
     

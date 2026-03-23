@@ -1,17 +1,17 @@
 //! Standalone ZK trusted setup binary.
 //!
 //! Generates Groth16 proving/verification keys for all 3 shielded circuits
-//! (shield, unshield, transfer) and writes them to `~/.moltchain/zk/`.
+//! (shield, unshield, transfer) and writes them to `~/.lichen/zk/`.
 //!
 //! This binary is intentionally minimal — no tokio, no RocksDB, no network —
 //! so it gets maximum available memory for the Groth16 MSM/FFT computations.
 //!
 //! Usage:
-//!   zk-setup                    # Generate keys to ~/.moltchain/zk/
+//!   zk-setup                    # Generate keys to ~/.lichen/zk/
 //!   zk-setup --output /path     # Generate keys to custom directory
 //!   zk-setup --force            # Regenerate even if keys exist
 
-use moltchain_core::zk::setup;
+use lichen_core::zk::setup;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ fn main() {
 
     let mut output_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+        .join(".lichen")
         .join("zk");
     let mut force = false;
 
@@ -47,7 +47,7 @@ fn main() {
                 println!("Usage: zk-setup [OPTIONS]");
                 println!();
                 println!("Options:");
-                println!("  -o, --output <DIR>   Output directory (default: ~/.moltchain/zk/)");
+                println!("  -o, --output <DIR>   Output directory (default: ~/.lichen/zk/)");
                 println!("  -f, --force          Regenerate keys even if they already exist");
                 println!("  -h, --help           Show this help");
                 std::process::exit(0);
@@ -78,7 +78,7 @@ fn main() {
 
     println!("🔑 ZK Trusted Setup — Groth16/BN254");
     println!("   Output: {}", output_dir.display());
-    println!("   Tree depth: {}", moltchain_core::zk::TREE_DEPTH);
+    println!("   Tree depth: {}", lichen_core::zk::TREE_DEPTH);
     println!();
 
     // Generate each circuit sequentially to keep memory bounded.

@@ -1,4 +1,4 @@
-import { MoltChainRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { isValidAddress } from './crypto-service.js';
 
 const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb'];
@@ -7,7 +7,7 @@ const SUPPORTED_ASSETS = ['usdc', 'usdt', 'sol', 'eth', 'bnb'];
 export async function loadBridgeSnapshot(address, network) {
   if (!address) return null;
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const history = await rpc.call('getBridgeDepositsByRecipient', [address, { limit: 10 }]).catch(() => null);
 
   const deposits = history?.deposits || history?.items || (Array.isArray(history) ? history : []);
@@ -42,7 +42,7 @@ export async function requestBridgeDepositAddress({ userAddress, chain, asset, n
   }
 
   // Route through RPC bridge proxy — custody auth handled server-side
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   return rpc.call('createBridgeDeposit', [{
     user_id: userAddress,
     chain: canonicalChain,
@@ -56,6 +56,6 @@ export async function getBridgeDepositStatus(depositId, network) {
   }
 
   // Route through RPC bridge proxy — custody auth handled server-side
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   return rpc.call('getBridgeDeposit', [depositId]);
 }

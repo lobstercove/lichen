@@ -1,4 +1,4 @@
-// MoltChain Core Library
+// Lichen Core Library
 // Week 1-2: Basic blockchain data structures + transaction processing
 // Week 3: Consensus, RPC, CLI
 // Week 4-5: Smart Contracts & WASM Runtime
@@ -24,7 +24,7 @@ pub mod multisig; // Multi-signature wallet support
 pub mod network;
 pub mod nft;
 pub mod processor;
-pub mod reefstake; // Liquid staking protocol
+pub mod mossstake; // Liquid staking protocol
 pub mod state;
 pub mod transaction;
 #[cfg(feature = "zk")]
@@ -38,14 +38,14 @@ pub use block::{
 };
 pub use consensus::{
     compute_block_reward, compute_epoch_mint, consensus_oracle_price_from_state, epoch_start_slot,
-    inflation_rate_bps, is_epoch_boundary, molt_price_from_state,
-    read_consensus_oracle_price_from_state, read_molt_price_feed_from_state, slot_to_epoch,
+    inflation_rate_bps, is_epoch_boundary, licn_price_from_state,
+    read_consensus_oracle_price_from_state, read_licn_price_feed_from_state, slot_to_epoch,
     BootstrapStatus, EpochInfo, FinalityTracker, ForkChoice, PendingValidatorChange, Precommit,
     Prevote, PriceOracle, Proposal, RewardAdjustmentInfo, RewardConfig, RoundStep,
     SlashingEvidence, SlashingOffense, SlashingTracker, StakeInfo, StakePool, StakingStats,
     StateOracle, ValidatorChangeType, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
     VoteAuthority, BOOTSTRAP_GRANT_AMOUNT, DOWNTIME_FORGIVENESS_SLOTS, DOWNTIME_SUSPENSION_SLOTS,
-    DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, GENESIS_SUPPLY_SHELLS, INFLATION_DECAY_RATE_BPS,
+    DOWNTIME_TIER2_SLASH_BPS, FINALITY_DEPTH, GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS,
     INITIAL_INFLATION_RATE_BPS, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
     MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PENALTY_REPAYMENT_BOOST_SLOTS,
     PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
@@ -59,10 +59,10 @@ pub use contract::{
 };
 pub use contract_instruction::ContractInstruction;
 pub use evm::{
-    decode_evm_transaction, evm_tx_hash, execute_evm_transaction, shells_to_u256,
-    simulate_evm_call, supported_precompiles, topics_match, u256_is_multiple_of_shell,
-    u256_to_shells, EvmAccount, EvmExecutionResult, EvmLog, EvmLogEntry, EvmReceipt,
-    EvmStateChange, EvmStateChanges, EvmTx, EvmTxRecord, EVM_PROGRAM_ID, MOLTCHAIN_CHAIN_ID,
+    decode_evm_transaction, evm_tx_hash, execute_evm_transaction, spores_to_u256,
+    simulate_evm_call, supported_precompiles, topics_match, u256_is_multiple_of_spore,
+    u256_to_spores, EvmAccount, EvmExecutionResult, EvmLog, EvmLogEntry, EvmReceipt,
+    EvmStateChange, EvmStateChanges, EvmTx, EvmTxRecord, EVM_PROGRAM_ID, LICHEN_CHAIN_ID,
     PRECOMPILE_BLAKE2F, PRECOMPILE_BN256_ADD, PRECOMPILE_BN256_MUL, PRECOMPILE_BN256_PAIRING,
     PRECOMPILE_ECRECOVER, PRECOMPILE_IDENTITY, PRECOMPILE_MODEXP, PRECOMPILE_RIPEMD160,
     PRECOMPILE_SHA256,
@@ -92,8 +92,8 @@ pub use processor::{
     NONCE_ACCOUNT_MIN_BALANCE, ORACLE_ASSET_MAX_LEN, ORACLE_ASSET_MIN_LEN, ORACLE_STALENESS_SLOTS,
     RENT_FREE_BYTES, SYSTEM_PROGRAM_ID,
 };
-pub use reefstake::{
-    ReefStakePool, StMoltToken, StakingPosition, UnstakeRequest, REEFSTAKE_BLOCK_SHARE_BPS,
+pub use mossstake::{
+    MossStakePool, StLicnToken, StakingPosition, UnstakeRequest, MOSSSTAKE_BLOCK_SHARE_BPS,
 };
 pub use state::AccountProof;
 pub use state::CheckpointMeta;

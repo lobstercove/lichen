@@ -1,11 +1,11 @@
 #!/bin/bash
-# Final warning check for all MoltChain contracts
+# Final warning check for all Lichen contracts
 
 echo "🦞⚡ FINAL WARNING CHECK - ALL CONTRACTS ⚡🦞"
 echo ""
 
 total_warnings=0
-contracts=("moltcoin" "moltpunks" "moltswap" "moltmarket" "moltauction" "moltoracle" "moltdao")
+contracts=("lichencoin" "lichenpunks" "lichenswap" "lichenmarket" "lichenauction" "lichenoracle" "lichendao")
 
 for contract in "${contracts[@]}"; do
     echo "Checking $contract..."
@@ -28,7 +28,7 @@ echo ""
 echo "================================"
 if [ "$total_warnings" -eq 0 ]; then
     echo "✅ ALL CONTRACTS CLEAN!"
-    echo "🦞 No warnings - Ready to molt harder! ⚡"
+    echo "🦞 No warnings - Ready to licn harder! ⚡"
 else
     echo "⚠️  Total warnings: $total_warnings"
 fi

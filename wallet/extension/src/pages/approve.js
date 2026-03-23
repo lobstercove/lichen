@@ -15,24 +15,24 @@ function escapeHtml(value) {
 function normalizeMethod(method) {
   const key = String(method || '').trim();
   const aliases = {
-    molt_getAccounts: 'molt_accounts',
-    molt_request_accounts: 'molt_requestAccounts',
-    molt_sign_message: 'molt_signMessage',
-    molt_sign_transaction: 'molt_signTransaction',
-    molt_send_transaction: 'molt_sendTransaction',
-    personal_sign: 'molt_signMessage',
-    eth_sign: 'molt_signMessage',
-    eth_signTransaction: 'molt_signTransaction',
-    eth_sendTransaction: 'molt_sendTransaction'
+    licn_getAccounts: 'licn_accounts',
+    licn_request_accounts: 'licn_requestAccounts',
+    licn_sign_message: 'licn_signMessage',
+    licn_sign_transaction: 'licn_signTransaction',
+    licn_send_transaction: 'licn_sendTransaction',
+    personal_sign: 'licn_signMessage',
+    eth_sign: 'licn_signMessage',
+    eth_signTransaction: 'licn_signTransaction',
+    eth_sendTransaction: 'licn_sendTransaction'
   };
   return aliases[key] || key;
 }
 
 function isSigningMethod(method) {
   const normalized = normalizeMethod(method);
-  return normalized === 'molt_signMessage'
-    || normalized === 'molt_signTransaction'
-    || normalized === 'molt_sendTransaction';
+  return normalized === 'licn_signMessage'
+    || normalized === 'licn_signTransaction'
+    || normalized === 'licn_sendTransaction';
 }
 
 function setDecisionEnabled(enabled) {
@@ -44,7 +44,7 @@ function setDecisionEnabled(enabled) {
 
 async function loadRequest(requestId) {
   const response = await chrome.runtime.sendMessage({
-    type: 'MOLT_PROVIDER_PENDING_GET',
+    type: 'LICHEN_PROVIDER_PENDING_GET',
     requestId
   });
 
@@ -56,7 +56,7 @@ async function loadRequest(requestId) {
 }
 
 async function loadPendingRequests() {
-  const response = await chrome.runtime.sendMessage({ type: 'MOLT_PROVIDER_LIST_PENDING' });
+  const response = await chrome.runtime.sendMessage({ type: 'LICHEN_PROVIDER_LIST_PENDING' });
   if (!response?.ok) {
     throw new Error(response?.error || 'Failed to load pending requests');
   }
@@ -157,7 +157,7 @@ async function decide(requestId, approved, request) {
   }
 
   const response = await chrome.runtime.sendMessage({
-    type: 'MOLT_PROVIDER_PENDING_DECIDE',
+    type: 'LICHEN_PROVIDER_PENDING_DECIDE',
     requestId,
     approved,
     approvalInput

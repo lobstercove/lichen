@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
 # Seed Insurance Fund
-# Transfers MOLT tokens to the dex_margin insurance fund
+# Transfers LICN tokens to the dex_margin insurance fund
 #
 # Usage: ./seed-insurance-fund.sh [--amount 100000] [--rpc URL]
 # ═══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
-AMOUNT=100000  # 100K MOLT default
+RPC_URL="${LICHEN_RPC_URL:-http://localhost:8899}"
+AMOUNT=100000  # 100K LICN default
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -22,7 +22,7 @@ done
 
 echo "═══════════════════════════════════════════════"
 echo "  Insurance Fund Seeding"
-echo "  Amount: ${AMOUNT} MOLT"
+echo "  Amount: ${AMOUNT} LICN"
 echo "  RPC:    ${RPC_URL}"
 echo "═══════════════════════════════════════════════"
 
@@ -47,19 +47,19 @@ if [[ "$CURRENT" -ge "$AMOUNT" ]]; then
 fi
 
 NEEDED=$((AMOUNT - CURRENT))
-echo "Need to add:            $NEEDED MOLT"
+echo "Need to add:            $NEEDED LICN"
 
 # Send transaction to add to insurance fund
 # This calls dex_margin::add_to_insurance(amount)
 # Opcode 0x06 = add_to_insurance
 TX_DATA="0x06$(printf '%016x' $NEEDED)"
 echo ""
-echo "Seeding insurance fund with $NEEDED MOLT..."
+echo "Seeding insurance fund with $NEEDED LICN..."
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "[DRY RUN] Would execute:"
-    echo "  moltchain tx send --to dex_margin --data $TX_DATA --rpc $RPC_URL"
+    echo "  lichen tx send --to dex_margin --data $TX_DATA --rpc $RPC_URL"
 else
-    moltchain tx send --to dex_margin --data "$TX_DATA" --rpc "$RPC_URL"
-    echo "✅ Insurance fund seeded with $NEEDED MOLT"
+    lichen tx send --to dex_margin --data "$TX_DATA" --rpc "$RPC_URL"
+    echo "✅ Insurance fund seeded with $NEEDED LICN"
 fi

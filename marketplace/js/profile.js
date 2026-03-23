@@ -1,10 +1,10 @@
-// Molt Market — Profile Page
+// Lichen Market — Profile Page
 // Wallet-gated, sell/list buttons on owned NFTs, collections management, activity
 
 (function () {
     'use strict';
 
-    var RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+    var RPC_URL = (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) || 'http://localhost:8899';
     var CONTRACT_PROGRAM_ID = null;
     var dataSource = window.marketplaceDataSource;
     var currentWallet = null;
@@ -15,9 +15,9 @@
     var favoritedNFTs = [];
     var allListings = [];
     var marketplaceProgram = null;
-    var FAVORITES_STORAGE_KEY = 'moltmarket_favorites_v1';
+    var FAVORITES_STORAGE_KEY = 'lichenmarket_favorites_v1';
 
-    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatMoltPrice) || function(v, isMolt) { var n = Number(isMolt ? v : v/1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
+    var fmp = (window.marketplaceUtils && window.marketplaceUtils.formatLicnPrice) || function(v, isLicn) { var n = Number(isLicn ? v : v/1e9); if (n >= 0.01) return n.toFixed(2); if (n >= 0.0001) return n.toFixed(4); if (n >= 0.000001) return n.toFixed(6); if (n > 0) return n.toFixed(9); return '0'; };
 
     function lazyAddresses() {
         return;
@@ -123,7 +123,7 @@
     async function resolveMarketplaceProgram() {
         if (marketplaceProgram) return marketplaceProgram;
         try {
-            var entry = await rpcCall('getSymbolRegistry', ['MOLTMARKET']);
+            var entry = await rpcCall('getSymbolRegistry', ['LICHENMARKET']);
             marketplaceProgram = entry && (entry.program || entry.program_id) ? (entry.program || entry.program_id) : null;
             if (marketplaceProgram) CONTRACT_PROGRAM_ID = marketplaceProgram;
         } catch (_) {}
@@ -187,7 +187,7 @@
         if (isOwnProfile && dataSource) {
             var balance = await dataSource.getWalletBalance(profileAddress);
             var bioEl = document.getElementById('profileBio');
-            if (bioEl) bioEl.textContent = 'Balance: ' + balance.toFixed(4) + ' MOLT';
+            if (bioEl) bioEl.textContent = 'Balance: ' + balance.toFixed(4) + ' LICN';
         }
 
         // Load listings for sell button matching
@@ -244,7 +244,7 @@
             });
             var isListed = listing && listing.active !== false;
 
-            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' MOLT' : (isListed ? fmp(listing.price > 1e6 ? listing.price / 1e9 : listing.price, true) + ' MOLT' : 'Not Listed');
+            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' LICN' : (isListed ? fmp(listing.price > 1e6 ? listing.price / 1e9 : listing.price, true) + ' LICN' : 'Not Listed');
             var name = nft.name || ('NFT #' + (nft.token_id || ''));
 
             var actionHtml = '';
@@ -318,7 +318,7 @@
             var imgHtml = safeUrl
                 ? '<img src="' + encodeURI(safeUrl) + '" style="width:100%;height:100%;object-fit:cover;" alt="">'
                 : '<div style="width:100%;height:100%;background:' + gradientFromHash(nft.id || nft.name || '') + ';display:flex;align-items:center;justify-content:center;font-size:36px;opacity:0.5;">\uD83D\uDDBC\uFE0F</div>';
-            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' MOLT' : 'Not Listed';
+            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' LICN' : 'Not Listed';
             var name = nft.name || ('NFT #' + (nft.token_id || ''));
 
             return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
@@ -398,7 +398,7 @@
                 ? '<img src="' + encodeURI(safeUrl) + '" style="width:100%;height:100%;object-fit:cover;" alt="">'
                 : '<div style="width:100%;height:100%;background:' + gradientFromHash(nft.id || nft.name || '') + ';display:flex;align-items:center;justify-content:center;font-size:36px;opacity:0.5;">\uD83D\uDDBC\uFE0F</div>';
 
-            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' MOLT' : 'Not Listed';
+            var price = nft.price ? fmp(nft.price > 1e6 ? nft.price / 1e9 : nft.price, true) + ' LICN' : 'Not Listed';
             var name = nft.name || ('NFT #' + (nft.token_id || ''));
 
             return '<div class="nft-card" onclick="window.location.href=\'item.html?id=' + encodeURIComponent(nft.id || '') + '&contract=' + encodeURIComponent(nft.collection || nft.contract_id || '') + '&token=' + encodeURIComponent(nft.token_id || '') + '\'">' +
@@ -453,7 +453,7 @@
                 var dirLabel = dir === 'incoming' ? 'Incoming' : 'Outgoing';
                 var dirColor = dir === 'incoming' ? '#22c55e' : '#3b82f6';
                 var nftName = offer.name || formatHash(offer.token_id || offer.nft_id || '', 8);
-                var price = offer.price_molt !== undefined ? fmp(offer.price_molt, true) : fmp(offer.price || 0, false);
+                var price = offer.price_licn !== undefined ? fmp(offer.price_licn, true) : fmp(offer.price || 0, false);
                 var from = offer.offerer || offer.buyer || '';
                 var expired = offer.expires_at && Date.now() > (offer.expires_at < 1e12 ? offer.expires_at * 1000 : offer.expires_at);
                 var statusLabel = expired ? 'Expired' : (offer.status || 'Active');
@@ -469,7 +469,7 @@
                 return '<tr data-dir="' + dir + '">' +
                     '<td><span style="padding:3px 8px;border-radius:4px;background:' + dirColor + '22;color:' + dirColor + ';font-size:12px;">' + dirLabel + '</span></td>' +
                     '<td>' + escapeHtml(nftName) + '</td>' +
-                    '<td>' + price + ' MOLT</td>' +
+                    '<td>' + price + ' LICN</td>' +
                     '<td><a href="profile.html?id=' + encodeURIComponent(from) + '" style="color:var(--accent-color);">' + formatHash(from, 8) + '</a></td>' +
                     '<td><span style="color:' + statusColor + ';">' + statusLabel + '</span></td>' +
                     '<td>' + actionHtml + '</td>' +
@@ -495,7 +495,7 @@
                 offerer
             ], 0);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
@@ -522,7 +522,7 @@
                 tokenId
             ], 0);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
@@ -555,7 +555,7 @@
             activity.forEach(function (s) {
                 if (s.seller === profileAddress) {
                     soldCount++;
-                    totalVolume += s.price_molt !== undefined ? Number(s.price_molt) : (s.price ? s.price / 1e9 : 0);
+                    totalVolume += s.price_licn !== undefined ? Number(s.price_licn) : (s.price ? s.price / 1e9 : 0);
                 }
             });
 
@@ -575,13 +575,13 @@
                 var eventItem = event.name || ('NFT #' + String(tokenRef || '-'));
                 var eventFrom = event.seller || '';
                 var eventTo = event.buyer || '';
-                var price = event.price_molt !== undefined ? fmp(event.price_molt, true) : fmp(event.price || 0, false);
+                var price = event.price_licn !== undefined ? fmp(event.price_licn, true) : fmp(event.price || 0, false);
                 var ts = event.timestamp ? new Date(event.timestamp < 1e12 ? event.timestamp * 1000 : event.timestamp).toLocaleDateString() : '-';
 
                 return '<tr data-type="' + type.toLowerCase() + '">' +
                     '<td><span style="padding:4px 8px;border-radius:4px;background:' + (type === 'Sale' ? '#22c55e22' : '#3b82f622') + ';color:' + (type === 'Sale' ? '#22c55e' : '#3b82f6') + ';font-size:12px;">' + type + '</span></td>' +
                         '<td><a href="item.html?id=' + encodeURIComponent(tokenRef) + '">' + escapeHtml(String(tokenRef || '-')) + '</a> ' + escapeHtml(eventItem) + '</td>' +
-                    '<td>' + price + ' MOLT</td>' +
+                    '<td>' + price + ' LICN</td>' +
                         '<td><a href="profile.html?id=' + encodeURIComponent(eventFrom) + '" style="color:var(--accent-color);">' + formatHash(eventFrom, 8) + '</a></td>' +
                         '<td><a href="profile.html?id=' + encodeURIComponent(eventTo) + '" style="color:var(--accent-color);">' + formatHash(eventTo, 8) + '</a></td>' +
                     '<td style="display:none;">' + escapeHtml(type) + '</td>' +
@@ -599,7 +599,7 @@
         var nft = ownedNFTs[index];
         if (!nft || !isOwnProfile) return;
 
-        var price = prompt('Enter listing price in MOLT:');
+        var price = prompt('Enter listing price in LICN:');
         if (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0) return;
 
         listNFTForSale(nft, parseFloat(price));
@@ -615,7 +615,7 @@
             return;
         }
 
-        var amount = prompt('Enter collection offer amount in MOLT:');
+        var amount = prompt('Enter collection offer amount in LICN:');
         if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
 
         var expiryHours = prompt('Enter expiry in hours (optional, leave blank for no expiry):');
@@ -636,31 +636,31 @@
         var nft = ownedNFTs[index];
         if (!nft || !isOwnProfile || !currentWallet) return;
 
-        var startPriceInput = prompt('Start price in MOLT:');
+        var startPriceInput = prompt('Start price in LICN:');
         if (!startPriceInput || isNaN(parseFloat(startPriceInput)) || parseFloat(startPriceInput) <= 0) return;
-        var reserveInput = prompt('Reserve price in MOLT (optional, default 0):');
+        var reserveInput = prompt('Reserve price in LICN (optional, default 0):');
         var durationInput = prompt('Duration in hours (default 24):');
 
-        var startShells = Math.round(parseFloat(startPriceInput) * 1e9);
-        var reserveShells = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
+        var startSpores = Math.round(parseFloat(startPriceInput) * 1e9);
+        var reserveSpores = reserveInput && !isNaN(parseFloat(reserveInput)) ? Math.round(parseFloat(reserveInput) * 1e9) : 0;
         var durationHours = durationInput && !isNaN(parseFloat(durationInput)) ? Math.max(1, Math.floor(parseFloat(durationInput))) : 24;
         var now = Math.floor(Date.now() / 1000);
         var endTs = now + (durationHours * 3600);
 
-        submitAuctionCreate(nft, startShells, reserveShells, now, endTs);
+        submitAuctionCreate(nft, startSpores, reserveSpores, now, endTs);
     };
 
     window._profilePlaceBid = function (index) {
         var nft = ownedNFTs[index];
         if (!nft || !currentWallet || isOwnProfile) return;
 
-        var bidInput = prompt('Bid amount in MOLT:');
+        var bidInput = prompt('Bid amount in LICN:');
         if (!bidInput || isNaN(parseFloat(bidInput)) || parseFloat(bidInput) <= 0) return;
-        var bidShells = Math.round(parseFloat(bidInput) * 1e9);
-        submitAuctionBid(nft, bidShells);
+        var bidSpores = Math.round(parseFloat(bidInput) * 1e9);
+        submitAuctionBid(nft, bidSpores);
     };
 
-    async function submitAuctionCreate(nft, startShells, reserveShells, startTs, endTs) {
+    async function submitAuctionCreate(nft, startSpores, reserveSpores, startTs, endTs) {
         try {
             var mp = await resolveMarketplaceProgram();
             if (!mp) throw new Error('Cannot resolve marketplace program');
@@ -671,14 +671,14 @@
                 currentWallet.address,
                 nftContract,
                 tokenId,
-                startShells,
-                reserveShells,
+                startSpores,
+                reserveSpores,
                 '',
                 startTs,
                 endTs
             ], 0);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
@@ -691,7 +691,7 @@
         }
     }
 
-    async function submitAuctionBid(nft, bidShells) {
+    async function submitAuctionBid(nft, bidSpores) {
         try {
             var mp = await resolveMarketplaceProgram();
             if (!mp) throw new Error('Cannot resolve marketplace program');
@@ -702,10 +702,10 @@
                 currentWallet.address,
                 nftContract,
                 tokenId,
-                bidShells
-            ], bidShells);
+                bidSpores
+            ], bidSpores);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
@@ -718,7 +718,7 @@
         }
     }
 
-    async function makeCollectionOffer(collectionId, priceShells, expiryTs) {
+    async function makeCollectionOffer(collectionId, priceSpores, expiryTs) {
         try {
             var mp = await resolveMarketplaceProgram();
             if (!mp) throw new Error('Cannot resolve marketplace program');
@@ -726,12 +726,12 @@
             var callData = buildContractCallData('make_collection_offer', [
                 currentWallet.address,
                 collectionId,
-                priceShells,
+                priceSpores,
                 '',
                 expiryTs || 0
-            ], priceShells);
+            ], priceSpores);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, collectionId],
                 data: callData,
@@ -744,7 +744,7 @@
         }
     }
 
-    async function listNFTForSale(nft, priceMolt) {
+    async function listNFTForSale(nft, priceLicn) {
         lazyAddresses();
         try {
             var mp = await resolveMarketplaceProgram();
@@ -752,7 +752,7 @@
 
             var nftContract = nft.collection || nft.contract_id || '';
             var tokenId = String(nft.token_id || nft.id);
-            var priceShells = Math.round(priceMolt * 1e9);
+            var priceSpores = Math.round(priceLicn * 1e9);
             var royaltyPercent = Number(nft.royalty || 0);
             var royaltyBps = Math.max(0, Math.min(5000, Math.round(royaltyPercent * 100)));
             var royaltyRecipient = nft.creator || currentWallet.address;
@@ -763,7 +763,7 @@
                     currentWallet.address,
                     nftContract,
                     tokenId,
-                    priceShells,
+                    priceSpores,
                     '',
                     royaltyRecipient,
                     royaltyBps
@@ -773,18 +773,18 @@
                     currentWallet.address,
                     nftContract,
                     tokenId,
-                    priceShells,
+                    priceSpores,
                     ''
                 ], 0);
             }
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
             }]);
 
-            showToast('Listed for ' + priceMolt + ' MOLT!', 'success');
+            showToast('Listed for ' + priceLicn + ' LICN!', 'success');
 
             // Refresh
             allListings = await dataSource.getAllListings(500);
@@ -815,16 +815,16 @@
             return;
         }
 
-        var currentPriceMolt = listing.price_molt !== undefined
-            ? Number(listing.price_molt || 0)
+        var currentPriceLicn = listing.price_licn !== undefined
+            ? Number(listing.price_licn || 0)
             : Number((listing.price || 0) / 1e9);
-        var next = prompt('Enter new listing price in MOLT:', currentPriceMolt > 0 ? String(currentPriceMolt) : '');
+        var next = prompt('Enter new listing price in LICN:', currentPriceLicn > 0 ? String(currentPriceLicn) : '');
         if (!next || isNaN(parseFloat(next)) || parseFloat(next) <= 0) return;
 
         updateListingPrice(nft, parseFloat(next));
     };
 
-    async function updateListingPrice(nft, newPriceMolt) {
+    async function updateListingPrice(nft, newPriceLicn) {
         lazyAddresses();
         try {
             var mp = await resolveMarketplaceProgram();
@@ -832,22 +832,22 @@
 
             var nftContract = nft.collection || nft.contract_id || '';
             var tokenId = Number(nft.token_id || nft.id || 0);
-            var priceShells = Math.round(newPriceMolt * 1e9);
+            var priceSpores = Math.round(newPriceLicn * 1e9);
 
             var callData = buildContractCallData('update_listing_price', [
                 currentWallet.address,
                 nftContract,
                 tokenId,
-                priceShells
+                priceSpores
             ], 0);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
             }]);
 
-            showToast('Price updated to ' + fmp(newPriceMolt, true) + ' MOLT', 'success');
+            showToast('Price updated to ' + fmp(newPriceLicn, true) + ' LICN', 'success');
             allListings = await dataSource.getAllListings(500);
             loadCollectedNFTs();
         } catch (err) {
@@ -870,7 +870,7 @@
                 tokenId
             ], 0);
 
-            await window.moltWallet.sendTransaction([{
+            await window.lichenWallet.sendTransaction([{
                 program_id: CONTRACT_PROGRAM_ID,
                 accounts: [currentWallet.address, mp, nftContract],
                 data: callData,
@@ -896,10 +896,10 @@
 
     // ===== Events =====
     function setupEvents() {
-        if (window.MoltWallet) {
-            window.moltWallet = window.moltWallet || new MoltWallet({ rpcUrl: RPC_URL });
-            window.moltWallet.bindConnectButton('#connectWallet');
-            window.moltWallet.onConnect(function (info) {
+        if (window.LichenWallet) {
+            window.lichenWallet = window.lichenWallet || new LichenWallet({ rpcUrl: RPC_URL });
+            window.lichenWallet.bindConnectButton('#connectWallet');
+            window.lichenWallet.onConnect(function (info) {
                 var previousWalletAddress = currentWallet && currentWallet.address ? currentWallet.address : '';
                 currentWallet = info;
                 updateNav();
@@ -918,7 +918,7 @@
                 isOwnProfile = profileAddress === info.address;
                 loadProfile();
             });
-            window.moltWallet.onDisconnect(function () {
+            window.lichenWallet.onDisconnect(function () {
                 currentWallet = null;
                 isOwnProfile = false;
                 updateNav();
@@ -1046,10 +1046,10 @@
 
     // ===== Init =====
     document.addEventListener('DOMContentLoaded', function () {
-        console.log('Molt Market Profile loading...');
+        console.log('Lichen Market Profile loading...');
         setupEvents();
         updateNav();
         loadProfile();
-        console.log('Molt Market Profile ready');
+        console.log('Lichen Market Profile ready');
     });
 })();

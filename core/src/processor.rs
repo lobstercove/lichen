@@ -1,11 +1,11 @@
-// MoltChain Core - Transaction Processor
+// Lichen Core - Transaction Processor
 
 use crate::account::{Account, Pubkey};
 use crate::consensus::{slot_to_epoch, SLOTS_PER_EPOCH};
 use crate::contract::{ContractAbi, ContractAccount, ContractContext, ContractRuntime};
 use crate::contract_instruction::ContractInstruction;
 use crate::evm::{
-    decode_evm_transaction, execute_evm_transaction, u256_is_multiple_of_shell, u256_to_shells,
+    decode_evm_transaction, execute_evm_transaction, u256_is_multiple_of_spore, u256_to_spores,
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
@@ -27,7 +27,7 @@ pub struct TxResult {
     pub compute_units_used: u64,
     /// Contract return code (if the transaction includes a contract call).
     /// This is the raw WASM function return value — interpretation depends on the
-    /// contract's ABI. For MoltyID: 0=success, 1=bad input, 2=identity not found, etc.
+    /// contract's ABI. For LichenID: 0=success, 1=bad input, 2=identity not found, etc.
     pub return_code: Option<i64>,
     /// Log messages emitted by the contract during execution.
     pub contract_logs: Vec<String>,
@@ -87,28 +87,28 @@ pub const DORMANCY_THRESHOLD_EPOCHS: u64 = 2;
 /// Maximum age in blocks for a transaction's recent_blockhash.
 /// Transactions referencing a blockhash older than this are rejected.
 pub const MAX_TX_AGE_BLOCKS: u64 = 300;
-/// Base transaction fee (0.001 MOLT = 1,000,000 shells)
-/// At $0.10/MOLT: $0.0001 per tx  |  At $1.00/MOLT: $0.001 per tx
-/// Solana ~$0.00025/tx — MoltChain is 2.5x cheaper at $0.10/MOLT
+/// Base transaction fee (0.001 LICN = 1,000,000 spores)
+/// At $0.10/LICN: $0.0001 per tx  |  At $1.00/LICN: $0.001 per tx
+/// Solana ~$0.00025/tx — Lichen is 2.5x cheaper at $0.10/LICN
 pub const BASE_FEE: u64 = 1_000_000;
 
-/// Contract deployment fee (25 MOLT = 25,000,000,000 shells)
-/// At $0.10/MOLT: $2.50 per deploy  |  At $1.00/MOLT: $25 per deploy
+/// Contract deployment fee (25 LICN = 25,000,000,000 spores)
+/// At $0.10/LICN: $2.50 per deploy  |  At $1.00/LICN: $25 per deploy
 pub const CONTRACT_DEPLOY_FEE: u64 = 25_000_000_000;
 
-/// Contract upgrade fee (10 MOLT = 10,000,000,000 shells)
-/// At $0.10/MOLT: $1.00 per upgrade  |  At $1.00/MOLT: $10 per upgrade
+/// Contract upgrade fee (10 LICN = 10,000,000,000 spores)
+/// At $0.10/LICN: $1.00 per upgrade  |  At $1.00/LICN: $10 per upgrade
 pub const CONTRACT_UPGRADE_FEE: u64 = 10_000_000_000;
 
-/// NFT mint fee (0.5 MOLT = 500,000,000 shells)
-/// At $0.10/MOLT: $0.05 per mint  |  At $1.00/MOLT: $0.50 per mint
+/// NFT mint fee (0.5 LICN = 500,000,000 spores)
+/// At $0.10/LICN: $0.05 per mint  |  At $1.00/LICN: $0.50 per mint
 pub const NFT_MINT_FEE: u64 = 500_000_000;
 
-/// NFT collection creation fee (1,000 MOLT = 1,000,000,000,000 shells)
-/// At $0.10/MOLT: $100 per collection  |  At $1.00/MOLT: $1,000 per collection
+/// NFT collection creation fee (1,000 LICN = 1,000,000,000,000 spores)
+/// At $0.10/LICN: $100 per collection  |  At $1.00/LICN: $1,000 per collection
 pub const NFT_COLLECTION_FEE: u64 = 1_000_000_000_000;
 
-/// Minimum balance required to create a nonce account (0.01 MOLT = 10,000,000 shells).
+/// Minimum balance required to create a nonce account (0.01 LICN = 10,000,000 spores).
 /// Keeps nonce accounts rent-exempt while preventing spam creation.
 pub const NONCE_ACCOUNT_MIN_BALANCE: u64 = 10_000_000;
 
@@ -116,7 +116,7 @@ pub const NONCE_ACCOUNT_MIN_BALANCE: u64 = 10_000_000;
 pub const NONCE_ACCOUNT_MARKER: u8 = 0xDA;
 
 // ── Governance parameter IDs (system instruction type 29) ──
-/// base_fee (shells per transaction)
+/// base_fee (spores per transaction)
 pub const GOV_PARAM_BASE_FEE: u8 = 0;
 /// fee_burn_percent (0-100)
 pub const GOV_PARAM_FEE_BURN_PERCENT: u8 = 1;
@@ -128,7 +128,7 @@ pub const GOV_PARAM_FEE_VOTERS_PERCENT: u8 = 3;
 pub const GOV_PARAM_FEE_TREASURY_PERCENT: u8 = 4;
 /// fee_community_percent (0-100)
 pub const GOV_PARAM_FEE_COMMUNITY_PERCENT: u8 = 5;
-/// min_validator_stake (shells)
+/// min_validator_stake (spores)
 pub const GOV_PARAM_MIN_VALIDATOR_STAKE: u8 = 6;
 /// epoch_slots (slots per epoch)
 pub const GOV_PARAM_EPOCH_SLOTS: u8 = 7;
@@ -146,7 +146,7 @@ pub const CU_STAKE: u64 = 500;
 pub const CU_UNSTAKE: u64 = 500;
 pub const CU_CLAIM_UNSTAKE: u64 = 300;
 pub const CU_REGISTER_EVM: u64 = 200;
-pub const CU_REEFSTAKE: u64 = 500;
+pub const CU_MOSSSTAKE: u64 = 500;
 pub const CU_DEPLOY_CONTRACT: u64 = 5_000;
 pub const CU_SET_CONTRACT_ABI: u64 = 1_000;
 pub const CU_FAUCET_AIRDROP: u64 = 100;
@@ -180,7 +180,7 @@ pub fn compute_units_for_system_ix(instruction_type: u8) -> u64 {
         10 => CU_UNSTAKE,
         11 => CU_CLAIM_UNSTAKE,
         12 => CU_REGISTER_EVM,
-        13..=16 => CU_REEFSTAKE,
+        13..=16 => CU_MOSSSTAKE,
         17 => CU_DEPLOY_CONTRACT,
         18 => CU_SET_CONTRACT_ABI,
         19 => CU_FAUCET_AIRDROP,
@@ -272,7 +272,7 @@ pub struct NonceState {
     /// Stored blockhash — transactions using this hash remain valid until
     /// the nonce is explicitly advanced.
     pub blockhash: Hash,
-    /// Fee rate (shells per signature) at the time the nonce was last advanced.
+    /// Fee rate (spores per signature) at the time the nonce was last advanced.
     pub fee_per_signature: u64,
 }
 
@@ -283,7 +283,7 @@ pub struct NonceState {
 ///   - Next 90KB (10KB–100KB total): 2× rate per KB
 ///   - Above 100KB total: 4× rate per KB
 ///
-/// Returns rent in shells per epoch.
+/// Returns rent in spores per epoch.
 pub fn compute_graduated_rent(data_len: u64, rate_per_kb_per_epoch: u64) -> u64 {
     if data_len <= RENT_FREE_BYTES {
         return 0;
@@ -411,7 +411,7 @@ impl TxProcessor {
     ///   `total = base_fee + instruction_premiums + priority_fee`
     /// where
     ///   `priority_fee = effective_compute_budget × compute_unit_price / 1_000_000`
-    /// (compute_unit_price is in micro-shells per CU).
+    /// (compute_unit_price is in micro-spores per CU).
     ///
     /// All users pay the same base rate — reputation discounts removed (Task 4.2 M-7).
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
@@ -449,7 +449,7 @@ impl TxProcessor {
                 // with gas_price * gas_limit (the maximum possible charge).
                 if let Ok(evm_tx) = decode_evm_transaction(&first_ix.data) {
                     let estimated =
-                        u256_to_shells(&(evm_tx.gas_price * U256::from(evm_tx.gas_limit)));
+                        u256_to_spores(&(evm_tx.gas_price * U256::from(evm_tx.gas_limit)));
                     return if estimated > 0 {
                         estimated
                     } else {
@@ -473,7 +473,7 @@ impl TxProcessor {
                         17 => total = total.saturating_add(fee_config.contract_deploy_fee),
                         // ZK shielded instructions carry heavier verification cost.
                         // Charge proportionally to their compute unit weight.
-                        // 1 CU = 1 shell (same as EVM gas pricing).
+                        // 1 CU = 1 spore (same as EVM gas pricing).
                         #[cfg(feature = "zk")]
                         23 => total = total.saturating_add(crate::zk::SHIELD_COMPUTE_UNITS),
                         #[cfg(feature = "zk")]
@@ -505,11 +505,11 @@ impl TxProcessor {
 
     /// Compute the priority fee portion: `effective_compute_budget × compute_unit_price / 1_000_000`.
     ///
-    /// `compute_unit_price` is denominated in micro-shells per CU.
-    /// Division by 1,000,000 converts to shells. This matches Solana's
+    /// `compute_unit_price` is denominated in micro-spores per CU.
+    /// Division by 1,000,000 converts to spores. This matches Solana's
     /// micro-lamports-per-CU model.
     ///
-    /// Example: 200,000 CU budget × 1,000 μshells/CU = 200,000,000 / 1,000,000 = 200 shells priority fee.
+    /// Example: 200,000 CU budget × 1,000 μspores/CU = 200,000,000 / 1,000,000 = 200 spores priority fee.
     pub fn compute_priority_fee(tx: &Transaction) -> u64 {
         let cu_price = tx.message.effective_compute_unit_price();
         if cu_price == 0 {
@@ -518,7 +518,7 @@ impl TxProcessor {
         let budget = tx.message.effective_compute_budget();
         // Use u128 to prevent overflow: budget (up to 1.4M) × price (up to u64::MAX)
         let product = budget as u128 * cu_price as u128;
-        // Divide by 1_000_000 (micro-shells → shells), capped at u64::MAX
+        // Divide by 1_000_000 (micro-spores → spores), capped at u64::MAX
         (product / 1_000_000).min(u64::MAX as u128) as u64
     }
 
@@ -543,7 +543,7 @@ impl TxProcessor {
         let evm_tx = decode_evm_transaction(&first_ix.data).ok()?;
         let evm_hash: [u8; 32] = evm_tx.hash.into();
         let receipt = state.get_evm_receipt(&evm_hash).ok().flatten()?;
-        let exact_fee = u256_to_shells(&(evm_tx.gas_price * U256::from(receipt.gas_used)));
+        let exact_fee = u256_to_spores(&(evm_tx.gas_price * U256::from(receipt.gas_used)));
 
         Some(if exact_fee > 0 {
             exact_fee
@@ -554,7 +554,7 @@ impl TxProcessor {
 
     /// Task 4.2 (M-7): Reputation-based fee discounts REMOVED.
     ///
-    /// Previously discounted fees by 5–10% based on MoltyID reputation score.
+    /// Previously discounted fees by 5–10% based on LichenID reputation score.
     /// Removed because: (1) no real blockchain uses identity-based fee discounts,
     /// (2) creates MEV vector — high-rep searchers get a fee advantage,
     /// (3) express lane already removed in Task 3.7. All users now pay flat fees.
@@ -759,21 +759,21 @@ impl TxProcessor {
         }
     }
 
-    fn b_put_reefstake_pool(&self, pool: &crate::reefstake::ReefStakePool) -> Result<(), String> {
+    fn b_put_mossstake_pool(&self, pool: &crate::mossstake::MossStakePool) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
-            batch.put_reefstake_pool(pool)
+            batch.put_mossstake_pool(pool)
         } else {
-            self.state.put_reefstake_pool(pool)
+            self.state.put_mossstake_pool(pool)
         }
     }
 
-    fn b_get_reefstake_pool(&self) -> Result<crate::reefstake::ReefStakePool, String> {
+    fn b_get_mossstake_pool(&self) -> Result<crate::mossstake::MossStakePool, String> {
         let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_ref() {
-            batch.get_reefstake_pool()
+            batch.get_mossstake_pool()
         } else {
-            self.state.get_reefstake_pool()
+            self.state.get_mossstake_pool()
         }
     }
 
@@ -1325,7 +1325,7 @@ impl TxProcessor {
 
                 // Refund the deploy/upgrade premium on instruction failure.
                 // The base fee is kept (anti-DoS) but premium fees are returned
-                // so developers don't lose 25 MOLT on a failed deploy.
+                // so developers don't lose 25 LICN on a failed deploy.
                 let premium = Self::compute_premium_fee(tx, &fee_config);
                 if premium > 0 {
                     if let Err(refund_err) = self.refund_premium(&fee_payer, premium) {
@@ -1712,7 +1712,7 @@ impl TxProcessor {
             };
         }
         logs.push(format!(
-            "Fee estimate: {} shells (budget: {} CU)",
+            "Fee estimate: {} spores (budget: {} CU)",
             total_fee, compute_budget
         ));
 
@@ -1952,7 +1952,7 @@ impl TxProcessor {
             }
         };
 
-        if !u256_is_multiple_of_shell(&evm_tx.value) {
+        if !u256_is_multiple_of_spore(&evm_tx.value) {
             return self.make_result(
                 false,
                 0,
@@ -2027,7 +2027,7 @@ impl TxProcessor {
 
         // AUDIT-FIX 0.7: Charge EVM fee BEFORE the batch, so rollback can't erase it.
         // This prevents free-compute DoS via intentionally-failing EVM transactions.
-        let fee_paid = u256_to_shells(&(evm_tx.gas_price * U256::from(result.gas_used)));
+        let fee_paid = u256_to_spores(&(evm_tx.gas_price * U256::from(result.gas_used)));
         if fee_paid > 0 {
             let native_payer = match mapping {
                 Some(payer) => payer,
@@ -2138,7 +2138,7 @@ impl TxProcessor {
             .b_get_account(payer)?
             .ok_or_else(|| "Payer account not found".to_string())?;
 
-        // T1.1 fix: Deduct from spendable balance, not total shells.
+        // T1.1 fix: Deduct from spendable balance, not total spores.
         // This prevents spending staked or locked funds on fees.
         payer_account.deduct_spendable(fee)?;
         self.b_put_account(payer, &payer_account)?;
@@ -2257,7 +2257,7 @@ impl TxProcessor {
             .saturating_add(base_community)
             .saturating_add(priority_producer);
 
-        // AUDIT-FIX B-5: Cap the total distributed to prevent shell creation from
+        // AUDIT-FIX B-5: Cap the total distributed to prevent spore creation from
         // malformed fee split percentages exceeding 100%.
         let capped_to_treasury =
             std::cmp::min(total_to_treasury, total_fee.saturating_sub(burn_amount));
@@ -2387,10 +2387,10 @@ impl TxProcessor {
             10 => self.system_request_unstake(ix),
             11 => self.system_claim_unstake(ix),
             12 => self.system_register_evm_address(ix),
-            13 => self.system_reefstake_deposit(ix),
-            14 => self.system_reefstake_unstake(ix),
-            15 => self.system_reefstake_claim(ix),
-            16 => self.system_reefstake_transfer(ix),
+            13 => self.system_mossstake_deposit(ix),
+            14 => self.system_mossstake_unstake(ix),
+            15 => self.system_mossstake_claim(ix),
+            16 => self.system_mossstake_transfer(ix),
             // H16 fix: consensus-safe instruction types for state-mutating operations
             17 => self.system_deploy_contract(ix),
             18 => self.system_set_contract_abi(ix),
@@ -2422,7 +2422,7 @@ impl TxProcessor {
         }
     }
 
-    /// System program: Transfer shells
+    /// System program: Transfer spores
     fn system_transfer(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("Transfer requires 2 accounts".to_string());
@@ -2506,7 +2506,7 @@ impl TxProcessor {
 
     /// System program: Register symbol for an existing deployed contract (instruction type 20).
     /// Instruction data: [20 | json_bytes]
-    /// JSON: { "symbol": "MOLT", "name": "MoltCoin", "template": "token", "metadata": {...} }
+    /// JSON: { "symbol": "LICN", "name": "LichenCoin", "template": "token", "metadata": {...} }
     /// Accounts: [contract_owner, contract_id]
     /// Only the contract owner can register a symbol for their contract.
     fn system_register_symbol(&self, ix: &Instruction) -> Result<(), String> {
@@ -2628,7 +2628,7 @@ impl TxProcessor {
     ///
     /// Instruction format:
     ///   data[0]    = 21
-    ///   data[1..9] = amount in shells (u64 LE)
+    ///   data[1..9] = amount in spores (u64 LE)
     ///   accounts   = [proposer, governed_wallet, recipient]
     fn system_propose_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 3 {
@@ -2801,7 +2801,7 @@ impl TxProcessor {
     /// Data layout:
     /// ```text
     ///   [0]       = 23 (type tag)
-    ///   [1..9]    = amount (u64 LE, shells)
+    ///   [1..9]    = amount (u64 LE, spores)
     ///   [9..41]   = commitment (32 bytes, Poseidon hash of value||blinding)
     ///   [41..169] = Groth16 proof (128 bytes, compressed BN254)
     /// ```
@@ -2877,7 +2877,7 @@ impl TxProcessor {
             ));
         }
         sender_acct.spendable = sender_acct.spendable.saturating_sub(amount);
-        sender_acct.shells = sender_acct
+        sender_acct.spores = sender_acct
             .spendable
             .saturating_add(sender_acct.staked)
             .saturating_add(sender_acct.locked);
@@ -2940,7 +2940,7 @@ impl TxProcessor {
     /// Data layout:
     /// ```text
     ///   [0]        = 24 (type tag)
-    ///   [1..9]     = amount (u64 LE, shells)
+    ///   [1..9]     = amount (u64 LE, spores)
     ///   [9..41]    = nullifier (32 bytes)
     ///   [41..73]   = merkle_root (32 bytes)
     ///   [73..105]  = recipient_fr (32 bytes, field element for circuit binding)
@@ -3087,7 +3087,7 @@ impl TxProcessor {
             .b_get_account(recipient_pubkey)?
             .unwrap_or_else(|| crate::Account::new(0, crate::SYSTEM_PROGRAM_ID));
         recipient_acct.spendable = recipient_acct.spendable.saturating_add(amount);
-        recipient_acct.shells = recipient_acct
+        recipient_acct.spores = recipient_acct
             .spendable
             .saturating_add(recipient_acct.staked)
             .saturating_add(recipient_acct.locked);
@@ -3456,7 +3456,7 @@ impl TxProcessor {
         Ok(())
     }
 
-    /// System program: Stake MOLT
+    /// System program: Stake LICN
     fn system_stake(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("Stake requires staker and validator accounts".to_string());
@@ -3534,7 +3534,7 @@ impl TxProcessor {
         Ok(())
     }
 
-    /// System program: Claim unstaked MOLT
+    /// System program: Claim unstaked LICN
     fn system_claim_unstake(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("Claim unstake requires staker and validator accounts".to_string());
@@ -3564,18 +3564,18 @@ impl TxProcessor {
     }
 
     // ========================================================================
-    // REEFSTAKE — Liquid Staking (T6.1: wired to processor)
+    // MOSSSTAKE — Liquid Staking (T6.1: wired to processor)
     // ========================================================================
 
-    /// System program: ReefStake deposit (instruction type 13)
+    /// System program: MossStake deposit (instruction type 13)
     /// data: [13, amount(8)]
     /// accounts: [depositor]
-    fn system_reefstake_deposit(&self, ix: &Instruction) -> Result<(), String> {
+    fn system_mossstake_deposit(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
-            return Err("ReefStake deposit requires depositor account".to_string());
+            return Err("MossStake deposit requires depositor account".to_string());
         }
         if ix.data.len() < 9 {
-            return Err("Invalid ReefStake deposit data".to_string());
+            return Err("Invalid MossStake deposit data".to_string());
         }
 
         let depositor = ix.accounts[0];
@@ -3585,12 +3585,12 @@ impl TxProcessor {
         let amount = u64::from_le_bytes(amount_bytes);
 
         if amount == 0 {
-            return Err("Cannot deposit 0 MOLT".to_string());
+            return Err("Cannot deposit 0 LICN".to_string());
         }
 
         // Parse lock tier (byte 9, optional — default to Flexible)
         let tier_byte = ix.data.get(9).copied().unwrap_or(0);
-        let tier = crate::reefstake::LockTier::from_u8(tier_byte)
+        let tier = crate::mossstake::LockTier::from_u8(tier_byte)
             .ok_or_else(|| format!("Invalid lock tier: {}", tier_byte))?;
 
         // Deduct from depositor's spendable balance
@@ -3600,78 +3600,78 @@ impl TxProcessor {
         account.deduct_spendable(amount)?;
         self.b_put_account(&depositor, &account)?;
 
-        // Stake into ReefStake pool and mint stMOLT
+        // Stake into MossStake pool and mint stLICN
         let current_slot = self.b_get_last_slot().unwrap_or(0);
-        let mut pool = self.b_get_reefstake_pool()?;
-        let _st_molt = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
-        self.b_put_reefstake_pool(&pool)?;
+        let mut pool = self.b_get_mossstake_pool()?;
+        let _st_licn = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
+        self.b_put_mossstake_pool(&pool)?;
 
         Ok(())
     }
 
-    /// System program: ReefStake request unstake (instruction type 14)
-    /// data: [14, st_molt_amount(8)]
+    /// System program: MossStake request unstake (instruction type 14)
+    /// data: [14, st_licn_amount(8)]
     /// accounts: [user]
-    fn system_reefstake_unstake(&self, ix: &Instruction) -> Result<(), String> {
+    fn system_mossstake_unstake(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
-            return Err("ReefStake unstake requires user account".to_string());
+            return Err("MossStake unstake requires user account".to_string());
         }
         if ix.data.len() < 9 {
-            return Err("Invalid ReefStake unstake data".to_string());
+            return Err("Invalid MossStake unstake data".to_string());
         }
 
         let user = ix.accounts[0];
         let amount_bytes: [u8; 8] = ix.data[1..9]
             .try_into()
             .map_err(|_| "Invalid amount encoding".to_string())?;
-        let st_molt_amount = u64::from_le_bytes(amount_bytes);
+        let st_licn_amount = u64::from_le_bytes(amount_bytes);
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
-        let mut pool = self.b_get_reefstake_pool()?;
-        let _request = pool.request_unstake(user, st_molt_amount, current_slot)?;
-        self.b_put_reefstake_pool(&pool)?;
+        let mut pool = self.b_get_mossstake_pool()?;
+        let _request = pool.request_unstake(user, st_licn_amount, current_slot)?;
+        self.b_put_mossstake_pool(&pool)?;
 
         Ok(())
     }
 
-    /// System program: ReefStake claim (instruction type 15)
+    /// System program: MossStake claim (instruction type 15)
     /// data: [15]
     /// accounts: [user]
-    fn system_reefstake_claim(&self, ix: &Instruction) -> Result<(), String> {
+    fn system_mossstake_claim(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
-            return Err("ReefStake claim requires user account".to_string());
+            return Err("MossStake claim requires user account".to_string());
         }
 
         let user = ix.accounts[0];
         let current_slot = self.b_get_last_slot().unwrap_or(0);
 
-        let mut pool = self.b_get_reefstake_pool()?;
-        let molt_claimed = pool.claim_unstake(user, current_slot)?;
-        self.b_put_reefstake_pool(&pool)?;
+        let mut pool = self.b_get_mossstake_pool()?;
+        let licn_claimed = pool.claim_unstake(user, current_slot)?;
+        self.b_put_mossstake_pool(&pool)?;
 
-        if molt_claimed == 0 {
-            return Err("No claimable MOLT (cooldown not complete)".to_string());
+        if licn_claimed == 0 {
+            return Err("No claimable LICN (cooldown not complete)".to_string());
         }
 
-        // Credit the MOLT back to user's spendable balance
+        // Credit the LICN back to user's spendable balance
         let mut account = self
             .b_get_account(&user)?
             .ok_or_else(|| "User account not found".to_string())?;
-        account.add_spendable(molt_claimed)?;
+        account.add_spendable(licn_claimed)?;
         self.b_put_account(&user, &account)?;
 
         Ok(())
     }
 
-    /// System program: ReefStake stMOLT transfer (instruction type 16)
-    /// data: [16, st_molt_amount(8)]
+    /// System program: MossStake stLICN transfer (instruction type 16)
+    /// data: [16, st_licn_amount(8)]
     /// accounts: [from, to]
-    fn system_reefstake_transfer(&self, ix: &Instruction) -> Result<(), String> {
+    fn system_mossstake_transfer(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
-            return Err("ReefStake transfer requires sender and receiver accounts".to_string());
+            return Err("MossStake transfer requires sender and receiver accounts".to_string());
         }
         if ix.data.len() < 9 {
-            return Err("Invalid ReefStake transfer data".to_string());
+            return Err("Invalid MossStake transfer data".to_string());
         }
 
         let from = ix.accounts[0];
@@ -3679,7 +3679,7 @@ impl TxProcessor {
         let amount_bytes: [u8; 8] = ix.data[1..9]
             .try_into()
             .map_err(|_| "Invalid amount encoding".to_string())?;
-        let st_molt_amount = u64::from_le_bytes(amount_bytes);
+        let st_licn_amount = u64::from_le_bytes(amount_bytes);
 
         // Ensure receiver account exists on-chain (create if needed)
         if self.b_get_account(&to)?.is_none() {
@@ -3687,9 +3687,9 @@ impl TxProcessor {
         }
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
-        let mut pool = self.b_get_reefstake_pool()?;
-        pool.transfer(from, to, st_molt_amount, current_slot)?;
-        self.b_put_reefstake_pool(&pool)?;
+        let mut pool = self.b_get_mossstake_pool()?;
+        pool.transfer(from, to, st_licn_amount, current_slot)?;
+        self.b_put_mossstake_pool(&pool)?;
 
         Ok(())
     }
@@ -3888,9 +3888,9 @@ impl TxProcessor {
     }
 
     /// H16 fix: Faucet airdrop through consensus (instruction type 19).
-    /// Instruction data: [19 | amount_shells(8 LE)]
+    /// Instruction data: [19 | amount_spores(8 LE)]
     /// Accounts: [treasury, recipient]
-    /// Treasury must be a signer. Amount capped at 10 MOLT.
+    /// Treasury must be a signer. Amount capped at 10 LICN.
     fn system_faucet_airdrop(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("FaucetAirdrop requires [treasury, recipient] accounts".to_string());
@@ -3911,17 +3911,17 @@ impl TxProcessor {
             return Err("FaucetAirdrop: sender must be treasury".to_string());
         }
 
-        let amount_shells = u64::from_le_bytes(
+        let amount_spores = u64::from_le_bytes(
             ix.data[1..9]
                 .try_into()
                 .map_err(|_| "Invalid amount encoding".to_string())?,
         );
 
-        // Cap at 10 MOLT (faucet per-request limit)
+        // Cap at 10 LICN (faucet per-request limit)
         let max_airdrop = 10u64 * 1_000_000_000;
-        if amount_shells == 0 || amount_shells > max_airdrop {
+        if amount_spores == 0 || amount_spores > max_airdrop {
             return Err(format!(
-                "FaucetAirdrop: amount must be between 1 shell and {} shells (10 MOLT)",
+                "FaucetAirdrop: amount must be between 1 spore and {} spores (10 LICN)",
                 max_airdrop
             ));
         }
@@ -3931,7 +3931,7 @@ impl TxProcessor {
             .b_get_account(&treasury)?
             .ok_or_else(|| "Treasury account not found".to_string())?;
         treasury_account
-            .deduct_spendable(amount_shells)
+            .deduct_spendable(amount_spores)
             .map_err(|e| format!("Insufficient treasury balance: {}", e))?;
         self.b_put_account(&treasury, &treasury_account)?;
 
@@ -3940,7 +3940,7 @@ impl TxProcessor {
             .b_get_account(&recipient)?
             .unwrap_or_else(|| crate::Account::new(0, SYSTEM_PROGRAM_ID));
         recipient_account
-            .add_spendable(amount_shells)
+            .add_spendable(amount_spores)
             .map_err(|e| format!("Recipient balance overflow: {}", e))?;
         self.b_put_account(&recipient, &recipient_account)?;
 
@@ -3954,7 +3954,7 @@ impl TxProcessor {
     /// Accounts: [new_validator_pubkey]
     ///
     /// This is fee-exempt because the new validator has no account yet.
-    /// The treasury funds the bootstrap grant (100K MOLT) which is immediately staked.
+    /// The treasury funds the bootstrap grant (100K LICN) which is immediately staked.
     fn system_register_validator(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.is_empty() {
             return Err("RegisterValidator requires [validator] account".to_string());
@@ -4019,7 +4019,7 @@ impl TxProcessor {
         let mut account = self
             .b_get_account(&validator_pubkey)?
             .unwrap_or_else(|| Account {
-                shells: 0,
+                spores: 0,
                 spendable: 0,
                 staked: 0,
                 locked: 0,
@@ -4030,7 +4030,7 @@ impl TxProcessor {
                 dormant: false,
                 missed_rent_epochs: 0,
             });
-        account.shells = account.shells.saturating_add(grant_amount);
+        account.spores = account.spores.saturating_add(grant_amount);
         account.staked = account.staked.saturating_add(grant_amount);
         self.b_put_account(&validator_pubkey, &account)?;
 
@@ -4209,7 +4209,7 @@ impl TxProcessor {
             if let Some(mut acct) = self.b_get_account(&offending_validator)? {
                 let debit = capped_penalty.min(acct.staked);
                 acct.staked = acct.staked.saturating_sub(debit);
-                acct.shells = acct.shells.saturating_sub(debit);
+                acct.spores = acct.spores.saturating_sub(debit);
                 self.b_put_account(&offending_validator, &acct)?;
             }
 
@@ -4219,7 +4219,7 @@ impl TxProcessor {
                 .get_treasury_pubkey()?
                 .ok_or_else(|| "SlashValidator: treasury pubkey not set".to_string())?;
             if let Some(mut treasury) = self.b_get_account(&treasury_pubkey)? {
-                treasury.shells = treasury.shells.saturating_add(capped_penalty);
+                treasury.spores = treasury.spores.saturating_add(capped_penalty);
                 treasury.spendable = treasury.spendable.saturating_add(capped_penalty);
                 self.b_put_account(&treasury_pubkey, &treasury)?;
             }
@@ -4301,7 +4301,7 @@ impl TxProcessor {
     /// Sub-opcodes (data[1]):
     ///   0 = Initialize — create a nonce account with stored blockhash
     ///   1 = Advance    — advance stored blockhash to latest (validates durable tx)
-    ///   2 = Withdraw   — withdraw shells from nonce account (authority only)
+    ///   2 = Withdraw   — withdraw spores from nonce account (authority only)
     ///   3 = Authorize  — change nonce authority to a new pubkey
     ///
     /// Accounts layout:
@@ -4353,7 +4353,7 @@ impl TxProcessor {
             .ok_or("NonceInitialize: funder account not found")?;
         if funder_account.spendable < NONCE_ACCOUNT_MIN_BALANCE {
             return Err(format!(
-                "NonceInitialize: funder needs at least {} shells",
+                "NonceInitialize: funder needs at least {} spores",
                 NONCE_ACCOUNT_MIN_BALANCE
             ));
         }
@@ -4442,7 +4442,7 @@ impl TxProcessor {
         Ok(())
     }
 
-    /// Withdraw shells from a nonce account (authority only).
+    /// Withdraw spores from a nonce account (authority only).
     /// Data: [28, 2, amount(8 LE)]   Accounts: [authority, nonce_account, recipient]
     fn nonce_withdraw(&self, ix: &Instruction) -> Result<(), String> {
         if ix.accounts.len() < 3 {
@@ -4478,9 +4478,9 @@ impl TxProcessor {
         }
 
         // If withdrawing everything, close the nonce account
-        if amount >= nonce_account.shells {
+        if amount >= nonce_account.spores {
             // Close: transfer all to recipient, zero out account
-            let full_amount = nonce_account.shells;
+            let full_amount = nonce_account.spores;
             self.b_transfer(&nonce_pk, &recipient, full_amount)?;
             // Clear nonce data
             let mut acct = self
@@ -4594,10 +4594,10 @@ impl TxProcessor {
         // Validate param_id and value ranges
         match param_id {
             GOV_PARAM_BASE_FEE => {
-                // base_fee must be > 0 (anti-spam) and <= 1 MOLT
+                // base_fee must be > 0 (anti-spam) and <= 1 LICN
                 if value == 0 || value > 1_000_000_000 {
                     return Err(
-                        "GovernanceParamChange: base_fee must be 1..=1_000_000_000 shells"
+                        "GovernanceParamChange: base_fee must be 1..=1_000_000_000 spores"
                             .to_string(),
                     );
                 }
@@ -4612,7 +4612,7 @@ impl TxProcessor {
                 }
             }
             GOV_PARAM_MIN_VALIDATOR_STAKE => {
-                // Minimum 1 MOLT, maximum 1,000,000 MOLT
+                // Minimum 1 LICN, maximum 1,000,000 LICN
                 if !(1_000_000_000..=1_000_000_000_000_000_000).contains(&value) {
                     return Err(
                         "GovernanceParamChange: min_validator_stake out of range".to_string()
@@ -4943,17 +4943,17 @@ impl TxProcessor {
             args,
         );
 
-        // ── Cross-contract storage injection: MoltyID reputation ──
-        // If the target contract has a MoltyID address configured (indicating it
-        // needs reputation checks), read the caller's MoltyID reputation from
+        // ── Cross-contract storage injection: LichenID reputation ──
+        // If the target contract has a LichenID address configured (indicating it
+        // needs reputation checks), read the caller's LichenID reputation from
         // CF_CONTRACT_STORAGE and inject it into cross_contract_storage.
         // The contract's existing code (load_u64("rep:{hex}")) will find the
         // injected data in ctx.storage after the merge in execute().
         {
-            let moltyid_program = context
+            let lichenid_program = context
                 .storage
-                .get(b"pm_moltyid_addr" as &[u8])
-                .or_else(|| context.storage.get(b"gov_moltyid_addr" as &[u8]))
+                .get(b"pm_lichenid_addr" as &[u8])
+                .or_else(|| context.storage.get(b"gov_lichenid_addr" as &[u8]))
                 .and_then(|v| {
                     if v.len() == 32 && v.iter().any(|&x| x != 0) {
                         Some(v)
@@ -4962,10 +4962,10 @@ impl TxProcessor {
                     }
                 });
 
-            if let Some(moltyid_addr_bytes) = moltyid_program {
-                let mut moltyid_pubkey = Pubkey([0u8; 32]);
-                moltyid_pubkey.0.copy_from_slice(moltyid_addr_bytes);
-                // Build the MoltyID reputation key: "rep:" + hex(caller)
+            if let Some(lichenid_addr_bytes) = lichenid_program {
+                let mut lichenid_pubkey = Pubkey([0u8; 32]);
+                lichenid_pubkey.0.copy_from_slice(lichenid_addr_bytes);
+                // Build the LichenID reputation key: "rep:" + hex(caller)
                 let hex_chars: &[u8; 16] = b"0123456789abcdef";
                 let mut rep_key = Vec::with_capacity(68);
                 rep_key.extend_from_slice(b"rep:");
@@ -4973,9 +4973,9 @@ impl TxProcessor {
                     rep_key.push(hex_chars[(b >> 4) as usize]);
                     rep_key.push(hex_chars[(b & 0x0f) as usize]);
                 }
-                // Read from MoltyID's storage in CF_CONTRACT_STORAGE
+                // Read from LichenID's storage in CF_CONTRACT_STORAGE
                 if let Ok(Some(rep_data)) =
-                    self.state.get_contract_storage(&moltyid_pubkey, &rep_key)
+                    self.state.get_contract_storage(&lichenid_pubkey, &rep_key)
                 {
                     context.cross_contract_storage.insert(rep_key, rep_data);
                 }
@@ -5189,12 +5189,12 @@ impl TxProcessor {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// Detect and auto-award achievements after a successful transaction.
-    /// Writes directly to MoltyID's CF_CONTRACT_STORAGE. Best-effort only.
+    /// Writes directly to LichenID's CF_CONTRACT_STORAGE. Best-effort only.
     fn detect_and_award_achievements(&self, tx: &Transaction) -> Result<(), String> {
-        // Resolve MoltyID contract address from symbol registry
-        let moltyid_addr = match self.state.get_symbol_registry("MOLTYID") {
+        // Resolve LichenID contract address from symbol registry
+        let lichenid_addr = match self.state.get_symbol_registry("LICHENID") {
             Ok(Some(entry)) => entry.program,
-            _ => return Ok(()), // No MoltyID deployed — skip
+            _ => return Ok(()), // No LichenID deployed — skip
         };
 
         let first_ix = tx.message.instructions.first();
@@ -5207,12 +5207,12 @@ impl TxProcessor {
             None => return Ok(()),
         };
 
-        // Check if user has a MoltyID identity (required for achievements)
+        // Check if user has a LichenID identity (required for achievements)
         let hex = Self::pubkey_to_hex(&caller);
         let identity_key = format!("identity:{}", hex);
         if self
             .state
-            .get_contract_storage(&moltyid_addr, identity_key.as_bytes())
+            .get_contract_storage(&lichenid_addr, identity_key.as_bytes())
             .ok()
             .flatten()
             .is_none()
@@ -5231,67 +5231,67 @@ impl TxProcessor {
             match op {
                 // Transfer
                 0 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
                     let amount = if ix.data.len() >= 9 {
                         u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
                     } else {
                         0
                     };
                     if amount >= 100 * 1_000_000_000 {
-                        // 100+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 106, timestamp)?;
+                        // 100+ LICN
+                        self.award_ach(&lichenid_addr, &caller, &hex, 106, timestamp)?;
                         // Big Spender
                     }
                     if amount >= 1_000 * 1_000_000_000 {
-                        // 1000+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 107, timestamp)?;
+                        // 1000+ LICN
+                        self.award_ach(&lichenid_addr, &caller, &hex, 107, timestamp)?;
                         // Whale Transfer
                     }
                 }
                 // CreateCollection (opcode 6 per dispatch table)
                 6 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 63, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 63, timestamp)?;
                     // Collection Creator
                 }
                 // MintNFT (opcode 7 per dispatch table)
                 7 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 64, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 64, timestamp)?;
                     // First Mint (NFT)
                 }
                 // TransferNFT (opcode 8 per dispatch table)
                 8 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 65, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 65, timestamp)?;
                     // NFT Trader
                 }
                 // Stake (opcode 9 per dispatch table)
                 9 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 41, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 41, timestamp)?;
                     // First Stake
                 }
                 // RequestUnstake (opcode 10 per dispatch table)
                 10 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 42, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 42, timestamp)?;
                     // Unstaked
                 }
                 // ClaimUnstake (opcode 11 per dispatch table)
                 11 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
                 }
                 // RegisterEvmAddress (opcode 12 per dispatch table)
                 12 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 108, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 108, timestamp)?;
                     // EVM Connected
                 }
-                // ReefStakeDeposit (opcode 13 per dispatch table)
+                // MossStakeDeposit (opcode 13 per dispatch table)
                 13 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 43, timestamp)?; // ReefStake Pioneer
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 43, timestamp)?; // MossStake Pioneer
                     let amount = if ix.data.len() >= 9 {
                         u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8]))
                     } else {
@@ -5299,63 +5299,63 @@ impl TxProcessor {
                     };
                     let tier = ix.data.get(9).copied().unwrap_or(0);
                     if tier >= 1 {
-                        self.award_ach(&moltyid_addr, &caller, &hex, 44, timestamp)?;
+                        self.award_ach(&lichenid_addr, &caller, &hex, 44, timestamp)?;
                     } // Locked Staker
                     if tier >= 3 {
-                        self.award_ach(&moltyid_addr, &caller, &hex, 45, timestamp)?;
+                        self.award_ach(&lichenid_addr, &caller, &hex, 45, timestamp)?;
                     } // Diamond Hands (365-day)
                     if amount >= 10_000 * 1_000_000_000 {
-                        // 10K+ MOLT
-                        self.award_ach(&moltyid_addr, &caller, &hex, 46, timestamp)?;
+                        // 10K+ LICN
+                        self.award_ach(&lichenid_addr, &caller, &hex, 46, timestamp)?;
                         // Whale Staker
                     }
                 }
-                // ReefStakeUnstake (opcode 14 per dispatch table)
+                // MossStakeUnstake (opcode 14 per dispatch table)
                 14 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
                 }
-                // ReefStakeClaim (opcode 15 per dispatch table)
+                // MossStakeClaim (opcode 15 per dispatch table)
                 15 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 47, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 47, timestamp)?;
                     // Reward Harvester
                 }
-                // ReefStakeTransfer / stMOLT (opcode 16 per dispatch table)
+                // MossStakeTransfer / stLICN (opcode 16 per dispatch table)
                 16 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 48, timestamp)?;
-                    // stMOLT Transferrer
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 48, timestamp)?;
+                    // stLICN Transferrer
                 }
                 // ShieldDeposit (opcode 23 per dispatch table)
                 23 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 57, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 57, timestamp)?;
                     // Privacy Pioneer (First Shield)
                 }
                 // UnshieldWithdraw (opcode 24 per dispatch table)
                 24 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 58, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 58, timestamp)?;
                     // Unshielded
                 }
                 // ShieldedTransfer (opcode 25 per dispatch table)
                 25 => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
-                    self.award_ach(&moltyid_addr, &caller, &hex, 59, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 59, timestamp)?;
                     // Shadow Sender
                 }
                 // Any other instruction
                 _ => {
-                    self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?;
+                    self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?;
                 }
             }
         } else if ix.program_id == CONTRACT_PROGRAM_ID {
             // Contract call — parse function name from JSON payload
-            self.award_ach(&moltyid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
+            self.award_ach(&lichenid_addr, &caller, &hex, 1, timestamp)?; // First Transaction
             if let Ok(json_str) = std::str::from_utf8(&ix.data) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
                     if val.get("Deploy").is_some() {
-                        self.award_ach(&moltyid_addr, &caller, &hex, 3, timestamp)?;
+                        self.award_ach(&lichenid_addr, &caller, &hex, 3, timestamp)?;
                         // Program Builder
                     }
                     if let Some(call) = val.get("Call") {
@@ -5372,28 +5372,28 @@ impl TxProcessor {
                         });
                         let sym = contract_symbol.as_deref().unwrap_or("");
 
-                        // ── MoltyID achievements (handled by contract itself, but ensure coverage)
-                        if sym == "MOLTYID" {
+                        // ── LichenID achievements (handled by contract itself, but ensure coverage)
+                        if sym == "LICHENID" {
                             match func {
                                 "register_identity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 109, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 109, timestamp)?;
                                     // Identity Created
                                 }
                                 "register_name" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 9, timestamp)?; // Name Registrar
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 12, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 9, timestamp)?; // Name Registrar
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 12, timestamp)?;
                                     // First Name
                                 }
                                 "update_profile" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 110, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 110, timestamp)?;
                                     // Profile Customizer
                                 }
                                 "vouch" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 111, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 111, timestamp)?;
                                     // Voucher (gave a vouch)
                                 }
                                 "create_agent" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 112, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 112, timestamp)?;
                                     // Agent Creator
                                 }
                                 _ => {}
@@ -5401,23 +5401,23 @@ impl TxProcessor {
                         }
 
                         // ── DEX achievements
-                        if sym == "DEX" || sym == "DEX_CORE" || sym == "MOLTSWAP" {
+                        if sym == "DEX" || sym == "DEX_CORE" || sym == "LICHENSWAP" {
                             match func {
                                 "swap" | "swap_exact_input" | "swap_exact_output"
                                 | "execute_swap" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 13, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 13, timestamp)?;
                                     // First Trade
                                 }
                                 "add_liquidity" | "provide_liquidity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 14, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 14, timestamp)?;
                                     // LP Provider
                                 }
                                 "remove_liquidity" | "withdraw_liquidity" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 15, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 15, timestamp)?;
                                     // LP Withdrawal
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 16, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 16, timestamp)?;
                                     // DEX User
                                 }
                             }
@@ -5425,7 +5425,7 @@ impl TxProcessor {
 
                         // ── DEX Router
                         if sym == "DEX_ROUTER" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 17, timestamp)?;
+                            self.award_ach(&lichenid_addr, &caller, &hex, 17, timestamp)?;
                             // Multi-hop Trader
                         }
 
@@ -5433,11 +5433,11 @@ impl TxProcessor {
                         if sym == "DEX_MARGIN" {
                             match func {
                                 "open_position" | "open_long" | "open_short" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 18, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 18, timestamp)?;
                                     // Margin Trader
                                 }
                                 "close_position" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 19, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 19, timestamp)?;
                                     // Position Closer
                                 }
                                 _ => {}
@@ -5445,19 +5445,19 @@ impl TxProcessor {
                         }
 
                         // ── DEX Governance
-                        if sym == "DEX_GOVERNANCE" || sym == "MOLTDAO" {
+                        if sym == "DEX_GOVERNANCE" || sym == "LICHENDAO" {
                             match func {
                                 "create_proposal" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 71, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 71, timestamp)?;
                                     // Proposal Creator
                                 }
                                 "vote" | "cast_vote" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 2, timestamp)?; // Governance Voter
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 72, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 2, timestamp)?; // Governance Voter
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 72, timestamp)?;
                                     // First Vote
                                 }
                                 "delegate" | "delegate_votes" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 73, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 73, timestamp)?;
                                     // Delegator
                                 }
                                 _ => {}
@@ -5468,7 +5468,7 @@ impl TxProcessor {
                         if sym == "DEX_REWARDS" {
                             match func {
                                 "claim" | "claim_rewards" | "harvest" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 20, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 20, timestamp)?;
                                     // Yield Farmer
                                 }
                                 _ => {}
@@ -5477,50 +5477,50 @@ impl TxProcessor {
 
                         // ── DEX Analytics
                         if sym == "DEX_ANALYTICS" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 21, timestamp)?;
+                            self.award_ach(&lichenid_addr, &caller, &hex, 21, timestamp)?;
                             // Analytics Explorer
                         }
 
-                        // ── Lending (LobsterLend)
-                        if sym == "LOBSTERLEND" {
+                        // ── Lending (ThallLend)
+                        if sym == "THALLLEND" {
                             match func {
                                 "deposit" | "supply" | "lend" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 31, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 31, timestamp)?;
                                     // First Lend
                                 }
                                 "borrow" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 32, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 32, timestamp)?;
                                     // First Borrow
                                 }
                                 "repay" | "repay_loan" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 33, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 33, timestamp)?;
                                     // Loan Repaid
                                 }
                                 "liquidate" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 34, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 34, timestamp)?;
                                     // Liquidator
                                 }
                                 "withdraw" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 35, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 35, timestamp)?;
                                     // Withdrawal Expert
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── Bridge (MoltBridge)
-                        if sym == "MOLTBRIDGE" {
+                        // ── Bridge (LichenBridge)
+                        if sym == "LICHENBRIDGE" {
                             match func {
                                 "deposit" | "bridge_in" | "lock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 51, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 51, timestamp)?;
                                     // Bridge Pioneer (In)
                                 }
                                 "withdraw" | "bridge_out" | "unlock" | "claim" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 52, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 52, timestamp)?;
                                     // Bridge Out
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 53, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 53, timestamp)?;
                                     // Bridge User
                                 }
                             }
@@ -5530,34 +5530,34 @@ impl TxProcessor {
                         if sym == "WETH" || sym == "WBNB" || sym == "WSOL" {
                             match func {
                                 "wrap" | "deposit" | "mint" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 54, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 54, timestamp)?;
                                     // Wrapper
                                 }
                                 "unwrap" | "withdraw" | "burn" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 55, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 55, timestamp)?;
                                     // Unwrapper
                                 }
                                 "transfer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 56, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 56, timestamp)?;
                                     // Cross-chain Trader
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── Stablecoin (mUSD)
-                        if sym == "MUSD" {
+                        // ── Stablecoin (lUSD)
+                        if sym == "LUSD" {
                             match func {
                                 "mint" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 36, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 36, timestamp)?;
                                     // Stablecoin Minter
                                 }
                                 "redeem" | "burn" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 37, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 37, timestamp)?;
                                     // Stablecoin Redeemer
                                 }
                                 "transfer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 38, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 38, timestamp)?;
                                     // Stable Sender
                                 }
                                 _ => {}
@@ -5566,52 +5566,52 @@ impl TxProcessor {
 
                         // ── Shielded Pool
                         if sym == "SHIELDED_POOL" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 60, timestamp)?;
+                            self.award_ach(&lichenid_addr, &caller, &hex, 60, timestamp)?;
                             // ZK Privacy User
                         }
 
                         // ── NFT Marketplace
-                        if sym == "MOLTMARKET" {
+                        if sym == "LICHENMARKET" {
                             match func {
                                 "list" | "create_listing" | "list_nft" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 66, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 66, timestamp)?;
                                     // First Listing
                                 }
                                 "buy" | "purchase" | "buy_nft" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 67, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 67, timestamp)?;
                                     // First Purchase
                                 }
                                 "make_offer" | "bid" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 68, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 68, timestamp)?;
                                     // Bidder
                                 }
                                 "accept_offer" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 69, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 69, timestamp)?;
                                     // Deal Maker
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── NFT Collection (MoltPunks)
-                        if sym == "MOLTPUNKS" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 70, timestamp)?;
+                        // ── NFT Collection (LichenPunks)
+                        if sym == "LICHENPUNKS" {
+                            self.award_ach(&lichenid_addr, &caller, &hex, 70, timestamp)?;
                             // Punk Collector
                         }
 
-                        // ── Auction (MoltAuction)
-                        if sym == "MOLTAUCTION" {
+                        // ── Auction (LichenAuction)
+                        if sym == "LICHENAUCTION" {
                             match func {
                                 "create_auction" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 91, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 91, timestamp)?;
                                     // Auctioneer
                                 }
                                 "place_bid" | "bid" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 92, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 92, timestamp)?;
                                     // Auction Bidder
                                 }
                                 "claim" | "settle" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 93, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 93, timestamp)?;
                                     // Auction Winner
                                 }
                                 _ => {}
@@ -5619,32 +5619,32 @@ impl TxProcessor {
                         }
 
                         // ── Oracle
-                        if sym == "MOLTORACLE" {
+                        if sym == "LICHENORACLE" {
                             match func {
                                 "submit_price" | "update_price" | "report" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 81, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 81, timestamp)?;
                                     // Oracle Reporter
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 82, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 82, timestamp)?;
                                     // Oracle User
                                 }
                             }
                         }
 
-                        // ── Storage (ReefStorage)
-                        if sym == "REEF_STORAGE" {
+                        // ── Storage (MossStorage)
+                        if sym == "MOSS_STORAGE" {
                             match func {
                                 "upload" | "store" | "put" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 86, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 86, timestamp)?;
                                     // File Uploader
                                 }
                                 "download" | "get" | "retrieve" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 87, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 87, timestamp)?;
                                     // Data Retriever
                                 }
                                 _ => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 88, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 88, timestamp)?;
                                     // Storage User
                                 }
                             }
@@ -5654,15 +5654,15 @@ impl TxProcessor {
                         if sym == "BOUNTYBOARD" {
                             match func {
                                 "create_bounty" | "post_bounty" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 96, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 96, timestamp)?;
                                     // Bounty Poster
                                 }
                                 "submit_work" | "claim_bounty" | "complete" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 97, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 97, timestamp)?;
                                     // Bounty Hunter
                                 }
                                 "approve" | "accept_submission" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 98, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 98, timestamp)?;
                                     // Bounty Judge
                                 }
                                 _ => {}
@@ -5673,19 +5673,19 @@ impl TxProcessor {
                         if sym == "PREDICTION_MARKET" {
                             match func {
                                 "create_market" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 101, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 101, timestamp)?;
                                     // Market Maker
                                 }
                                 "predict" | "place_bet" | "buy_shares" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 102, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 102, timestamp)?;
                                     // First Prediction
                                 }
                                 "resolve" | "settle" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 103, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 103, timestamp)?;
                                     // Oracle Resolver
                                 }
                                 "claim" | "redeem" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 104, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 104, timestamp)?;
                                     // Prediction Winner
                                 }
                                 _ => {}
@@ -5696,78 +5696,78 @@ impl TxProcessor {
                         if sym == "COMPUTE_MARKET" {
                             match func {
                                 "register_provider" | "offer_compute" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 113, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 113, timestamp)?;
                                     // Compute Provider
                                 }
                                 "request_compute" | "submit_job" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 114, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 114, timestamp)?;
                                     // Compute Consumer
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── ClawPay
-                        if sym == "CLAWPAY" {
+                        // ── SporePay
+                        if sym == "SPOREPAY" {
                             match func {
                                 "create_invoice" | "create_payment" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 115, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 115, timestamp)?;
                                     // Payment Creator
                                 }
                                 "pay" | "send_payment" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 116, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 116, timestamp)?;
                                     // First Payment
                                 }
                                 "create_subscription" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 117, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 117, timestamp)?;
                                     // Subscription Creator
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── ClawPump (Token Launch)
-                        if sym == "CLAWPUMP" {
+                        // ── SporePump (Token Launch)
+                        if sym == "SPOREPUMP" {
                             match func {
                                 "create_token" | "launch" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 118, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 118, timestamp)?;
                                     // Token Launcher
                                 }
                                 "buy" | "purchase" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 119, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 119, timestamp)?;
                                     // Early Buyer
                                 }
                                 "sell" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 120, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 120, timestamp)?;
                                     // Token Seller
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── ClawVault
-                        if sym == "CLAWVAULT" {
+                        // ── SporeVault
+                        if sym == "SPOREVAULT" {
                             match func {
                                 "deposit" | "lock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 121, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 121, timestamp)?;
                                     // Vault Depositor
                                 }
                                 "withdraw" | "unlock" => {
-                                    self.award_ach(&moltyid_addr, &caller, &hex, 122, timestamp)?;
+                                    self.award_ach(&lichenid_addr, &caller, &hex, 122, timestamp)?;
                                     // Vault Withdrawer
                                 }
                                 _ => {}
                             }
                         }
 
-                        // ── MoltCoin (native token contract)
-                        if sym == "MOLTCOIN" {
-                            self.award_ach(&moltyid_addr, &caller, &hex, 123, timestamp)?;
+                        // ── LichenCoin (native token contract)
+                        if sym == "LICHENCOIN" {
+                            self.award_ach(&lichenid_addr, &caller, &hex, 123, timestamp)?;
                             // Token Contract User
                         }
 
                         // Generic contract interaction
-                        self.award_ach(&moltyid_addr, &caller, &hex, 124, timestamp)?;
+                        self.award_ach(&lichenid_addr, &caller, &hex, 124, timestamp)?;
                         // Contract Interactor
                     }
                 }
@@ -5783,10 +5783,10 @@ impl TxProcessor {
     }
 
     /// Award a single achievement if not already earned.
-    /// Writes directly to MoltyID's CF_CONTRACT_STORAGE.
+    /// Writes directly to LichenID's CF_CONTRACT_STORAGE.
     fn award_ach(
         &self,
-        moltyid_addr: &Pubkey,
+        lichenid_addr: &Pubkey,
         _caller: &Pubkey,
         hex: &str,
         achievement_id: u8,
@@ -5797,7 +5797,7 @@ impl TxProcessor {
         let key_bytes = key.as_bytes();
 
         // Check if already awarded (skip if so)
-        if let Ok(Some(_)) = self.state.get_contract_storage(moltyid_addr, key_bytes) {
+        if let Ok(Some(_)) = self.state.get_contract_storage(lichenid_addr, key_bytes) {
             return Ok(()); // Already earned
         }
 
@@ -5809,14 +5809,14 @@ impl TxProcessor {
         let mut ach_data = Vec::with_capacity(9);
         ach_data.push(achievement_id);
         ach_data.extend_from_slice(&timestamp.to_le_bytes());
-        self.b_put_contract_storage(moltyid_addr, key_bytes, &ach_data)?;
+        self.b_put_contract_storage(lichenid_addr, key_bytes, &ach_data)?;
 
         // Increment achievement count
         let count_key = format!("ach_count:{}", hex);
         let count_bytes = count_key.as_bytes();
         let prev = self
             .state
-            .get_contract_storage(moltyid_addr, count_bytes)
+            .get_contract_storage(lichenid_addr, count_bytes)
             .ok()
             .flatten()
             .and_then(|d| {
@@ -5827,7 +5827,7 @@ impl TxProcessor {
                 }
             })
             .unwrap_or(0);
-        self.b_put_contract_storage(moltyid_addr, count_bytes, &(prev + 1).to_le_bytes())?;
+        self.b_put_contract_storage(lichenid_addr, count_bytes, &(prev + 1).to_le_bytes())?;
 
         Ok(())
     }
@@ -6063,13 +6063,13 @@ impl TxProcessor {
         // and must be claimed before the contract can be closed.
         if account.staked > 0 {
             return Err(format!(
-                "Cannot close contract with {} staked shells — unstake first",
+                "Cannot close contract with {} staked spores — unstake first",
                 account.staked
             ));
         }
         if account.locked > 0 {
             return Err(format!(
-                "Cannot close contract with {} locked shells — claim unstake first",
+                "Cannot close contract with {} locked spores — claim unstake first",
                 account.locked
             ));
         }
@@ -6145,7 +6145,7 @@ impl TxProcessor {
             }
 
             // Zero-balance accounts with no data: also exempt
-            if account.shells == 0 && data_len == 0 {
+            if account.spores == 0 && data_len == 0 {
                 account.rent_epoch = current_slot;
                 self.b_put_account(&pubkey, &account)?;
                 continue;
@@ -6210,7 +6210,7 @@ struct DeployRegistryData {
     make_public: Option<bool>,
     /// Explicit ABI provided by the deployer (takes priority over auto-extracted)
     abi: Option<ContractAbi>,
-    /// Token decimals (e.g. 9 for MOLT, 18 for ERC-20 style)
+    /// Token decimals (e.g. 9 for LICN, 18 for ERC-20 style)
     decimals: Option<u8>,
 }
 
@@ -6244,7 +6244,7 @@ impl DeployRegistryData {
     }
 }
 
-/// MoltyID trust tier calculation (matches contract implementation)
+/// LichenID trust tier calculation (matches contract implementation)
 /// Tier 0: Newcomer (rep < 100)
 /// Tier 1: Known (rep 100-499)
 /// Tier 2: Trusted (rep 500-999)
@@ -6291,7 +6291,7 @@ mod tests {
             .put_account(&treasury, &Account::new(0, treasury))
             .unwrap();
 
-        // Fund alice with 1000 MOLT
+        // Fund alice with 1000 LICN
         let alice_account = Account::new(1000, alice);
         state.put_account(&alice, &alice_account).unwrap();
 
@@ -6323,11 +6323,11 @@ mod tests {
         from_kp: &Keypair,
         from: Pubkey,
         to: Pubkey,
-        amount_molt: u64,
+        amount_licn: u64,
         recent_blockhash: Hash,
     ) -> Transaction {
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(amount_molt).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(amount_licn).to_le_bytes());
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -6355,7 +6355,7 @@ mod tests {
         assert_eq!(result.fee_paid, BASE_FEE);
         assert_eq!(
             state.get_balance(&bob).unwrap(),
-            Account::molt_to_shells(100)
+            Account::licn_to_spores(100)
         );
     }
 
@@ -6401,7 +6401,7 @@ mod tests {
 
         // Build tx but DON'T sign it
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -6424,7 +6424,7 @@ mod tests {
         let eve_kp = Keypair::generate();
 
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -6448,7 +6448,7 @@ mod tests {
 
         // Two instructions, both from alice
         let mut data1 = vec![0u8];
-        data1.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data1.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix1 = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -6456,7 +6456,7 @@ mod tests {
         };
 
         let mut data2 = vec![0u8];
-        data2.extend_from_slice(&Account::molt_to_shells(20).to_le_bytes());
+        data2.extend_from_slice(&Account::licn_to_spores(20).to_le_bytes());
         let ix2 = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, charlie],
@@ -6476,11 +6476,11 @@ mod tests {
 
         assert_eq!(
             state.get_balance(&bob).unwrap(),
-            Account::molt_to_shells(10)
+            Account::licn_to_spores(10)
         );
         assert_eq!(
             state.get_balance(&charlie).unwrap(),
-            Account::molt_to_shells(20)
+            Account::licn_to_spores(20)
         );
     }
 
@@ -6491,7 +6491,7 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let initial_balance = state.get_balance(&alice).unwrap();
-        let transfer_amount = Account::molt_to_shells(50);
+        let transfer_amount = Account::licn_to_spores(50);
         let tx = make_transfer_tx(&alice_kp, alice, bob, 50, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
 
@@ -6506,24 +6506,24 @@ mod tests {
         let bob = Pubkey([2u8; 32]);
         let validator = Pubkey([42u8; 32]);
 
-        // Alice has 1000 MOLT, try to send 2000
+        // Alice has 1000 LICN, try to send 2000
         let tx = make_transfer_tx(&alice_kp, alice, bob, 2000, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
 
         assert!(!result.success, "Oversized transfer should be rejected");
     }
 
-    // ─── ReefStake instruction tests ──────────────────────────────────
+    // ─── MossStake instruction tests ──────────────────────────────────
 
-    /// Helper: build and sign a ReefStake deposit tx (instruction type 13)
-    fn make_reefstake_deposit_tx(
+    /// Helper: build and sign a MossStake deposit tx (instruction type 13)
+    fn make_mossstake_deposit_tx(
         kp: &Keypair,
         user: Pubkey,
-        amount_shells: u64,
+        amount_spores: u64,
         recent_blockhash: Hash,
     ) -> Transaction {
         let mut data = vec![13u8];
-        data.extend_from_slice(&amount_shells.to_le_bytes());
+        data.extend_from_slice(&amount_spores.to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![user],
@@ -6535,15 +6535,15 @@ mod tests {
         tx
     }
 
-    /// Helper: build and sign a ReefStake unstake tx (instruction type 14)
-    fn make_reefstake_unstake_tx(
+    /// Helper: build and sign a MossStake unstake tx (instruction type 14)
+    fn make_mossstake_unstake_tx(
         kp: &Keypair,
         user: Pubkey,
-        st_molt_amount: u64,
+        st_licn_amount: u64,
         recent_blockhash: Hash,
     ) -> Transaction {
         let mut data = vec![14u8];
-        data.extend_from_slice(&st_molt_amount.to_le_bytes());
+        data.extend_from_slice(&st_licn_amount.to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![user],
@@ -6555,8 +6555,8 @@ mod tests {
         tx
     }
 
-    /// Helper: build and sign a ReefStake claim tx (instruction type 15)
-    fn make_reefstake_claim_tx(kp: &Keypair, user: Pubkey, recent_blockhash: Hash) -> Transaction {
+    /// Helper: build and sign a MossStake claim tx (instruction type 15)
+    fn make_mossstake_claim_tx(kp: &Keypair, user: Pubkey, recent_blockhash: Hash) -> Transaction {
         let data = vec![15u8];
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -6570,19 +6570,19 @@ mod tests {
     }
 
     #[test]
-    fn test_reefstake_deposit_reduces_balance() {
+    fn test_mossstake_deposit_reduces_balance() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        let deposit_amount = Account::molt_to_shells(100);
+        let deposit_amount = Account::licn_to_spores(100);
         let initial_balance = state.get_balance(&alice).unwrap();
 
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
 
         assert!(
             result.success,
-            "ReefStake deposit should succeed: {:?}",
+            "MossStake deposit should succeed: {:?}",
             result.error
         );
 
@@ -6594,32 +6594,32 @@ mod tests {
         );
 
         // Pool should have the staked amount
-        let pool = state.get_reefstake_pool().unwrap();
-        assert_eq!(pool.st_molt_token.total_molt_staked, deposit_amount);
+        let pool = state.get_mossstake_pool().unwrap();
+        assert_eq!(pool.st_licn_token.total_licn_staked, deposit_amount);
         assert!(pool.positions.contains_key(&alice));
     }
 
     #[test]
-    fn test_reefstake_deposit_zero_rejected() {
+    fn test_mossstake_deposit_zero_rejected() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, 0, genesis_hash);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, 0, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
 
         assert!(!result.success, "Zero deposit should be rejected");
     }
 
     #[test]
-    fn test_reefstake_deposit_insufficient_balance() {
+    fn test_mossstake_deposit_insufficient_balance() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        // Alice has 1000 MOLT, try to deposit 2000
-        let tx = make_reefstake_deposit_tx(
+        // Alice has 1000 LICN, try to deposit 2000
+        let tx = make_mossstake_deposit_tx(
             &alice_kp,
             alice,
-            Account::molt_to_shells(2000),
+            Account::licn_to_spores(2000),
             genesis_hash,
         );
         let result = processor.process_transaction(&tx, &validator);
@@ -6628,72 +6628,72 @@ mod tests {
     }
 
     #[test]
-    fn test_reefstake_unstake_creates_request() {
+    fn test_mossstake_unstake_creates_request() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
         // First deposit
-        let deposit_amount = Account::molt_to_shells(200);
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let deposit_amount = Account::licn_to_spores(200);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(result.success, "Deposit should succeed");
 
-        // Get the stMOLT minted (1:1 on first deposit)
-        let pool = state.get_reefstake_pool().unwrap();
-        let st_molt = pool.positions.get(&alice).unwrap().st_molt_amount;
-        assert_eq!(st_molt, deposit_amount);
+        // Get the stLICN minted (1:1 on first deposit)
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
+        assert_eq!(st_licn, deposit_amount);
 
         // Request unstake
-        let tx = make_reefstake_unstake_tx(&alice_kp, alice, st_molt, genesis_hash);
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(result.success, "Unstake should succeed: {:?}", result.error);
 
         // Check pending unstake request exists
-        let pool = state.get_reefstake_pool().unwrap();
+        let pool = state.get_mossstake_pool().unwrap();
         let requests = pool.get_unstake_requests(&alice);
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].molt_to_receive, deposit_amount);
+        assert_eq!(requests[0].licn_to_receive, deposit_amount);
     }
 
     #[test]
-    fn test_reefstake_claim_before_cooldown_fails() {
+    fn test_mossstake_claim_before_cooldown_fails() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
         // Deposit then unstake
-        let deposit_amount = Account::molt_to_shells(100);
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let deposit_amount = Account::licn_to_spores(100);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
         assert!(processor.process_transaction(&tx, &validator).success);
 
-        let pool = state.get_reefstake_pool().unwrap();
-        let st_molt = pool.positions.get(&alice).unwrap().st_molt_amount;
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
 
-        let tx = make_reefstake_unstake_tx(&alice_kp, alice, st_molt, genesis_hash);
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
         assert!(processor.process_transaction(&tx, &validator).success);
 
         // Try claim immediately (slot 0, cooldown is 151200 slots)
-        let tx = make_reefstake_claim_tx(&alice_kp, alice, genesis_hash);
+        let tx = make_mossstake_claim_tx(&alice_kp, alice, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Claim before cooldown should fail");
     }
 
     #[test]
-    fn test_reefstake_claim_after_cooldown_succeeds() {
+    fn test_mossstake_claim_after_cooldown_succeeds() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
         let initial_balance = state.get_balance(&alice).unwrap();
 
         // Deposit
-        let deposit_amount = Account::molt_to_shells(100);
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        let deposit_amount = Account::licn_to_spores(100);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
         let r1 = processor.process_transaction(&tx, &validator);
         assert!(r1.success);
 
         // Unstake
-        let pool = state.get_reefstake_pool().unwrap();
-        let st_molt = pool.positions.get(&alice).unwrap().st_molt_amount;
-        let tx = make_reefstake_unstake_tx(&alice_kp, alice, st_molt, genesis_hash);
+        let pool = state.get_mossstake_pool().unwrap();
+        let st_licn = pool.positions.get(&alice).unwrap().st_licn_amount;
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, st_licn, genesis_hash);
         let r2 = processor.process_transaction(&tx, &validator);
         assert!(r2.success);
 
@@ -6712,7 +6712,7 @@ mod tests {
         state.set_last_slot(2_000_000).unwrap();
 
         // Claim should succeed now
-        let tx = make_reefstake_claim_tx(&alice_kp, alice, future_hash);
+        let tx = make_mossstake_claim_tx(&alice_kp, alice, future_hash);
         let r3 = processor.process_transaction(&tx, &validator);
         assert!(
             r3.success,
@@ -6727,18 +6727,18 @@ mod tests {
     }
 
     #[test]
-    fn test_reefstake_unstake_more_than_staked_fails() {
+    fn test_mossstake_unstake_more_than_staked_fails() {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        // Deposit 100 MOLT
-        let deposit_amount = Account::molt_to_shells(100);
-        let tx = make_reefstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
+        // Deposit 100 LICN
+        let deposit_amount = Account::licn_to_spores(100);
+        let tx = make_mossstake_deposit_tx(&alice_kp, alice, deposit_amount, genesis_hash);
         assert!(processor.process_transaction(&tx, &validator).success);
 
-        // Try to unstake 200 MOLT worth of stMOLT
-        let too_much = Account::molt_to_shells(200);
-        let tx = make_reefstake_unstake_tx(&alice_kp, alice, too_much, genesis_hash);
+        // Try to unstake 200 LICN worth of stLICN
+        let too_much = Account::licn_to_spores(200);
+        let tx = make_mossstake_unstake_tx(&alice_kp, alice, too_much, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Unstaking more than staked should fail");
     }
@@ -6753,7 +6753,7 @@ mod tests {
         // Fund treasury for test
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
         treasury_acct
-            .add_spendable(Account::molt_to_shells(100))
+            .add_spendable(Account::licn_to_spores(100))
             .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
@@ -6787,7 +6787,7 @@ mod tests {
         // Fund treasury
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
         treasury_acct
-            .add_spendable(Account::molt_to_shells(100))
+            .add_spendable(Account::licn_to_spores(100))
             .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
@@ -6812,24 +6812,24 @@ mod tests {
         let result = processor.process_transaction(&tx, &validator);
         assert!(result.success, "Deploy should succeed: {:?}", result.error);
 
-        // The fee should include contract_deploy_fee (25 MOLT) + base_fee (0.001 MOLT)
+        // The fee should include contract_deploy_fee (25 LICN) + base_fee (0.001 LICN)
         let after = state.get_account(&alice).unwrap().unwrap().spendable;
         let charged = before - after;
-        // contract_deploy_fee = 25_000_000_000 shells, base_fee = 1_000_000 shells
+        // contract_deploy_fee = 25_000_000_000 spores, base_fee = 1_000_000 spores
         assert!(
             charged >= 25_000_000_000,
-            "Expected at least 25 MOLT fee for deploy, got {} shells charged",
+            "Expected at least 25 LICN fee for deploy, got {} spores charged",
             charged
         );
     }
 
-    /// AUDIT-FIX B-2: An account with only 1 MOLT cannot pay the 25 MOLT deploy fee.
+    /// AUDIT-FIX B-2: An account with only 1 LICN cannot pay the 25 LICN deploy fee.
     #[test]
     fn test_system_deploy_rejects_underfunded() {
         let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        // Set Alice to only 1 MOLT — cannot afford 25 MOLT deploy fee
+        // Set Alice to only 1 LICN — cannot afford 25 LICN deploy fee
         let low = Account::new(1, alice);
         state.put_account(&alice, &low).unwrap();
 
@@ -6851,7 +6851,7 @@ mod tests {
         let result = processor.process_transaction(&tx, &validator);
         assert!(
             !result.success,
-            "Deploy with only 1 MOLT should fail due to 25 MOLT fee"
+            "Deploy with only 1 LICN should fail due to 25 LICN fee"
         );
     }
 
@@ -6862,7 +6862,7 @@ mod tests {
 
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
         treasury_acct
-            .add_spendable(Account::molt_to_shells(100))
+            .add_spendable(Account::licn_to_spores(100))
             .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
@@ -6896,7 +6896,7 @@ mod tests {
 
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
         treasury_acct
-            .add_spendable(Account::molt_to_shells(100))
+            .add_spendable(Account::licn_to_spores(100))
             .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
@@ -7036,10 +7036,10 @@ mod tests {
         // Verify only base fee was kept (premium refunded)
         let final_balance = state.get_balance(&alice).unwrap();
         let fee_kept = initial_balance - final_balance;
-        // base_fee = 1_000_000 shells (0.001 MOLT), deploy premium = 25_000_000_000
+        // base_fee = 1_000_000 spores (0.001 LICN), deploy premium = 25_000_000_000
         assert!(
             fee_kept < 25_000_000_000,
-            "Premium should be refunded on failed deploy, but {} shells kept",
+            "Premium should be refunded on failed deploy, but {} spores kept",
             fee_kept
         );
     }
@@ -7172,11 +7172,11 @@ mod tests {
 
         // Fund treasury
         let mut t = state.get_account(&treasury).unwrap().unwrap();
-        t.add_spendable(Account::molt_to_shells(1000)).unwrap();
+        t.add_spendable(Account::licn_to_spores(1000)).unwrap();
         state.put_account(&treasury, &t).unwrap();
 
         let recipient = Pubkey([0x99; 32]);
-        let amount: u64 = Account::molt_to_shells(10);
+        let amount: u64 = Account::licn_to_spores(10);
 
         let mut data = vec![19u8];
         data.extend_from_slice(&amount.to_le_bytes());
@@ -7230,8 +7230,8 @@ mod tests {
         a.add_spendable(u64::MAX / 2).unwrap();
         state.put_account(&alice, &a).unwrap();
 
-        // A fee of 1e18 (~1e9 MOLT) times percent 50 would overflow u64 multiply
-        let large_fee: u64 = 1_000_000_000_000_000_000; // 1e18 shells
+        // A fee of 1e18 (~1e9 LICN) times percent 50 would overflow u64 multiply
+        let large_fee: u64 = 1_000_000_000_000_000_000; // 1e18 spores
         let result = processor.charge_fee_direct(&alice, large_fee);
         assert!(
             result.is_ok(),
@@ -7258,11 +7258,11 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let mut t = state.get_account(&treasury).unwrap().unwrap();
-        t.add_spendable(Account::molt_to_shells(10000)).unwrap();
+        t.add_spendable(Account::licn_to_spores(10000)).unwrap();
         state.put_account(&treasury, &t).unwrap();
 
         let recipient = Pubkey([0xBB; 32]);
-        // 200 MOLT exceeds 10 MOLT cap
+        // 200 LICN exceeds 10 LICN cap
         let amount: u64 = 200u64 * 1_000_000_000;
 
         let mut data = vec![19u8];
@@ -7291,7 +7291,7 @@ mod tests {
         tx.signatures
             .push(treasury_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, &validator);
-        assert!(!result.success, "Airdrop > 10 MOLT should fail");
+        assert!(!result.success, "Airdrop > 10 LICN should fail");
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -7439,8 +7439,8 @@ mod tests {
 
         // Verify both actually transferred
         let r = state.get_account(&shared_recipient).unwrap().unwrap();
-        let alice_sent = Account::molt_to_shells(10);
-        let bob_sent = Account::molt_to_shells(10);
+        let alice_sent = Account::licn_to_spores(10);
+        let bob_sent = Account::licn_to_spores(10);
         assert!(
             r.spendable >= alice_sent + bob_sent,
             "Recipient should have both transfers"
@@ -7609,12 +7609,12 @@ mod tests {
             .put_account(&treasury, &Account::new(0, treasury))
             .unwrap();
 
-        // Create two payers each with 10 MOLT (10_000_000_000 shells)
+        // Create two payers each with 10 LICN (10_000_000_000 spores)
         let kp_a = Keypair::generate();
         let kp_b = Keypair::generate();
         let payer_a = kp_a.pubkey();
         let payer_b = kp_b.pubkey();
-        let initial_shells = Account::molt_to_shells(10);
+        let initial_spores = Account::licn_to_spores(10);
         state
             .put_account(&payer_a, &Account::new(10, payer_a))
             .unwrap();
@@ -7622,7 +7622,7 @@ mod tests {
             .put_account(&payer_b, &Account::new(10, payer_b))
             .unwrap();
 
-        let fee = Account::molt_to_shells(1); // 1 MOLT = 1_000_000_000 shells
+        let fee = Account::licn_to_spores(1); // 1 LICN = 1_000_000_000 spores
 
         // Simulate two parallel groups charging fees concurrently.
         // With the treasury_lock, the second group must see the first's write.
@@ -7641,32 +7641,32 @@ mod tests {
         // Treasury should have received BOTH fee credits (minus burned portion)
         let final_treasury = state.get_account(&treasury).unwrap().unwrap();
         assert!(
-            final_treasury.shells > 0,
+            final_treasury.spores > 0,
             "Treasury must have received fee credits"
         );
-        // Both payers should have been debited exactly 1 MOLT
-        let payer_a_bal = state.get_account(&payer_a).unwrap().unwrap().shells;
-        let payer_b_bal = state.get_account(&payer_b).unwrap().unwrap().shells;
-        assert_eq!(payer_a_bal, initial_shells - fee);
-        assert_eq!(payer_b_bal, initial_shells - fee);
+        // Both payers should have been debited exactly 1 LICN
+        let payer_a_bal = state.get_account(&payer_a).unwrap().unwrap().spores;
+        let payer_b_bal = state.get_account(&payer_b).unwrap().unwrap().spores;
+        assert_eq!(payer_a_bal, initial_spores - fee);
+        assert_eq!(payer_b_bal, initial_spores - fee);
     }
 
     /// AUDIT-FIX B-5: Fee split percentages are capped so total distributed
     /// never exceeds the original fee amount.
     #[test]
-    fn test_fee_split_capped_no_shell_creation() {
+    fn test_fee_split_capped_no_spore_creation() {
         let (processor, state, _alice_kp, _alice, treasury, _genesis_hash) = setup();
 
-        // Set up a payer with known balance (10 MOLT)
+        // Set up a payer with known balance (10 LICN)
         let payer = Pubkey([99u8; 32]);
         state.put_account(&payer, &Account::new(10, payer)).unwrap();
 
-        let fee = Account::molt_to_shells(1); // 1 MOLT
-        let treasury_before = state.get_account(&treasury).unwrap().unwrap().shells;
+        let fee = Account::licn_to_spores(1); // 1 LICN
+        let treasury_before = state.get_account(&treasury).unwrap().unwrap().spores;
 
         processor.charge_fee_direct(&payer, fee).unwrap();
 
-        let treasury_after = state.get_account(&treasury).unwrap().unwrap().shells;
+        let treasury_after = state.get_account(&treasury).unwrap().unwrap().spores;
         let treasury_gain = treasury_after - treasury_before;
         let burned = state.get_total_burned().unwrap_or(0);
 
@@ -7712,7 +7712,7 @@ mod tests {
         let new_acct = new_kp.pubkey();
         let validator = Pubkey([42u8; 32]);
 
-        // Two instructions: 1-shell transfer (fee payer = alice), create_account (signer = new_acct)
+        // Two instructions: 1-spore transfer (fee payer = alice), create_account (signer = new_acct)
         let message = crate::transaction::Message::new(
             vec![
                 Instruction {
@@ -7746,7 +7746,7 @@ mod tests {
 
         let acct = state.get_account(&new_acct).unwrap();
         assert!(acct.is_some(), "New account must exist after creation");
-        assert_eq!(acct.unwrap().shells, 0, "New account should have 0 balance");
+        assert_eq!(acct.unwrap().spores, 0, "New account should have 0 balance");
     }
 
     #[test]
@@ -7816,7 +7816,7 @@ mod tests {
         let t_acct2 = Account::new(1_000_000, treasury_pub);
         state.put_account(&treasury_pub, &t_acct2).unwrap();
 
-        let amount = Account::molt_to_shells(100);
+        let amount = Account::licn_to_spores(100);
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![treasury_pub, bob],
@@ -7843,7 +7843,7 @@ mod tests {
         let bob = Pubkey([53u8; 32]);
         let validator = Pubkey([42u8; 32]);
 
-        let amount = Account::molt_to_shells(10);
+        let amount = Account::licn_to_spores(10);
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -7865,7 +7865,7 @@ mod tests {
     // ====================================================================
 
     /// Helper: create a collection and return the collection account pubkey.
-    /// NOTE: Funds the creator with extra MOLT to cover the 1000 MOLT collection fee.
+    /// NOTE: Funds the creator with extra LICN to cover the 1000 LICN collection fee.
     fn create_test_collection(
         processor: &TxProcessor,
         state: &StateStore,
@@ -7874,7 +7874,7 @@ mod tests {
         collection_addr: Pubkey,
         genesis_hash: Hash,
     ) -> TxResult {
-        // Ensure creator has enough for the collection fee (1000 MOLT) + base fee
+        // Ensure creator has enough for the collection fee (1000 LICN) + base fee
         state
             .put_account(&creator, &Account::new(10_000, creator))
             .unwrap();
@@ -8192,7 +8192,7 @@ mod tests {
         // Register validator in pool
         setup_validator_in_pool(&state, validator);
 
-        // Fund alice with enough for MIN_VALIDATOR_STAKE (75K MOLT)
+        // Fund alice with enough for MIN_VALIDATOR_STAKE (75K LICN)
         state
             .put_account(&alice, &Account::new(100_000, alice))
             .unwrap();
@@ -8233,7 +8233,7 @@ mod tests {
         let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let fake_validator = Pubkey([99u8; 32]); // Not in stake pool
 
-        let amount = Account::molt_to_shells(100);
+        let amount = Account::licn_to_spores(100);
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, fake_validator],
@@ -8335,7 +8335,7 @@ mod tests {
         assert!(r.success, "Stake should succeed: {:?}", r.error);
 
         // Try to unstake more than staked
-        let too_much = Account::molt_to_shells(100_000);
+        let too_much = Account::licn_to_spores(100_000);
         let ix_unstake = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
@@ -8503,21 +8503,21 @@ mod tests {
     }
 
     // ====================================================================
-    // REEFSTAKE TRANSFER (type 16)
+    // MOSSSTAKE TRANSFER (type 16)
     // ====================================================================
 
     #[test]
-    fn test_reefstake_transfer_success() {
+    fn test_mossstake_transfer_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let bob = Pubkey([80u8; 32]);
 
-        // Deposit first: alice deposits 100 MOLT into ReefStake
-        let deposit_amount = Account::molt_to_shells(100);
+        // Deposit first: alice deposits 100 LICN into MossStake
+        let deposit_amount = Account::licn_to_spores(100);
         let ix_deposit = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice],
             data: {
-                let mut d = vec![13u8]; // ReefStake deposit
+                let mut d = vec![13u8]; // MossStake deposit
                 d.extend_from_slice(&deposit_amount.to_le_bytes());
                 d
             },
@@ -8526,21 +8526,21 @@ mod tests {
         let r = processor.process_transaction(&tx_dep, &Pubkey([42u8; 32]));
         assert!(r.success, "Deposit should succeed: {:?}", r.error);
 
-        // Get alice's stMOLT balance
-        let pool = state.get_reefstake_pool().unwrap();
+        // Get alice's stLICN balance
+        let pool = state.get_mossstake_pool().unwrap();
         let (alice_pos, _) = pool
             .get_position(&alice)
             .expect("Alice should have a position after deposit");
-        let alice_stmolt = alice_pos.st_molt_amount;
-        assert!(alice_stmolt > 0, "Alice should have stMOLT after deposit");
+        let alice_st_licn = alice_pos.st_licn_amount;
+        assert!(alice_st_licn > 0, "Alice should have stLICN after deposit");
 
-        // Transfer half the stMOLT to bob
-        let transfer_amount = alice_stmolt / 2;
+        // Transfer half the stLICN to bob
+        let transfer_amount = alice_st_licn / 2;
         let ix_transfer = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
             data: {
-                let mut d = vec![16u8]; // ReefStake transfer
+                let mut d = vec![16u8]; // MossStake transfer
                 d.extend_from_slice(&transfer_amount.to_le_bytes());
                 d
             },
@@ -8549,19 +8549,19 @@ mod tests {
         let result = processor.process_transaction(&tx_xfer, &Pubkey([42u8; 32]));
         assert!(
             result.success,
-            "ReefStake transfer should succeed: {:?}",
+            "MossStake transfer should succeed: {:?}",
             result.error
         );
 
         // Verify balances
-        let pool2 = state.get_reefstake_pool().unwrap();
+        let pool2 = state.get_mossstake_pool().unwrap();
         let (bob_pos, _) = pool2
             .get_position(&bob)
             .expect("Bob should have a position after transfer");
-        let bob_stmolt = bob_pos.st_molt_amount;
+        let bob_st_licn = bob_pos.st_licn_amount;
         assert_eq!(
-            bob_stmolt, transfer_amount,
-            "Bob should have received stMOLT"
+            bob_st_licn, transfer_amount,
+            "Bob should have received stLICN"
         );
     }
 
@@ -8595,7 +8595,7 @@ mod tests {
 
         deploy_fake_contract(&state, alice, contract_id);
 
-        let json_payload = r#"{"symbol":"TMOLT","name":"TestMolt","template":"token"}"#;
+        let json_payload = r#"{"symbol":"TLICN","name":"TestLicn","template":"token"}"#;
         let mut data = vec![20u8];
         data.extend_from_slice(json_payload.as_bytes());
 
@@ -8613,8 +8613,8 @@ mod tests {
         );
 
         // Verify symbol is registered
-        let entry = state.get_symbol_registry("TMOLT").unwrap();
-        assert!(entry.is_some(), "Symbol TMOLT should be in registry");
+        let entry = state.get_symbol_registry("TLICN").unwrap();
+        assert!(entry.is_some(), "Symbol TLICN should be in registry");
         let e = entry.unwrap();
         assert_eq!(e.program, contract_id);
         assert_eq!(e.owner, alice);
@@ -8806,7 +8806,7 @@ mod tests {
         let bob = Pubkey([2u8; 32]);
 
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -8827,7 +8827,7 @@ mod tests {
 
         // Drain alice's balance
         let mut acct = state.get_account(&alice).unwrap().unwrap();
-        acct.shells = 0;
+        acct.spores = 0;
         acct.spendable = 0;
         state.put_account(&alice, &acct).unwrap();
 
@@ -8905,7 +8905,7 @@ mod tests {
         let recipient = Pubkey([99u8; 32]);
 
         // Fund the ecosystem wallet
-        let eco_acct = Account::new(Account::molt_to_shells(1000), Pubkey([0u8; 32]));
+        let eco_acct = Account::new(Account::licn_to_spores(1000), Pubkey([0u8; 32]));
         state.put_account(&eco, &eco_acct).unwrap();
 
         // Configure as governed wallet (threshold=2, signers=[alice, eco])
@@ -8948,7 +8948,7 @@ mod tests {
         let recipient = Pubkey([99u8; 32]);
 
         // Fund participants
-        let fund = Account::molt_to_shells(1000);
+        let fund = Account::licn_to_spores(1000);
         state
             .put_account(&eco, &Account::new(fund, Pubkey([0u8; 32])))
             .unwrap();
@@ -8965,7 +8965,7 @@ mod tests {
         );
         state.set_governed_wallet_config(&eco, &config).unwrap();
 
-        let transfer_amount = Account::molt_to_shells(50);
+        let transfer_amount = Account::licn_to_spores(50);
 
         // Step 1: Alice proposes a governed transfer (type 21)
         let mut propose_data = vec![21u8];
@@ -9040,7 +9040,7 @@ mod tests {
         let recipient = Pubkey([88u8; 32]);
 
         // Fund participants
-        let fund = Account::molt_to_shells(1000);
+        let fund = Account::licn_to_spores(1000);
         state
             .put_account(&reserve, &Account::new(fund, Pubkey([0u8; 32])))
             .unwrap();
@@ -9057,7 +9057,7 @@ mod tests {
         );
         state.set_governed_wallet_config(&reserve, &config).unwrap();
 
-        let transfer_amount = Account::molt_to_shells(10);
+        let transfer_amount = Account::licn_to_spores(10);
 
         // Propose
         let mut data = vec![21u8];
@@ -9293,7 +9293,7 @@ mod tests {
             .unwrap();
 
         // 3. Build shield witness
-        let amount = 500_000_000u64; // 0.5 MOLT in shells
+        let amount = 500_000_000u64; // 0.5 LICN in spores
         let blinding = Fr::rand(&mut OsRng);
         let amount_fr = Fr::from(amount);
         let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
@@ -9543,7 +9543,7 @@ mod tests {
 
         // Verify nonce account exists with expected state
         let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
-        assert_eq!(nonce_acct.shells, NONCE_ACCOUNT_MIN_BALANCE);
+        assert_eq!(nonce_acct.spores, NONCE_ACCOUNT_MIN_BALANCE);
         assert_eq!(nonce_acct.owner, SYSTEM_PROGRAM_ID);
         assert_eq!(nonce_acct.data[0], NONCE_ACCOUNT_MARKER);
 
@@ -9589,11 +9589,11 @@ mod tests {
             .put_account(&treasury, &Account::new(0, treasury))
             .unwrap();
 
-        // Poor alice with only 1 shell
+        // Poor alice with only 1 spore
         let alice_kp = Keypair::generate();
         let alice = alice_kp.pubkey();
         let mut poor_account = Account::new(0, alice);
-        poor_account.shells = 1;
+        poor_account.spores = 1;
         poor_account.spendable = 1;
         state.put_account(&alice, &poor_account).unwrap();
 
@@ -9730,7 +9730,7 @@ mod tests {
         // First instruction = AdvanceNonce, second = Transfer
         let advance_ix = make_nonce_advance_ix(alice, nonce_pk);
         let mut transfer_data = vec![0u8];
-        transfer_data.extend_from_slice(&Account::molt_to_shells(1).to_le_bytes());
+        transfer_data.extend_from_slice(&Account::licn_to_spores(1).to_le_bytes());
         let transfer_ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -9750,8 +9750,8 @@ mod tests {
             durable_result.error,
         );
 
-        // Bob should have received 1 MOLT
-        assert_eq!(state.get_balance(&bob).unwrap(), Account::molt_to_shells(1));
+        // Bob should have received 1 LICN
+        assert_eq!(state.get_balance(&bob).unwrap(), Account::licn_to_spores(1));
 
         // Nonce should be advanced to latest blockhash
         let nonce_acct = state.get_account(&nonce_pk).unwrap().unwrap();
@@ -9909,7 +9909,7 @@ mod tests {
         // Set alice as governance authority
         state.set_governance_authority(&alice).unwrap();
 
-        // Change base_fee to 2,000,000 shells (0.002 MOLT)
+        // Change base_fee to 2,000,000 spores (0.002 LICN)
         let new_base_fee = 2_000_000u64;
         let ix = make_gov_param_ix(alice, GOV_PARAM_BASE_FEE, new_base_fee);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
@@ -9972,8 +9972,8 @@ mod tests {
 
         state.set_governance_authority(&alice).unwrap();
 
-        // Change min_validator_stake to 100 MOLT
-        let new_stake = 100_000_000_000u64; // 100 MOLT in shells
+        // Change min_validator_stake to 100 LICN
+        let new_stake = 100_000_000_000u64; // 100 LICN in spores
         let ix = make_gov_param_ix(alice, GOV_PARAM_MIN_VALIDATOR_STAKE, new_stake);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
@@ -10313,12 +10313,12 @@ mod tests {
     }
 
     /// Helper: set up a validator with active stake in the stake pool
-    fn setup_active_validator(state: &StateStore, pubkey: &Pubkey, stake_shells: u64) {
+    fn setup_active_validator(state: &StateStore, pubkey: &Pubkey, stake_spores: u64) {
         let mut pool = state
             .get_stake_pool()
             .unwrap_or_else(|_| crate::consensus::StakePool::new());
         // Use stake() which requires >= MIN_VALIDATOR_STAKE
-        pool.stake(*pubkey, stake_shells, 0).unwrap();
+        pool.stake(*pubkey, stake_spores, 0).unwrap();
         state.put_stake_pool(&pool).unwrap();
     }
 
@@ -10330,8 +10330,8 @@ mod tests {
         // Make alice an active validator
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
-        // Submit price attestation: MOLT = 1.50 (150_000_000 at 8 decimals)
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 150_000_000, 8);
+        // Submit price attestation: LICN = 1.50 (150_000_000 at 8 decimals)
+        let ix = make_oracle_attestation_ix(alice, "LICN", 150_000_000, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10340,7 +10340,7 @@ mod tests {
 
         // Verify attestation was stored
         let attestations = state
-            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+            .get_oracle_attestations("LICN", 0, ORACLE_STALENESS_SLOTS)
             .unwrap();
         assert_eq!(attestations.len(), 1);
         assert_eq!(attestations[0].price, 150_000_000);
@@ -10354,7 +10354,7 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         // Alice is NOT a validator (no stake)
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 150_000_000, 8);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 150_000_000, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10373,7 +10373,7 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 0, 8);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 0, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10392,7 +10392,7 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 100, 19);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 100, 19);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10506,8 +10506,8 @@ mod tests {
 
         let block_producer = Pubkey([42u8; 32]);
 
-        // Alice attests: MOLT = 150 (1 of 3, not quorum)
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 150, 8);
+        // Alice attests: LICN = 150 (1 of 3, not quorum)
+        let ix = make_oracle_attestation_ix(alice, "LICN", 150, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10515,11 +10515,11 @@ mod tests {
         assert!(r.success, "Alice attestation failed: {:?}", r.error);
 
         // No consensus yet
-        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(cp.is_none(), "No consensus with 1/3 attestations");
 
-        // Bob attests: MOLT = 160 (2 of 3, exactly 2/3 — NOT strictly >2/3, no quorum yet)
-        let ix = make_oracle_attestation_ix(bob, "MOLT", 160, 8);
+        // Bob attests: LICN = 160 (2 of 3, exactly 2/3 — NOT strictly >2/3, no quorum yet)
+        let ix = make_oracle_attestation_ix(bob, "LICN", 160, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(bob_kp.sign(&tx.message.serialize()));
@@ -10527,14 +10527,14 @@ mod tests {
         assert!(r.success, "Bob attestation failed: {:?}", r.error);
 
         // 2/3 exactly is NOT >2/3 supermajority (Tendermint convention)
-        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(
             cp.is_none(),
             "2/3 exactly should NOT reach quorum (need >2/3)"
         );
 
-        // Carol attests: MOLT = 155 (3 of 3 = 100% > 2/3, quorum reached)
-        let ix = make_oracle_attestation_ix(carol, "MOLT", 155, 8);
+        // Carol attests: LICN = 155 (3 of 3 = 100% > 2/3, quorum reached)
+        let ix = make_oracle_attestation_ix(carol, "LICN", 155, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(carol_kp.sign(&tx.message.serialize()));
@@ -10542,7 +10542,7 @@ mod tests {
         assert!(r.success, "Carol attestation failed: {:?}", r.error);
 
         // Now 3/3 = 100% > 2/3 — consensus reached
-        let cp = state.get_oracle_consensus_price("MOLT").unwrap();
+        let cp = state.get_oracle_consensus_price("LICN").unwrap();
         assert!(cp.is_some(), "Should have consensus with 3/3 stake");
         let cp = cp.unwrap();
         assert_eq!(cp.attestation_count, 3);
@@ -10560,7 +10560,7 @@ mod tests {
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
         // First attestation: price = 100
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 100, 8);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 100, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10568,7 +10568,7 @@ mod tests {
         assert!(r.success, "first: {:?}", r.error);
 
         // Second attestation: price = 200 (should replace)
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 200, 8);
+        let ix = make_oracle_attestation_ix(alice, "LICN", 200, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
@@ -10577,7 +10577,7 @@ mod tests {
 
         // Should only have 1 attestation (replaced, not appended)
         let atts = state
-            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+            .get_oracle_attestations("LICN", 0, ORACLE_STALENESS_SLOTS)
             .unwrap();
         assert_eq!(atts.len(), 1);
         assert_eq!(atts[0].price, 200);
@@ -10589,13 +10589,13 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
         setup_active_validator(&state, &alice, MIN_VALIDATOR_STAKE);
 
-        // Attest MOLT
-        let ix = make_oracle_attestation_ix(alice, "MOLT", 150, 8);
+        // Attest LICN
+        let ix = make_oracle_attestation_ix(alice, "LICN", 150, 8);
         let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
         let mut tx = Transaction::new(msg);
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
         let r = processor.process_transaction(&tx, &validator);
-        assert!(r.success, "MOLT: {:?}", r.error);
+        assert!(r.success, "LICN: {:?}", r.error);
 
         // Attest wETH
         let ix = make_oracle_attestation_ix(alice, "wETH", 345_000, 8);
@@ -10606,15 +10606,15 @@ mod tests {
         assert!(r.success, "wETH: {:?}", r.error);
 
         // Check each asset independently
-        let molt_atts = state
-            .get_oracle_attestations("MOLT", 0, ORACLE_STALENESS_SLOTS)
+        let licn_atts = state
+            .get_oracle_attestations("LICN", 0, ORACLE_STALENESS_SLOTS)
             .unwrap();
         let weth_atts = state
             .get_oracle_attestations("wETH", 0, ORACLE_STALENESS_SLOTS)
             .unwrap();
-        assert_eq!(molt_atts.len(), 1);
+        assert_eq!(licn_atts.len(), 1);
         assert_eq!(weth_atts.len(), 1);
-        assert_eq!(molt_atts[0].price, 150);
+        assert_eq!(licn_atts[0].price, 150);
         assert_eq!(weth_atts[0].price, 345_000);
     }
 
@@ -11036,7 +11036,7 @@ mod tests {
         let gov_kp = crate::Keypair::generate();
         let gov = gov_kp.pubkey();
         state.set_governance_authority(&gov).unwrap();
-        // Fund governance account (10 MOLT)
+        // Fund governance account (10 LICN)
         let gov_acct = crate::Account::new(10, gov);
         state.put_account(&gov, &gov_acct).unwrap();
 
@@ -11271,13 +11271,13 @@ mod tests {
         from_kp: &Keypair,
         from: Pubkey,
         to: Pubkey,
-        amount_molt: u64,
+        amount_licn: u64,
         recent_blockhash: Hash,
         compute_budget: Option<u64>,
         compute_unit_price: Option<u64>,
     ) -> Transaction {
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(amount_molt).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(amount_licn).to_le_bytes());
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -11343,8 +11343,8 @@ mod tests {
     fn test_priority_fee_computation_with_price() {
         let (_, _, alice_kp, alice, _, genesis_hash) = setup();
         let bob = Pubkey([2u8; 32]);
-        // compute_unit_price = 1000 μshells/CU, budget = 200_000 CU (default)
-        // priority = 200_000 × 1000 / 1_000_000 = 200 shells
+        // compute_unit_price = 1000 μspores/CU, budget = 200_000 CU (default)
+        // priority = 200_000 × 1000 / 1_000_000 = 200 spores
         let tx =
             make_transfer_tx_with_cu(&alice_kp, alice, bob, 10, genesis_hash, None, Some(1000));
         let priority = TxProcessor::compute_priority_fee(&tx);
@@ -11355,8 +11355,8 @@ mod tests {
     fn test_priority_fee_with_custom_budget() {
         let (_, _, alice_kp, alice, _, genesis_hash) = setup();
         let bob = Pubkey([2u8; 32]);
-        // compute_unit_price = 5000 μshells/CU, budget = 400_000 CU
-        // priority = 400_000 × 5000 / 1_000_000 = 2000 shells
+        // compute_unit_price = 5000 μspores/CU, budget = 400_000 CU
+        // priority = 400_000 × 5000 / 1_000_000 = 2000 spores
         let tx = make_transfer_tx_with_cu(
             &alice_kp,
             alice,
@@ -11396,9 +11396,9 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let initial_balance = state.get_balance(&alice).unwrap();
-        let transfer_amount = Account::molt_to_shells(10);
+        let transfer_amount = Account::licn_to_spores(10);
 
-        // cu_price=1000 μshells/CU, default budget=200K → priority=200 shells
+        // cu_price=1000 μspores/CU, default budget=200K → priority=200 spores
         let tx =
             make_transfer_tx_with_cu(&alice_kp, alice, bob, 10, genesis_hash, None, Some(1000));
 
@@ -11425,7 +11425,7 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let mut data = vec![0u8];
-        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, bob],
@@ -11489,7 +11489,7 @@ mod tests {
 
         // Type 4 = Genesis transfer (fee-free)
         let mut data = vec![4u8];
-        data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
+        data.extend_from_slice(&Account::licn_to_spores(10).to_le_bytes());
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, Pubkey([9u8; 32])],
@@ -11503,7 +11503,7 @@ mod tests {
         let base = TxProcessor::compute_base_fee(&tx, &fee_config);
         assert_eq!(base, 0, "Fee-free tx should have 0 base fee");
         let priority = TxProcessor::compute_priority_fee(&tx);
-        assert_eq!(priority, 200); // 200K CU × 1000 μshells / 1M
+        assert_eq!(priority, 200); // 200K CU × 1000 μspores / 1M
     }
 
     #[test]

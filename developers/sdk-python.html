@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Python SDK - MoltChain Developer Portal</title>
+    <title>Python SDK - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html" class="active">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -111,7 +111,7 @@
             </div>
 
             <h1>Python SDK</h1>
-            <p>The official async Python SDK for MoltChain. Built on <code>httpx</code> and <code>websockets</code> with
+            <p>The official async Python SDK for Lichen. Built on <code>httpx</code> and <code>websockets</code> with
                 full type hints.</p>
 
             <!-- Installation -->
@@ -120,7 +120,7 @@
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>pip install moltchain</code></pre>
+                    <pre><code>pip install lichen</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>,
@@ -135,7 +135,7 @@
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>import asyncio
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder
 
 async def main():
     # Connect to a local validator
@@ -147,7 +147,7 @@ async def main():
 
     # Check balance
     balance = await conn.get_balance(kp.public_key())
-    print(f"Balance: {balance['shells']} shells")
+    print(f"Balance: {balance['spores']} spores")
 
     # Build and send a transfer
     recipient = PublicKey("RecipientBase58Address...")
@@ -174,7 +174,7 @@ asyncio.run(main())</code></pre>
 
             <div class="method-card" id="connection-constructor">
                 <h3 class="method-name">Connection(rpc_url, ws_url=None)</h3>
-                <p class="method-desc">Create an async connection to a MoltChain validator node.</p>
+                <p class="method-desc">Create an async connection to a Lichen validator node.</p>
                 <div class="method-section">
                     <h4 class="method-section-title">Parameters</h4>
                     <table class="param-table">
@@ -264,7 +264,7 @@ asyncio.run(main())</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await get_total_burned() -&gt; Dict[str, int]</h3>
-                <p class="method-desc">Get total burned MOLT — <code>{"shells": ..., "molt": ...}</code>.</p>
+                <p class="method-desc">Get total burned LICN — <code>{"spores": ..., "licn": ...}</code>.</p>
             </div>
 
             <!-- Account Methods -->
@@ -272,19 +272,19 @@ asyncio.run(main())</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">await get_balance(pubkey: PublicKey) -&gt; Dict[str, int]</h3>
-                <p class="method-desc">Get account balance in shells and MOLT.</p>
+                <p class="method-desc">Get account balance in spores and LICN.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
-print(balance["shells"])  # 5000000000
-print(balance["molt"])    # 5.0</code></pre>
+print(balance["spores"])  # 5000000000
+print(balance["licn"])    # 5.0</code></pre>
                 </div>
             </div>
 
             <div class="method-card">
                 <h3 class="method-name">await get_account(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
-                <p class="method-desc">Get raw account data — shells, owner, executable, data.</p>
+                <p class="method-desc">Get raw account data — spores, owner, executable, data.</p>
             </div>
 
             <div class="method-card">
@@ -344,12 +344,12 @@ print(f"Signature: {sig}")</code></pre>
             <div class="method-card">
                 <h3 class="method-name">await stake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str
                 </h3>
-                <p class="method-desc">Build, sign, and send a stake transaction. Amount in shells.</p>
+                <p class="method-desc">Build, sign, and send a stake transaction. Amount in spores.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>validator = PublicKey("ValidatorPubkey...")
-sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</code></pre>
+sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 LICN</code></pre>
                 </div>
             </div>
 
@@ -731,7 +731,7 @@ class Transaction:
                     <tbody>
                         <tr>
                             <td>TransactionBuilder.transfer(from_pubkey, to_pubkey, amount)</td>
-                            <td>Create a MOLT transfer instruction (type 0). Amount in shells.</td>
+                            <td>Create a LICN transfer instruction (type 0). Amount in spores.</td>
                         </tr>
                         <tr>
                             <td>TransactionBuilder.stake(from_pubkey, validator, amount)</td>

@@ -1,10 +1,10 @@
-// MoltChain Block Producer
+// Lichen Block Producer
 //
 // Extracts transactions from the mempool, processes them, and constructs
 // a signed Block ready for inclusion in a BFT proposal. The block is NOT
 // yet stored or broadcast — that's the consensus engine's responsibility.
 
-use moltchain_core::{Block, Hash, Mempool, Pubkey, StateStore, TxProcessor};
+use lichen_core::{Block, Hash, Mempool, Pubkey, StateStore, TxProcessor};
 use tracing::{debug, info};
 
 /// Build a new block from pending mempool transactions.

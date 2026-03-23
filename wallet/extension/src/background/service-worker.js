@@ -20,14 +20,14 @@ async function broadcastProviderStateDirty() {
     await Promise.allSettled(
       tabs
         .filter((tab) => Number.isInteger(tab.id))
-        .map((tab) => chrome.tabs.sendMessage(tab.id, { type: 'MOLT_PROVIDER_STATE_DIRTY' }))
+        .map((tab) => chrome.tabs.sendMessage(tab.id, { type: 'LICHEN_PROVIDER_STATE_DIRTY' }))
     );
   } catch {
     // ignore tabs broadcast errors
   }
 
   try {
-    await chrome.runtime.sendMessage({ type: 'MOLT_PROVIDER_STATE_DIRTY' });
+    await chrome.runtime.sendMessage({ type: 'LICHEN_PROVIDER_STATE_DIRTY' });
   } catch {
     // ignore if no runtime listeners
   }
@@ -36,7 +36,7 @@ async function broadcastProviderStateDirty() {
 walletWsManager.addListener(async (event) => {
   if (!event) return;
   try {
-    await chrome.runtime.sendMessage({ type: 'MOLT_WS_EVENT', payload: event });
+    await chrome.runtime.sendMessage({ type: 'LICHEN_WS_EVENT', payload: event });
   } catch {
     // ignore if no listeners
   }
@@ -71,7 +71,7 @@ function resolveSenderOrigin(sender) {
 registerLockAlarmHandler();
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('[MoltWallet] Extension installed');
+  console.log('[LichenWallet] Extension installed');
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -87,19 +87,19 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'MOLT_PING') {
+  if (message?.type === 'LICHEN_PING') {
     sendResponse({ ok: true, version: APP_VERSION });
     return true;
   }
 
-  if (message?.type === 'MOLT_GET_STATE') {
+  if (message?.type === 'LICHEN_GET_STATE') {
     loadState()
       .then((state) => sendResponse({ ok: true, result: state }))
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_REQUEST') {
+  if (message?.type === 'LICHEN_PROVIDER_REQUEST') {
     const origin = resolveSenderOrigin(sender);
 
     loadState()
@@ -124,7 +124,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_PENDING_GET') {
+  if (message?.type === 'LICHEN_PROVIDER_PENDING_GET') {
     const request = getPendingRequest(message?.requestId);
     if (!request) {
       sendResponse({ ok: false, error: 'Request not found' });
@@ -155,13 +155,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_LIST_PENDING') {
+  if (message?.type === 'LICHEN_PROVIDER_LIST_PENDING') {
     const requests = listPendingRequests(Number(message?.limit || 20));
     sendResponse({ ok: true, result: requests });
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_PENDING_DECIDE') {
+  if (message?.type === 'LICHEN_PROVIDER_PENDING_DECIDE') {
     loadState()
       .then((state) => {
         const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;
@@ -184,7 +184,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_RESULT') {
+  if (message?.type === 'LICHEN_PROVIDER_RESULT') {
     const finalized = consumeFinalizedResult(message?.requestId);
     if (!finalized) {
       sendResponse({ ok: true, pending: true });
@@ -194,14 +194,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_LIST_ORIGINS') {
+  if (message?.type === 'LICHEN_PROVIDER_LIST_ORIGINS') {
     listApprovedOrigins()
       .then((origins) => sendResponse({ ok: true, result: origins }))
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
 
-  if (message?.type === 'MOLT_PROVIDER_REVOKE_ORIGIN') {
+  if (message?.type === 'LICHEN_PROVIDER_REVOKE_ORIGIN') {
     const origin = String(message?.origin || '').trim();
     if (!origin) {
       sendResponse({ ok: false, error: 'Origin is required' });
@@ -217,13 +217,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_NOTIFY') {
-    const title = message?.payload?.title || 'MoltWallet';
+  if (message?.type === 'LICHEN_NOTIFY') {
+    const title = message?.payload?.title || 'LichenWallet';
     const body = message?.payload?.message || '';
 
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'MoltWallet_Logo_256.png',
+      iconUrl: 'LichenWallet_Logo_256.png',
       title,
       message: body
     });
@@ -232,12 +232,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'MOLT_WS_STATUS') {
+  if (message?.type === 'LICHEN_WS_STATUS') {
     sendResponse({ ok: true, result: walletWsManager.status() });
     return true;
   }
 
-  if (message?.type === 'MOLT_WS_SYNC') {
+  if (message?.type === 'LICHEN_WS_SYNC') {
     loadState()
       .then((state) => {
         const activeWallet = state.wallets?.find((wallet) => wallet.id === state.activeWalletId) || null;

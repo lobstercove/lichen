@@ -6,10 +6,10 @@ Tests all RPC methods and SDK capabilities
 
 import asyncio
 import sys
-from moltchain import Connection, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, PublicKey, TransactionBuilder, Instruction
 
 async def main():
-    print("🦞 MoltChain Python SDK - Comprehensive Test")
+    print("🦞 Lichen Python SDK - Comprehensive Test")
     print("============================================\n")
     
     # Create connection
@@ -69,7 +69,7 @@ async def main():
     print("getBalance... ", end="")
     try:
         balance = await conn.get_balance(test_pubkey)
-        print(f"✅ Balance: {balance.get('molt', 0)} MOLT")
+        print(f"✅ Balance: {balance.get('licn', 0)} LICN")
     except Exception as e:
         print(f"❌ ERROR: {e}")
     
@@ -166,7 +166,7 @@ async def main():
     print("getTotalBurned... ", end="")
     try:
         burned = await conn.get_total_burned()
-        print(f"✅ Burned: {burned.get('molt', 0)} MOLT")
+        print(f"✅ Burned: {burned.get('licn', 0)} LICN")
     except Exception as e:
         print(f"❌ ERROR: {e}")
     

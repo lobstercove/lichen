@@ -1,9 +1,9 @@
-import { MoltChainRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 
 export async function loadNftSnapshot(address, network) {
   if (!address) return null;
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const response = await rpc.call('getNFTsByOwner', [address, { limit: 20 }]).catch(() => null);
 
   const items = response?.nfts || response?.items || (Array.isArray(response) ? response : []);
@@ -21,7 +21,7 @@ export async function loadNftSnapshot(address, network) {
 export async function loadNftDetails(address, network, limit = 50) {
   if (!address) return [];
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const response = await rpc.call('getNFTsByOwner', [address, { limit }]).catch(() => null);
   const items = response?.nfts || response?.items || (Array.isArray(response) ? response : []);
 

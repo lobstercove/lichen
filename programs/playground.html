@@ -4,9 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltChain Playground - Build, Deploy & Test Smart Contracts</title>
+    <title>Lichen Playground - Build, Deploy & Test Smart Contracts</title>
     <meta name="description"
-        content="Full-featured IDE for building, testing, and deploying smart contracts on MoltChain. Monaco editor, wallet management, terminal, examples, and more.">
+        content="Full-featured IDE for building, testing, and deploying smart contracts on Lichen. Monaco editor, wallet management, terminal, examples, and more.">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/playground.css">
@@ -25,8 +25,8 @@
     <nav class="playground-nav">
         <div class="nav-left">
             <div class="nav-logo">
-                <img src="MoltPrograms_Logo_256.png" class="logo-icon" alt="MoltChain Playground">
-                <span class="logo-text">MoltChain Playground</span>
+                <img src="LichenPrograms_Logo_256.png" class="logo-icon" alt="Lichen Playground">
+                <span class="logo-text">Lichen Playground</span>
             </div>
             <div class="nav-menu">
                 <div class="nav-menu-group">
@@ -90,12 +90,12 @@
 
             <div class="wallet-balance-pill" id="walletBalancePill" style="display: none;">
                 <i class="fas fa-coins"></i>
-                <span id="walletBalanceText">0.0000 MOLT</span>
+                <span id="walletBalanceText">0.0000 LICN</span>
             </div>
 
 
             <!-- Faucet Button (Testnet only) -->
-            <button class="btn btn-sm btn-success" id="faucetBtn" style="display: none;" title="Request test MOLT">
+            <button class="btn btn-sm btn-primary" id="faucetBtn" style="display: none;" title="Request test LICN">
                 <i class="fas fa-faucet"></i> Faucet
             </button>
 
@@ -320,7 +320,7 @@
                     <div class="example-item" data-example="token">
                         <div class="example-icon"><i class="fas fa-coins"></i></div>
                         <div class="example-info">
-                            <h4>MoltCoin MT-20</h4>
+                            <h4>LichenCoin MT-20</h4>
                             <p>Native fungible token contract</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -329,7 +329,7 @@
                     <div class="example-item" data-example="nft">
                         <div class="example-icon"><i class="fas fa-layer-group"></i></div>
                         <div class="example-info">
-                            <h4>MoltPunks Collection</h4>
+                            <h4>LichenPunks Collection</h4>
                             <p>NFT collection + minting</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -338,7 +338,7 @@
                     <div class="example-item" data-example="dex">
                         <div class="example-icon"><i class="fas fa-right-left"></i></div>
                         <div class="example-info">
-                            <h4>MoltSwap AMM</h4>
+                            <h4>LichenSwap AMM</h4>
                             <p>TWAP oracle, flash loans, price impact</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -347,7 +347,7 @@
                     <div class="example-item" data-example="dao">
                         <div class="example-icon"><i class="fas fa-landmark"></i></div>
                         <div class="example-info">
-                            <h4>MoltDAO Governance</h4>
+                            <h4>LichenDAO Governance</h4>
                             <p>Token-weighted proposals</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -356,7 +356,7 @@
                     <div class="example-item" data-example="lending">
                         <div class="example-icon"><i class="fas fa-hand-holding-usd"></i></div>
                         <div class="example-info">
-                            <h4>LobsterLend</h4>
+                            <h4>ThallLend</h4>
                             <p>Flash loans, reentrancy guards, pause</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -365,7 +365,7 @@
                     <div class="example-item" data-example="launchpad">
                         <div class="example-icon"><i class="fas fa-rocket"></i></div>
                         <div class="example-info">
-                            <h4>ClawPump Launchpad</h4>
+                            <h4>SporePump Launchpad</h4>
                             <p>Anti-manipulation, royalties, cooldowns</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -374,7 +374,7 @@
                     <div class="example-item" data-example="streaming">
                         <div class="example-icon"><i class="fas fa-money-bill-wave"></i></div>
                         <div class="example-info">
-                            <h4>ClawPay Streaming</h4>
+                            <h4>SporePay Streaming</h4>
                             <p>Cliff vesting, stream transfer, pause</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -383,7 +383,7 @@
                     <div class="example-item" data-example="vault">
                         <div class="example-icon"><i class="fas fa-vault"></i></div>
                         <div class="example-info">
-                            <h4>ClawVault Yield</h4>
+                            <h4>SporeVault Yield</h4>
                             <p>Fees, caps, risk tiers, strategies</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -392,7 +392,7 @@
                     <div class="example-item" data-example="identity">
                         <div class="example-icon"><i class="fas fa-fingerprint"></i></div>
                         <div class="example-info">
-                            <h4>MoltyID Identity</h4>
+                            <h4>LichenID Identity</h4>
                             <p>Cooldowns, pause, admin transfer</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -401,7 +401,7 @@
                     <div class="example-item" data-example="marketplace">
                         <div class="example-icon"><i class="fas fa-store"></i></div>
                         <div class="example-info">
-                            <h4>MoltMarket NFT</h4>
+                            <h4>LichenMarket NFT</h4>
                             <p>Fixed layout, offers, bids, stats</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -410,7 +410,7 @@
                     <div class="example-item" data-example="auction">
                         <div class="example-icon"><i class="fas fa-gavel"></i></div>
                         <div class="example-info">
-                            <h4>MoltAuction</h4>
+                            <h4>LichenAuction</h4>
                             <p>Anti-sniping, reserve prices, cancel</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -419,7 +419,7 @@
                     <div class="example-item" data-example="oracle">
                         <div class="example-icon"><i class="fas fa-broadcast-tower"></i></div>
                         <div class="example-info">
-                            <h4>MoltOracle Feeds</h4>
+                            <h4>LichenOracle Feeds</h4>
                             <p>Price feeds, VRF, attestations</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -428,7 +428,7 @@
                     <div class="example-item" data-example="bridge">
                         <div class="example-icon"><i class="fas fa-bridge"></i></div>
                         <div class="example-info">
-                            <h4>MoltBridge</h4>
+                            <h4>LichenBridge</h4>
                             <p>Secure multi-call confirmation</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -455,13 +455,13 @@
                     <div class="example-item" data-example="storage">
                         <div class="example-icon"><i class="fas fa-database"></i></div>
                         <div class="example-info">
-                            <h4>ReefStorage</h4>
+                            <h4>MossStorage</h4>
                             <p>Proof-of-storage, staking, slashing</p>
                             <span class="example-lang">Rust</span>
                         </div>
                     </div>
 
-                    <!-- MoltyDEX Suite -->
+                    <!-- Lichen DEX Suite -->
                     <div class="example-item" data-example="dex_core">
                         <div class="example-icon"><i class="fas fa-chart-line"></i></div>
                         <div class="example-info">
@@ -535,10 +535,10 @@
                         </div>
                     </div>
 
-                    <div class="example-item" data-example="musd_token">
+                    <div class="example-item" data-example="lusd_token">
                         <div class="example-icon"><i class="fas fa-dollar-sign"></i></div>
                         <div class="example-info">
-                            <h4>mUSD Stablecoin</h4>
+                            <h4>lUSD Stablecoin</h4>
                             <p>Treasury-backed stablecoin contract</p>
                             <span class="example-lang">Rust</span>
                         </div>
@@ -638,7 +638,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label>Initial Funding (MOLT)</label>
+                        <label>Initial Funding (LICN)</label>
                         <input type="number" class="form-input" id="initialFunding" placeholder="1.0" value="1.0"
                             step="0.1" min="0">
                     </div>
@@ -699,7 +699,7 @@
                     </div>
 
                     <div class="deploy-info">
-                        <small><i class="fas fa-info-circle"></i> Deploy cost: 25.001 MOLT (25 MOLT deploy + 0.001 base
+                        <small><i class="fas fa-info-circle"></i> Deploy cost: 25.001 LICN (25 LICN deploy + 0.001 base
                             fee)</small>
                     </div>
                 </div>
@@ -801,13 +801,13 @@
                     <div class="terminal-content active" data-terminal-tab="terminal">
                         <div class="terminal-lines" id="terminalLines">
                             <div class="terminal-line">
-                                <span class="terminal-prompt">molt@playground:~$</span>
-                                <span class="terminal-text">Welcome to MoltChain Playground! Type 'help' for
+                                <span class="terminal-prompt">lichen@playground:~$</span>
+                                <span class="terminal-text">Welcome to Lichen Playground! Type 'help' for
                                     commands.</span>
                             </div>
                         </div>
                         <div class="terminal-input-row">
-                            <span class="terminal-prompt">molt@playground:~$</span>
+                            <span class="terminal-prompt">lichen@playground:~$</span>
                             <input type="text" class="terminal-input" id="terminalInput" placeholder="Type a command"
                                 autocomplete="off" spellcheck="false">
                         </div>
@@ -878,7 +878,7 @@
                             <input type="text" class="form-input-sm" id="transferTo" placeholder="base58...">
                         </div>
                         <div class="form-group">
-                            <label>Amount (MOLT)</label>
+                            <label>Amount (LICN)</label>
                             <input type="number" class="form-input-sm" id="transferAmount" placeholder="0.00"
                                 step="0.01">
                         </div>
@@ -1135,7 +1135,7 @@
                 <div class="wm-create-info">
                     <i class="fas fa-plug"></i>
                     <h4>Connect Wallet Extension</h4>
-                    <p>Connect your MoltChain Wallet browser extension to trade securely. Your private keys never leave
+                    <p>Connect your Lichen Wallet browser extension to trade securely. Your private keys never leave
                         the extension.</p>
                 </div>
                 <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect
@@ -1146,7 +1146,7 @@
                 <div class="wm-create-info">
                     <i class="fas fa-shield-alt"></i>
                     <h4>Generate New Wallet</h4>
-                    <p>Create a fresh MoltChain wallet. Save the private key securely — it will not be shown again.</p>
+                    <p>Create a fresh Lichen wallet. Save the private key securely — it will not be shown again.</p>
                 </div>
                 <div class="form-group">
                     <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(required — encrypts local
@@ -1247,8 +1247,8 @@
     <!-- Ed25519 (TweetNaCl) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl.min.js" crossorigin="anonymous"></script>
 
-    <!-- MoltChain SDK -->
-    <script src="js/moltchain-sdk.js"></script>
+    <!-- Lichen SDK -->
+    <script src="js/lichen-sdk.js"></script>
 
     <!-- Complete Playground Script -->
     <script src="js/playground-complete.js"></script>

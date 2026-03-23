@@ -1,4 +1,4 @@
-// MoltWallet Cryptography Utilities
+// LichenWallet Cryptography Utilities
 // Secure key generation, encryption, and signing
 
 // BIP39 wordlist (full 2048 words)
@@ -297,7 +297,7 @@ function sha256Sync(bytes) {
     return out;
 }
 
-class MoltCrypto {
+class LichenCrypto {
     /**
      * Generate a 12-word BIP39-compliant mnemonic with proper checksum
      * AUDIT-FIX FE-3: Replaced non-standard implementation with correct BIP39 spec:
@@ -384,7 +384,7 @@ class MoltCrypto {
     }
 
     /**
-     * Convert public key bytes to MoltChain address (base58, compatible with Solana)
+     * Convert public key bytes to Lichen address (base58, compatible with Solana)
      */
     static publicKeyToAddress(publicKey) {
         if (typeof bs58 !== 'undefined' && bs58.encode) {
@@ -540,7 +540,7 @@ class MoltCrypto {
     }
 
     /**
-     * Validate MoltChain address format (base58-encoded 32-byte public key)
+     * Validate Lichen address format (base58-encoded 32-byte public key)
      */
     static isValidAddress(address) {
         if (!address || typeof address !== 'string') return false;
@@ -633,4 +633,4 @@ class MoltCrypto {
 }
 
 // Export for use in wallet.js
-window.MoltCrypto = MoltCrypto;
+window.LichenCrypto = LichenCrypto;

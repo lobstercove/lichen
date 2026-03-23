@@ -1,4 +1,4 @@
-// Minimal bincode encoder for MoltChain transactions
+// Minimal bincode encoder for Lichen transactions
 
 import { PublicKey } from './publickey';
 import { Instruction, Message, Transaction } from './transaction';

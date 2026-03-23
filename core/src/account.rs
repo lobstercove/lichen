@@ -1,4 +1,4 @@
-// MoltChain Core - Account Model
+// Lichen Core - Account Model
 // Based on Solana's account model with dual address support
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -20,7 +20,7 @@ impl Pubkey {
         Pubkey(bytes)
     }
 
-    /// Convert to Base58 string (native MoltChain format)
+    /// Convert to Base58 string (native Lichen format)
     pub fn to_base58(&self) -> String {
         bs58::encode(self.0).into_string()
     }
@@ -131,9 +131,9 @@ impl Default for Keypair {
 /// Account structure with balance separation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
-    /// Total balance in shells (1 MOLT = 1_000_000_000 shells)
+    /// Total balance in spores (1 LICN = 1_000_000_000 spores)
     /// Total = spendable + staked + locked
-    pub shells: u64,
+    pub spores: u64,
 
     /// Spendable balance (available for transfers)
     #[serde(default)]
@@ -169,32 +169,32 @@ pub struct Account {
 }
 
 impl Account {
-    /// M11 fix: repair legacy accounts where spendable/staked/locked are all 0 but shells > 0.
+    /// M11 fix: repair legacy accounts where spendable/staked/locked are all 0 but spores > 0.
     /// This happens when deserializing accounts created before the balance separation fields existed.
     pub fn fixup_legacy(&mut self) {
-        if self.shells > 0 && self.spendable == 0 && self.staked == 0 && self.locked == 0 {
-            self.spendable = self.shells;
+        if self.spores > 0 && self.spendable == 0 && self.staked == 0 && self.locked == 0 {
+            self.spendable = self.spores;
         }
     }
 
-    /// Convert MOLT to shells
-    pub const fn molt_to_shells(molt: u64) -> u64 {
-        molt.saturating_mul(1_000_000_000)
+    /// Convert LICN to spores
+    pub const fn licn_to_spores(licn: u64) -> u64 {
+        licn.saturating_mul(1_000_000_000)
     }
 
-    /// Convert shells to MOLT (integer division — truncates fractional MOLT).
+    /// Convert spores to LICN (integer division — truncates fractional LICN).
     /// AUDIT-FIX 3.2: Callers needing rounding should use
-    /// `(shells + 999_999_999) / 1_000_000_000` for round-up.
-    pub const fn shells_to_molt(shells: u64) -> u64 {
-        shells / 1_000_000_000
+    /// `(spores + 999_999_999) / 1_000_000_000` for round-up.
+    pub const fn spores_to_licn(spores: u64) -> u64 {
+        spores / 1_000_000_000
     }
 
-    /// Create a new account with MOLT balance (all spendable)
-    pub fn new(molt: u64, owner: Pubkey) -> Self {
-        let shells = Self::molt_to_shells(molt);
+    /// Create a new account with LICN balance (all spendable)
+    pub fn new(licn: u64, owner: Pubkey) -> Self {
+        let spores = Self::licn_to_spores(licn);
         Account {
-            shells,
-            spendable: shells, // All balance is spendable initially
+            spores,
+            spendable: spores, // All balance is spendable initially
             staked: 0,
             locked: 0,
             data: Vec::new(),
@@ -207,7 +207,7 @@ impl Account {
     }
 
     /// Stake some balance (moves from spendable to staked)
-    /// T3.3 fix: shells total is unchanged (just a reclassification)
+    /// T3.3 fix: spores total is unchanged (just a reclassification)
     /// AUDIT-FIX 1.1a: checked arithmetic, compute-before-mutate
     pub fn stake(&mut self, amount: u64) -> Result<(), String> {
         // AUDIT-FIX 3.1: Skip no-op zero-amount operations
@@ -228,7 +228,7 @@ impl Account {
         })?;
         self.spendable = new_spendable;
         self.staked = new_staked;
-        if self.shells != self.spendable + self.staked + self.locked {
+        if self.spores != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after stake".to_string());
         }
         Ok(())
@@ -253,7 +253,7 @@ impl Account {
         })?;
         self.staked = new_staked;
         self.spendable = new_spendable;
-        if self.shells != self.spendable + self.staked + self.locked {
+        if self.spores != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after unstake".to_string());
         }
         Ok(())
@@ -280,7 +280,7 @@ impl Account {
         })?;
         self.spendable = new_spendable;
         self.locked = new_locked;
-        if self.shells != self.spendable + self.staked + self.locked {
+        if self.spores != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after lock".to_string());
         }
         Ok(())
@@ -305,7 +305,7 @@ impl Account {
         })?;
         self.locked = new_locked;
         self.spendable = new_spendable;
-        if self.shells != self.spendable + self.staked + self.locked {
+        if self.spores != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after unlock".to_string());
         }
         Ok(())
@@ -313,10 +313,10 @@ impl Account {
 
     /// Add to spendable balance (for rewards, transfers)
     pub fn add_spendable(&mut self, amount: u64) -> Result<(), String> {
-        let new_shells = self.shells.checked_add(amount).ok_or_else(|| {
+        let new_spores = self.spores.checked_add(amount).ok_or_else(|| {
             format!(
-                "Overflow adding {} to shells balance {}",
-                amount, self.shells
+                "Overflow adding {} to spores balance {}",
+                amount, self.spores
             )
         })?;
         let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
@@ -325,7 +325,7 @@ impl Account {
                 amount, self.spendable
             )
         })?;
-        self.shells = new_shells;
+        self.spores = new_spores;
         self.spendable = new_spendable;
         Ok(())
     }
@@ -339,14 +339,14 @@ impl Account {
                 self.spendable, amount
             )
         })?;
-        let new_shells = self.shells.checked_sub(amount).ok_or_else(|| {
+        let new_spores = self.spores.checked_sub(amount).ok_or_else(|| {
             format!(
-                "Underflow subtracting {} from shells balance {}",
-                amount, self.shells
+                "Underflow subtracting {} from spores balance {}",
+                amount, self.spores
             )
         })?;
         self.spendable = new_spendable;
-        self.shells = new_shells;
+        self.spores = new_spores;
         Ok(())
     }
 
@@ -356,23 +356,23 @@ impl Account {
             .locked
             .checked_sub(amount)
             .ok_or_else(|| format!("Insufficient locked balance: {} < {}", self.locked, amount))?;
-        let new_shells = self.shells.checked_sub(amount).ok_or_else(|| {
+        let new_spores = self.spores.checked_sub(amount).ok_or_else(|| {
             format!(
-                "Underflow subtracting {} from shells balance {}",
-                amount, self.shells
+                "Underflow subtracting {} from spores balance {}",
+                amount, self.spores
             )
         })?;
         self.locked = new_locked;
-        self.shells = new_shells;
-        if self.shells != self.spendable + self.staked + self.locked {
+        self.spores = new_spores;
+        if self.spores != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after locked deduction".to_string());
         }
         Ok(())
     }
 
-    /// Get balance in MOLT
-    pub fn balance_molt(&self) -> u64 {
-        Self::shells_to_molt(self.shells)
+    /// Get balance in LICN
+    pub fn balance_licn(&self) -> u64 {
+        Self::spores_to_licn(self.spores)
     }
 }
 
@@ -381,11 +381,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_molt_shells_conversion() {
-        assert_eq!(Account::molt_to_shells(1), 1_000_000_000);
-        assert_eq!(Account::molt_to_shells(100), 100_000_000_000);
-        assert_eq!(Account::shells_to_molt(1_000_000_000), 1);
-        assert_eq!(Account::shells_to_molt(100_000_000_000), 100);
+    fn test_licn_spores_conversion() {
+        assert_eq!(Account::licn_to_spores(1), 1_000_000_000);
+        assert_eq!(Account::licn_to_spores(100), 100_000_000_000);
+        assert_eq!(Account::spores_to_licn(1_000_000_000), 1);
+        assert_eq!(Account::spores_to_licn(100_000_000_000), 100);
     }
 
     #[test]

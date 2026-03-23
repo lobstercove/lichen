@@ -1,4 +1,4 @@
-// MoltChain Compiler Service
+// Lichen Compiler Service
 // Compile Rust/C/AssemblyScript to WASM for smart contracts
 
 use axum::{
@@ -144,7 +144,7 @@ async fn main() {
         });
 
     let addr = format!("0.0.0.0:{}", port);
-    info!("🔨 MoltChain Compiler Service starting on {} (auth: enabled)", addr);
+    info!("🔨 Lichen Compiler Service starting on {} (auth: enabled)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
         eprintln!("❌ Failed to bind to {}: {}", addr, e);
@@ -427,7 +427,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Add moltchain-contract-sdk here if needed
+# Add lichen-contract-sdk here if needed
 
 [profile.release]
 opt-level = {}

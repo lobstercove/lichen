@@ -1,5 +1,5 @@
 (() => {
-  if (window.moltwallet) return;
+  if (window.licnwallet) return;
 
   let requestId = 0;
   const pending = new Map();
@@ -58,7 +58,7 @@
 
       window.postMessage(
         {
-          target: 'MOLT_EXTENSION',
+          target: 'LICHEN_EXTENSION',
           id,
           payload
         },
@@ -68,7 +68,7 @@
       setTimeout(() => {
         if (!pending.has(id)) return;
         pending.delete(id);
-        reject(new Error('MoltWallet request timed out'));
+        reject(new Error('LichenWallet request timed out'));
       }, 120000);
     });
   }
@@ -93,12 +93,12 @@
     if (event.source !== window) return;
     if (!event.data) return;
 
-    if (event.data.target === 'MOLT_INPAGE_EVENT') {
+    if (event.data.target === 'LICHEN_INPAGE_EVENT') {
       emit(event.data.event, event.data.payload);
       return;
     }
 
-    if (event.data.target !== 'MOLT_INPAGE') return;
+    if (event.data.target !== 'LICHEN_INPAGE') return;
 
     const { id, response } = event.data;
     const active = pending.get(id);
@@ -111,32 +111,32 @@
       return;
     }
 
-    active.reject(new Error(response?.error || 'Unknown MoltWallet error'));
+    active.reject(new Error(response?.error || 'Unknown LichenWallet error'));
   });
 
-  window.moltwallet = {
-    isMoltWallet: true,
+  window.licnwallet = {
+    isLichenWallet: true,
     on: addListener,
     removeListener,
     request: sendRequest,
-    getProviderState: () => sendRequest({ method: 'molt_getProviderState' }),
-    isConnected: () => sendRequest({ method: 'molt_isConnected' }),
-    chainId: () => sendRequest({ method: 'molt_chainId' }),
-    network: () => sendRequest({ method: 'molt_network' }),
-    version: () => sendRequest({ method: 'molt_version' }),
-    accounts: () => sendRequest({ method: 'molt_accounts' }),
-    requestAccounts: () => sendRequest({ method: 'molt_requestAccounts' }),
-    connect: () => sendRequest({ method: 'molt_connect' }),
-    disconnect: () => sendRequest({ method: 'molt_disconnect' }),
-    getPermissions: () => sendRequest({ method: 'molt_getPermissions' }),
+    getProviderState: () => sendRequest({ method: 'licn_getProviderState' }),
+    isConnected: () => sendRequest({ method: 'licn_isConnected' }),
+    chainId: () => sendRequest({ method: 'licn_chainId' }),
+    network: () => sendRequest({ method: 'licn_network' }),
+    version: () => sendRequest({ method: 'licn_version' }),
+    accounts: () => sendRequest({ method: 'licn_accounts' }),
+    requestAccounts: () => sendRequest({ method: 'licn_requestAccounts' }),
+    connect: () => sendRequest({ method: 'licn_connect' }),
+    disconnect: () => sendRequest({ method: 'licn_disconnect' }),
+    getPermissions: () => sendRequest({ method: 'licn_getPermissions' }),
     revokePermissions: () => sendRequest({ method: 'wallet_revokePermissions' }),
-    getBalance: (address) => sendRequest({ method: 'molt_getBalance', params: [{ address }] }),
-    getAccount: (address) => sendRequest({ method: 'molt_getAccount', params: [{ address }] }),
-    getLatestBlock: () => sendRequest({ method: 'molt_getLatestBlock' }),
-    getTransactions: (address, limit = 20) => sendRequest({ method: 'molt_getTransactions', params: [{ address, limit }] }),
-    signMessage: (message) => sendRequest({ method: 'molt_signMessage', params: [{ message }] }),
-    signTransaction: (transaction) => sendRequest({ method: 'molt_signTransaction', params: [{ transaction }] }),
-    sendTransaction: (transaction) => sendRequest({ method: 'molt_sendTransaction', params: [{ transaction }] })
+    getBalance: (address) => sendRequest({ method: 'licn_getBalance', params: [{ address }] }),
+    getAccount: (address) => sendRequest({ method: 'licn_getAccount', params: [{ address }] }),
+    getLatestBlock: () => sendRequest({ method: 'licn_getLatestBlock' }),
+    getTransactions: (address, limit = 20) => sendRequest({ method: 'licn_getTransactions', params: [{ address, limit }] }),
+    signMessage: (message) => sendRequest({ method: 'licn_signMessage', params: [{ message }] }),
+    signTransaction: (transaction) => sendRequest({ method: 'licn_signTransaction', params: [{ transaction }] }),
+    sendTransaction: (transaction) => sendRequest({ method: 'licn_sendTransaction', params: [{ transaction }] })
   };
 
   if (!window.ethereum) {
@@ -164,12 +164,12 @@
       }
     };
 
-    window.moltwallet.on('accountsChanged', (accounts) => {
+    window.licnwallet.on('accountsChanged', (accounts) => {
       window.ethereum.selectedAddress = Array.isArray(accounts) && accounts.length ? accounts[0] : null;
     });
 
     window.dispatchEvent(new Event('ethereum#initialized'));
   }
 
-  window.dispatchEvent(new Event('moltwallet#initialized'));
+  window.dispatchEvent(new Event('lichenwallet#initialized'));
 })();

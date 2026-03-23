@@ -1,4 +1,4 @@
-// MoltChain Auto-Update System
+// Lichen Auto-Update System
 //
 // Production-grade automatic update module for validators.
 // Checks GitHub Releases for new versions, downloads the binary,
@@ -6,7 +6,7 @@
 // a graceful binary swap with rollback guard.
 
 use anyhow::{anyhow, bail, Context, Result};
-use moltchain_core::{Keypair, Pubkey};
+use lichen_core::{Keypair, Pubkey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -26,7 +26,7 @@ use tracing::{info, warn};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// GitHub repository for release checks
-const GITHUB_REPO: &str = "lobstercove/moltchain";
+const GITHUB_REPO: &str = "lobstercove/lichen";
 
 /// GitHub API base URL
 const GITHUB_API: &str = "https://api.github.com";
@@ -108,12 +108,12 @@ pub struct UpdateConfig {
     /// Maximum random jitter added to check interval (seconds)
     pub jitter_max_secs: u64,
     /// Which binary to extract from the release archive.
-    /// Defaults to "moltchain-validator".  Set to "moltchain-faucet",
-    /// "molt-cli", or "moltchain-custody" for other services.
+    /// Defaults to "lichen-validator".  Set to "lichen-faucet",
+    /// "lichen-cli", or "lichen-custody" for other services.
     pub target_binary: String,
     /// Optional list of companion binaries to also update from the same
     /// release archive.  Each entry is a (binary_name, install_path) pair.
-    /// Example: `("moltchain-faucet", "/usr/local/bin/moltchain-faucet")`
+    /// Example: `("lichen-faucet", "/usr/local/bin/lichen-faucet")`
     /// Only updated when mode == Apply and the primary binary updates
     /// successfully. Companion update failures are logged but don't block
     /// the primary update.
@@ -128,7 +128,7 @@ impl Default for UpdateConfig {
             channel: "stable".to_string(),
             no_auto_restart: false,
             jitter_max_secs: 60,
-            target_binary: "moltchain-validator".to_string(),
+            target_binary: "lichen-validator".to_string(),
             companion_binaries: Vec::new(),
         }
     }
@@ -518,7 +518,7 @@ async fn check_rollback_guard() -> Result<()> {
 /// Filters by channel: "stable" skips prereleases, "beta"/"edge" includes them.
 async fn fetch_latest_release(channel: &str) -> Result<GitHubRelease> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("moltchain-validator/{}", VERSION))
+        .user_agent(format!("lichen-validator/{}", VERSION))
         .timeout(Duration::from_secs(30))
         .build()?;
 
@@ -562,7 +562,7 @@ async fn fetch_latest_release(channel: &str) -> Result<GitHubRelease> {
 /// Download a text file (SHA256SUMS, SHA256SUMS.sig)
 async fn download_text(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("moltchain-validator/{}", VERSION))
+        .user_agent(format!("lichen-validator/{}", VERSION))
         .timeout(Duration::from_secs(30))
         .build()?;
 
@@ -576,7 +576,7 @@ async fn download_text(url: &str) -> Result<String> {
 /// Download a binary file with size limit
 async fn download_binary(url: &str, expected_size: u64) -> Result<Vec<u8>> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("moltchain-validator/{}", VERSION))
+        .user_agent(format!("lichen-validator/{}", VERSION))
         .timeout(Duration::from_secs(600))
         .build()?;
 
@@ -707,7 +707,7 @@ fn platform_asset_name() -> String {
         "unknown"
     };
 
-    format!("moltchain-validator-{}-{}.tar.gz", os, arch)
+    format!("lichen-validator-{}-{}.tar.gz", os, arch)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -825,19 +825,19 @@ mod tests {
 
     #[test]
     fn test_find_hash_in_sums() {
-        let sums = "abc123  moltchain-validator-linux-x86_64.tar.gz\n\
-                     def456  moltchain-validator-darwin-aarch64.tar.gz\n\
-                     ghi789  moltchain-validator-windows-x86_64.tar.gz\n";
+        let sums = "abc123  lichen-validator-linux-x86_64.tar.gz\n\
+                     def456  lichen-validator-darwin-aarch64.tar.gz\n\
+                     ghi789  lichen-validator-windows-x86_64.tar.gz\n";
         assert_eq!(
-            find_hash_in_sums(sums, "moltchain-validator-linux-x86_64.tar.gz"),
+            find_hash_in_sums(sums, "lichen-validator-linux-x86_64.tar.gz"),
             Some("abc123".to_string())
         );
         assert_eq!(
-            find_hash_in_sums(sums, "moltchain-validator-darwin-aarch64.tar.gz"),
+            find_hash_in_sums(sums, "lichen-validator-darwin-aarch64.tar.gz"),
             Some("def456".to_string())
         );
         assert_eq!(
-            find_hash_in_sums(sums, "moltchain-validator-windows-x86_64.tar.gz"),
+            find_hash_in_sums(sums, "lichen-validator-windows-x86_64.tar.gz"),
             Some("ghi789".to_string())
         );
         assert_eq!(find_hash_in_sums(sums, "nonexistent.tar.gz"), None);
@@ -846,7 +846,7 @@ mod tests {
     #[test]
     fn test_platform_asset_name() {
         let name = platform_asset_name();
-        assert!(name.starts_with("moltchain-validator-"));
+        assert!(name.starts_with("lichen-validator-"));
         assert!(name.ends_with(".tar.gz"));
     }
 
@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_ed25519_sign_verify_roundtrip() {
-        use moltchain_core::Keypair;
+        use lichen_core::Keypair;
 
         // Generate a keypair, sign a message, then verify
         let kp = Keypair::new();

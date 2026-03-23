@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Parser;
-use moltchain_core::{
+use lichen_core::{
     ContractInstruction, CreateCollectionData, Hash, Instruction, Keypair, Message, MintNftData,
     Pubkey, Transaction, CONTRACT_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
@@ -65,11 +65,11 @@ async fn main() -> Result<()> {
     send_tx(&client, &args.rpc_url, &signer, vec![deploy_ix]).await?;
 
     let collection_names = [
-        ("MoltPunks", "MOLTP"),
+        ("LichenPunks", "LICNP"),
         ("Agent Apes", "APES"),
         ("Cyber Crustaceans", "CRAB"),
-        ("Quantum Shells", "QSHL"),
-        ("Neon Reefs", "REEF"),
+        ("Quantum Spores", "QSHL"),
+        ("Neon Moss", "MOSS"),
         ("Digital Depths", "DEEP"),
     ];
 
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         let (name, symbol) = collection_names
             .get(index % collection_names.len())
             .copied()
-            .unwrap_or(("Molt Collection", "MOLT"));
+            .unwrap_or(("Lichen Collection", "LICN"));
 
         let collection_pubkey = derive_pubkey(format!("collection:{}:{}", name, index).as_bytes());
         collection_pubkeys.push(collection_pubkey);
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
 
             let mint_data = MintNftData {
                 token_id,
-                metadata_uri: format!("ipfs://molt-demo/{}/{}", collection_index, token_id),
+                metadata_uri: format!("ipfs://lichen-demo/{}/{}", collection_index, token_id),
             };
 
             let mut data = vec![7u8];
@@ -335,10 +335,10 @@ async fn create_demo_accounts(
     for index in 0..3 {
         let keypair = Keypair::new();
         let recipient = keypair.pubkey();
-        let amount_shells = 20_000_000_000u64;
+        let amount_spores = 20_000_000_000u64;
 
         let mut data = vec![0u8];
-        data.extend_from_slice(&amount_shells.to_le_bytes());
+        data.extend_from_slice(&amount_spores.to_le_bytes());
 
         let ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
@@ -347,12 +347,12 @@ async fn create_demo_accounts(
         };
 
         println!(
-            "💧 Funding demo account {} (20 MOLT)",
+            "💧 Funding demo account {} (20 LICN)",
             recipient.to_base58()
         );
         send_tx(client, rpc_url, signer, vec![ix]).await?;
 
-        wait_for_balance(client, rpc_url, &recipient, amount_shells).await?;
+        wait_for_balance(client, rpc_url, &recipient, amount_spores).await?;
 
         println!("   Demo account {} ready", index + 1);
         accounts.push(keypair);
@@ -365,7 +365,7 @@ async fn wait_for_balance(
     client: &reqwest::Client,
     rpc_url: &str,
     pubkey: &Pubkey,
-    target_shells: u64,
+    target_spores: u64,
 ) -> Result<()> {
     for _ in 0..30 {
         let result = rpc_call(
@@ -379,10 +379,10 @@ async fn wait_for_balance(
         let spendable = result
             .get("spendable")
             .and_then(|v| v.as_u64())
-            .or_else(|| result.get("shells").and_then(|v| v.as_u64()))
+            .or_else(|| result.get("spores").and_then(|v| v.as_u64()))
             .unwrap_or(0);
 
-        if spendable >= target_shells {
+        if spendable >= target_spores {
             return Ok(());
         }
 

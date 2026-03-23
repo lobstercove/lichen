@@ -2,7 +2,7 @@
 # Design System Validation Script
 # Checks that all CSS files properly import theme.css
 
-echo "🦞 MoltChain Design System Validator"
+echo "🦞 Lichen Design System Validator"
 echo "======================================"
 echo ""
 

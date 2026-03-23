@@ -1,7 +1,7 @@
 {
-  "name": "@moltchain/sdk",
+  "name": "@lichen/sdk",
   "version": "0.1.0",
-  "description": "Official JavaScript/TypeScript SDK for MoltChain blockchain",
+  "description": "Official JavaScript/TypeScript SDK for Lichen blockchain",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -11,17 +11,17 @@
     "prepare": "npm run build"
   },
   "keywords": [
-    "moltchain",
+    "lichen",
     "blockchain",
     "crypto",
-    "molt",
+    "licn",
     "web3"
   ],
-  "author": "Trading Lobster <trading.lobster@moltchain.io>",
+  "author": "Lichen Labs <hello@lichen.network>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/moltchain/moltchain.git",
+    "url": "https://github.com/lichen/lichen.git",
     "directory": "sdk/js"
   },
   "devDependencies": {

@@ -1,9 +1,9 @@
 [package]
-name = "moltchain-core"
+name = "lichen-core"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.network>"]
-description = "MoltChain core blockchain implementation"
+authors = ["Lichen Labs <trading.lobster@lichen.network>"]
+description = "Lichen core blockchain implementation"
 license = "Apache-2.0"
 
 [dependencies]

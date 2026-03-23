@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoltChain Validator Setup Script
+# Lichen Validator Setup Script
 # Production-ready validator initialization and configuration
 
 set -e
@@ -16,7 +16,7 @@ PURPLE='\033[0;35m'
 NC='\033[0m'
 
 # Default values
-MOLTCHAIN_HOME="$HOME/.moltchain"
+LICHEN_HOME="$HOME/.lichen"
 CONFIG_PATH=""
 GENESIS_PATH=""
 KEYPAIR_PATH=""
@@ -25,14 +25,14 @@ P2P_PORT=""
 RPC_PORT=""
 WS_PORT=""
 AUTO_STAKE=false
-STAKE_AMOUNT=1000000  # 1M MOLT default
+STAKE_AMOUNT=1000000  # 1M LICN default
 INSTALL_SERVICE=false
 NETWORK="testnet"
 
 print_header() {
     echo -e "${PURPLE}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🦞 MoltChain Validator Setup"
+    echo "🦞 Lichen Validator Setup"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo -e "${NC}"
 }
@@ -60,21 +60,21 @@ print_step() {
 
 usage() {
     cat <<EOF
-🦞 MoltChain Validator Setup
+🦞 Lichen Validator Setup
 
 USAGE:
     $0 [OPTIONS]
 
 OPTIONS:
     --network <testnet|mainnet>    Network to join (default: testnet)
-    --home <PATH>                  MoltChain home directory (default: ~/.moltchain)
+    --home <PATH>                  Lichen home directory (default: ~/.lichen)
     --genesis <PATH>               Path to genesis.json file (required)
     --keypair <PATH>               Path to validator keypair (optional, will generate)
-    --data-dir <PATH>              Data directory (default: ~/.moltchain/data)
+    --data-dir <PATH>              Data directory (default: ~/.lichen/data)
     --p2p-port <PORT>              P2P port (default: testnet=7001, mainnet=8001)
     --rpc-port <PORT>              RPC port (default: testnet=8899, mainnet=9899)
     --auto-stake                   Automatically stake minimum required amount
-    --stake-amount <MOLT>          Amount to stake in MOLT (default: 1000000)
+    --stake-amount <LICN>          Amount to stake in LICN (default: 1000000)
     --install-service              Install systemd service (Linux only)
     --help                         Show this help message
 
@@ -86,7 +86,7 @@ EXAMPLES:
     $0 --network mainnet --genesis ./genesis.json --install-service --auto-stake
 
     # Custom ports and directories
-    $0 --genesis ./genesis.json --p2p-port 8001 --rpc-port 9001 --data-dir /mnt/moltchain
+    $0 --genesis ./genesis.json --p2p-port 8001 --rpc-port 9001 --data-dir /mnt/lichen
 
 EOF
     exit 0
@@ -100,7 +100,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --home)
-            MOLTCHAIN_HOME="$2"
+            LICHEN_HOME="$2"
             shift 2
             ;;
         --genesis)
@@ -178,14 +178,14 @@ fi
 
 # Set defaults if not provided
 if [ -z "$DATA_DIR" ]; then
-    DATA_DIR="$MOLTCHAIN_HOME/data"
+    DATA_DIR="$LICHEN_HOME/data"
 fi
 
 if [ -z "$KEYPAIR_PATH" ]; then
-    KEYPAIR_PATH="$MOLTCHAIN_HOME/validator-keypair.json"
+    KEYPAIR_PATH="$LICHEN_HOME/validator-keypair.json"
 fi
 
-CONFIG_PATH="$MOLTCHAIN_HOME/config.toml"
+CONFIG_PATH="$LICHEN_HOME/config.toml"
 
 # Start setup
 print_header
@@ -195,7 +195,7 @@ print_info "Use deploy/setup.sh and docs/deployment/PRODUCTION_DEPLOYMENT.md for
 exit 1
 
 print_info "Network: ${NETWORK}"
-print_info "Home directory: ${MOLTCHAIN_HOME}"
+print_info "Home directory: ${LICHEN_HOME}"
 print_info "Data directory: ${DATA_DIR}"
 print_info "P2P port: ${P2P_PORT}"
 print_info "RPC port: ${RPC_PORT}"
@@ -206,15 +206,15 @@ echo ""
 # ============================================================================
 print_step "Creating directory structure"
 
-mkdir -p "$MOLTCHAIN_HOME"
+mkdir -p "$LICHEN_HOME"
 mkdir -p "$DATA_DIR"
-mkdir -p "$MOLTCHAIN_HOME/logs"
-mkdir -p "$MOLTCHAIN_HOME/backups"
+mkdir -p "$LICHEN_HOME/logs"
+mkdir -p "$LICHEN_HOME/backups"
 
 print_success "Directories created"
-print_info "  Home: $MOLTCHAIN_HOME"
+print_info "  Home: $LICHEN_HOME"
 print_info "  Data: $DATA_DIR"
-print_info "  Logs: $MOLTCHAIN_HOME/logs"
+print_info "  Logs: $LICHEN_HOME/logs"
 
 # ============================================================================
 # STEP 2: Generate or verify validator keypair
@@ -235,13 +235,13 @@ if [ -f "$KEYPAIR_PATH" ]; then
 else
     print_info "Generating new validator keypair..."
     
-    # Generate keypair using molt CLI or create manually
-    if [ -f "$PROJECT_ROOT/target/release/molt" ]; then
-        "$PROJECT_ROOT/target/release/molt" init --output "$KEYPAIR_PATH"
+    # Generate keypair using licn CLI or create manually
+    if [ -f "$PROJECT_ROOT/target/release/licn" ]; then
+        "$PROJECT_ROOT/target/release/licn" init --output "$KEYPAIR_PATH"
         print_success "Keypair generated: $KEYPAIR_PATH"
     else
         # Fallback: create a placeholder that validator will initialize
-        print_warning "molt CLI not found, validator will generate keypair on first run"
+        print_warning "lichen CLI not found, validator will generate keypair on first run"
         echo '{"note":"Keypair will be generated on first validator start"}' > "$KEYPAIR_PATH"
     fi
     
@@ -251,8 +251,8 @@ else
 fi
 
 # Display public key if possible
-if command -v molt &> /dev/null && [ -s "$KEYPAIR_PATH" ]; then
-    PUBKEY=$(molt pubkey "$KEYPAIR_PATH" 2>/dev/null || echo "Unable to extract")
+if command -v licn &> /dev/null && [ -s "$KEYPAIR_PATH" ]; then
+    PUBKEY=$(licn pubkey "$KEYPAIR_PATH" 2>/dev/null || echo "Unable to extract")
     print_info "Public key: ${PUBKEY}"
 fi
 
@@ -261,18 +261,18 @@ fi
 # ============================================================================
 print_step "Genesis configuration"
 
-GENESIS_DEST="$MOLTCHAIN_HOME/genesis.json"
+GENESIS_DEST="$LICHEN_HOME/genesis.json"
 cp "$GENESIS_PATH" "$GENESIS_DEST"
 print_success "Genesis copied to: $GENESIS_DEST"
 
 # Verify genesis file
 if command -v jq &> /dev/null; then
     CHAIN_ID=$(jq -r '.chain_id' "$GENESIS_DEST")
-    TOTAL_SUPPLY=$(jq -r '.initial_accounts | map(.balance_molt) | add' "$GENESIS_DEST")
+    TOTAL_SUPPLY=$(jq -r '.initial_accounts | map(.balance_licn) | add' "$GENESIS_DEST")
     VALIDATOR_COUNT=$(jq '.initial_validators | length' "$GENESIS_DEST")
     
     print_info "Chain ID: $CHAIN_ID"
-    print_info "Total supply: ${TOTAL_SUPPLY} MOLT"
+    print_info "Total supply: ${TOTAL_SUPPLY} LICN"
     print_info "Genesis validators: $VALIDATOR_COUNT"
 fi
 
@@ -282,7 +282,7 @@ fi
 print_step "Configuration file"
 
 cat > "$CONFIG_PATH" <<EOF
-# MoltChain Validator Configuration
+# Lichen Validator Configuration
 # Generated: $(date)
 # Network: ${NETWORK}
 
@@ -313,7 +313,7 @@ max_connections = 1000
 [logging]
 level = "info"
 log_to_file = true
-log_file_path = "${MOLTCHAIN_HOME}/logs/validator.log"
+log_file_path = "${LICHEN_HOME}/logs/validator.log"
 log_format = "text"
 
 [monitoring]
@@ -323,7 +323,7 @@ enable_health_check = true
 
 [genesis]
 genesis_path = "${GENESIS_DEST}"
-chain_id = "${CHAIN_ID:-moltchain-${NETWORK}-1}"
+chain_id = "${CHAIN_ID:-lichen-${NETWORK}-1}"
 
 [performance]
 worker_threads = 0
@@ -349,11 +349,11 @@ if [ "$INSTALL_SERVICE" = true ]; then
     elif [ ! -d "/etc/systemd/system" ]; then
         print_warning "Systemd not detected, skipping service installation"
     else
-        SERVICE_FILE="/etc/systemd/system/moltchain-validator.service"
+        SERVICE_FILE="/etc/systemd/system/lichen-validator.service"
         
         sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 [Unit]
-Description=MoltChain Validator
+Description=Lichen Validator
 After=network.target
 Wants=network-online.target
 
@@ -361,18 +361,18 @@ Wants=network-online.target
 Type=simple
 User=$USER
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$PROJECT_ROOT/target/release/moltchain-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path $DATA_DIR
+ExecStart=$PROJECT_ROOT/target/release/lichen-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path $DATA_DIR
 Restart=always
 RestartSec=10
-StandardOutput=append:$MOLTCHAIN_HOME/logs/validator.log
-StandardError=append:$MOLTCHAIN_HOME/logs/validator-error.log
+StandardOutput=append:$LICHEN_HOME/logs/validator.log
+StandardError=append:$LICHEN_HOME/logs/validator-error.log
 
 # Security
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=$MOLTCHAIN_HOME $DATA_DIR
+ReadWritePaths=$LICHEN_HOME $DATA_DIR
 
 # Resource limits
 LimitNOFILE=65536
@@ -384,10 +384,10 @@ EOF
 
         sudo systemctl daemon-reload
         print_success "Systemd service installed: $SERVICE_FILE"
-        print_info "Enable with: sudo systemctl enable moltchain-validator"
-        print_info "Start with: sudo systemctl start moltchain-validator"
-        print_info "Status: sudo systemctl status moltchain-validator"
-        print_info "Logs: sudo journalctl -u moltchain-validator -f"
+        print_info "Enable with: sudo systemctl enable lichen-validator"
+        print_info "Start with: sudo systemctl start lichen-validator"
+        print_info "Status: sudo systemctl status lichen-validator"
+        print_info "Logs: sudo journalctl -u lichen-validator -f"
     fi
 fi
 
@@ -397,20 +397,20 @@ fi
 print_step "Creating helper scripts"
 
 # Start script
-cat > "$MOLTCHAIN_HOME/start-validator.sh" <<EOF
+cat > "$LICHEN_HOME/start-validator.sh" <<EOF
 #!/bin/bash
-# Start MoltChain Validator
+# Start Lichen Validator
 
 cd "$PROJECT_ROOT"
-exec ./target/release/moltchain-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path "$DATA_DIR"
+exec ./target/release/lichen-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path "$DATA_DIR"
 EOF
-chmod +x "$MOLTCHAIN_HOME/start-validator.sh"
-print_success "Start script: $MOLTCHAIN_HOME/start-validator.sh"
+chmod +x "$LICHEN_HOME/start-validator.sh"
+print_success "Start script: $LICHEN_HOME/start-validator.sh"
 
 # Health check script
-cat > "$MOLTCHAIN_HOME/health-check.sh" <<EOF
+cat > "$LICHEN_HOME/health-check.sh" <<EOF
 #!/bin/bash
-# MoltChain Validator Health Check
+# Lichen Validator Health Check
 
 RPC_URL="http://localhost:${RPC_PORT}"
 
@@ -425,28 +425,28 @@ else
     exit 1
 fi
 EOF
-chmod +x "$MOLTCHAIN_HOME/health-check.sh"
-print_success "Health check: $MOLTCHAIN_HOME/health-check.sh"
+chmod +x "$LICHEN_HOME/health-check.sh"
+print_success "Health check: $LICHEN_HOME/health-check.sh"
 
 # Backup script
-cat > "$MOLTCHAIN_HOME/backup.sh" <<EOF
+cat > "$LICHEN_HOME/backup.sh" <<EOF
 #!/bin/bash
-# Backup MoltChain validator data
+# Backup Lichen validator data
 
-BACKUP_DIR="$MOLTCHAIN_HOME/backups"
+BACKUP_DIR="$LICHEN_HOME/backups"
 TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
-BACKUP_FILE="\$BACKUP_DIR/moltchain-backup-\$TIMESTAMP.tar.gz"
+BACKUP_FILE="\$BACKUP_DIR/lichen-backup-\$TIMESTAMP.tar.gz"
 
 echo "Creating backup..."
-tar -czf "\$BACKUP_FILE" -C "$MOLTCHAIN_HOME" validator-keypair.json config.toml genesis.json
+tar -czf "\$BACKUP_FILE" -C "$LICHEN_HOME" validator-keypair.json config.toml genesis.json
 tar -czf "\$BACKUP_FILE.data" -C "$DATA_DIR" .
 
 echo "✓ Backup created:"
 echo "  Config: \$BACKUP_FILE"
 echo "  Data: \$BACKUP_FILE.data"
 EOF
-chmod +x "$MOLTCHAIN_HOME/backup.sh"
-print_success "Backup script: $MOLTCHAIN_HOME/backup.sh"
+chmod +x "$LICHEN_HOME/backup.sh"
+print_success "Backup script: $LICHEN_HOME/backup.sh"
 
 # ============================================================================
 # STEP 7: Security check
@@ -487,35 +487,35 @@ echo "1. Review your configuration:"
 echo "   cat $CONFIG_PATH"
 echo ""
 echo "2. Start the validator:"
-echo "   $MOLTCHAIN_HOME/start-validator.sh"
+echo "   $LICHEN_HOME/start-validator.sh"
 echo ""
 echo "   Or use the production start script:"
 echo "   cd $PROJECT_ROOT"
-echo "   ./moltchain-start.sh $NETWORK"
+echo "   ./lichen-start.sh $NETWORK"
 echo ""
 echo "   Or run the binary directly:"
-echo "   ./target/release/moltchain-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path $DATA_DIR"
+echo "   ./target/release/lichen-validator --network $NETWORK --rpc-port $RPC_PORT --ws-port $WS_PORT --p2p-port $P2P_PORT --db-path $DATA_DIR"
 echo ""
 echo "3. Check validator health:"
-echo "   $MOLTCHAIN_HOME/health-check.sh"
+echo "   $LICHEN_HOME/health-check.sh"
 echo ""
 echo "4. View logs:"
-echo "   tail -f $MOLTCHAIN_HOME/logs/validator.log"
+echo "   tail -f $LICHEN_HOME/logs/validator.log"
 echo ""
 
 if [ "$INSTALL_SERVICE" = true ] && [ "$(uname)" = "Linux" ]; then
     echo "5. Manage systemd service:"
-    echo "   sudo systemctl start moltchain-validator"
-    echo "   sudo systemctl status moltchain-validator"
-    echo "   sudo journalctl -u moltchain-validator -f"
+    echo "   sudo systemctl start lichen-validator"
+    echo "   sudo systemctl status lichen-validator"
+    echo "   sudo journalctl -u lichen-validator -f"
     echo ""
 fi
 
 if [ "$AUTO_STAKE" = true ]; then
     print_warning "Auto-staking not yet implemented"
-    print_info "To stake manually, use the molt CLI after validator starts"
+    print_info "To stake manually, use the licn CLI after validator starts"
 fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-print_success "🦞 Ready to molt! 🦞"
+print_success "🦞 Ready to grow! 🦞"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

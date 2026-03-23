@@ -1,9 +1,9 @@
 [package]
-name = "moltchain-contract-sdk"
+name = "lichen-contract-sdk"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
-description = "MoltChain Smart Contract SDK"
+authors = ["Lichen Labs <hello@lichen.network>"]
+description = "Lichen Smart Contract SDK"
 license = "Apache-2.0"
 
 [lib]

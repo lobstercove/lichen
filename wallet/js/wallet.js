@@ -1,4 +1,4 @@
-// MoltWallet - Core Wallet Logic
+// LichenWallet - Core Wallet Logic
 // Full RPC integration, wallet management, and UI controls
 
 // Wallet State — declared early so all helpers can reference it safely
@@ -24,8 +24,8 @@ function fmtUsd(value, sym = '$') {
 
 // Live token prices — fetched from DEX oracle via RPC, with offline fallbacks.
 // Fallback values used ONLY when RPC is unreachable (never displayed as "live").
-const _OFFLINE_FALLBACK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
-const livePrices = { MOLT: 0, mUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0 };
+const _OFFLINE_FALLBACK_PRICES = { LICN: 0.10, lUSD: 1.0, wSOL: 150.0, wETH: 3000.0, wBNB: 600.0 };
+const livePrices = { LICN: 0, lUSD: 1.0, wSOL: 0, wETH: 0, wBNB: 0 };
 let _pricesLoaded = false;
 
 async function fetchLivePrices() {
@@ -38,11 +38,11 @@ async function fetchLivePrices() {
                     livePrices[base] = parseFloat(pair.price) || 0;
                 }
             }
-            // MOLT price: look for MOLT/mUSD pair
-            const moltPair = result.find(p =>
-                (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD'
+            // LICN price: look for LICN/lUSD pair
+            const licnPair = result.find(p =>
+                (p.base || '').toUpperCase() === 'LICN' && (p.quote || '').toUpperCase() === 'LUSD'
             );
-            if (moltPair && moltPair.price) livePrices.MOLT = parseFloat(moltPair.price) || 0;
+            if (licnPair && licnPair.price) livePrices.LICN = parseFloat(licnPair.price) || 0;
             _pricesLoaded = true;
         }
     } catch {
@@ -74,13 +74,13 @@ function getPrice(symbol) {
     return livePrices[symbol] || _OFFLINE_FALLBACK_PRICES[symbol] || 0;
 }
 
-// Network configuration — centralized in shared-config.js (MOLT_CONFIG)
-const NETWORKS = MOLT_CONFIG.networks;
+// Network configuration — centralized in shared-config.js (LICHEN_CONFIG)
+const NETWORKS = LICHEN_CONFIG.networks;
 const WS_ENDPOINTS = {};
 for (const [k, v] of Object.entries(NETWORKS)) { WS_ENDPOINTS[k] = v.ws; }
 
 function getSelectedNetwork() {
-    return MOLT_CONFIG.currentNetwork('moltchain_wallet_network');
+    return LICHEN_CONFIG.currentNetwork('lichen_wallet_network');
 }
 
 function getRpcEndpoint() {
@@ -89,11 +89,11 @@ function getRpcEndpoint() {
     const settings = walletState.settings || {};
     if (net === 'mainnet' && settings.mainnetRPC) return settings.mainnetRPC;
     if (net === 'testnet' && settings.testnetRPC) return settings.testnetRPC;
-    return MOLT_CONFIG.rpc(net);
+    return LICHEN_CONFIG.rpc(net);
 }
 
 function getWsEndpoint() {
-    return MOLT_CONFIG.ws(getSelectedNetwork());
+    return LICHEN_CONFIG.ws(getSelectedNetwork());
 }
 
 // ===== LIVE BALANCE WEBSOCKET =====
@@ -198,7 +198,7 @@ function connectBalanceWebSocket() {
                     refreshBalance();
                     loadAssets();
                     loadActivity();
-                    // Refresh staking tab if visible — catches ReefStake deposit/unstake
+                    // Refresh staking tab if visible — catches MossStake deposit/unstake
                     refreshStakingIfVisible();
                     return;
                 }
@@ -209,7 +209,7 @@ function connectBalanceWebSocket() {
                     return;
                 }
 
-                // Bridge mint event — wrapped tokens minted on MoltChain
+                // Bridge mint event — wrapped tokens minted on Lichen
                 if (subId === bridgeMintSubId && result) {
                     handleBridgeMintEvent(result);
                     return;
@@ -264,7 +264,7 @@ function handleBridgeMintEvent(data) {
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
-        statusEl.innerHTML = `<i class="fas fa-check-double" style="color: #06D6A0;"></i> <span>Credited to your MoltChain wallet!</span>`;
+        statusEl.innerHTML = `<i class="fas fa-check-double" style="color: #06D6A0;"></i> <span>Credited to your Lichen wallet!</span>`;
     }
 
     // Stop polling — we got the final status via WS
@@ -372,7 +372,7 @@ function stopBalancePolling() {
 }
 
 // RPC Client (same as explorer)
-class MoltChainRPC {
+class LichenRPC {
     constructor(url) {
         this.url = url;
     }
@@ -438,36 +438,36 @@ class MoltChainRPC {
     }
 }
 
-const rpc = new MoltChainRPC(getRpcEndpoint());
+const rpc = new LichenRPC(getRpcEndpoint());
 
-let _networkBaseFeeMolt = typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001;
+let _networkBaseFeeLicn = typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001;
 
-function getNetworkBaseFeeMolt() {
-    return (Number.isFinite(_networkBaseFeeMolt) && _networkBaseFeeMolt > 0)
-        ? _networkBaseFeeMolt
-        : (typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001);
+function getNetworkBaseFeeLicn() {
+    return (Number.isFinite(_networkBaseFeeLicn) && _networkBaseFeeLicn > 0)
+        ? _networkBaseFeeLicn
+        : (typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001);
 }
 
 function updateSendFeeEstimateUI() {
     const feeEl = document.getElementById('sendNetworkFeeDisplay');
     if (!feeEl) return;
-    feeEl.textContent = `${fmtToken(getNetworkBaseFeeMolt())} MOLT`;
+    feeEl.textContent = `${fmtToken(getNetworkBaseFeeLicn())} LICN`;
 }
 
 async function refreshDynamicFeeConfig() {
     try {
         const feeConfig = await rpc.call('getFeeConfig', []);
-        const baseFeeShells = Number(
-            feeConfig?.base_fee_shells
-            ?? feeConfig?.baseFeeShells
+        const baseFeeSpores = Number(
+            feeConfig?.base_fee_spores
+            ?? feeConfig?.baseFeeSpores
             ?? feeConfig?.base_fee
             ?? 0
         );
-        if (Number.isFinite(baseFeeShells) && baseFeeShells > 0) {
-            _networkBaseFeeMolt = baseFeeShells / SHELLS_PER_MOLT;
+        if (Number.isFinite(baseFeeSpores) && baseFeeSpores > 0) {
+            _networkBaseFeeLicn = baseFeeSpores / SPORES_PER_LICN;
         }
     } catch (_) {
-        _networkBaseFeeMolt = typeof BASE_FEE_MOLT === 'number' ? BASE_FEE_MOLT : 0.001;
+        _networkBaseFeeLicn = typeof BASE_FEE_LICN === 'number' ? BASE_FEE_LICN : 0.001;
     }
     updateSendFeeEstimateUI();
 }
@@ -475,13 +475,13 @@ async function refreshDynamicFeeConfig() {
 // ── Wrapped Token Registry ──
 // Token contract addresses — loaded from deploy manifest or configured manually
 const TOKEN_REGISTRY = {
-    mUSD: { symbol: 'mUSD', name: 'Molt USD', decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://moltchain.network/assets/img/coins/128x128/musd.png' },
+    lUSD: { symbol: 'lUSD', name: 'Licn USD', decimals: 9, icon: 'fas fa-dollar-sign', address: null, color: '#4ade80', logoUrl: 'https://lichen.network/assets/img/coins/128x128/musd.png' },
     wSOL: { symbol: 'wSOL', name: 'Wrapped SOL', decimals: 9, icon: 'fab fa-solana', address: null, color: '#9945FF', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png' },
     wETH: { symbol: 'wETH', name: 'Wrapped ETH', decimals: 9, icon: 'fab fa-ethereum', address: null, color: '#627EEA', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png' },
     wBNB: { symbol: 'wBNB', name: 'Wrapped BNB', decimals: 9, icon: 'fas fa-coins', address: null, color: '#F0B90B', logoUrl: 'https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png' },
 };
 
-const MOLT_LOGO_URL = 'https://moltchain.network/assets/img/coins/128x128/molt.png';
+const LICN_LOGO_URL = 'https://lichen.network/assets/img/coins/128x128/licn.png';
 
 // Load deploy manifest to get token contract addresses
 async function loadTokenRegistry() {
@@ -508,7 +508,7 @@ async function loadTokenRegistry() {
 
     // Fallback: try localStorage (user can paste addresses in settings)
     try {
-        const stored = localStorage.getItem('moltchain_token_addresses');
+        const stored = localStorage.getItem('lichen_token_addresses');
         if (stored) {
             const addrs = JSON.parse(stored);
             for (const [symbol, addr] of Object.entries(addrs)) {
@@ -588,7 +588,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // WL-09: Load wallet state from localStorage.
 // Private keys are encrypted at rest; the lock screen gates access on reopen.
 function loadWalletState() {
-    const stored = localStorage.getItem('moltWalletState');
+    const stored = localStorage.getItem('lichenWalletState');
     if (stored) {
         try {
             const parsed = JSON.parse(stored);
@@ -598,7 +598,7 @@ function loadWalletState() {
                     wallets: parsed.wallets,
                     activeWalletId: parsed.activeWalletId || null,
                     isLocked: parsed.isLocked !== false,
-                    network: parsed.network || MOLT_CONFIG.defaultNetwork,
+                    network: parsed.network || LICHEN_CONFIG.defaultNetwork,
                     settings: {
                         currency: (parsed.settings && parsed.settings.currency) || 'USD',
                         lockTimeout: (parsed.settings && typeof parsed.settings.lockTimeout === 'number') ? parsed.settings.lockTimeout : 300000,
@@ -614,7 +614,7 @@ function loadWalletState() {
 
 // WL-09: Save wallet state to localStorage
 function saveWalletState() {
-    localStorage.setItem('moltWalletState', JSON.stringify(walletState));
+    localStorage.setItem('lichenWalletState', JSON.stringify(walletState));
 }
 
 // Check if wallet exists and show appropriate screen
@@ -635,8 +635,8 @@ function showUnlockScreen() {
     container.innerHTML = `
         <div class="unlock-card">
             <div class="welcome-logo">
-                <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-                <h1>MoltWallet</h1>
+                <img src="LichenWallet_Logo_256.png" class="logo-icon" alt="LichenWallet">
+                <h1>LichenWallet</h1>
             </div>
             <p class="unlock-greeting">Welcome back!</p>
             
@@ -670,7 +670,7 @@ async function unlockWallet() {
     try {
         // Try to decrypt first wallet as validation
         const firstWallet = walletState.wallets[0];
-        await MoltCrypto.decryptPrivateKey(firstWallet.encryptedKey, password);
+        await LichenCrypto.decryptPrivateKey(firstWallet.encryptedKey, password);
 
         // Success - unlock and show dashboard
         walletState.isLocked = false;
@@ -740,8 +740,8 @@ async function createWalletStep2() {
     }
 
     // Generate mnemonic
-    createdMnemonic = await MoltCrypto.generateMnemonic();
-    createdKeypair = await MoltCrypto.mnemonicToKeypair(createdMnemonic);
+    createdMnemonic = await LichenCrypto.generateMnemonic();
+    createdKeypair = await LichenCrypto.mnemonicToKeypair(createdMnemonic);
 
     // Display seed phrase
     const seedDisplay = document.getElementById('seedPhraseDisplay');
@@ -781,8 +781,8 @@ function copyMnemonic() {
 
 function downloadMnemonic() {
     const wallet = getActiveWallet() || { name: 'new-wallet' };
-    const filename = `molt-wallet-seed-${wallet.name}-${Date.now()}.txt`;
-    const content = `MoltWallet Seed Phrase\n` +
+    const filename = `lichen-wallet-seed-${wallet.name}-${Date.now()}.txt`;
+    const content = `LichenWallet Seed Phrase\n` +
         `DO NOT SHARE THIS WITH ANYONE!\n\n` +
         `Wallet: ${wallet.name}\n` +
         `Created: ${new Date().toISOString()}\n\n` +
@@ -911,14 +911,14 @@ async function finishCreateWallet() {
     const password = document.getElementById('createPassword').value;
 
     // Encrypt private key
-    const encrypted = await MoltCrypto.encryptPrivateKey(createdKeypair.privateKey, password);
+    const encrypted = await LichenCrypto.encryptPrivateKey(createdKeypair.privateKey, password);
 
     // Create wallet object
     // Encrypt mnemonic alongside the private key (same password, separate ciphertext)
-    const encryptedMnemonic = await MoltCrypto.encryptPrivateKey(createdMnemonic, password);
+    const encryptedMnemonic = await LichenCrypto.encryptPrivateKey(createdMnemonic, password);
 
     const wallet = {
-        id: MoltCrypto.generateId(),
+        id: LichenCrypto.generateId(),
         name: `Wallet ${walletState.wallets.length + 1}`,
         address: createdKeypair.address,
         publicKey: createdKeypair.publicKey,
@@ -1014,14 +1014,14 @@ async function importWalletSeed() {
     const seed = getImportMnemonicFromGrid();
     const password = document.getElementById('importPassword').value;
 
-    if (!MoltCrypto.isValidMnemonic(seed)) {
+    if (!LichenCrypto.isValidMnemonic(seed)) {
         showToast('Invalid seed phrase', 'error');
         return;
     }
 
     // AUDIT-FIX W-7: Full async BIP39 checksum verification on import
-    if (MoltCrypto.isValidMnemonicAsync) {
-        const checksumValid = await MoltCrypto.isValidMnemonicAsync(seed);
+    if (LichenCrypto.isValidMnemonicAsync) {
+        const checksumValid = await LichenCrypto.isValidMnemonicAsync(seed);
         if (!checksumValid) {
             showToast('Invalid seed phrase — BIP39 checksum mismatch. Please check your words and try again.', 'error');
             return;
@@ -1033,12 +1033,12 @@ async function importWalletSeed() {
         return;
     }
 
-    const keypair = await MoltCrypto.mnemonicToKeypair(seed);
-    const encrypted = await MoltCrypto.encryptPrivateKey(keypair.privateKey, password);
-    const encryptedMnemonic = await MoltCrypto.encryptPrivateKey(seed, password);
+    const keypair = await LichenCrypto.mnemonicToKeypair(seed);
+    const encrypted = await LichenCrypto.encryptPrivateKey(keypair.privateKey, password);
+    const encryptedMnemonic = await LichenCrypto.encryptPrivateKey(seed, password);
 
     const wallet = {
-        id: MoltCrypto.generateId(),
+        id: LichenCrypto.generateId(),
         name: `Wallet ${walletState.wallets.length + 1}`,
         address: keypair.address,
         publicKey: keypair.publicKey,
@@ -1082,15 +1082,15 @@ async function importWalletPrivateKey() {
         return;
     }
 
-    const publicKey = await MoltCrypto.derivePublicKey(MoltCrypto.hexToBytes(normalizedKey));
-    const address = MoltCrypto.publicKeyToAddress(publicKey);
-    const encrypted = await MoltCrypto.encryptPrivateKey(normalizedKey, password);
+    const publicKey = await LichenCrypto.derivePublicKey(LichenCrypto.hexToBytes(normalizedKey));
+    const address = LichenCrypto.publicKeyToAddress(publicKey);
+    const encrypted = await LichenCrypto.encryptPrivateKey(normalizedKey, password);
 
     const wallet = {
-        id: MoltCrypto.generateId(),
+        id: LichenCrypto.generateId(),
         name: `Wallet ${walletState.wallets.length + 1}`,
         address,
-        publicKey: MoltCrypto.bytesToHex(publicKey),
+        publicKey: LichenCrypto.bytesToHex(publicKey),
         encryptedKey: encrypted,
         createdAt: Date.now()
     };
@@ -1131,7 +1131,7 @@ async function importWalletJson() {
             if (keystore.encryptedSecretKey) {
                 // AUDIT-FIX K-1b: Handle v2 encrypted export format
                 const importPw = document.getElementById('importPasswordJson').value;
-                const decryptedHex = await MoltCrypto.decryptPrivateKey(keystore.encryptedSecretKey, importPw);
+                const decryptedHex = await LichenCrypto.decryptPrivateKey(keystore.encryptedSecretKey, importPw);
                 if (!decryptedHex) {
                     showToast('Invalid password for this keystore', 'error');
                     return;
@@ -1141,31 +1141,31 @@ async function importWalletJson() {
             } else if (keystore.secretKey) {
                 // Full 64-byte secretKey — first 32 bytes are the seed
                 const secretBytes = new Uint8Array(keystore.secretKey);
-                seedHex = MoltCrypto.bytesToHex(secretBytes.slice(0, 32));
+                seedHex = LichenCrypto.bytesToHex(secretBytes.slice(0, 32));
             } else if (typeof keystore.privateKey === 'string') {
                 seedHex = keystore.privateKey;
             } else {
                 const privBytes = new Uint8Array(keystore.privateKey);
-                seedHex = MoltCrypto.bytesToHex(privBytes.slice(0, 32));
+                seedHex = LichenCrypto.bytesToHex(privBytes.slice(0, 32));
             }
 
             // Reconstruct keypair
-            const seed = MoltCrypto.hexToBytes(seedHex);
+            const seed = LichenCrypto.hexToBytes(seedHex);
             const keypair = nacl.sign.keyPair.fromSeed(seed);
-            const address = MoltCrypto.publicKeyToAddress(keypair.publicKey);
+            const address = LichenCrypto.publicKeyToAddress(keypair.publicKey);
 
             if (!password || password.length < 8) {
                 showToast('Password must be at least 8 characters', 'error');
                 return;
             }
 
-            const encrypted = await MoltCrypto.encryptPrivateKey(seedHex, password);
+            const encrypted = await LichenCrypto.encryptPrivateKey(seedHex, password);
 
             const wallet = {
-                id: MoltCrypto.generateId(),
+                id: LichenCrypto.generateId(),
                 name: keystore.name || `Imported ${walletState.wallets.length + 1}`,
                 address: address,
-                publicKey: MoltCrypto.bytesToHex(keypair.publicKey),
+                publicKey: LichenCrypto.bytesToHex(keypair.publicKey),
                 encryptedKey: encrypted,
                 createdAt: Date.now()
             };
@@ -1227,9 +1227,9 @@ async function initShieldedForActiveWallet() {
     try {
         if (wallet.encryptedMnemonic) {
             try {
-                const mnemonic = await MoltCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
-                if (mnemonic && MoltCrypto.isValidMnemonic && MoltCrypto.isValidMnemonic(mnemonic)) {
-                    const keypair = await MoltCrypto.mnemonicToKeypair(mnemonic);
+                const mnemonic = await LichenCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
+                if (mnemonic && LichenCrypto.isValidMnemonic && LichenCrypto.isValidMnemonic(mnemonic)) {
+                    const keypair = await LichenCrypto.mnemonicToKeypair(mnemonic);
                     decryptedSeedHex = keypair.privateKey;
                     zeroBytes(keypair.secretKey);
                 }
@@ -1239,15 +1239,15 @@ async function initShieldedForActiveWallet() {
         }
 
         if (!decryptedSeedHex) {
-            decryptedSeedHex = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+            decryptedSeedHex = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
         }
 
         if (!/^[0-9a-fA-F]{64}$/.test(decryptedSeedHex || '')) {
             throw new Error('Invalid decrypted wallet seed');
         }
 
-        const domain = new TextEncoder().encode('moltchain-shielded-spending-seed-v1');
-        const seedBytes = MoltCrypto.hexToBytes(decryptedSeedHex);
+        const domain = new TextEncoder().encode('lichen-shielded-spending-seed-v1');
+        const seedBytes = LichenCrypto.hexToBytes(decryptedSeedHex);
         const keyMaterial = new Uint8Array(seedBytes.length + domain.length);
         keyMaterial.set(seedBytes, 0);
         keyMaterial.set(domain, seedBytes.length);
@@ -1371,14 +1371,14 @@ async function refreshBalance() {
 
     try {
         const balance = await rpc.getBalance(wallet.address);
-        const molt = parseFloat(balance.molt) || 0;
-        window.walletBalance = molt;
+        const licn = parseFloat(balance.licn) || 0;
+        window.walletBalance = licn;
 
         // Fetch all token balances in parallel
         const tokenBalances = await getAllTokenBalances(wallet.address);
 
         // Calculate total USD value from live prices
-        let totalUsd = molt * getPrice('MOLT');
+        let totalUsd = licn * getPrice('LICN');
         for (const [symbol, bal] of Object.entries(tokenBalances)) {
             totalUsd += bal * getPrice(symbol);
         }
@@ -1390,21 +1390,21 @@ async function refreshBalance() {
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
 
-        document.getElementById('totalBalance').textContent = `${fmtToken(molt)} MOLT`;
+        document.getElementById('totalBalance').textContent = `${fmtToken(licn)} LICN`;
         document.getElementById('balanceUsd').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
 
-        // Balance breakdown — show spendable/staked/locked/reef split when non-trivial
+        // Balance breakdown — show spendable/staked/locked/moss split when non-trivial
         const breakdownEl = document.getElementById('balanceBreakdown');
         if (breakdownEl) {
-            const spendable = parseFloat(balance.spendable_molt) || 0;
-            const staked = parseFloat(balance.staked_molt) || 0;
-            const locked = parseFloat(balance.locked_molt) || 0;
-            const reefStaked = parseFloat(balance.reef_staked_molt) || 0;
-            const hasBreakdown = staked > 0 || locked > 0 || reefStaked > 0;
+            const spendable = parseFloat(balance.spendable_licn) || 0;
+            const staked = parseFloat(balance.staked_licn) || 0;
+            const locked = parseFloat(balance.locked_licn) || 0;
+            const mossStaked = parseFloat(balance.moss_staked_licn) || 0;
+            const hasBreakdown = staked > 0 || locked > 0 || mossStaked > 0;
             if (hasBreakdown) {
                 const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(spendable)}</strong>`];
                 if (staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(staked)}</strong>`);
-                if (reefStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${fmtToken(reefStaked)}</strong>`);
+                if (mossStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> Liquid Staking: <strong>${fmtToken(mossStaked)}</strong>`);
                 if (locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(locked)}</strong>`);
                 breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
                 breakdownEl.style.display = 'block';
@@ -1419,7 +1419,7 @@ async function refreshBalance() {
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
         window.walletBalance = 0;
-        document.getElementById('totalBalance').textContent = '0.00 MOLT';
+        document.getElementById('totalBalance').textContent = '0.00 LICN';
         document.getElementById('balanceUsd').textContent = `${sym}0.00 ${currency}`;
     }
 }
@@ -1429,8 +1429,8 @@ async function loadAssets() {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
-    const balance = await rpc.getBalance(wallet.address).catch(() => ({ molt: 0 }));
-    const molt = parseFloat(balance.molt) || 0;
+    const balance = await rpc.getBalance(wallet.address).catch(() => ({ licn: 0 }));
+    const licn = parseFloat(balance.licn) || 0;
 
     // Fetch all token balances in parallel
     const tokenBalances = await getAllTokenBalances(wallet.address);
@@ -1445,18 +1445,18 @@ async function loadAssets() {
     // Build asset list HTML
     let html = '';
 
-    // MOLT (always first, always shown)
-    const moltUsd = molt * getPrice('MOLT');
+    // LICN (always first, always shown)
+    const licnUsd = licn * getPrice('LICN');
     html += `
         <div class="asset-item" style="cursor: default;">
-            <div class="asset-icon asset-icon-molt"><img src="${MOLT_LOGO_URL}" alt="MOLT" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
+            <div class="asset-icon asset-icon-lichen"><img src="${LICN_LOGO_URL}" alt="LICN" style="width:20px;height:20px;border-radius:50%;object-fit:cover;"></div>
             <div class="asset-info">
-                <div class="asset-name">MoltChain</div>
-                <div class="asset-symbol">MOLT</div>
+                <div class="asset-name">Lichen</div>
+                <div class="asset-symbol">LICN</div>
             </div>
             <div class="asset-balance">
-                <div class="asset-amount">${fmtToken(molt)}</div>
-                <div class="asset-value">${fmtUsd(moltUsd, sym)}</div>
+                <div class="asset-amount">${fmtToken(licn)}</div>
+                <div class="asset-value">${fmtUsd(licnUsd, sym)}</div>
             </div>
         </div>
     `;
@@ -1574,7 +1574,7 @@ async function loadActivity(reset = true) {
         let airdrops = [];
         if (!requestBeforeSlot) {
             try {
-                const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : null;
+                const faucetUrl = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.faucet) ? LICHEN_CONFIG.faucet : null;
                 if (faucetUrl) {
                     const abortCtl = new AbortController();
                     const timer = setTimeout(() => abortCtl.abort(), 2000);
@@ -1586,7 +1586,7 @@ async function loadActivity(reset = true) {
                             type: 'Airdrop',
                             from: 'Treasury',
                             to: a.recipient,
-                            amount: a.amount_molt * SHELLS_PER_MOLT,
+                            amount: a.amount_licn * SPORES_PER_LICN,
                             timestamp: a.timestamp_ms,
                             signature: a.signature,
                             isAirdrop: true
@@ -1647,7 +1647,7 @@ async function loadActivity(reset = true) {
                 color = '#60a5fa';
                 type = 'Airdrop';
                 address = 'Faucet (Treasury)';
-                amount = fmtToken(tx.amount / SHELLS_PER_MOLT);
+                amount = fmtToken(tx.amount / SPORES_PER_LICN);
                 sign = '+';
             } else {
                 const isSent = tx.from === wallet.address;
@@ -1658,10 +1658,10 @@ async function loadActivity(reset = true) {
                     'Stake': 'Staked',
                     'Unstake': 'Unstaked',
                     'ClaimUnstake': 'Claimed Unstake',
-                    'ReefStakeDeposit': 'Staked (Liquid Staking)',
-                    'ReefStakeUnstake': 'Unstaked (Liquid Staking)',
-                    'ReefStakeClaim': 'Claimed (Liquid Staking)',
-                    'ReefStakeTransfer': 'Transfer (stMOLT)',
+                    'MossStakeDeposit': 'Staked (Liquid Staking)',
+                    'MossStakeUnstake': 'Unstaked (Liquid Staking)',
+                    'MossStakeClaim': 'Claimed (Liquid Staking)',
+                    'MossStakeTransfer': 'Transfer (stLICN)',
                     'RegisterEvmAddress': 'EVM Registration',
                     'Contract': 'Contract Call',
                     'DeployContract': 'Deploy Contract',
@@ -1697,14 +1697,14 @@ async function loadActivity(reset = true) {
                     type = fnMap[tx.contract_function] || `Contract: ${tx.contract_function.replace(/_/g, ' ')}`;
                 }
                 icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
-                color = isSent ? '#ff6b35' : '#4ade80';
+                color = isSent ? '#00C9DB' : '#4ade80';
                 // Special icons/colors for non-transfer types
                 if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
-                    || tx.type === 'ReefStakeDeposit' || tx.type === 'ReefStakeUnstake'
-                    || tx.type === 'ReefStakeClaim' || tx.type === 'ReefStakeTransfer') {
+                    || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake'
+                    || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
                     icon = 'fa-coins'; color = '#a78bfa';
                     // For staking deposits, show the staked amount as negative (outflow)
-                    if (tx.type === 'ReefStakeDeposit' || tx.type === 'Stake') {
+                    if (tx.type === 'MossStakeDeposit' || tx.type === 'Stake') {
                         sign = '-';
                     }
                 } else if (tx.type === 'RegisterEvmAddress') {
@@ -1721,8 +1721,8 @@ async function loadActivity(reset = true) {
                     icon = 'fa-user-plus'; color = '#94a3b8';
                 }
                 address = isSent ? (tx.to || '') : (tx.from || '');
-                const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
-                amount = fmtToken(amountVal / SHELLS_PER_MOLT);
+                const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
+                amount = fmtToken(amountVal / SPORES_PER_LICN);
                 sign = sign || (isSent ? '-' : '+');
             }
 
@@ -1730,17 +1730,17 @@ async function loadActivity(reset = true) {
             const date = tx.timestamp ? formatTime(tx.timestamp) : '';
             const sig = tx.signature || tx.hash || '';
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
-            const explorerBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.explorer)
-                ? String(MOLT_CONFIG.explorer).replace(/\/$/, '')
+            const explorerBase = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.explorer)
+                ? String(LICHEN_CONFIG.explorer).replace(/\/$/, '')
                 : '../explorer';
             const explorerLink = sig ? `${explorerBase}/transaction.html?sig=${encodeURIComponent(sig)}` : '#';
             const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
                 || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
                 || tx.type === 'CreateAccount');
             const isPaidContract = tx.type === 'Contract' && amount !== '0' && parseFloat(amount) > 0;
-            const feeShells = tx.fee_shells || tx.fee || 0;
-            const feeAmt = fmtToken(feeShells / SHELLS_PER_MOLT);
-            const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amount} MOLT`;
+            const feeSpores = tx.fee_spores || tx.fee || 0;
+            const feeAmt = fmtToken(feeSpores / SPORES_PER_LICN);
+            const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amount} LICN`;
             const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
             const paidTag = isPaidContract ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(139,92,246,0.15);color:#a78bfa;font-weight:600;vertical-align:middle;">PAID</span>' : '';
 
@@ -1793,11 +1793,11 @@ async function loadStaking() {
         const validators = await getStakingValidators();
         const myValidator = validators.find(v => v.pubkey === wallet.address);
 
-        // Always show staking tab (for ReefStake or validator staking)
+        // Always show staking tab (for MossStake or validator staking)
         if (stakingTabBtn) stakingTabBtn.style.display = 'flex';
 
         if (!myValidator) {
-            // Not a validator - show ReefStake community staking UI
+            // Not a validator - show MossStake community staking UI
             if (validatorSection) {
                 validatorSection.style.display = 'block';
                 validatorSection.innerHTML = `
@@ -1805,22 +1805,22 @@ async function loadStaking() {
                         <div class="tab-banner-icon"><i class="fas fa-water"></i></div>
                         <div class="tab-banner-text">
                             <h3>Liquid Staking</h3>
-                            <p>Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
+                            <p>Stake LICN, receive stLICN. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
                         </div>
                     </div>
 
                     <div class="staking-stats-grid">
                         <div class="staking-stat-card">
-                            <div class="staking-stat-label">Your stMOLT</div>
-                            <div class="staking-stat-value" id="userStMolt">0</div>
+                            <div class="staking-stat-label">Your stLICN</div>
+                            <div class="staking-stat-value" id="userStLicn">0</div>
                         </div>
                         <div class="staking-stat-card">
                             <div class="staking-stat-label">Current Value</div>
-                            <div class="staking-stat-value green" id="userStakeValue">0 MOLT</div>
+                            <div class="staking-stat-value green" id="userStakeValue">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
                             <div class="staking-stat-label">Rewards Earned</div>
-                            <div class="staking-stat-value amber" id="userRewardsEarned">0 MOLT</div>
+                            <div class="staking-stat-value amber" id="userRewardsEarned">0 LICN</div>
                         </div>
                         <div class="staking-stat-card">
                             <div class="staking-stat-label">Your Tier</div>
@@ -1832,11 +1832,11 @@ async function loadStaking() {
                         </div>
                         <div class="staking-stat-card">
                             <div class="staking-stat-label">Total Staked (Pool)</div>
-                            <div class="staking-stat-value" id="totalPoolStaked">0 MOLT</div>
+                            <div class="staking-stat-value" id="totalPoolStaked">0 LICN</div>
                         </div>
                     </div>
 
-                    <div id="reefstakeTiers" style="margin-bottom: 1.5rem;">
+                    <div id="mossstakeTiers" style="margin-bottom: 1.5rem;">
                         <h4 class="staking-tiers-heading">
                             <i class="fas fa-layer-group"></i> Staking Tiers & APY
                         </h4>
@@ -1845,17 +1845,17 @@ async function loadStaking() {
 
                     <div class="staking-info-box">
                         <i class="fas fa-info-circle"></i>
-                        <strong>How it works:</strong> Stake MOLT to receive stMOLT (liquid receipt). Rewards auto-compound — your stMOLT value grows over time.
+                        <strong>How it works:</strong> Stake LICN to receive stLICN (liquid receipt). Rewards auto-compound — your stLICN value grows over time.
                         <strong>Flexible tier</strong> has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
                         After a lock expires, you can unstake with the standard 7-day cooldown.
                     </div>
 
                     <div class="staking-actions">
-                        <button onclick="showReefStakeModal()" class="btn btn-primary">
-                            <i class="fas fa-arrow-down"></i> Stake MOLT
+                        <button onclick="showMossStakeModal()" class="btn btn-primary">
+                            <i class="fas fa-arrow-down"></i> Stake LICN
                         </button>
-                        <button id="reefUnstakeBtn" onclick="showReefUnstakeModal()" class="btn btn-secondary">
-                            <i class="fas fa-arrow-up"></i> Unstake stMOLT
+                        <button id="mossUnstakeBtn" onclick="showMossUnstakeModal()" class="btn btn-secondary">
+                            <i class="fas fa-arrow-up"></i> Unstake stLICN
                         </button>
                     </div>
 
@@ -1869,8 +1869,8 @@ async function loadStaking() {
                     </div>
                 `;
 
-                // Load ReefStake position
-                loadReefStakePosition(wallet.address);
+                // Load MossStake position
+                loadMossStakePosition(wallet.address);
             }
             return;
         }
@@ -1897,7 +1897,7 @@ async function loadStaking() {
                     </div>
                     <div class="staking-stat-card">
                         <div class="staking-stat-label">Bootstrap Grant</div>
-                        <div class="staking-stat-value">1,000 MOLT</div>
+                        <div class="staking-stat-value">1,000 LICN</div>
                     </div>
                     <div class="staking-stat-card">
                         <div class="staking-stat-label">Debt Remaining</div>
@@ -1934,16 +1934,16 @@ async function loadStaking() {
 
         // Get validator account to check actual stake
         const account = await rpc.getAccount(wallet.address);
-        const totalStake = account?.shells || 0;
-        const totalStakeMOLT = totalStake / SHELLS_PER_MOLT;
+        const totalStake = account?.spores || 0;
+        const totalStakeLICN = totalStake / SPORES_PER_LICN;
 
         // Bootstrap grant info
-        const BOOTSTRAP_GRANT = 100000; // 100K MOLT
+        const BOOTSTRAP_GRANT = 100000; // 100K LICN
         const bootstrapDebt = myValidator.bootstrap_debt || 0;
-        const debtMOLT = bootstrapDebt / SHELLS_PER_MOLT;
+        const debtLICN = bootstrapDebt / SPORES_PER_LICN;
 
         // Calculate earned/vested amount
-        const earnedAmount = BOOTSTRAP_GRANT - debtMOLT;
+        const earnedAmount = BOOTSTRAP_GRANT - debtLICN;
         const vestingPercent = (earnedAmount / BOOTSTRAP_GRANT * 100).toFixed(2);
 
         // Check if graduated
@@ -1951,9 +1951,9 @@ async function loadStaking() {
         const graduationSlot = myValidator.graduation_slot;
 
         // Update UI
-        document.getElementById('totalStake').textContent = `${fmtToken(totalStakeMOLT)} MOLT`;
-        document.getElementById('debtRemaining').textContent = `${fmtToken(debtMOLT)} MOLT`;
-        document.getElementById('earnedAmount').textContent = `${fmtToken(earnedAmount)} MOLT`;
+        document.getElementById('totalStake').textContent = `${fmtToken(totalStakeLICN)} LICN`;
+        document.getElementById('debtRemaining').textContent = `${fmtToken(debtLICN)} LICN`;
+        document.getElementById('earnedAmount').textContent = `${fmtToken(earnedAmount)} LICN`;
         document.getElementById('vestingPercent').textContent = `${vestingPercent}%`;
         document.getElementById('vestingProgressBar').style.width = `${vestingPercent}%`;
 
@@ -1962,7 +1962,7 @@ async function loadStaking() {
         if (isGraduated) {
             statusHTML = '<span style="color: #10b981;">✓ Active & Graduated</span>';
         } else if (myValidator.status === 'Active') {
-            statusHTML = `<span style="color: #f59e0b;">⚡ Active (Bootstrap phase - ${fmtToken(debtMOLT)} MOLT remaining)</span>`;
+            statusHTML = `<span style="color: #f59e0b;">⚡ Active (Bootstrap phase - ${fmtToken(debtLICN)} LICN remaining)</span>`;
         } else if (myValidator.status === 'Jailed') {
             statusHTML = '<span style="color: #ef4444;">⚠️ Jailed (Offline or misbehaving)</span>';
         } else {
@@ -1992,7 +1992,7 @@ async function loadStaking() {
 
     } catch (error) {
         console.error('Failed to load staking info:', error);
-        // Show ReefStake UI even on error
+        // Show MossStake UI even on error
         if (stakingTabBtn) stakingTabBtn.style.display = 'flex';
         if (validatorSection) {
             validatorSection.innerHTML = '<p style="text-align: center; padding: 2rem; color: var(--text-muted);">Failed to load staking info</p>';
@@ -2007,25 +2007,25 @@ function refreshStakingIfVisible() {
     const stakingTab = document.querySelector('.dashboard-tab[data-tab="staking"]');
     const stakingSection = document.getElementById('stakingValidatorInfo');
     if (stakingTab && stakingTab.classList.contains('active') && stakingSection && stakingSection.style.display !== 'none') {
-        loadReefStakePosition(wallet.address);
+        loadMossStakePosition(wallet.address);
     }
 }
 
-// Load ReefStake position for community  stakers
-async function loadReefStakePosition(address) {
+// Load MossStake position for community  stakers
+async function loadMossStakePosition(address) {
     try {
-        const poolInfo = await rpc.call('getReefStakePoolInfo');
+        const poolInfo = await rpc.call('getMossStakePoolInfo');
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
 
         // Update basic stats
-        document.getElementById('userStMolt').textContent = fmtToken(position.st_molt_amount / SHELLS_PER_MOLT);
-        document.getElementById('userStakeValue').textContent = `${fmtToken(position.current_value_molt / SHELLS_PER_MOLT)} MOLT`;
-        document.getElementById('totalPoolStaked').textContent = `${fmtToken(poolInfo.total_molt_staked / SHELLS_PER_MOLT)} MOLT`;
+        document.getElementById('userStLicn').textContent = fmtToken(position.st_licn_amount / SPORES_PER_LICN);
+        document.getElementById('userStakeValue').textContent = `${fmtToken(position.current_value_licn / SPORES_PER_LICN)} LICN`;
+        document.getElementById('totalPoolStaked').textContent = `${fmtToken(poolInfo.total_licn_staked / SPORES_PER_LICN)} LICN`;
 
         // Rewards
         const rewardsEl = document.getElementById('userRewardsEarned');
-        if (rewardsEl) rewardsEl.textContent = `${fmtToken(position.rewards_earned / SHELLS_PER_MOLT)} MOLT`;
+        if (rewardsEl) rewardsEl.textContent = `${fmtToken(position.rewards_earned / SPORES_PER_LICN)} LICN`;
 
         // Tier info
         const tierEl = document.getElementById('userLockTier');
@@ -2052,7 +2052,7 @@ async function loadReefStakePosition(address) {
         }
 
         // Disable unstake button when position is locked
-        const unstakeBtn = document.getElementById('reefUnstakeBtn');
+        const unstakeBtn = document.getElementById('mossUnstakeBtn');
         if (unstakeBtn) {
             const currentSlot = Math.floor(Date.now() / MS_PER_SLOT);
             const posLocked = position.lock_until > 0 && position.lock_until > currentSlot;
@@ -2072,9 +2072,9 @@ async function loadReefStakePosition(address) {
         if (tiersGrid && poolInfo.tiers) {
             const tierColorClasses = ['flexible', 'lock30', 'lock180', 'lock365'];
             tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
-                const isActive = position.lock_tier === t.id && position.st_molt_amount > 0;
+                const isActive = position.lock_tier === t.id && position.st_licn_amount > 0;
                 const apyStr = (t.apy_percent || 0).toFixed(1);
-                const apyDisplay = poolInfo.total_molt_staked > 0 && t.apy_percent > 0
+                const apyDisplay = poolInfo.total_licn_staked > 0 && t.apy_percent > 0
                     ? `${apyStr}% APY`
                     : `${t.multiplier}x rewards`;
                 return `
@@ -2102,10 +2102,10 @@ async function loadReefStakePosition(address) {
                 const remainDays = (remainSlots / SLOTS_PER_DAY).toFixed(1);
                 return `
                     <div class="staking-unstake-item">
-                        <span class="staking-unstake-amount">${fmtToken(req.molt_to_receive / SHELLS_PER_MOLT)} MOLT</span>
+                        <span class="staking-unstake-amount">${fmtToken(req.licn_to_receive / SPORES_PER_LICN)} LICN</span>
                         <span class="staking-unstake-status">
                             ${isClaimable
-                        ? `<button onclick="claimReefStake()" class="btn btn-small btn-claim">
+                        ? `<button onclick="claimMossStake()" class="btn btn-small btn-claim">
                                         <i class="fas fa-check-circle"></i> Claim
                                    </button>`
                         : `<span class="staking-unstake-timer"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
@@ -2118,18 +2118,18 @@ async function loadReefStakePosition(address) {
             document.getElementById('pendingUnstakes').style.display = 'none';
         }
     } catch (error) {
-        console.error('Failed to load ReefStake position:', error);
+        console.error('Failed to load MossStake position:', error);
     }
 }
 
-// Show ReefStake modal
-async function showReefStakeModal() {
+// Show MossStake modal
+async function showMossStakeModal() {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
 
     const values = await showPasswordModal({
         title: 'Stake to Liquid Staking',
-        message: `Enter the amount of MOLT to stake, choose a lock tier, and sign with your password.
+        message: `Enter the amount of LICN to stake, choose a lock tier, and sign with your password.
             <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
                 <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
                 <strong>30-Day Lock:</strong> 1.6x rewards<br>
@@ -2137,10 +2137,10 @@ async function showReefStakeModal() {
                 <strong>365-Day Lock:</strong> 3.6x rewards
             </div>`,
         icon: 'fas fa-layer-group',
-        confirmText: 'Stake MOLT',
-        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
+        confirmText: 'Stake LICN',
+        requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
         fields: [
-            { id: 'stakeAmount', label: 'Amount (MOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
+            { id: 'stakeAmount', label: 'Amount (LICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             {
                 id: 'lockTier', label: 'Lock Tier', type: 'select',
                 options: [
@@ -2159,32 +2159,32 @@ async function showReefStakeModal() {
     if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
     if (!values.password) { showToast('Password required'); return; }
 
-    // Balance guard: check spendable MOLT and auto-correct
+    // Balance guard: check spendable LICN and auto-correct
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
-        const maxStakable = Math.max(0, spendable - BASE_FEE_MOLT);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
+        const maxStakable = Math.max(0, spendable - BASE_FEE_LICN);
         if (maxStakable <= 0) {
-            showToast('Insufficient MOLT balance for staking');
+            showToast('Insufficient LICN balance for staking');
             return;
         }
         if (amount > maxStakable) {
             amount = parseFloat(maxStakable.toFixed(6));
-            showToast(`Stake amount adjusted to available balance: ${fmtToken(amount)} MOLT`);
+            showToast(`Stake amount adjusted to available balance: ${fmtToken(amount)} LICN`);
         }
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const shells = Math.floor(amount * SHELLS_PER_MOLT);
+        const spores = Math.floor(amount * SPORES_PER_LICN);
         const tierByte = parseInt(values.lockTier || '0');
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
 
-        // Instruction type 13 = ReefStake deposit, then amount(8), then tier(1)
+        // Instruction type 13 = MossStake deposit, then amount(8), then tier(1)
         const instructionData = new Uint8Array(10);
         instructionData[0] = 13;
         const view = new DataView(instructionData.buffer);
-        view.setBigUint64(1, BigInt(shells), true);
+        view.setBigUint64(1, BigInt(spores), true);
         instructionData[9] = tierByte;
 
         const message = {
@@ -2196,9 +2196,9 @@ async function showReefStakeModal() {
             blockhash: latestBlock.hash
         };
 
-        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+        const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
         const transaction = { signatures: [Array.from(signature)], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
@@ -2206,33 +2206,33 @@ async function showReefStakeModal() {
 
         showToast('Submitting liquid staking transaction...');
         const txSig = await rpc.sendTransaction(txBase64);
-        showToast(`Staked ${amount} MOLT! Sig: ${String(txSig).slice(0, 16)}...`);
+        showToast(`Staked ${amount} LICN! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
-        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
-        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
+        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Stake failed: ' + error.message);
     }
 }
 
-// Show ReefUnstake modal
-async function showReefUnstakeModal() {
+// Show MossUnstake modal
+async function showMossUnstakeModal() {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
 
     const values = await showPasswordModal({
         title: 'Unstake from Liquid Staking',
-        message: `Enter the amount of stMOLT to unstake. After requesting, there is a <strong>7-day cooldown</strong> before you can claim your MOLT.
+        message: `Enter the amount of stLICN to unstake. After requesting, there is a <strong>7-day cooldown</strong> before you can claim your LICN.
             <div style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted);">
                 <i class="fas fa-exclamation-triangle" style="color:#f59e0b;"></i>
                 If your position has a lock tier, you must wait for the lock to expire before unstaking.
             </div>`,
         icon: 'fas fa-unlock-alt',
         confirmText: 'Unstake',
-        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
+        requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
         fields: [
-            { id: 'unstakeAmount', label: 'Amount (stMOLT)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
+            { id: 'unstakeAmount', label: 'Amount (stLICN)', type: 'number', placeholder: '0.00', min: 0, step: 'any' },
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
     });
@@ -2242,40 +2242,40 @@ async function showReefUnstakeModal() {
     if (!amount || amount <= 0) { showToast('Invalid amount'); return; }
     if (!values.password) { showToast('Password required'); return; }
 
-    // Balance guard: check stMOLT position and auto-correct
+    // Balance guard: check stLICN position and auto-correct
     try {
         const position = await rpc.call('getStakingPosition', [wallet.address]);
-        const stMolt = (position?.st_molt_amount || 0) / SHELLS_PER_MOLT;
-        if (stMolt <= 0) {
-            showToast('No stMOLT balance to unstake');
+        const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
+        if (stLicn <= 0) {
+            showToast('No stLICN balance to unstake');
             return;
         }
-        if (amount > stMolt) {
-            amount = parseFloat(stMolt.toFixed(6));
-            showToast(`Unstake amount adjusted to stMOLT balance: ${fmtToken(amount)} stMOLT`);
+        if (amount > stLicn) {
+            amount = parseFloat(stLicn.toFixed(6));
+            showToast(`Unstake amount adjusted to stLICN balance: ${fmtToken(amount)} stLICN`);
         }
     } catch (e) { /* let RPC reject */ }
 
-    // Fee guard: need MOLT for tx fee
+    // Fee guard: need LICN for tx fee
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
-        if (spendable < BASE_FEE_MOLT) {
-            showToast(`Insufficient MOLT for fee: need ${fmtToken(BASE_FEE_MOLT)} MOLT`);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
+        if (spendable < BASE_FEE_LICN) {
+            showToast(`Insufficient LICN for fee: need ${fmtToken(BASE_FEE_LICN)} LICN`);
             return;
         }
     } catch (e) { /* let RPC reject */ }
 
     try {
-        const shells = Math.floor(amount * SHELLS_PER_MOLT);
+        const spores = Math.floor(amount * SPORES_PER_LICN);
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
 
-        // Instruction type 14 = ReefStake unstake
+        // Instruction type 14 = MossStake unstake
         const instructionData = new Uint8Array(9);
         instructionData[0] = 14;
         const view = new DataView(instructionData.buffer);
-        view.setBigUint64(1, BigInt(shells), true);
+        view.setBigUint64(1, BigInt(spores), true);
 
         const message = {
             instructions: [{
@@ -2286,9 +2286,9 @@ async function showReefUnstakeModal() {
             blockhash: latestBlock.hash
         };
 
-        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+        const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
         const transaction = { signatures: [Array.from(signature)], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
@@ -2299,15 +2299,15 @@ async function showReefUnstakeModal() {
         showToast(`Unstake initiated! 7-day cooldown. Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
         // Refresh staking position after a brief delay for block inclusion
-        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
-        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
+        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Unstake failed: ' + error.message);
     }
 }
 
-// Claim matured ReefStake unstake (instruction type 15)
-async function claimReefStake() {
+// Claim matured MossStake unstake (instruction type 15)
+async function claimMossStake() {
     const wallet = getActiveWallet();
     if (!wallet) { showToast('No active wallet'); return; }
 
@@ -2323,22 +2323,22 @@ async function claimReefStake() {
         }
     } catch (e) { /* let RPC reject */ }
 
-    // Fee guard: need at least the base fee in spendable MOLT
+    // Fee guard: need at least the base fee in spendable LICN
     try {
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
-        if (spendable < BASE_FEE_MOLT) {
-            showToast(`Insufficient MOLT for fee: need ${fmtToken(BASE_FEE_MOLT)} MOLT`);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
+        if (spendable < BASE_FEE_LICN) {
+            showToast(`Insufficient LICN for fee: need ${fmtToken(BASE_FEE_LICN)} LICN`);
             return;
         }
     } catch (e) { /* let RPC reject */ }
 
     const values = await showPasswordModal({
-        title: 'Claim Unstaked MOLT',
-        message: 'Enter your password to sign the claim transaction. Your matured MOLT will be returned to your spendable balance.',
+        title: 'Claim Unstaked LICN',
+        message: 'Enter your password to sign the claim transaction. Your matured LICN will be returned to your spendable balance.',
         icon: 'fas fa-check-circle',
         confirmText: 'Claim',
-        requiredMolt: typeof BASE_FEE_MOLT !== 'undefined' ? BASE_FEE_MOLT : 0.001,
+        requiredLicn: typeof BASE_FEE_LICN !== 'undefined' ? BASE_FEE_LICN : 0.001,
         fields: [
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
@@ -2348,9 +2348,9 @@ async function claimReefStake() {
 
     try {
         const latestBlock = await rpc.getLatestBlock();
-        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
 
-        // Instruction type 15 = ReefStake claim (data: [15], accounts: [user])
+        // Instruction type 15 = MossStake claim (data: [15], accounts: [user])
         const instructionData = new Uint8Array([15]);
 
         const message = {
@@ -2362,20 +2362,20 @@ async function claimReefStake() {
             blockhash: latestBlock.hash
         };
 
-        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+        const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
         const transaction = { signatures: [Array.from(signature)], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
-        showToast('Claiming unstaked MOLT...');
+        showToast('Claiming unstaked LICN...');
         const txSig = await rpc.sendTransaction(txBase64);
         showToast(`Claimed! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
-        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
-        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
+        setTimeout(() => loadMossStakePosition(wallet.address), 1500);
+        setTimeout(() => loadMossStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Claim failed: ' + error.message);
     }
@@ -2391,7 +2391,7 @@ async function showSend() {
     // Dynamically populate token dropdown from on-chain data — only show tokens with balance
     const select = document.getElementById('sendToken');
     if (select) {
-        select.innerHTML = '<option value="MOLT">MOLT</option>';
+        select.innerHTML = '<option value="LICN">LICN</option>';
 
         try {
             // Fetch all token accounts for this address from the chain
@@ -2417,14 +2417,14 @@ async function showSend() {
                         select.innerHTML += `<option value="${symbol}">${symbol}</option>`;
                     }
                 }
-            } catch (e2) { /* still show MOLT */ }
+            } catch (e2) { /* still show LICN */ }
         }
 
-        // Add stMOLT if user has a staking position
+        // Add stLICN if user has a staking position
         try {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            if (position && position.st_molt_amount > 0) {
-                select.innerHTML += `<option value="stMOLT">stMOLT</option>`;
+            if (position && position.st_licn_amount > 0) {
+                select.innerHTML += `<option value="stLICN">stLICN</option>`;
             }
         } catch (e) {
             // No staking position
@@ -2441,15 +2441,15 @@ async function showSend() {
         sendAmtInput.onblur = async function () {
             let v = parseFloat(this.value);
             if (isNaN(v) || v < 0) { this.value = ''; return; }
-            const sel = document.getElementById('sendToken')?.value || 'MOLT';
+            const sel = document.getElementById('sendToken')?.value || 'LICN';
             let maxSend = 0;
             try {
-                const baseFee = getNetworkBaseFeeMolt();
-                if (sel === 'MOLT') {
+                const baseFee = getNetworkBaseFeeLicn();
+                if (sel === 'LICN') {
                     maxSend = Math.max(0, (window.walletBalance || 0) - baseFee);
-                } else if (sel === 'stMOLT') {
+                } else if (sel === 'stLICN') {
                     const pos = await rpc.call('getStakingPosition', [getActiveWallet()?.address]);
-                    maxSend = (pos?.st_molt_amount || 0) / SHELLS_PER_MOLT;
+                    maxSend = (pos?.st_licn_amount || 0) / SPORES_PER_LICN;
                 } else {
                     maxSend = await getTokenBalanceFormatted(sel, getActiveWallet()?.address) || 0;
                 }
@@ -2458,16 +2458,16 @@ async function showSend() {
         };
     }
 
-    // Disable Send button when MOLT balance can't cover fee
+    // Disable Send button when LICN balance can't cover fee
     const sendConfirmBtn = document.querySelector('#sendModal .modal-footer .btn-primary');
     if (sendConfirmBtn) {
-        const baseFee = getNetworkBaseFeeMolt();
+        const baseFee = getNetworkBaseFeeLicn();
         const bal = window.walletBalance || 0;
         if (bal <= baseFee) {
             sendConfirmBtn.disabled = true;
             sendConfirmBtn.style.opacity = '0.5';
             sendConfirmBtn.style.cursor = 'not-allowed';
-            sendConfirmBtn.title = `Insufficient balance — need at least ${fmtToken(baseFee)} MOLT for the fee`;
+            sendConfirmBtn.title = `Insufficient balance — need at least ${fmtToken(baseFee)} LICN for the fee`;
         } else {
             sendConfirmBtn.disabled = false;
             sendConfirmBtn.style.opacity = '';
@@ -2564,7 +2564,7 @@ async function showDepositInfo(chain) {
     showConfirmModal({
         title: `Bridge from ${info.name}`,
         message: `<div style="text-align: left; font-size: 0.9rem;">
-            <p style="margin-bottom: 0.75rem;">Select a token to deposit from ${escapeHtml(info.name)} → MoltChain:</p>
+            <p style="margin-bottom: 0.75rem;">Select a token to deposit from ${escapeHtml(info.name)} → Lichen:</p>
             <div id="bridgeTokenSelect" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
                 ${tokenSelect}
             </div>
@@ -2575,7 +2575,7 @@ async function showDepositInfo(chain) {
             <div id="bridgeDepositResult" style="display:none;"></div>
             <p id="bridgeHelpText" style="font-size: 0.8rem; color: var(--text-muted);">
                 You'll receive a unique deposit address. Send tokens there and they'll be credited
-                to your MoltChain wallet automatically (~2-5 min after source chain finality).
+                to your Lichen wallet automatically (~2-5 min after source chain finality).
             </p>
         </div>`,
         icon: info.icon,
@@ -2729,8 +2729,8 @@ function startDepositPolling(depositId) {
                 'issued': { icon: 'fas fa-clock', color: 'var(--text-muted)', text: 'Waiting for deposit...' },
                 'pending': { icon: 'fas fa-spinner fa-spin', color: '#FFD166', text: 'Deposit detected, confirming...' },
                 'confirmed': { icon: 'fas fa-check-circle', color: '#06D6A0', text: 'Deposit confirmed! Sweeping to treasury...' },
-                'swept': { icon: 'fas fa-exchange-alt', color: '#06D6A0', text: 'Swept! Minting wrapped tokens on MoltChain...' },
-                'credited': { icon: 'fas fa-check-double', color: '#06D6A0', text: 'Credited to your MoltChain wallet!' },
+                'swept': { icon: 'fas fa-exchange-alt', color: '#06D6A0', text: 'Swept! Minting wrapped tokens on Lichen...' },
+                'credited': { icon: 'fas fa-check-double', color: '#06D6A0', text: 'Credited to your Lichen wallet!' },
                 'expired': { icon: 'fas fa-times-circle', color: '#EF476F', text: 'Deposit expired — address no longer active.' },
             };
             const s = statusMap[deposit.status] || statusMap['issued'];
@@ -2767,7 +2767,7 @@ function stopDepositPolling() {
 }
 
 function showSwap() {
-    showToast('Use the MoltSwap DEX for trading -- launching with mainnet');
+    showToast('Use the LichenSwap DEX for trading -- launching with mainnet');
 }
 
 function showBuy() {
@@ -2840,22 +2840,22 @@ async function refreshNFTs() {
 function showNFTDetail(mintId) {
     // Navigate to marketplace item detail page
     const id = encodeURIComponent(mintId || '');
-    const marketBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace)
-        ? String(MOLT_CONFIG.marketplace).replace(/\/+$/, '')
+    const marketBase = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace)
+        ? String(LICHEN_CONFIG.marketplace).replace(/\/+$/, '')
         : '../marketplace';
     window.open(marketBase + '/item.html?id=' + id, '_blank');
 }
 
 function openMarketplace() {
-    const marketBase = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace)
-        ? String(MOLT_CONFIG.marketplace).replace(/\/+$/, '')
+    const marketBase = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace)
+        ? String(LICHEN_CONFIG.marketplace).replace(/\/+$/, '')
         : '../marketplace';
     window.open(marketBase + '/index.html', '_blank');
 }
 
-function formatMolt(shells) {
-    if (typeof shells === 'string') shells = parseInt(shells) || 0;
-    return fmtToken(shells / SHELLS_PER_MOLT) + ' MOLT';
+function formatLicn(spores) {
+    if (typeof spores === 'string') spores = parseInt(spores) || 0;
+    return fmtToken(spores / SPORES_PER_LICN) + ' LICN';
 }
 
 // escapeHtml provided by shared/utils.js (loaded before this file)
@@ -2891,7 +2891,7 @@ function closeModal(modalId) {
             const sendToken = document.getElementById('sendToken');
             if (sendTo) sendTo.value = '';
             if (sendAmount) sendAmount.value = '';
-            if (sendToken) sendToken.value = 'MOLT';
+            if (sendToken) sendToken.value = 'LICN';
         }
     }
 }
@@ -2932,8 +2932,8 @@ function copyAddress(type = 'native', triggerEl = null) {
 // Implements Keccak256(pubkey)[12:32] derivation as per core/src/account.rs
 function generateEVMAddress(base58Address) {
     try {
-        if (window.MoltCrypto && typeof window.MoltCrypto.generateEVMAddress === 'function') {
-            const evmAddress = window.MoltCrypto.generateEVMAddress(base58Address);
+        if (window.LichenCrypto && typeof window.LichenCrypto.generateEVMAddress === 'function') {
+            const evmAddress = window.LichenCrypto.generateEVMAddress(base58Address);
             if (evmAddress) {
                 return evmAddress;
             }
@@ -2960,7 +2960,7 @@ function generateEVMAddress(base58Address) {
 
 async function getRegisteredEvmAddress(nativeAddress) {
     if (!nativeAddress) return null;
-    const cacheKey = `moltEvmRegistered:${nativeAddress}`;
+    const cacheKey = `licnEvmRegistered:${nativeAddress}`;
 
     try {
         if (localStorage.getItem(cacheKey) === '1') {
@@ -2984,7 +2984,7 @@ async function getRegisteredEvmAddress(nativeAddress) {
 // Flow: localStorage cache → RPC check → tx → cache
 async function registerEvmAddress(wallet, password) {
     try {
-        const cacheKey = `moltEvmRegistered:${wallet.address}`;
+        const cacheKey = `licnEvmRegistered:${wallet.address}`;
 
         // 1) localStorage cache hit — skip entirely (no RPC, no tx)
         try { if (localStorage.getItem(cacheKey) === '1') return; } catch (_) { }
@@ -3002,7 +3002,7 @@ async function registerEvmAddress(wallet, password) {
         // 3) Skip if account not funded yet (imported wallets)
         try {
             const bal = await rpc.getBalance(wallet.address);
-            if (!bal || (bal.shells === 0 && !bal.spendable)) return;
+            if (!bal || (bal.spores === 0 && !bal.spendable)) return;
         } catch (_) { return; }
 
         // 4) Derive EVM address
@@ -3024,7 +3024,7 @@ async function registerEvmAddress(wallet, password) {
         instructionData.set(evmBytes, 1);
 
         const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
-        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
         const latestBlock = await rpc.getLatestBlock();
 
         const message = {
@@ -3036,9 +3036,9 @@ async function registerEvmAddress(wallet, password) {
             blockhash: latestBlock.hash
         };
 
-        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+        const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
         const transaction = { signatures: [Array.from(signature)], message };
         const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
@@ -3058,20 +3058,20 @@ async function setMaxAmount() {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
-    const selectedToken = document.getElementById('sendToken')?.value || 'MOLT';
+    const selectedToken = document.getElementById('sendToken')?.value || 'LICN';
 
     try {
-        if (selectedToken === 'MOLT') {
+        if (selectedToken === 'LICN') {
             const balance = await rpc.getBalance(wallet.address);
-            const molt = parseFloat(balance.molt) || 0;
+            const licn = parseFloat(balance.licn) || 0;
             // Reserve base fee for gas
-            const maxAmount = Math.max(0, molt - getNetworkBaseFeeMolt());
+            const maxAmount = Math.max(0, licn - getNetworkBaseFeeLicn());
             document.getElementById('sendAmount').value = maxAmount.toFixed(6);
-        } else if (selectedToken === 'stMOLT') {
-            // AUDIT-FIX W-3: Fetch stMOLT balance from staking position
+        } else if (selectedToken === 'stLICN') {
+            // AUDIT-FIX W-3: Fetch stLICN balance from staking position
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            const stMolt = (position?.st_molt_amount || 0) / SHELLS_PER_MOLT;
-            document.getElementById('sendAmount').value = stMolt.toFixed(6);
+            const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
+            document.getElementById('sendAmount').value = stLicn.toFixed(6);
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
             document.getElementById('sendAmount').value = bal.toFixed(6);
@@ -3086,19 +3086,19 @@ async function updateSendTokenUI() {
     const wallet = getActiveWallet();
     if (!wallet) return;
 
-    const selectedToken = document.getElementById('sendToken')?.value || 'MOLT';
+    const selectedToken = document.getElementById('sendToken')?.value || 'LICN';
     const balanceHint = document.getElementById('sendAvailableBalance');
     if (!balanceHint) return;
 
     try {
-        if (selectedToken === 'MOLT') {
+        if (selectedToken === 'LICN') {
             const balance = await rpc.getBalance(wallet.address);
-            const molt = parseFloat(balance.molt) || 0;
-            balanceHint.textContent = `Available: ${fmtToken(molt)} MOLT`;
-        } else if (selectedToken === 'stMOLT') {
+            const licn = parseFloat(balance.licn) || 0;
+            balanceHint.textContent = `Available: ${fmtToken(licn)} LICN`;
+        } else if (selectedToken === 'stLICN') {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
-            const stMolt = (position?.st_molt_amount || 0) / SHELLS_PER_MOLT;
-            balanceHint.textContent = `Available: ${fmtToken(stMolt)} stMOLT`;
+            const stLicn = (position?.st_licn_amount || 0) / SPORES_PER_LICN;
+            balanceHint.textContent = `Available: ${fmtToken(stLicn)} stLICN`;
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
             balanceHint.textContent = `Available: ${fmtToken(bal)} ${selectedToken}`;
@@ -3111,9 +3111,9 @@ async function updateSendTokenUI() {
 async function confirmSend() {
     const to = document.getElementById('sendTo').value.trim();
     let amount = parseFloat(document.getElementById('sendAmount').value);
-    const selectedToken = document.getElementById('sendToken')?.value || 'MOLT';
+    const selectedToken = document.getElementById('sendToken')?.value || 'LICN';
 
-    if (!MoltCrypto.isValidAddress(to)) {
+    if (!LichenCrypto.isValidAddress(to)) {
         showToast('Invalid recipient address', 'error');
         return;
     }
@@ -3130,26 +3130,26 @@ async function confirmSend() {
     try {
         await refreshDynamicFeeConfig();
         const balResult = await rpc.call('getBalance', [wallet.address]);
-        const spendable = (balResult?.spendable || balResult?.balance || 0) / SHELLS_PER_MOLT;
-        const baseFee = getNetworkBaseFeeMolt();
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / SPORES_PER_LICN;
+        const baseFee = getNetworkBaseFeeLicn();
 
-        if (selectedToken === 'MOLT') {
+        if (selectedToken === 'LICN') {
             const maxSendable = Math.max(0, spendable - baseFee);
             if (maxSendable <= 0) {
-                showToast('Insufficient MOLT balance (not enough to cover fee)');
+                showToast('Insufficient LICN balance (not enough to cover fee)');
                 document.getElementById('sendAmount').value = '0';
                 return;
             }
             if (amount > maxSendable) {
                 amount = parseFloat(maxSendable.toFixed(6));
                 document.getElementById('sendAmount').value = amount;
-                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} MOLT`);
+                showToast(`Amount adjusted to available balance: ${fmtToken(amount)} LICN`);
                 return; // Let user review the adjusted amount
             }
         } else {
-            // Check fee coverage for non-MOLT tokens
+            // Check fee coverage for non-LICN tokens
             if (spendable < baseFee) {
-                showToast(`Insufficient MOLT for fee: need ${fmtToken(baseFee)} MOLT, have ${fmtToken(spendable)}`);
+                showToast(`Insufficient LICN for fee: need ${fmtToken(baseFee)} LICN, have ${fmtToken(spendable)}`);
                 return;
             }
             // Check token balance
@@ -3177,19 +3177,19 @@ async function confirmSend() {
         const latestBlock = await rpc.getLatestBlock();
         const blockhash = latestBlock.hash;
 
-        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const fromPubkey = LichenCrypto.hexToBytes(wallet.publicKey);
         const toPubkey = bs58.decode(to);
         let message;
 
-        if (selectedToken === 'MOLT') {
-            // Native MOLT transfer
-            const shells = Math.floor(amount * SHELLS_PER_MOLT);
+        if (selectedToken === 'LICN') {
+            // Native LICN transfer
+            const spores = Math.floor(amount * SPORES_PER_LICN);
             const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
             const instructionData = new Uint8Array(9);
             instructionData[0] = 0; // Transfer type
             const view = new DataView(instructionData.buffer);
-            view.setBigUint64(1, BigInt(shells), true);
+            view.setBigUint64(1, BigInt(spores), true);
 
             message = {
                 instructions: [{
@@ -3199,15 +3199,15 @@ async function confirmSend() {
                 }],
                 blockhash: blockhash
             };
-        } else if (selectedToken === 'stMOLT') {
-            // stMOLT transfer via ReefStake opcode 16
-            const stMoltShells = Math.floor(amount * SHELLS_PER_MOLT);
+        } else if (selectedToken === 'stLICN') {
+            // stLICN transfer via MossStake opcode 16
+            const stLicnSpores = Math.floor(amount * SPORES_PER_LICN);
             const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
             const instructionData = new Uint8Array(9);
-            instructionData[0] = 16; // ReefStake transfer
+            instructionData[0] = 16; // MossStake transfer
             const view = new DataView(instructionData.buffer);
-            view.setBigUint64(1, BigInt(stMoltShells), true);
+            view.setBigUint64(1, BigInt(stLicnSpores), true);
 
             message = {
                 instructions: [{
@@ -3267,9 +3267,9 @@ async function confirmSend() {
             return;
         }
 
-        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, passwordValues.password);
+        const privateKey = await LichenCrypto.decryptPrivateKey(wallet.encryptedKey, passwordValues.password);
         const messageBytes = serializeMessageBincode(message);
-        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        const signature = await LichenCrypto.signTransaction(privateKey, messageBytes);
 
         // AUDIT-FIX W-5: Zero sensitive key material after signing
         // (privateKey is a hex string — overwrite not possible; signTransaction zeros seed internally)
@@ -3305,7 +3305,7 @@ async function confirmSend() {
         document.getElementById('sendTo').value = '';
         document.getElementById('sendAmount').value = '';
         const tokenSelect = document.getElementById('sendToken');
-        if (tokenSelect) tokenSelect.value = 'MOLT';
+        if (tokenSelect) tokenSelect.value = 'LICN';
 
         // Wait briefly for block commitment, then refresh balance + activity
         await new Promise(r => setTimeout(r, 1500));
@@ -3349,12 +3349,12 @@ function logoutWallet() {
 
         // K-3: Only remove wallet-prefixed keys to avoid wiping other app data on shared origins
         Object.keys(localStorage).filter(function (k) {
-            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
-                || k.startsWith('moltWallet') || k.startsWith('moltchain_') || k.startsWith('moltEvmRegistered');
+            return k.startsWith('lichen_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
+                || k.startsWith('lichenWallet') || k.startsWith('lichen_') || k.startsWith('licnEvmRegistered');
         }).forEach(function (k) { localStorage.removeItem(k); });
         Object.keys(sessionStorage).filter(function (k) {
-            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
-                || k.startsWith('moltWallet') || k.startsWith('moltchain_') || k.startsWith('moltEvmRegistered');
+            return k.startsWith('lichen_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_')
+                || k.startsWith('lichenWallet') || k.startsWith('lichen_') || k.startsWith('licnEvmRegistered');
         }).forEach(function (k) { sessionStorage.removeItem(k); });
 
         // Reset state completely (isLocked false — no wallet exists to lock)
@@ -3370,7 +3370,7 @@ function logoutWallet() {
 
         // Reset identity cache
         if (typeof _identityCache !== 'undefined') _identityCache = null;
-        if (typeof _moltyidAddress !== 'undefined') _moltyidAddress = null;
+        if (typeof _lichenidAddress !== 'undefined') _lichenidAddress = null;
 
         // Remove ALL modals immediately (password modals, confirm modals, send/receive/settings)
         document.querySelectorAll('.password-modal, .modal.show').forEach(m => {
@@ -3490,18 +3490,18 @@ function showPasswordModal(options) {
         requestAnimationFrame(() => modal.classList.add('show'));
 
         // Balance guard: disable confirm when wallet balance is too low
-        if (options.requiredMolt != null && options.requiredMolt > 0) {
+        if (options.requiredLicn != null && options.requiredLicn > 0) {
             const confirmBtn = modal.querySelector('#passwordModalConfirm');
             const spendable = window.walletBalance || 0;
-            if (spendable < options.requiredMolt) {
+            if (spendable < options.requiredLicn) {
                 confirmBtn.disabled = true;
-                confirmBtn.title = `Insufficient balance (need ${options.requiredMolt} MOLT, have ${spendable.toFixed(4)})`;
+                confirmBtn.title = `Insufficient balance (need ${options.requiredLicn} LICN, have ${spendable.toFixed(4)})`;
                 confirmBtn.style.opacity = '0.5';
                 confirmBtn.style.cursor = 'not-allowed';
                 // Add warning below the fields
                 const warning = document.createElement('div');
                 warning.style.cssText = 'color:#ef4444;font-size:0.82rem;margin:0.5rem 0 0.75rem;padding:0.5rem 0.75rem;background:rgba(239,68,68,0.08);border-radius:6px;';
-                warning.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Insufficient balance — need at least ${options.requiredMolt} MOLT`;
+                warning.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Insufficient balance — need at least ${options.requiredLicn} LICN`;
                 const body = modal.querySelector('.password-modal-body');
                 if (body) body.insertBefore(warning, body.querySelector('.password-modal-actions'));
             }
@@ -3671,7 +3671,7 @@ async function exportPrivateKeyWithPassword(password) {
         }
 
         // Verify password
-        const testDecrypt = await MoltCrypto.decryptKeypair(wallet.encryptedKey, password);
+        const testDecrypt = await LichenCrypto.decryptKeypair(wallet.encryptedKey, password);
         if (!testDecrypt) {
             showToast('❌ Invalid password');
             return;
@@ -3737,8 +3737,8 @@ async function exportPrivateKeyWithPassword(password) {
 }
 
 function downloadPrivateKey(privateKeyHex, walletName) {
-    const filename = `molt-wallet-privatekey-${walletName}-${Date.now()}.txt`;
-    const content = `MoltWallet Private Key\n` +
+    const filename = `lichen-wallet-privatekey-${walletName}-${Date.now()}.txt`;
+    const content = `LichenWallet Private Key\n` +
         `DO NOT SHARE THIS WITH ANYONE!\n\n` +
         `Wallet: ${walletName}\n` +
         `Exported: ${new Date().toISOString()}\n\n` +
@@ -3781,16 +3781,16 @@ async function exportJSONWithPassword(password) {
         }
 
         // Verify password
-        const keypair = await MoltCrypto.decryptKeypair(wallet.encryptedKey, password);
+        const keypair = await LichenCrypto.decryptKeypair(wallet.encryptedKey, password);
         if (!keypair) {
             showToast('❌ Invalid password');
             return;
         }
 
-        // AUDIT-FIX K-1: Encrypt secret key with password using AES-256-GCM (via MoltCrypto)
+        // AUDIT-FIX K-1: Encrypt secret key with password using AES-256-GCM (via LichenCrypto)
         // Never export raw secret key in plaintext
         const secretKeyHex = Array.from(keypair.secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
-        const encryptedSecret = await MoltCrypto.encryptPrivateKey(secretKeyHex, password);
+        const encryptedSecret = await LichenCrypto.encryptPrivateKey(secretKeyHex, password);
 
         // Create JSON keystore with encrypted secret key
         const keystore = {
@@ -3804,7 +3804,7 @@ async function exportJSONWithPassword(password) {
             encryption: 'AES-256-GCM-PBKDF2'
         };
 
-        const filename = `molt-wallet-keystore-${wallet.name}-${Date.now()}.json`;
+        const filename = `lichen-wallet-keystore-${wallet.name}-${Date.now()}.json`;
         const blob = new Blob([JSON.stringify(keystore, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -3847,7 +3847,7 @@ async function exportMnemonicWithPassword(password) {
 
     try {
         // Verify password
-        const keypair = await MoltCrypto.decryptKeypair(wallet.encryptedKey, password);
+        const keypair = await LichenCrypto.decryptKeypair(wallet.encryptedKey, password);
         if (!keypair) {
             showToast('❌ Invalid password');
             return;
@@ -3856,11 +3856,11 @@ async function exportMnemonicWithPassword(password) {
         // Decrypt the mnemonic
         let mnemonic;
         if (wallet.encryptedMnemonic) {
-            mnemonic = await MoltCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
+            mnemonic = await LichenCrypto.decryptPrivateKey(wallet.encryptedMnemonic, password);
         } else if (wallet.mnemonic) {
             // Legacy: migrate plaintext mnemonic to encrypted
             mnemonic = wallet.mnemonic;
-            wallet.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(mnemonic, password);
+            wallet.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(mnemonic, password);
             wallet.hasMnemonic = true;
             delete wallet.mnemonic;
             saveWalletState();
@@ -3932,8 +3932,8 @@ async function exportMnemonicWithPassword(password) {
 }
 
 function downloadMnemonicExport(mnemonic, walletName) {
-    const filename = `molt-wallet-seed-${walletName}-${Date.now()}.txt`;
-    const content = `MoltWallet Seed Phrase\n` +
+    const filename = `lichen-wallet-seed-${walletName}-${Date.now()}.txt`;
+    const content = `LichenWallet Seed Phrase\n` +
         `DO NOT SHARE THIS WITH ANYONE!\n\n` +
         `Wallet: ${walletName}\n` +
         `Exported: ${new Date().toISOString()}\n\n` +
@@ -4017,7 +4017,7 @@ document.addEventListener('scroll', resetLockTimer, true);
 
 // ===== NETWORK SELECTOR=====
 const NETWORK_LABELS = {};
-for (const [k, v] of Object.entries(MOLT_CONFIG.networks)) { NETWORK_LABELS[k] = v.label; }
+for (const [k, v] of Object.entries(LICHEN_CONFIG.networks)) { NETWORK_LABELS[k] = v.label; }
 
 const NETWORK_COLORS = {
     'mainnet': '#4ade80',
@@ -4027,7 +4027,7 @@ const NETWORK_COLORS = {
 };
 
 function initNetworkSelector() {
-    MOLT_CONFIG.initNetworkSelector('networkSelect', 'moltchain_wallet_network', (network) => {
+    LICHEN_CONFIG.initNetworkSelector('networkSelect', 'lichen_wallet_network', (network) => {
         switchNetwork(network);
     });
 
@@ -4037,7 +4037,7 @@ function initNetworkSelector() {
 }
 
 function switchNetwork(network) {
-    localStorage.setItem('moltchain_wallet_network', network);
+    localStorage.setItem('lichen_wallet_network', network);
     walletState.network = network;
     saveWalletState();
 
@@ -4149,7 +4149,7 @@ async function changePasswordStep2(oldPassword) {
     }
 
     // Verify old password
-    const keypair = await MoltCrypto.decryptKeypair(wallet.encryptedKey, oldPassword);
+    const keypair = await LichenCrypto.decryptKeypair(wallet.encryptedKey, oldPassword);
     if (!keypair) {
         showToast('❌ Invalid password');
         return;
@@ -4182,16 +4182,16 @@ async function changePasswordStep2(oldPassword) {
         for (let i = 0; i < walletState.wallets.length; i++) {
             const w = walletState.wallets[i];
             try {
-                const wKeypair = await MoltCrypto.decryptKeypair(w.encryptedKey, oldPassword);
+                const wKeypair = await LichenCrypto.decryptKeypair(w.encryptedKey, oldPassword);
                 if (wKeypair) {
-                    w.encryptedKey = await MoltCrypto.encryptKeypair(wKeypair, values.newPassword);
+                    w.encryptedKey = await LichenCrypto.encryptKeypair(wKeypair, values.newPassword);
                     zeroBytes(wKeypair.secretKey);
                 }
                 if (w.encryptedMnemonic) {
-                    const wMnemonic = await MoltCrypto.decryptPrivateKey(w.encryptedMnemonic, oldPassword);
-                    if (wMnemonic) w.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(wMnemonic, values.newPassword);
+                    const wMnemonic = await LichenCrypto.decryptPrivateKey(w.encryptedMnemonic, oldPassword);
+                    if (wMnemonic) w.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(wMnemonic, values.newPassword);
                 } else if (w.mnemonic) {
-                    w.encryptedMnemonic = await MoltCrypto.encryptPrivateKey(w.mnemonic, values.newPassword);
+                    w.encryptedMnemonic = await LichenCrypto.encryptPrivateKey(w.mnemonic, values.newPassword);
                     w.hasMnemonic = true;
                     delete w.mnemonic;
                 }
@@ -4346,11 +4346,11 @@ function loadSettingsValues() {
     }
 
     if (document.getElementById('mainnetRPC')) {
-        document.getElementById('mainnetRPC').value = settings.mainnetRPC || MOLT_CONFIG.rpc('mainnet');
+        document.getElementById('mainnetRPC').value = settings.mainnetRPC || LICHEN_CONFIG.rpc('mainnet');
     }
 
     if (document.getElementById('testnetRPC')) {
-        document.getElementById('testnetRPC').value = settings.testnetRPC || MOLT_CONFIG.rpc('testnet');
+        document.getElementById('testnetRPC').value = settings.testnetRPC || LICHEN_CONFIG.rpc('testnet');
     }
 
     if (document.getElementById('autoLockTimer')) {

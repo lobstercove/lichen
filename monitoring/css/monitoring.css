@@ -1,12 +1,12 @@
 /* ============================================================
-   MoltChain Mission Control - Dark Theme
+   Lichen Mission Control - Dark Theme
    Matches Explorer design system
    ============================================================ */
 
 :root {
-    --primary: #FF6B35;
-    --primary-dark: #E5501B;
-    --accent: #F77F00;
+    --primary: #00C9DB;
+    --primary-dark: #008B9E;
+    --accent: #00E5FF;
     --secondary: #004E89;
     --info: #118AB2;
     --success: #06D6A0;
@@ -23,8 +23,8 @@
     --border-light: #2a3052;
     --shadow: 0 4px 20px rgba(0,0,0,0.3);
     --shadow-lg: 0 10px 40px rgba(0,0,0,0.4);
-    --shadow-glow: 0 0 20px rgba(255,107,53,0.3);
-    --gradient-1: linear-gradient(135deg, #FF6B35, #F77F00);
+    --shadow-glow: 0 0 20px rgba(0, 201, 219,0.3);
+    --gradient-1: linear-gradient(135deg, #00C9DB, #00E5FF);
     --gradient-2: linear-gradient(135deg, #004E89, #118AB2);
     --gradient-3: linear-gradient(135deg, #06D6A0, #118AB2);
     --radius: 16px;
@@ -264,7 +264,7 @@ body {
     font-weight: 600;
     padding: 0.25rem 0.75rem;
     border-radius: 20px;
-    background: rgba(255,107,53,0.15);
+    background: rgba(0, 201, 219,0.15);
     color: var(--primary);
 }
 
@@ -307,9 +307,9 @@ body {
 }
 
 .btn-sm:hover, .btn-sm.active {
-    background: rgba(255,107,53,0.15);
+    background: rgba(0, 201, 219,0.15);
     color: var(--primary);
-    border-color: rgba(255,107,53,0.3);
+    border-color: rgba(0, 201, 219,0.3);
 }
 
 /* ─── Validator Grid ───────────────────────────────────────── */
@@ -1031,7 +1031,7 @@ body {
 }
 
 .attack-severity.medium {
-    background: rgba(247, 127, 0, 0.2);
+    background: rgba(0, 229, 255, 0.2);
     color: var(--accent);
 }
 
@@ -1352,7 +1352,7 @@ body {
     transition: all 0.2s;
 }
 .contract-cat-btn:hover { color: var(--text-primary); background: var(--bg-hover); border-color: var(--border-light); }
-.contract-cat-btn.active { background: rgba(255,107,53,0.15); color: var(--primary); border-color: rgba(255,107,53,0.3); }
+.contract-cat-btn.active { background: rgba(0, 201, 219,0.15); color: var(--primary); border-color: rgba(0, 201, 219,0.3); }
 
 .contract-monitor-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1412,7 +1412,7 @@ body {
     .contract-monitor-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* ─── MoltyID Identity Monitor ────────────────────────────── */
+/* ─── LichenID Identity Monitor ────────────────────────────── */
 .identity-tier-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 0.75rem; margin-top: 0.75rem;
@@ -1444,7 +1444,7 @@ body {
 }
 .identity-tier-bar {
     height: 100%; border-radius: 3px; transition: width 0.6s ease;
-    box-shadow: 0 0 8px rgba(255,107,53,0.1);
+    box-shadow: 0 0 8px rgba(0, 201, 219,0.1);
 }
 
 /* Prediction Markets detail grid (tier-* classes) */
@@ -1473,7 +1473,7 @@ body {
 }
 .tier-fill {
     height: 100%; border-radius: 3px; transition: width 0.6s ease;
-    box-shadow: 0 0 8px rgba(255,107,53,0.1);
+    box-shadow: 0 0 8px rgba(0, 201, 219,0.1);
 }
 
 @media (max-width: 900px) {

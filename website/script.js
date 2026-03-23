@@ -1,24 +1,24 @@
-// MoltChain Website JavaScript
+// Lichen Website JavaScript
 // Live stats, animations, and interactions
 
-// Network configuration — centralized in shared-config.js (MOLT_CONFIG)
+// Network configuration — centralized in shared-config.js (LICHEN_CONFIG)
 const NETWORKS = {};
 const WS_ENDPOINTS = {};
-for (const [k, v] of Object.entries(MOLT_CONFIG.networks)) {
+for (const [k, v] of Object.entries(LICHEN_CONFIG.networks)) {
     NETWORKS[k] = v.rpc;
     WS_ENDPOINTS[k] = v.ws;
 }
 
 function getSelectedNetwork() {
-    return MOLT_CONFIG.currentNetwork('moltchain_website_network');
+    return LICHEN_CONFIG.currentNetwork('lichen_website_network');
 }
 
 function getRpcEndpoint() {
-    return MOLT_CONFIG.rpc(getSelectedNetwork());
+    return LICHEN_CONFIG.rpc(getSelectedNetwork());
 }
 
 function switchNetwork(network) {
-    localStorage.setItem('moltchain_website_network', network);
+    localStorage.setItem('lichen_website_network', network);
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
     // Reconnect WebSocket to new network
@@ -102,7 +102,7 @@ function copyCode(button) {
 }
 
 // RPC Client
-class MoltChainRPC {
+class LichenRPC {
     constructor(url) {
         this.url = url;
     }
@@ -140,14 +140,19 @@ class MoltChainRPC {
     async health() { return this.call('health'); }
 }
 
-function resolveValidatorCount(validatorsResult) {
+function resolveValidatorCount(validatorsResult, currentSlot) {
     let list = null;
     if (Array.isArray(validatorsResult)) list = validatorsResult;
     else if (validatorsResult && Array.isArray(validatorsResult.validators)) list = validatorsResult.validators;
-    else if (validatorsResult && typeof validatorsResult.count === 'number') return validatorsResult.count;
     if (!list) return 0;
-    // Exclude ghost validators that never produced a block and never came online
-    return list.filter(v => v.last_active_slot > 0 || v.blocks_produced > 0).length;
+    // Count only validators active within 100 slots of current (same as explorer)
+    if (typeof currentSlot === 'number' && currentSlot > 0) {
+        return list.filter(v => {
+            const lastActive = v.last_active_slot || v.lastActiveSlot || 0;
+            return currentSlot - lastActive <= 100;
+        }).length;
+    }
+    return list.length;
 }
 
 function resolveTps(metricsResult) {
@@ -161,7 +166,7 @@ function resolveTps(metricsResult) {
     return null;
 }
 
-const rpc = new MoltChainRPC(getRpcEndpoint());
+const rpc = new LichenRPC(getRpcEndpoint());
 
 function setNetworkIndicator(status, message) {
     const indicator = document.getElementById('networkIndicator');
@@ -196,7 +201,8 @@ async function updateStats() {
         }
 
         if (validatorsOk) {
-            const count = resolveValidatorCount(validators.value);
+            const currentSlot = slotOk ? slot.value : null;
+            const count = resolveValidatorCount(validators.value, currentSlot);
             const el = document.getElementById('stat-validators');
             if (el) el.textContent = count;
         }
@@ -235,7 +241,7 @@ let websiteWs = null;
 let websiteWsReconnectTimer = null;
 
 function getWsEndpoint() {
-    return MOLT_CONFIG.ws(getSelectedNetwork());
+    return LICHEN_CONFIG.ws(getSelectedNetwork());
 }
 
 function connectWebsiteWS() {
@@ -443,8 +449,8 @@ function setupWizardTabs() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    // Wire network selector via MOLT_CONFIG (auto-populates, hides local-* in production)
-    MOLT_CONFIG.initNetworkSelector('websiteNetworkSelect', 'moltchain_website_network', (network) => {
+    // Wire network selector via LICHEN_CONFIG (auto-populates, hides local-* in production)
+    LICHEN_CONFIG.initNetworkSelector('websiteNetworkSelect', 'lichen_website_network', (network) => {
         switchNetwork(network);
     });
 

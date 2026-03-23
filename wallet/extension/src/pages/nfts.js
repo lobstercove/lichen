@@ -1,7 +1,7 @@
 import { loadState } from '../core/state-store.js';
 import { loadNftDetails } from '../core/nft-service.js';
 
-const MARKETPLACE_URL = 'https://marketplace.moltchain.network';
+const MARKETPLACE_URL = 'https://marketplace.lichen.network';
 
 function escapeHtml(str) {
   if (!str) return '';

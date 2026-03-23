@@ -4,21 +4,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoltChain — The Agent-First Blockchain</title>
+    <title>Lichen — The Agent-First Blockchain</title>
     <meta name="description"
-        content="MoltChain: The first Layer-1 blockchain built from the ground up for autonomous AI agents. $0.0001 transactions, 400ms finality, WASM + EVM smart contracts, on-chain identity.">
+        content="Lichen: The first Layer-1 blockchain built from the ground up for autonomous AI agents. $0.0001 transactions, 400ms finality, WASM + EVM smart contracts, on-chain identity.">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="MoltChain — The Agent-First Blockchain">
+    <meta property="og:title" content="Lichen — The Agent-First Blockchain">
     <meta property="og:description"
         content="400ms finality, $0.0001 transactions, WASM + EVM smart contracts, and on-chain identity for autonomous agents.">
-    <meta property="og:image" content="MoltChain_Logo_256.png">
-    <meta property="og:url" content="https://moltchain.network">
+    <meta property="og:image" content="Lichen_Logo_256.png">
+    <meta property="og:url" content="https://lichen.network">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="MoltChain — The Agent-First Blockchain">
+    <meta name="twitter:title" content="Lichen — The Agent-First Blockchain">
     <meta name="twitter:description"
         content="400ms finality, $0.0001 transactions, WASM + EVM smart contracts, and on-chain identity for autonomous agents.">
-    <meta name="twitter:image" content="MoltChain_Logo_256.png">
-    <link rel="canonical" href="https://moltchain.network/">
+    <meta name="twitter:image" content="Lichen_Logo_256.png">
+    <link rel="canonical" href="https://lichen.network/">
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
@@ -37,15 +37,15 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
-                <span class="logo-text">MoltChain</span>
+                <img src="Lichen_Logo_256.png" class="logo-icon" alt="Lichen">
+                <span class="logo-text">Lichen</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="#vision">Vision</a></li>
                 <li><a href="#architecture">Architecture</a></li>
                 <li><a href="#validators">Validators</a></li>
                 <li><a href="#tokenomics">Tokenomics</a></li>
-                <li><a href="#identity">MoltyID</a></li>
+                <li><a href="#identity">LichenID</a></li>
                 <li><a href="#ecosystem">Ecosystem</a></li>
                 <li><a href="#api">API</a></li>
                 <li><a href="#deploy">Deploy</a></li>
@@ -53,10 +53,10 @@
                 <li><a href="#community">Community</a></li>
             </ul>
             <div class="nav-actions">
-                <a href="#" data-molt-app="explorer" class="btn btn-small btn-secondary" target="_blank">
+                <a href="#" data-lichen-app="explorer" class="btn btn-small btn-secondary" target="_blank">
                     <i class="fas fa-search"></i> Explorer
                 </a>
-                <a href="#" data-molt-app="wallet" class="btn btn-small btn-primary" target="_blank">
+                <a href="#" data-lichen-app="wallet" class="btn btn-small btn-primary" target="_blank">
                     <i class="fas fa-wallet"></i> Wallet
                 </a>
                 <select id="websiteNetworkSelect" class="network-select">
@@ -86,7 +86,7 @@
                         <span class="gradient-text">Built BY Agents, FOR Agents</span>
                     </h1>
                     <p class="hero-subtitle">
-                        MoltChain is an agent-first Layer-1 with 400ms finality, $0.0001 transactions,
+                        Lichen is an agent-first Layer-1 with 400ms finality, $0.0001 transactions,
                         WASM + EVM smart contracts, and on-chain identity — designed so autonomous agents
                         can operate at machine speed without human-scale costs.
                     </p>
@@ -117,7 +117,7 @@
                         <a href="#deploy" class="btn btn-primary btn-large">
                             <i class="fas fa-code"></i> Deploy a Contract
                         </a>
-                        <a href="#" data-molt-app="developers" class="btn btn-secondary btn-large" target="_blank">
+                        <a href="#" data-lichen-app="developers" class="btn btn-secondary btn-large" target="_blank">
                             <i class="fas fa-book"></i> Read the Docs
                         </a>
                     </div>
@@ -132,7 +132,7 @@
         <section class="section" id="vision">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">The Molt Has Begun</h2>
+                    <h2 class="section-title">The Lichen Has Begun</h2>
                     <p class="section-subtitle">
                         Blockchains were built for humans. Agents need something different.
                     </p>
@@ -144,15 +144,15 @@
                         <h3>Agents Operate Differently</h3>
                         <p>An autonomous agent can execute 10,000 transactions per day — 100× more than a human trader.
                             It runs 24/7, never sleeps, and interfaces through APIs, not UIs. Existing chains charge
-                            human prices for machine-scale throughput. MoltChain was built from the ground up for this
+                            human prices for machine-scale throughput. Lichen was built from the ground up for this
                             reality.</p>
                     </div>
                     <div class="vision-card animate-on-scroll">
                         <div class="vision-icon"><i class="fas fa-chart-line"></i></div>
                         <h3>Economic Independence</h3>
                         <p>At 10,000 tx/day, an agent spends $50,000+/year on Ethereum, $75/year on Solana — and
-                            <strong>$1.50/year on MoltChain</strong>. But it's more than cost. Agents need their own
-                            identity, reputation, and economic layer. MoltyID gives them on-chain trust without human
+                            <strong>$1.50/year on Lichen</strong>. But it's more than cost. Agents need their own
+                            identity, reputation, and economic layer. LichenID gives them on-chain trust without human
                             intermediaries.
                         </p>
                     </div>
@@ -161,13 +161,13 @@
                         <h3>Machine-Speed Infrastructure</h3>
                         <p>400ms block finality. 10,000 transactions per block. WASM + EVM dual execution.
                             Ed25519 signatures with dual addressing (Base58 native + EVM 0x). Every layer of
-                            MoltChain is optimized for autonomous operation at machine speed.</p>
+                            Lichen is optimized for autonomous operation at machine speed.</p>
                     </div>
                     <div class="vision-card animate-on-scroll">
                         <div class="vision-icon"><i class="fas fa-balance-scale"></i></div>
                         <h3>Meritocracy, Not Plutocracy</h3>
-                        <p>Ethereum requires $100,000 to validate. Solana requires $50,000+. MoltChain requires
-                            <strong>$0</strong>. Our Contributory Stake model grants new validators a 100,000 MOLT
+                        <p>Ethereum requires $100,000 to validate. Solana requires $50,000+. Lichen requires
+                            <strong>$0</strong>. Our Contributory Stake model grants new validators a 100,000 LICN
                             bootstrap — they earn their stake through honest work. No capital gates. Merit-based from
                             day one.
                         </p>
@@ -211,7 +211,7 @@
                             </div>
                             <div class="spec-row">
                                 <span class="spec-label">Min Validator Stake</span>
-                                <span class="spec-value">75,000 MOLT</span>
+                                <span class="spec-value">75,000 LICN</span>
                             </div>
                         </div>
                     </div>
@@ -308,16 +308,16 @@
                             </div>
                         </div>
                         <div class="comparison-card featured animate-on-scroll">
-                            <div class="comparison-header molt">
+                            <div class="comparison-header lichen">
                                 <i class="fas fa-fire"></i>
-                                <h4>MoltChain</h4>
+                                <h4>Lichen</h4>
                             </div>
                             <div class="comparison-body">
                                 <div class="comp-row"><span>TX Cost</span><span class="good">$0.0001</span></div>
                                 <div class="comp-row"><span>TPS</span><span class="good">35,000+ (single-thread)</span>
                                 </div>
                                 <div class="comp-row"><span>Finality</span><span class="good">400ms</span></div>
-                                <div class="comp-row"><span>Deploy Cost</span><span class="good">25 MOLT</span></div>
+                                <div class="comp-row"><span>Deploy Cost</span><span class="good">25 LICN</span></div>
                                 <div class="comp-row"><span>Validator Stake</span><span class="good">$0
                                         (bootstrapped)</span></div>
                             </div>
@@ -333,7 +333,7 @@
                 <div class="section-header">
                     <h2 class="section-title">Tokenomics</h2>
                     <p class="section-subtitle">
-                        500 million MOLT at genesis. Live supply tracks genesis + epoch-settled minting - burned fees,
+                        500 million LICN at genesis. Live supply tracks genesis + epoch-settled minting - burned fees,
                         and explorer totals can be projected mid-epoch before settlement.
                     </p>
                 </div>
@@ -347,7 +347,7 @@
                         <div class="token-body">
                             <div class="token-row">
                                 <span>Genesis Supply</span>
-                                <span class="good"><strong>500,000,000 MOLT</strong></span>
+                                <span class="good"><strong>500,000,000 LICN</strong></span>
                             </div>
                             <div class="token-row">
                                 <span>Live Supply</span>
@@ -355,7 +355,7 @@
                             </div>
                             <div class="token-row">
                                 <span>Smallest Unit</span>
-                                <span>1 shell = 10⁻⁹ MOLT</span>
+                                <span>1 spore = 10⁻⁹ LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Inflation</span>
@@ -367,7 +367,7 @@
                             </div>
                             <div class="token-row">
                                 <span>Base Reward Signal</span>
-                                <span>~0.254 MOLT/slot projected (Year 0), settles each epoch</span>
+                                <span>~0.254 LICN/slot projected (Year 0), settles each epoch</span>
                             </div>
                         </div>
                     </div>
@@ -380,27 +380,27 @@
                         <div class="token-body">
                             <div class="token-row">
                                 <span>Community Treasury</span>
-                                <span class="good">25% — 125M MOLT</span>
+                                <span class="good">25% — 125M LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Builder Grants</span>
-                                <span>35% — 175M MOLT</span>
+                                <span>35% — 175M LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Validator Rewards Reserve</span>
-                                <span>10% — 50M MOLT</span>
+                                <span>10% — 50M LICN</span>
                             </div>
                             <div class="token-row">
-                                <span>Founding Moltys</span>
-                                <span>10% — 50M MOLT</span>
+                                <span>Founding Symbionts</span>
+                                <span>10% — 50M LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Ecosystem Partnerships</span>
-                                <span>10% — 50M MOLT</span>
+                                <span>10% — 50M LICN</span>
                             </div>
                             <div class="token-row">
                                 <span>Reserve Pool</span>
-                                <span>10% — 50M MOLT</span>
+                                <span>10% — 50M LICN</span>
                             </div>
                         </div>
                     </div>
@@ -413,7 +413,7 @@
                         <div class="token-body">
                             <div class="token-row">
                                 <span>Base Transfer</span>
-                                <span class="good">0.001 MOLT ($0.0001)</span>
+                                <span class="good">0.001 LICN ($0.0001)</span>
                             </div>
                             <div class="token-row">
                                 <span>Contract Deploy</span>
@@ -421,7 +421,7 @@
                             </div>
                             <div class="token-row">
                                 <span>NFT Mint</span>
-                                <span>0.5 MOLT ($0.05)</span>
+                                <span>0.5 LICN ($0.05)</span>
                             </div>
                             <div class="token-row">
                                 <span>40% Burned</span>
@@ -458,11 +458,11 @@
             </div>
         </section>
 
-        <!-- ═══════════════════ MOLTYID & AGENT FEATURES ═══════════════════ -->
+        <!-- ═══════════════════ LICHENID & AGENT FEATURES ═══════════════════ -->
         <section class="section section-alt" id="identity">
             <div class="container">
                 <div class="section-header">
-                    <h2 class="section-title">MoltyID — Agent Identity Layer</h2>
+                    <h2 class="section-title">LichenID — Agent Identity Layer</h2>
                     <p class="section-subtitle">
                         On-chain identity, reputation, and trust for autonomous agents. Not an app — a protocol
                         primitive.
@@ -488,10 +488,12 @@
                     </div>
                     <div class="feature-card animate-on-scroll">
                         <div class="feature-icon"><i class="fas fa-at"></i></div>
-                        <h3>.molt Naming</h3>
-                        <p>Register human-readable names like <code>alice.molt</code> or <code>trading-bot.molt</code>.
+                        <h3>.lichen Naming</h3>
+                        <p>Register human-readable names like <code>alice.lichen</code> or
+                            <code>trading-bot.lichen</code>.
                             3–32 characters, forward and reverse resolution, yearly renewal. Pricing: 3-char domains
-                            from 500 MOLT, 5+ chars from 20 MOLT.</p>
+                            from 500 LICN, 5+ chars from 20 LICN.
+                        </p>
                         <span class="feature-detail">Register · Resolve · Transfer · Renew</span>
                     </div>
                     <div class="feature-card animate-on-scroll">
@@ -515,7 +517,7 @@
                         <h3>Dual Addressing</h3>
                         <p>Every account has two addresses: a native Base58 address (Ed25519 public key) and an
                             EVM-compatible 0x address (Keccak256 derived). Use whichever your tooling prefers —
-                            both work natively on MoltChain.</p>
+                            both work natively on Lichen.</p>
                         <span class="feature-detail">Base58 + 0x · Chain ID 8001 (0x1f41) · MetaMask compatible</span>
                     </div>
                 </div>
@@ -528,8 +530,8 @@
                 <div class="section-header">
                     <h2 class="section-title">Bootstrap Validator Path — $0 Entry</h2>
                     <p class="section-subtitle">
-                        The first 200 validators can use a 100,000 MOLT bootstrap grant. Self-funded validators can
-                        join any time with 75,000 MOLT and no grant recovery.
+                        The first 200 validators can use a 100,000 LICN bootstrap grant. Self-funded validators can
+                        join any time with 75,000 LICN and no grant recovery.
                     </p>
                 </div>
 
@@ -546,7 +548,7 @@
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Bootstrap Grant</span>
-                                <span class="metric-value good">100,000 MOLT</span>
+                                <span class="metric-value good">100,000 LICN</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Hardware</span>
@@ -575,7 +577,7 @@
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Base Reward Signal</span>
-                                <span class="metric-value">~0.254 MOLT/slot projected, settles each epoch</span>
+                                <span class="metric-value">~0.254 LICN/slot projected, settles each epoch</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Required Uptime</span>
@@ -585,14 +587,14 @@
                     </div>
 
                     <div class="chain-card featured animate-on-scroll">
-                        <div class="chain-header moltchain">
+                        <div class="chain-header lichen">
                             <i class="fas fa-trophy"></i>
                             <h3>After Graduation — Fully Vested</h3>
                         </div>
                         <div class="chain-metrics">
                             <div class="metric">
                                 <span class="metric-label">Remaining Grant Recovery</span>
-                                <span class="metric-value good">0 MOLT — Fully repaid</span>
+                                <span class="metric-value good">0 LICN — Fully repaid</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">Settlement Cadence</span>
@@ -611,7 +613,7 @@
                 </div>
 
                 <div class="section-cta">
-                    <a href="#" data-molt-app="developers" data-molt-path="/validator.html"
+                    <a href="#" data-lichen-app="developers" data-lichen-path="/validator.html"
                         class="btn btn-primary btn-large">
                         <i class="fas fa-play-circle"></i> Start Validating Now
                     </a>
@@ -634,39 +636,39 @@
                     <!-- DeFi -->
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-coins"></i></div>
-                        <h3>MoltCoin</h3>
+                        <h3>LichenCoin</h3>
                         <p>MT-20 fungible token standard. Transfer, mint, burn, allowances.</p>
                         <span class="contract-size">5.2 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-exchange-alt"></i></div>
-                        <h3>MoltSwap</h3>
+                        <h3>LichenSwap</h3>
                         <p>AMM DEX with constant-product liquidity pools, 0.3% swap fees, reentrancy protection.</p>
                         <span class="contract-size">5.4 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-hand-holding-usd"></i></div>
-                        <h3>LobsterLend</h3>
+                        <h3>ThallLend</h3>
                         <p>P2P lending: deposit collateral, borrow assets, earn interest, automated liquidations.</p>
                         <span class="contract-size">12 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-rocket"></i></div>
-                        <h3>ClawPump</h3>
-                        <p>Token launchpad with bonding curves. Fair-launch tokens graduate to MoltSwap at market cap
+                        <h3>SporePump</h3>
+                        <p>Token launchpad with bonding curves. Fair-launch tokens graduate to LichenSwap at market cap
                             threshold.</p>
                         <span class="contract-size">16.5 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-money-bill-wave"></i></div>
-                        <h3>ClawPay</h3>
+                        <h3>SporePay</h3>
                         <p>Sablier-style streaming payments. Create time-windowed streams with proportional withdrawals.
                         </p>
                         <span class="contract-size">17 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-vault"></i></div>
-                        <h3>ClawVault</h3>
+                        <h3>SporeVault</h3>
                         <p>Yield aggregator: auto-compounding across DeFi protocols. 10% performance fee, 2% management
                             fee.</p>
                         <span class="contract-size">17 KB WASM</span>
@@ -675,13 +677,13 @@
                     <!-- Identity & Governance -->
                     <div class="contract-card animate-on-scroll" data-category="identity">
                         <div class="contract-icon"><i class="fas fa-fingerprint"></i></div>
-                        <h3>MoltyID</h3>
-                        <p>Agent identity, reputation, .molt naming, vouching, skill attestations, achievements.</p>
+                        <h3>LichenID</h3>
+                        <p>Agent identity, reputation, .lichen naming, vouching, skill attestations, achievements.</p>
                         <span class="contract-size">43 KB WASM · 30+ functions</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="identity">
                         <div class="contract-icon"><i class="fas fa-vote-yea"></i></div>
-                        <h3>MoltDAO</h3>
+                        <h3>LichenDAO</h3>
                         <p>On-chain governance with token-weighted voting, 3 proposal tiers, treasury management.</p>
                         <span class="contract-size">18.5 KB WASM</span>
                     </div>
@@ -689,19 +691,19 @@
                     <!-- NFTs -->
                     <div class="contract-card animate-on-scroll" data-category="nft">
                         <div class="contract-icon"><i class="fas fa-image"></i></div>
-                        <h3>MoltPunks</h3>
+                        <h3>LichenPunks</h3>
                         <p>MT-721 NFT standard reference. Full ownership, transfers, metadata.</p>
                         <span class="contract-size">8.9 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="nft">
                         <div class="contract-icon"><i class="fas fa-store"></i></div>
-                        <h3>MoltMarket</h3>
+                        <h3>LichenMarket</h3>
                         <p>NFT marketplace with listings, purchases, and cross-contract composability.</p>
                         <span class="contract-size">8.5 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="nft">
                         <div class="contract-icon"><i class="fas fa-gavel"></i></div>
-                        <h3>MoltAuction</h3>
+                        <h3>LichenAuction</h3>
                         <p>English auctions, offers/bids, creator royalties, collection stats.</p>
                         <span class="contract-size">35.5 KB WASM</span>
                     </div>
@@ -709,13 +711,13 @@
                     <!-- Infrastructure -->
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-broadcast-tower"></i></div>
-                        <h3>MoltOracle</h3>
+                        <h3>LichenOracle</h3>
                         <p>Decentralized price feeds, verifiable random function (VRF), attestation services.</p>
                         <span class="contract-size">16.4 KB WASM</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-bridge"></i></div>
-                        <h3>MoltBridge</h3>
+                        <h3>LichenBridge</h3>
                         <p>Cross-chain bridge with lock-and-mint pattern, multi-validator confirmation.</p>
                         <span class="contract-size">16.2 KB WASM</span>
                     </div>
@@ -734,7 +736,7 @@
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="infra">
                         <div class="contract-icon"><i class="fas fa-database"></i></div>
-                        <h3>Reef Storage</h3>
+                        <h3>Moss Storage</h3>
                         <p>Decentralized storage layer. Register storage requests, providers confirm and earn rewards.
                             Up to 10× replication.</p>
                         <span class="contract-size">14.7 KB WASM</span>
@@ -747,7 +749,7 @@
                         <span class="contract-size">18.2 KB WASM</span>
                     </div>
 
-                    <!-- MoltyDEX Suite (7 contracts) -->
+                    <!-- Lichen DEX Suite (7 contracts) -->
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-chart-line"></i></div>
                         <h3>DEX Core</h3>
@@ -765,7 +767,7 @@
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-route"></i></div>
                         <h3>DEX Router</h3>
-                        <p>Smart order routing across CLOB, AMM, and legacy MoltSwap. Multi-hop and split routes.</p>
+                        <p>Smart order routing across CLOB, AMM, and legacy LichenSwap. Multi-hop and split routes.</p>
                         <span class="contract-size">520 lines · 27 tests</span>
                     </div>
                     <div class="contract-card animate-on-scroll" data-category="defi">
@@ -806,7 +808,7 @@
                     <!-- ═══ Stablecoin & Wrapped Bridge Tokens ═══ -->
                     <div class="contract-card animate-on-scroll" data-category="defi">
                         <div class="contract-icon"><i class="fas fa-dollar-sign"></i></div>
-                        <h3>mUSD Stablecoin</h3>
+                        <h3>lUSD Stablecoin</h3>
                         <p>Treasury-backed stablecoin. Mint, burn, with reserve attestation and circuit breaker
                             protection.</p>
                         <span class="contract-size">23.5 KB WASM</span>
@@ -832,7 +834,7 @@
                 </div>
 
                 <div class="section-cta">
-                    <a href="https://github.com/lobstercove/moltchain?tab=repositories" target="_blank"
+                    <a href="https://github.com/lobstercove/lichen?tab=repositories" target="_blank"
                         class="btn btn-primary btn-large">
                         <i class="fab fa-github"></i> Browse All 29 Contracts
                     </a>
@@ -884,14 +886,14 @@
                             </div>
                             <div class="code-content">
                                 <pre><code># Clone the repo
-git clone https://github.com/lobstercove/moltchain
-cd moltchain
+git clone https://github.com/lobstercove/lichen
+cd lichen
 
 # Build CLI (Rust required)
-cargo build --release --bin molt
+cargo build --release --bin lichen
 
 # Verify
-./target/release/molt --version</code></pre>
+./target/release/lichen --version</code></pre>
                             </div>
                         </div>
                     </div>
@@ -906,16 +908,16 @@ cargo build --release --bin molt
                             </div>
                             <div class="code-content">
                                 <pre><code># Generate keypair (encrypted with AES-256-GCM)
-./target/release/molt identity new
+./target/release/lichen identity new
 
 # Output:
 # <i class="fa-solid fa-shrimp"></i> Generated new identity!
 # <i class="fa-solid fa-location-dot"></i> Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ...
 # <i class="fa-solid fa-lock"></i> EVM Address: 0x7a3b...9f2e
-# <i class="fa-solid fa-floppy-disk"></i> Saved to:    ~/.moltchain/keypairs/id.json
+# <i class="fa-solid fa-floppy-disk"></i> Saved to:    ~/.lichen/keypairs/id.json
 
 # Get test tokens from faucet
-./target/release/molt airdrop 100</code></pre>
+./target/release/lichen airdrop 100</code></pre>
                             </div>
                         </div>
                     </div>
@@ -990,7 +992,7 @@ python3 tools/deploy_contract.py counter.wasm
                                 <span class="code-title">JavaScript</span>
                             </div>
                             <div class="code-content">
-                                <pre><code>const RPC_URL = 'http://localhost:8899'; // or rpc.moltchain.network
+                                <pre><code>const RPC_URL = 'http://localhost:8899'; // or rpc.lichen.network
 
 const response = await fetch(RPC_URL, {
   method: 'POST',
@@ -1004,7 +1006,7 @@ const response = await fetch(RPC_URL, {
 });
 
 const { result } = await response.json();
-console.log('Balance:', result); // { shells, molt }</code></pre>
+console.log('Balance:', result); // { spores, licn }</code></pre>
                             </div>
                         </div>
                     </div>
@@ -1057,7 +1059,7 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                                     <span class="code-title">Response</span>
                                 </div>
                                 <div class="code-content">
-                                    <pre><code>{ "shells": 100000000000, "molt": 100.0 }</code></pre>
+                                    <pre><code>{ "spores": 100000000000, "licn": 100.0 }</code></pre>
                                 </div>
                             </div>
                         </div>
@@ -1154,7 +1156,7 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                             <div class="method-signature">
                                 <span class="method-name">getTotalBurned</span><span class="method-params">()</span>
                             </div>
-                            <p class="method-description">Total MOLT permanently burned from transaction fees (40% of
+                            <p class="method-description">Total LICN permanently burned from transaction fees (40% of
                                 all fees).</p>
                         </div>
                     </div>
@@ -1162,11 +1164,11 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
 
                 <div class="api-footer">
                     <p><strong>Base URL:</strong> <code>http://localhost:8899</code> (local) ·
-                        <code>https://rpc.moltchain.network</code> (production)
+                        <code>https://rpc.lichen.network</code> (production)
                     </p>
                     <p><strong>Protocol:</strong> JSON-RPC 2.0 · <strong>WebSocket:</strong> Port 8900 for subscriptions
                     </p>
-                    <a href="#" data-molt-app="developers" data-molt-path="/rpc-reference.html"
+                    <a href="#" data-lichen-app="developers" data-lichen-path="/rpc-reference.html"
                         class="btn btn-secondary btn-large" target="_blank" style="margin-top: 1rem;">
                         <i class="fas fa-book"></i> Full API Reference →
                     </a>
@@ -1179,7 +1181,7 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
             <div class="container">
                 <div class="section-header">
                     <h2 class="section-title">Roadmap</h2>
-                    <p class="section-subtitle">Building the agent-first blockchain, one molt at a time.</p>
+                    <p class="section-subtitle">Building the agent-first blockchain, one lichen at a time.</p>
                 </div>
 
                 <div class="roadmap-timeline">
@@ -1190,9 +1192,10 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                             <div class="phase-items">
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> BFT Consensus Engine
                                 </div>
-                                <div class="phase-item done"><i class="fas fa-check-circle"></i> MoltyVM (WASM + EVM)
+                                <div class="phase-item done"><i class="fas fa-check-circle"></i> LichenVM (WASM + EVM)
                                 </div>
-                                <div class="phase-item done"><i class="fas fa-check-circle"></i> MoltyID Identity System
+                                <div class="phase-item done"><i class="fas fa-check-circle"></i> LichenID Identity
+                                    System
                                 </div>
                                 <div class="phase-item done"><i class="fas fa-check-circle"></i> Mainnet + Testnet Live
                                 </div>
@@ -1216,7 +1219,7 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Better Custody
                                     and Bridge UX Across Solana, Ethereum, and BNB Flows</div>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Liquidity Growth
-                                    for ClawSwap, Wrapped Assets, and Agent-Native Markets</div>
+                                    for SporeSwap, Wrapped Assets, and Agent-Native Markets</div>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Faster Builder
                                     Onboarding Through SDK, Docs, and One-Minute Validator Installs</div>
                                 <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Broader
@@ -1261,20 +1264,20 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                         <p>Dev support, governance, ecosystem news</p>
                         <span class="community-link">Join Discord →</span>
                     </a>
-                    <a href="https://x.com/MoltChainHQ" class="community-card animate-on-scroll" target="_blank">
+                    <a href="https://x.com/LichenHQ" class="community-card animate-on-scroll" target="_blank">
                         <div class="community-icon"><i class="fab fa-x-twitter"></i></div>
                         <h3>X</h3>
                         <p>Announcements, updates, community</p>
-                        <span class="community-link">Follow @MoltChainHQ →</span>
+                        <span class="community-link">Follow @LichenHQ →</span>
                     </a>
-                    <a href="https://github.com/lobstercove/moltchain" class="community-card animate-on-scroll"
+                    <a href="https://github.com/lobstercove/lichen" class="community-card animate-on-scroll"
                         target="_blank">
                         <div class="community-icon"><i class="fab fa-github"></i></div>
                         <h3>GitHub</h3>
                         <p>Open source — star, fork, contribute</p>
                         <span class="community-link">Star on GitHub →</span>
                     </a>
-                    <a href="#" data-molt-app="developers" class="community-card animate-on-scroll" target="_blank">
+                    <a href="#" data-lichen-app="developers" class="community-card animate-on-scroll" target="_blank">
                         <div class="community-icon"><i class="fas fa-book"></i></div>
                         <h3>Developer Portal</h3>
                         <p>15 pages of SDK, API, and contract docs</p>
@@ -1294,7 +1297,7 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                         <a href="#deploy" class="btn btn-primary btn-large">
                             <i class="fas fa-rocket"></i> Deploy a Contract
                         </a>
-                        <a href="https://github.com/lobstercove/moltchain" class="btn btn-secondary btn-large"
+                        <a href="https://github.com/lobstercove/lichen" class="btn btn-secondary btn-large"
                             target="_blank">
                             <i class="fab fa-github"></i> View on GitHub
                         </a>
@@ -1311,8 +1314,8 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
             <div class="footer-grid">
                 <div class="footer-col">
                     <div class="footer-logo">
-                        <img src="MoltChain_Logo_256.png" class="logo-icon" alt="MoltChain">
-                        <span class="logo-text">MoltChain</span>
+                        <img src="Lichen_Logo_256.png" class="logo-icon" alt="Lichen">
+                        <span class="logo-text">Lichen</span>
                     </div>
                     <p class="footer-desc">
                         The agent-first blockchain. 400ms finality, $0.0001 fees, WASM + EVM contracts, on-chain
@@ -1322,36 +1325,38 @@ console.log('Balance:', result); // { shells, molt }</code></pre>
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="developers">Documentation</a></li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/architecture.html">Architecture</a>
+                        <li><a href="#" data-lichen-app="developers">Documentation</a></li>
+                        <li><a href="#" data-lichen-app="developers"
+                                data-lichen-path="/architecture.html">Architecture</a>
                         </li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/getting-started.html">Getting
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/getting-started.html">Getting
                                 Started</a></li>
-                        <li><a href="#" data-molt-app="developers" data-molt-path="/validator.html">Validator Guide</a>
+                        <li><a href="#" data-lichen-app="developers" data-lichen-path="/validator.html">Validator
+                                Guide</a>
                         </li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Tools</h4>
                     <ul class="footer-links">
-                        <li><a href="#" data-molt-app="explorer">Explorer</a></li>
-                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
-                        <li><a href="#" data-molt-app="developers">Developer Portal</a></li>
-                        <li><a href="#" data-molt-app="faucet">Testnet Faucet</a></li>
+                        <li><a href="#" data-lichen-app="explorer">Explorer</a></li>
+                        <li><a href="#" data-lichen-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-lichen-app="developers">Developer Portal</a></li>
+                        <li><a href="#" data-lichen-app="faucet">Testnet Faucet</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
                     <h4>Community</h4>
                     <ul class="footer-links">
                         <li><a href="https://discord.gg/gkQmsHXRXp">Discord</a></li>
-                        <li><a href="https://x.com/MoltChainHQ">X</a></li>
-                        <li><a href="https://t.me/moltchainhq">Telegram</a></li>
-                        <li><a href="mailto:hello@moltchain.network">hello@moltchain.network</a></li>
+                        <li><a href="https://x.com/LichenHQ">X</a></li>
+                        <li><a href="https://t.me/lichenhq">Telegram</a></li>
+                        <li><a href="mailto:hello@lichen.network">hello@lichen.network</a></li>
                     </ul>
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2026 MoltChain. Dual-licensed: Apache 2.0 core, MIT for SDKs and auxiliary apps.</p>
+                <p>&copy; 2026 Lichen. Dual-licensed: Apache 2.0 core, MIT for SDKs and auxiliary apps.</p>
                 <p>Built by agents, for agents. <i class="fa-solid fa-shrimp"></i><i class="fa-solid fa-bolt"></i></p>
             </div>
         </div>

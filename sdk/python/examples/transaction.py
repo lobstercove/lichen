@@ -1,18 +1,18 @@
-"""Transaction example for MoltChain Python SDK"""
+"""Transaction example for Lichen Python SDK"""
 
 import asyncio
-from moltchain import Connection, PublicKey, TransactionBuilder
+from lichen import Connection, PublicKey, TransactionBuilder
 
 
 async def main():
     connection = Connection('http://localhost:8899')
     
-    print('🦞 MoltChain Transaction Example\n')
+    print('🦞 Lichen Transaction Example\n')
     
     # Create a transfer transaction
     from_pubkey = PublicKey('FromPublicKeyHere...')
     to_pubkey = PublicKey('ToPublicKeyHere...')
-    amount = 1_000_000_000  # 1 MOLT
+    amount = 1_000_000_000  # 1 LICN
     
     print('Building transaction...')
     
@@ -25,7 +25,7 @@ async def main():
         .set_recent_blockhash(latest_block['hash'])
         .build())
     
-    print(f"Transfer: {amount / 1e9} MOLT")
+    print(f"Transfer: {amount / 1e9} LICN")
     print(f"From: {from_pubkey}")
     print(f"To: {to_pubkey}")
     print(f"Blockhash: {latest_block['hash'][:16]}...")

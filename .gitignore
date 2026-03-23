@@ -66,9 +66,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # ── Test artifacts / output ─────────────────────────────────
-tests/artifacts/
-tests/__pycache__/
-tests/dev_playground/
+tests/
 *_test_output.txt
 
 # ── Python ─────────────────────────────────────────────────

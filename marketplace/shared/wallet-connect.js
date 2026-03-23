@@ -1,5 +1,5 @@
 /**
- * MoltChain Shared Wallet Connect — Full Wallet Modal System
+ * Lichen Shared Wallet Connect — Full Wallet Modal System
  *
  * Provides a DEX-identical wallet connection experience for the marketplace.
  * Supports: Import (private key + mnemonic), Extension, Create New.
@@ -10,14 +10,14 @@
  *   <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
  *   <script src="shared/wallet-connect.js"></script>
  *   — Auto-binds to #connectWallet button if present.
- *   — Exposes window.MoltWallet constructor.
+ *   — Exposes window.LichenWallet constructor.
  */
 
 // ─── Utilities (only what shared/utils.js does NOT provide) ──
 
 // bytesToHex / hexToBytes / keypairSeedHex are wallet-specific — keep here.
-// BS58_ALPHABET, bs58encode, bs58decode, formatHash, moltRpcCall,
-// escapeHtml, getMoltRpcUrl are already declared in shared/utils.js
+// BS58_ALPHABET, bs58encode, bs58decode, formatHash, lichenRpcCall,
+// escapeHtml, getLichenRpcUrl are already declared in shared/utils.js
 // which is loaded BEFORE this file.
 
 function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
@@ -60,11 +60,11 @@ const WALLET_MODAL_HTML = '<div class="wallet-modal-overlay hidden" id="walletMo
     '<button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect Wallet</button></div>' +
     '<div class="wm-tab-content hidden" id="wmTabExtension"><div class="wm-create-info">' +
     '<i class="fas fa-plug"></i><h4>Connect Wallet Extension</h4>' +
-    '<p>Connect your MoltChain Wallet browser extension to trade securely. Your private keys never leave the extension.</p></div>' +
+    '<p>Connect your Lichen Wallet browser extension to trade securely. Your private keys never leave the extension.</p></div>' +
     '<button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect Extension</button></div>' +
     '<div class="wm-tab-content hidden" id="wmTabCreate"><div class="wm-create-info">' +
     '<i class="fas fa-shield-alt"></i><h4>Generate New Wallet</h4>' +
-    '<p>Create a fresh MoltChain wallet. Save the private key securely \u2014 it will not be shown again.</p></div>' +
+    '<p>Create a fresh Lichen wallet. Save the private key securely \u2014 it will not be shown again.</p></div>' +
     '<button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create Wallet</button>' +
     '<div class="wm-created-wallet hidden" id="wmCreatedWallet">' +
     '<div class="wm-generated-row"><span class="wm-label">Address</span><span class="wm-value" id="wmNewAddress"></span></div>' +
@@ -77,9 +77,9 @@ const WALLET_MODAL_HTML = '<div class="wallet-modal-overlay hidden" id="walletMo
 
 // ─── Wallet Manager ──────────────────────────────────────
 
-function MoltWallet(options) {
+function LichenWallet(options) {
     options = options || {};
-    this.rpcUrl = options.rpcUrl || getMoltRpcUrl();
+    this.rpcUrl = options.rpcUrl || getLichenRpcUrl();
     this.storageKey = options.storageKey || 'marketWallets';
     this.persist = options.persist !== false;
 
@@ -94,9 +94,9 @@ function MoltWallet(options) {
     this._balanceInterval = null;
     this._buttonEl = null;
 
-    // MoltyID / .molt name state (matches DEX)
-    this.moltName = null;
-    this.moltyIdProfile = null;
+    // LichenID / .lichen name state (matches DEX)
+    this.lichenName = null;
+    this.lichenIdProfile = null;
     this.reputation = 0;
     this.trustTier = 0;
 
@@ -115,10 +115,10 @@ function MoltWallet(options) {
     this._modalInjected = false;
 }
 
-MoltWallet.prototype.isConnected = function() { return this.address !== null; };
+LichenWallet.prototype.isConnected = function() { return this.address !== null; };
 
 /** Import wallet from hex or base58 private key */
-MoltWallet.prototype.fromSecretKey = async function(secretInput) {
+LichenWallet.prototype.fromSecretKey = async function(secretInput) {
     var text = (secretInput || '').trim();
     if (!text) throw new Error('Private key is required');
     var bytes;
@@ -150,7 +150,7 @@ MoltWallet.prototype.fromSecretKey = async function(secretInput) {
 };
 
 /** Generate a fresh Ed25519 keypair */
-MoltWallet.prototype.generate = async function() {
+LichenWallet.prototype.generate = async function() {
     var kp = nacl.sign.keyPair();
     this.keypair = kp;
     this.address = bs58encode(kp.publicKey);
@@ -160,7 +160,7 @@ MoltWallet.prototype.generate = async function() {
 };
 
 /** Connect to known address (read-only or with keypair) */
-MoltWallet.prototype.connectAddress = async function(addr, options) {
+LichenWallet.prototype.connectAddress = async function(addr, options) {
     options = options || {};
     this.address = addr;
     this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
@@ -170,14 +170,14 @@ MoltWallet.prototype.connectAddress = async function(addr, options) {
 };
 
 /** Connect via wallet extension */
-MoltWallet.prototype.connectExtension = async function() {
-    if (window.moltchain && typeof window.moltchain.connect === 'function') {
-        var ext = await window.moltchain.connect();
+LichenWallet.prototype.connectExtension = async function() {
+    if (window.lichen && typeof window.lichen.connect === 'function') {
+        var ext = await window.lichen.connect();
         this.address = ext.publicKey || ext.address;
         this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
         this.signingReady = true;
         this.keypair = { connected: true };
-        this._moltExtension = ext;
+        this._lichenExtension = ext;
         return this;
     }
     // Fallback: local wallet generation when extension is unavailable.
@@ -186,17 +186,17 @@ MoltWallet.prototype.connectExtension = async function() {
 };
 
 /** Sign a message (Ed25519 detached) */
-MoltWallet.prototype.sign = function(message) {
+LichenWallet.prototype.sign = function(message) {
     if (!this.keypair || !this.keypair.secretKey) throw new Error('No local keypair available for signing');
     return nacl.sign.detached(message, this.keypair.secretKey);
 };
 
 /** Send transaction via RPC with optional local signing */
-MoltWallet.prototype.sendTransaction = async function(instructions) {
+LichenWallet.prototype.sendTransaction = async function(instructions) {
     if (!this.address) throw new Error('Wallet not connected');
     if (!this.signingReady) throw new Error('Signing session not active. Reconnect wallet to sign.');
 
-    var blockhash = await moltRpcCall('getRecentBlockhash', [], this.rpcUrl);
+    var blockhash = await lichenRpcCall('getRecentBlockhash', [], this.rpcUrl);
     var self = this;
     var message = {
         instructions: instructions.map(function(ix) {
@@ -220,10 +220,10 @@ MoltWallet.prototype.sendTransaction = async function(instructions) {
         var sig = this.sign(msg);
         var txPayload = { signatures: [Array.from(sig)], message: message };
         var txBase64 = btoa(String.fromCharCode.apply(null, new TextEncoder().encode(JSON.stringify(txPayload))));
-        return moltRpcCall('sendTransaction', [txBase64], this.rpcUrl);
+        return lichenRpcCall('sendTransaction', [txBase64], this.rpcUrl);
     }
 
-    var extension = this._moltExtension || (window.moltchain && typeof window.moltchain === 'object' ? window.moltchain : null);
+    var extension = this._lichenExtension || (window.lichen && typeof window.lichen === 'object' ? window.lichen : null);
     if (!extension) {
         throw new Error('No local keypair available and wallet extension is unavailable for signing.');
     }
@@ -236,14 +236,14 @@ MoltWallet.prototype.sendTransaction = async function(instructions) {
     if (typeof extension.signTransaction === 'function') {
         var signed = await extension.signTransaction(unsignedTx);
         if (typeof signed === 'string') {
-            return moltRpcCall('sendTransaction', [signed], this.rpcUrl);
+            return lichenRpcCall('sendTransaction', [signed], this.rpcUrl);
         }
         if (signed && typeof signed.signedTransactionBase64 === 'string') {
-            return moltRpcCall('sendTransaction', [signed.signedTransactionBase64], this.rpcUrl);
+            return lichenRpcCall('sendTransaction', [signed.signedTransactionBase64], this.rpcUrl);
         }
         if (signed && signed.signedTransaction) {
             var txBase64 = btoa(String.fromCharCode.apply(null, new TextEncoder().encode(JSON.stringify(signed.signedTransaction))));
-            return moltRpcCall('sendTransaction', [txBase64], this.rpcUrl);
+            return lichenRpcCall('sendTransaction', [txBase64], this.rpcUrl);
         }
         throw new Error('Wallet extension returned an unsupported signed transaction format');
     }
@@ -252,7 +252,7 @@ MoltWallet.prototype.sendTransaction = async function(instructions) {
 };
 
 /** Derive seed from mnemonic — BIP39 PBKDF2-HMAC-SHA512 (matches wallet app & extension) */
-MoltWallet.prototype.mnemonicToSeed = async function(phrase) {
+LichenWallet.prototype.mnemonicToSeed = async function(phrase) {
     var mnemonicBytes = new TextEncoder().encode(phrase.normalize('NFKD').trim());
     var saltBytes = new TextEncoder().encode('mnemonic');
     var keyMaterial = await crypto.subtle.importKey('raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']);
@@ -264,10 +264,10 @@ MoltWallet.prototype.mnemonicToSeed = async function(phrase) {
 };
 
 /** Refresh balance from RPC */
-MoltWallet.prototype.refreshBalance = async function() {
+LichenWallet.prototype.refreshBalance = async function() {
     if (!this.address) return 0;
     try {
-        var result = await moltRpcCall('getBalance', [this.address], this.rpcUrl);
+        var result = await lichenRpcCall('getBalance', [this.address], this.rpcUrl);
         this.balance = (typeof result === 'object') ? (result.balance || result.value || 0) : (result || 0);
     } catch (err) { /* balance unavailable */ }
     for (var i = 0; i < this._balanceCallbacks.length; i++) {
@@ -276,29 +276,29 @@ MoltWallet.prototype.refreshBalance = async function() {
     return this.balance;
 };
 
-MoltWallet.prototype._startBalancePolling = function() {
+LichenWallet.prototype._startBalancePolling = function() {
     this._stopBalancePolling();
     var self = this;
     this._balanceInterval = setInterval(function() { self.refreshBalance(); }, 15000);
 };
 
-MoltWallet.prototype._stopBalancePolling = function() {
+LichenWallet.prototype._stopBalancePolling = function() {
     if (this._balanceInterval) { clearInterval(this._balanceInterval); this._balanceInterval = null; }
 };
 
 // ─── Events ──────────────────────────────────────────────
 
-MoltWallet.prototype.onConnect = function(cb) {
+LichenWallet.prototype.onConnect = function(cb) {
     this._connectCallbacks.push(cb);
     if (this.isConnected()) {
         try { cb({ address: this.address, shortAddr: this.shortAddr, balance: this.balance }); } catch (e) { console.error(e); }
     }
 };
 
-MoltWallet.prototype.onDisconnect = function(cb) { this._disconnectCallbacks.push(cb); };
-MoltWallet.prototype.onBalanceUpdate = function(cb) { this._balanceCallbacks.push(cb); };
+LichenWallet.prototype.onDisconnect = function(cb) { this._disconnectCallbacks.push(cb); };
+LichenWallet.prototype.onBalanceUpdate = function(cb) { this._balanceCallbacks.push(cb); };
 
-MoltWallet.prototype._fireConnect = function() {
+LichenWallet.prototype._fireConnect = function() {
     var info = { address: this.address, shortAddr: this.shortAddr, balance: this.balance };
     for (var i = 0; i < this._connectCallbacks.length; i++) {
         try { this._connectCallbacks[i](info); } catch (e) { console.error(e); }
@@ -308,7 +308,7 @@ MoltWallet.prototype._fireConnect = function() {
     this.refreshBalance();
 };
 
-MoltWallet.prototype._fireDisconnect = function() {
+LichenWallet.prototype._fireDisconnect = function() {
     for (var i = 0; i < this._disconnectCallbacks.length; i++) {
         try { this._disconnectCallbacks[i]({ address: null }); } catch (e) { console.error(e); }
     }
@@ -318,7 +318,7 @@ MoltWallet.prototype._fireDisconnect = function() {
 
 // ─── Connection Logic ────────────────────────────────────
 
-MoltWallet.prototype._connectTo = async function(address, shortAddr, options) {
+LichenWallet.prototype._connectTo = async function(address, shortAddr, options) {
     options = options || {};
     this.address = address;
     this.shortAddr = shortAddr;
@@ -327,27 +327,27 @@ MoltWallet.prototype._connectTo = async function(address, shortAddr, options) {
     this.keypair = sessionKp || (this.signingReady ? { connected: true } : null);
     this.signingReady = this.signingReady || !!sessionKp;
 
-    // M16: Resolve .molt name and fetch MoltyID profile (matches DEX)
+    // M16: Resolve .lichen name and fetch LichenID profile (matches DEX)
     var displayLabel = shortAddr;
     try {
-        var reverseResult = await moltRpcCall('reverseMoltName', [address], this.rpcUrl);
+        var reverseResult = await lichenRpcCall('reverseLichenName', [address], this.rpcUrl);
         if (reverseResult && reverseResult.name) {
-            this.moltName = reverseResult.name + '.molt';
-            displayLabel = this.moltName;
+            this.lichenName = reverseResult.name + '.lichen';
+            displayLabel = this.lichenName;
         } else {
-            this.moltName = null;
+            this.lichenName = null;
         }
-    } catch (e) { this.moltName = null; }
+    } catch (e) { this.lichenName = null; }
     try {
-        var profileResult = await moltRpcCall('getMoltyIdProfile', [address], this.rpcUrl);
+        var profileResult = await lichenRpcCall('getLichenIdProfile', [address], this.rpcUrl);
         if (profileResult) {
-            this.moltyIdProfile = profileResult;
+            this.lichenIdProfile = profileResult;
             this.reputation = profileResult.reputation || 0;
             this.trustTier = profileResult.trustTier || profileResult.trust_tier || 0;
         } else {
-            this.moltyIdProfile = null; this.reputation = 0; this.trustTier = 0;
+            this.lichenIdProfile = null; this.reputation = 0; this.trustTier = 0;
         }
-    } catch (e) { this.moltyIdProfile = null; this.reputation = 0; this.trustTier = 0; }
+    } catch (e) { this.lichenIdProfile = null; this.reputation = 0; this.trustTier = 0; }
     this._displayLabel = displayLabel;
 
     if (!options.preserveCreatedDetails) this._resetModalInputs();
@@ -355,27 +355,27 @@ MoltWallet.prototype._connectTo = async function(address, shortAddr, options) {
     this._fireConnect();
 };
 
-MoltWallet.prototype._disconnect = function() {
+LichenWallet.prototype._disconnect = function() {
     this.address = null;
     this.shortAddr = null;
     this.keypair = null;
     this.signingReady = false;
-    this.moltName = null;
-    this.moltyIdProfile = null;
+    this.lichenName = null;
+    this.lichenIdProfile = null;
     this.reputation = 0;
     this.trustTier = 0;
     this._displayLabel = null;
     this._fireDisconnect();
 };
 
-MoltWallet.prototype._disconnectAll = function() {
+LichenWallet.prototype._disconnectAll = function() {
     this.savedWallets = [];
     if (this.persist) { try { localStorage.removeItem(this.storageKey); } catch (e) {} }
     this._disconnect();
     this._showNotification('All wallets disconnected', 'info');
 };
 
-MoltWallet.prototype._saveWallets = function() {
+LichenWallet.prototype._saveWallets = function() {
     if (this.persist) {
         try { localStorage.setItem(this.storageKey, JSON.stringify(this.savedWallets)); } catch (e) {}
     }
@@ -383,7 +383,7 @@ MoltWallet.prototype._saveWallets = function() {
 
 // ─── UI: Button ──────────────────────────────────────────
 
-MoltWallet.prototype.bindConnectButton = function(selector) {
+LichenWallet.prototype.bindConnectButton = function(selector) {
     var el = (typeof selector === 'string') ? document.querySelector(selector) : selector;
     if (!el) return;
     this._buttonEl = el;
@@ -402,12 +402,12 @@ MoltWallet.prototype.bindConnectButton = function(selector) {
     }
 };
 
-MoltWallet.prototype._updateButton = function() {
+LichenWallet.prototype._updateButton = function() {
     if (!this._buttonEl) return;
     if (this.isConnected()) {
-        var label = this._displayLabel || this.moltName || escapeHtml(formatHash(this.address, 6));
+        var label = this._displayLabel || this.lichenName || escapeHtml(formatHash(this.address, 6));
         var repBadge = this.reputation > 0
-            ? ' <span class="moltyid-rep-badge" title="MoltyID Reputation: ' + this.reputation + '">\u2b50' + this.reputation + '</span>'
+            ? ' <span class="lichenid-rep-badge" title="LichenID Reputation: ' + this.reputation + '">\u2b50' + this.reputation + '</span>'
             : '';
         this._buttonEl.innerHTML = '<i class="fas fa-wallet"></i> ' + escapeHtml(label) + repBadge;
         this._buttonEl.className = 'btn btn-small btn-secondary';
@@ -421,7 +421,7 @@ MoltWallet.prototype._updateButton = function() {
 
 // ─── UI: Notification Toast ──────────────────────────────
 
-MoltWallet.prototype._showNotification = function(message, type) {
+LichenWallet.prototype._showNotification = function(message, type) {
     type = type || 'info';
     var toast = document.createElement('div');
     toast.className = 'wm-toast wm-toast-' + type;
@@ -438,7 +438,7 @@ MoltWallet.prototype._showNotification = function(message, type) {
 
 // ─── UI: Modal ───────────────────────────────────────────
 
-MoltWallet.prototype._injectModal = function() {
+LichenWallet.prototype._injectModal = function() {
     if (this._modalInjected) return;
     var container = document.createElement('div');
     container.innerHTML = WALLET_MODAL_HTML;
@@ -447,7 +447,7 @@ MoltWallet.prototype._injectModal = function() {
     this._wireModalEvents();
 };
 
-MoltWallet.prototype._openWalletModal = function() {
+LichenWallet.prototype._openWalletModal = function() {
     this._injectModal();
     var modal = document.getElementById('walletModal');
     if (modal) {
@@ -457,13 +457,13 @@ MoltWallet.prototype._openWalletModal = function() {
     }
 };
 
-MoltWallet.prototype._closeWalletModal = function() {
+LichenWallet.prototype._closeWalletModal = function() {
     var modal = document.getElementById('walletModal');
     if (modal) modal.classList.add('hidden');
     this._resetModalInputs();
 };
 
-MoltWallet.prototype._switchTab = function(tabName) {
+LichenWallet.prototype._switchTab = function(tabName) {
     var tabs = document.querySelectorAll('#walletModal .wm-tab');
     tabs.forEach(function(t) { t.classList.toggle('active', t.dataset.wmTab === tabName); });
     var contents = { wallets: 'wmTabWallets', import: 'wmTabImport', extension: 'wmTabExtension', create: 'wmTabCreate' };
@@ -473,7 +473,7 @@ MoltWallet.prototype._switchTab = function(tabName) {
     });
 };
 
-MoltWallet.prototype._resetModalInputs = function(options) {
+LichenWallet.prototype._resetModalInputs = function(options) {
     options = options || {};
     var clearCreated = options.clearCreated !== false; // default true
     var pk = document.getElementById('wmPrivateKey'); if (pk) pk.value = '';
@@ -496,7 +496,7 @@ MoltWallet.prototype._resetModalInputs = function(options) {
     }
 };
 
-MoltWallet.prototype._renderWalletList = async function() {
+LichenWallet.prototype._renderWalletList = async function() {
     var list = document.getElementById('wmWalletsList');
     if (!list) return;
     var self = this;
@@ -509,13 +509,13 @@ MoltWallet.prototype._renderWalletList = async function() {
         return;
     }
 
-    // M16: Batch-resolve .molt names for saved wallets (matches DEX)
+    // M16: Batch-resolve .lichen names for saved wallets (matches DEX)
     var nameMap = {};
     try {
-        var result = await moltRpcCall('batchReverseMoltNames', [this.savedWallets.map(function(w) { return w.address; })], this.rpcUrl);
+        var result = await lichenRpcCall('batchReverseLichenNames', [this.savedWallets.map(function(w) { return w.address; })], this.rpcUrl);
         if (result && typeof result === 'object') {
             for (var addr in result) {
-                if (result[addr]) nameMap[addr] = result[addr] + '.molt';
+                if (result[addr]) nameMap[addr] = result[addr] + '.lichen';
             }
         }
     } catch (e) { /* RPC unavailable — show plain addresses */ }
@@ -573,7 +573,7 @@ MoltWallet.prototype._renderWalletList = async function() {
     if (da) da.addEventListener('click', function() { self._disconnectAll(); self._renderWalletList(); });
 };
 
-MoltWallet.prototype._wireModalEvents = function() {
+LichenWallet.prototype._wireModalEvents = function() {
     var self = this;
 
     // Close
@@ -713,12 +713,12 @@ MoltWallet.prototype._wireModalEvents = function() {
 
 // ─── Public API ──────────────────────────────────────────
 
-MoltWallet.prototype.disconnect = function() { this._disconnect(); };
-MoltWallet.prototype.toggle = async function() { this._openWalletModal(); };
+LichenWallet.prototype.disconnect = function() { this._disconnect(); };
+LichenWallet.prototype.toggle = async function() { this._openWalletModal(); };
 
 // ─── Export ──────────────────────────────────────────────
 
-window.MoltWallet = MoltWallet;
+window.LichenWallet = LichenWallet;
 // bytesToHex / hexToBytes are wallet-specific; others already on window from utils.js
 window.bytesToHex = window.bytesToHex || bytesToHex;
 window.hexToBytes = window.hexToBytes || hexToBytes;

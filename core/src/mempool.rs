@@ -1,4 +1,4 @@
-// MoltChain Mempool - CU-Priced Transaction Priority Queue
+// Lichen Mempool - CU-Priced Transaction Priority Queue
 //
 // Transactions are ordered by effective compute unit price (fee per CU),
 // then by total fee as tiebreaker, then FIFO. This incentivizes users to
@@ -21,7 +21,7 @@ const MAX_PENDING_PER_SENDER: usize = 100;
 struct PrioritizedTransaction {
     transaction: Transaction,
     fee: u64,
-    /// Effective CU price in micro-shells per CU (fee * 1_000_000 / compute_budget).
+    /// Effective CU price in micro-spores per CU (fee * 1_000_000 / compute_budget).
     /// Higher values = higher priority for block inclusion.
     effective_cu_price: u64,
     timestamp: u64,
@@ -62,15 +62,15 @@ impl Ord for PrioritizedTransaction {
     }
 }
 
-/// Compute effective CU price for a transaction (micro-shells per CU).
+/// Compute effective CU price for a transaction (micro-spores per CU).
 /// This normalizes fee by compute budget so that a 100-CU transfer paying
-/// 1M shells gets higher priority than a 200K-CU contract call paying 1M.
+/// 1M spores gets higher priority than a 200K-CU contract call paying 1M.
 fn compute_effective_cu_price(fee: u64, tx: &Transaction) -> u64 {
     let budget = tx.message.effective_compute_budget();
     if budget == 0 {
         return fee; // Fallback: use raw fee for edge case
     }
-    // fee * 1_000_000 / budget (micro-shells per CU), capped at u64::MAX
+    // fee * 1_000_000 / budget (micro-spores per CU), capped at u64::MAX
     ((fee as u128 * 1_000_000) / budget as u128).min(u64::MAX as u128) as u64
 }
 

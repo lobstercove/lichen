@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Contract Development - MoltChain Developer Portal</title>
+    <title>Smart Contract Development - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html" class="active">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -77,7 +77,7 @@
                 <div class="sidebar-heading">Related</div>
                 <a href="contract-reference.html" class="sidebar-link">Contract Reference</a>
                 <a href="cli-reference.html" class="sidebar-link">CLI Reference</a>
-                <a href="moltyid.html" class="sidebar-link">MoltyID Guide</a>
+                <a href="lichenid.html" class="sidebar-link">LichenID Guide</a>
             </div>
         </aside>
 
@@ -95,10 +95,10 @@
 
             <section id="overview">
                 <h2>Overview</h2>
-                <p>MoltChain smart contracts are compiled to <strong>WebAssembly (WASM)</strong> and executed inside a
+                <p>Lichen smart contracts are compiled to <strong>WebAssembly (WASM)</strong> and executed inside a
                     <strong>Wasmer sandbox</strong>. Contracts are written in Rust using <code>#![no_std]</code> and
                     export <code>extern "C"</code> functions that the runtime invokes. The
-                    <code>moltchain-contract-sdk</code> crate provides all host functions for storage, events, logging,
+                    <code>lichen-contract-sdk</code> crate provides all host functions for storage, events, logging,
                     cross-contract calls, and more.
                 </p>
 
@@ -125,19 +125,19 @@
             <!-- ============================================================ -->
             <section id="deploy-vs-create">
                 <h2>Deploy vs Token Create &mdash; When to Use Which</h2>
-                <p>All tokens on MoltChain are WASM contracts. There are three ways to deploy and register them:</p>
+                <p>All tokens on Lichen are WASM contracts. There are three ways to deploy and register them:</p>
 
                 <div class="info-box">
                     <i class="fas fa-code"></i>
                     <div>
-                        <strong><code>molt deploy</code> &mdash; Custom WASM Contract</strong>
+                        <strong><code>lichen deploy</code> &mdash; Custom WASM Contract</strong>
                         <p>Use when you need <em>custom logic</em>: DeFi protocols, NFT
                             collections, games, DAOs, oracles, or tokens with non-standard behavior.</p>
                         <ul>
                             <li>You write Rust, compile to WASM, deploy on-chain</li>
                             <li>Full access to all SDK features (storage, events, cross-calls, Token/NFT modules)</li>
-                            <li>Deploy fee: <strong>25.001 MOLT</strong> (25 MOLT deploy + 0.001 MOLT base fee)</li>
-                            <li>If deployment fails, the 25 MOLT premium is <strong>refunded</strong></li>
+                            <li>Deploy fee: <strong>25.001 LICN</strong> (25 LICN deploy + 0.001 LICN base fee)</li>
+                            <li>If deployment fails, the 25 LICN premium is <strong>refunded</strong></li>
                             <li>Add <code>--symbol</code>, <code>--name</code>, <code>--template</code> to auto-register
                                 in the symbol registry</li>
                         </ul>
@@ -147,14 +147,14 @@
                 <div class="info-box">
                     <i class="fas fa-coins"></i>
                     <div>
-                        <strong><code>molt token create</code> &mdash; Token Deploy Shortcut</strong>
+                        <strong><code>lichen token create</code> &mdash; Token Deploy Shortcut</strong>
                         <p>Convenience wrapper for deploying a token WASM contract with
                             <code>template=&quot;token&quot;</code> preset.
                         </p>
                         <ul>
                             <li>Requires <code>--wasm</code> flag with a compiled WASM token contract</li>
                             <li>Automatically registers in symbol registry with template=&quot;token&quot;</li>
-                            <li>Same fee as <code>molt deploy</code>: <strong>25.001 MOLT</strong></li>
+                            <li>Same fee as <code>lichen deploy</code>: <strong>25.001 LICN</strong></li>
                         </ul>
                     </div>
                 </div>
@@ -162,13 +162,13 @@
                 <div class="info-box">
                     <i class="fas fa-tag"></i>
                     <div>
-                        <strong><code>molt contract register</code> &mdash; Retroactive Registration</strong>
+                        <strong><code>lichen contract register</code> &mdash; Retroactive Registration</strong>
                         <p>Register an already-deployed contract in the symbol registry (e.g. if you forgot
                             <code>--symbol</code> during deploy).
                         </p>
                         <ul>
                             <li>Must be called by the contract owner</li>
-                            <li>Only <strong>0.001 MOLT</strong> base fee</li>
+                            <li>Only <strong>0.001 LICN</strong> base fee</li>
                         </ul>
                     </div>
                 </div>
@@ -183,19 +183,19 @@
                     </thead>
                     <tbody>
                         <tr>
-                            <td><code>molt deploy wasm --symbol X</code></td>
+                            <td><code>lichen deploy wasm --symbol X</code></td>
                             <td>Deploy WASM + register in symbol registry</td>
-                            <td>25.001 MOLT</td>
+                            <td>25.001 LICN</td>
                         </tr>
                         <tr>
-                            <td><code>molt token create "Name" SYM --wasm token.wasm</code></td>
+                            <td><code>lichen token create "Name" SYM --wasm token.wasm</code></td>
                             <td>Deploy token WASM + register (template=token)</td>
-                            <td>25.001 MOLT</td>
+                            <td>25.001 LICN</td>
                         </tr>
                         <tr>
-                            <td><code>molt contract register &lt;addr&gt; --symbol X</code></td>
+                            <td><code>lichen contract register &lt;addr&gt; --symbol X</code></td>
                             <td>Retroactively register deployed contract</td>
-                            <td>0.001 MOLT</td>
+                            <td>0.001 LICN</td>
                         </tr>
                     </tbody>
                 </table>
@@ -262,7 +262,7 @@
                         <tr>
                             <td><code>initial_supply</code></td>
                             <td>string</td>
-                            <td>Initial supply in base units (shells)</td>
+                            <td>Initial supply in base units (spores)</td>
                         </tr>
                     </tbody>
                 </table>
@@ -290,7 +290,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }</code></pre>
+lichen-sdk = { package = "lichen-contract-sdk", path = "../../sdk" }</code></pre>
                 </div>
 
                 <p>Your <code>src/lib.rs</code> must declare <code>#![no_std]</code> and export entry points as
@@ -306,7 +306,7 @@ moltchain-sdk = { package = "moltchain-contract-sdk", path = "../../sdk" }</code
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     storage, contract, event, log,
     Address, ContractResult, ContractError,
 };
@@ -351,7 +351,7 @@ pub extern "C" fn get_value() -> u32 {
             <!-- ============================================================ -->
             <section id="sdk-functions">
                 <h2>SDK Host Functions</h2>
-                <p>The <code>moltchain-contract-sdk</code> crate (imported as <code>moltchain_sdk</code>) exposes the
+                <p>The <code>lichen-contract-sdk</code> crate (imported as <code>lichen_sdk</code>) exposes the
                     following host functions that the WASM runtime
                     provides to your contract.</p>
 
@@ -505,8 +505,8 @@ pub extern "C" fn get_value() -> u32 {
                         <span class="method-badge get">READ</span>
                     </div>
                     <div class="method-body">
-                        <p>Get the amount of MOLT (in shells) transferred along with this contract call. Used for
-                            payable functions (e.g., .molt name registration).</p>
+                        <p>Get the amount of LICN (in spores) transferred along with this contract call. Used for
+                            payable functions (e.g., .lichen name registration).</p>
                     </div>
                 </div>
 
@@ -527,7 +527,7 @@ pub extern "C" fn get_value() -> u32 {
                         <span class="method-badge get">READ</span>
                     </div>
                     <div class="method-body">
-                        <p>Get the current slot number. MoltChain produces ~2.5 slots/second (400ms per slot). Used for
+                        <p>Get the current slot number. Lichen produces ~2.5 slots/second (400ms per slot). Used for
                             slot-based timing
                             (e.g., name expiry at ~78.8M slots/year).</p>
                     </div>
@@ -554,7 +554,7 @@ pub extern "C" fn get_value() -> u32 {
                     </div>
                     <div class="method-body">
                         <p>Log a message for debugging. Logs are visible in contract execution output and via
-                            <code>molt contract logs &lt;address&gt;</code>.
+                            <code>lichen contract logs &lt;address&gt;</code>.
                         </p>
                     </div>
                 </div>
@@ -594,7 +594,7 @@ pub extern "C" fn get_value() -> u32 {
                         </table>
                         <p><strong>Returns:</strong> <code>[u8; 32]</code> &mdash; the Poseidon hash result as a 32-byte
                             little-endian field element. Compute cost: 2,000 CU.</p>
-                        <pre><code>use moltchain_sdk::poseidon_hash;
+                        <pre><code>use lichen_sdk::poseidon_hash;
 
 let left = [0u8; 32];  // first field element
 let right = [1u8; 32]; // second field element
@@ -609,7 +609,7 @@ let hash = poseidon_hash(&amp;left, &amp;right); // 32-byte hash output</code></
             <section id="storage">
                 <h2>Storage Model</h2>
                 <p>Each contract has its own isolated key-value byte store. Both keys and values are arbitrary byte
-                    arrays. Common conventions used across MoltChain contracts:</p>
+                    arrays. Common conventions used across Lichen contracts:</p>
 
                 <h3>Key Naming Conventions</h3>
                 <table class="params-table">
@@ -639,12 +639,12 @@ let hash = poseidon_hash(&amp;left, &amp;right); // 32-byte hash output</code></
                         <tr>
                             <td><code>name:{lowercase}</code></td>
                             <td><code>b"name:tradingbot"</code></td>
-                            <td>.molt name forward lookup</td>
+                            <td>.lichen name forward lookup</td>
                         </tr>
                         <tr>
                             <td><code>name_rev:{hex}</code></td>
                             <td><code>b"name_rev:a1b2..."</code></td>
-                            <td>.molt name reverse lookup</td>
+                            <td>.lichen name reverse lookup</td>
                         </tr>
                         <tr>
                             <td><code>allowance:{owner}:{spender}</code></td>
@@ -660,7 +660,7 @@ let hash = poseidon_hash(&amp;left, &amp;right); // 32-byte hash output</code></
                         <code>u64_to_bytes()</code> and <code>bytes_to_u64()</code> helpers from the SDK.
                     </li>
                     <li><strong>Addresses:</strong> Raw 32-byte public keys.</li>
-                    <li><strong>Fixed records:</strong> Packed structs at known byte offsets (e.g., MoltyID identity =
+                    <li><strong>Fixed records:</strong> Packed structs at known byte offsets (e.g., LichenID identity =
                         127 bytes with owner at 0..32, reputation at 99..107).</li>
                     <li><strong>Strings:</strong> UTF-8 bytes, often with a length prefix.</li>
                 </ul>
@@ -668,7 +668,7 @@ let hash = poseidon_hash(&amp;left, &amp;right); // 32-byte hash output</code></
                 <div class="code-block">
                     <div class="code-header"><span>Storage Pattern Example</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>use moltchain_sdk::{storage, u64_to_bytes, bytes_to_u64, Address};
+                    <pre><code>use lichen_sdk::{storage, u64_to_bytes, bytes_to_u64, Address};
 
 // Store a counter
 fn increment_counter() {
@@ -693,7 +693,7 @@ fn set_balance(account: Address, amount: u64) {
             <section id="crosscall">
                 <h2>Cross-Contract Calls</h2>
                 <p>Contracts can invoke functions on other deployed contracts using the <code>crosscall</code> module.
-                    This enables composability &mdash; for example, checking a caller's MoltyID reputation before
+                    This enables composability &mdash; for example, checking a caller's LichenID reputation before
                     granting access.</p>
 
                 <div class="method-card">
@@ -705,12 +705,12 @@ fn set_balance(account: Address, amount: u64) {
                     <div class="method-body">
                         <p>Execute a cross-contract call. The <code>CrossCall</code> struct specifies the target
                             address, function name, arguments, and optional value transfer.</p>
-                        <pre><code>use moltchain_sdk::crosscall::{CrossCall, call_contract};
-use moltchain_sdk::Address;
+                        <pre><code>use lichen_sdk::crosscall::{CrossCall, call_contract};
+use lichen_sdk::Address;
 
 let target = Address::new(contract_addr_bytes);
 let call = CrossCall::new(target, "get_identity", caller_pubkey.to_vec())
-    .with_value(0); // optional MOLT transfer
+    .with_value(0); // optional LICN transfer
 
 match call_contract(call) {
     Ok(data) =&gt; { /* process return data */ }
@@ -761,19 +761,19 @@ match call_contract(call) {
                     </div>
                 </div>
 
-                <h3>MoltyID Integration Pattern</h3>
+                <h3>LichenID Integration Pattern</h3>
                 <div class="code-block">
                     <div class="code-header"><span>Identity Gate Example</span><button
                             class="code-copy-btn">Copy</button></div>
-                    <pre><code>use moltchain_sdk::crosscall::{CrossCall, call_contract};
-use moltchain_sdk::{Address, bytes_to_u64};
+                    <pre><code>use lichen_sdk::crosscall::{CrossCall, call_contract};
+use lichen_sdk::{Address, bytes_to_u64};
 
-const MOLTYID_ADDRESS: [u8; 32] = [/* well-known address */];
+const LICHENID_ADDRESS: [u8; 32] = [/* well-known address */];
 const MIN_REPUTATION: u64 = 500;
 
 fn require_reputation(caller: &amp;[u8]) -&gt; bool {
-    let moltyid = Address::new(MOLTYID_ADDRESS);
-    let call = CrossCall::new(moltyid, "get_reputation", caller.to_vec());
+    let lichenid = Address::new(LICHENID_ADDRESS);
+    let call = CrossCall::new(lichenid, "get_reputation", caller.to_vec());
     match call_contract(call) {
         Ok(data) if data.len() &gt;= 8 =&gt; {
             bytes_to_u64(&amp;data) &gt;= MIN_REPUTATION
@@ -789,7 +789,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
             <!-- ============================================================ -->
             <section id="token">
                 <h2>Token Module (MT-20)</h2>
-                <p>The <code>moltchain_sdk::token::Token</code> struct implements the MT-20 token standard (similar to
+                <p>The <code>lichen_sdk::token::Token</code> struct implements the MT-20 token standard (similar to
                     ERC-20). It provides mint, burn, transfer, and allowance functionality backed by contract storage.
                 </p>
 
@@ -882,7 +882,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
             <!-- ============================================================ -->
             <section id="nft">
                 <h2>NFT Module (MT-721)</h2>
-                <p>The <code>moltchain_sdk::nft::NFT</code> struct implements the MT-721 NFT standard (similar to
+                <p>The <code>lichen_sdk::nft::NFT</code> struct implements the MT-721 NFT standard (similar to
                     ERC-721). Each token has a unique ID, owner, and optional metadata URI.</p>
 
                 <div class="method-card">
@@ -979,8 +979,8 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
             <!-- ============================================================ -->
             <section id="dex">
                 <h2>DEX Module (AMM)</h2>
-                <p>The <code>moltchain_sdk::dex::Pool</code> implements a constant-product AMM (x &times; y = k) with a
-                    configurable fee (default 0.3%). Used by the MoltSwap contract.</p>
+                <p>The <code>lichen_sdk::dex::Pool</code> implements a constant-product AMM (x &times; y = k) with a
+                    configurable fee (default 0.3%). Used by the LichenSwap contract.</p>
 
                 <div class="method-card">
                     <div class="method-header"><span class="method-name">Pool::new(token_a, token_b) &rarr; Pool</span>
@@ -1092,7 +1092,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                         </tr>
                         <tr>
                             <td><code>test_mock::set_value(val)</code></td>
-                            <td>Set the mock MOLT value sent with the call</td>
+                            <td>Set the mock LICN value sent with the call</td>
                         </tr>
                         <tr>
                             <td><code>test_mock::set_timestamp(ts)</code></td>
@@ -1127,7 +1127,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                     <pre><code>#[cfg(test)]
 mod tests {
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     #[test]
     fn test_initialize_and_set_value() {
@@ -1197,19 +1197,19 @@ wasm-opt -Oz -o optimized.wasm \
                 <div class="code-block">
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
                     <pre><code># Deploy with full symbol registration (recommended)
-molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
+lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
     --symbol MYTK --name "My Token" --template token --decimals 9 \
     --supply 1000000 --metadata '{"website":"https://example.com","logo":"https://example.com/logo.png"}'
 
 # Deploy with just symbol + name (minimum for explorer visibility)
-molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
+lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm \
     --symbol MYTK --name "My Token" --template token --decimals 9
 
 # Deploy without registration (can register later)
-molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+lichen deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
 # Register an already-deployed contract retroactively
-molt contract register &lt;address&gt; --symbol MYTK --name "My Token" --template token
+lichen contract register &lt;address&gt; --symbol MYTK --name "My Token" --template token
 
 # Output:
 # 🦐 Deploying contract: my_contract.wasm
@@ -1237,14 +1237,14 @@ molt contract register &lt;address&gt; --symbol MYTK --name "My Token" --templat
                                 <code>identity</code>, <code>launchpad</code>, <code>vault</code>,
                                 <code>payments</code>, etc.
                             </li>
-                            <li><code>--decimals</code> — Token decimal places (default: 9 for MOLT-compatible).</li>
-                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to shells
+                            <li><code>--decimals</code> — Token decimal places (default: 9 for LICN-compatible).</li>
+                            <li><code>--supply</code> — Initial total supply in whole tokens (auto-converted to spores
                                 via decimals).</li>
                             <li><code>--metadata</code> — JSON object with arbitrary metadata (website, logo,
                                 description, etc.).</li>
                         </ul>
-                        <p><strong>Fee:</strong> 25.001 MOLT (25 MOLT deploy premium + 0.001 MOLT base fee). If deploy
-                            fails, the 25 MOLT premium is automatically refunded.</p>
+                        <p><strong>Fee:</strong> 25.001 LICN (25 LICN deploy premium + 0.001 LICN base fee). If deploy
+                            fails, the 25 LICN premium is automatically refunded.</p>
                         <p><strong>Auto-register:</strong> If the symbol doesn't appear in the registry after deploy,
                             the CLI automatically sends a fallback register-symbol transaction.</p>
                     </div>
@@ -1254,10 +1254,10 @@ molt contract register &lt;address&gt; --symbol MYTK --name "My Token" --templat
                 <div class="code-block">
                     <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
                     <pre><code># Call a function on the deployed contract
-molt call 7xK9...mN2q initialize '[]'
+lichen call 7xK9...mN2q initialize '[]'
 
 # Call with arguments
-molt call 7xK9...mN2q set_value --args '[42]'</code></pre>
+lichen call 7xK9...mN2q set_value --args '[42]'</code></pre>
                 </div>
             </section>
 
@@ -1297,7 +1297,7 @@ pub extern "C" fn sensitive_operation() -&gt; u32 {
                 </div>
 
                 <h3>2. Overflow Protection</h3>
-                <p>Always use <code>saturating_add</code> and <code>saturating_sub</code> for arithmetic. MoltChain
+                <p>Always use <code>saturating_add</code> and <code>saturating_sub</code> for arithmetic. Lichen
                     contracts run in <code>#![no_std]</code> where overflow panics abort the WASM instance.</p>
                 <div class="code-block">
                     <div class="code-header"><span>Safe Arithmetic</span><button class="code-copy-btn">Copy</button>

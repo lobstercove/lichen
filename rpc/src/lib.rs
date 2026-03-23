@@ -1,4 +1,4 @@
-// MoltChain RPC Server
+// Lichen RPC Server
 // JSON-RPC API for querying blockchain state
 //
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -13,7 +13,7 @@
 //   SOLANA SERIALIZATION HELPERS   — solana_context, solana_*_json, encoding
 //   SERVER STARTUP & ROUTER        — start_rpc_server, build_rpc_router
 //   RPC DISPATCH                   — handle_rpc, handle_solana_rpc, handle_evm_rpc
-//   NATIVE MOLT RPC METHODS        — getBalance, getAccount, getBlock, getSlot, …
+//   NATIVE LICN RPC METHODS        — getBalance, getAccount, getBlock, getSlot, …
 //   CORE TRANSACTION METHODS       — getTransaction, getTransactionsByAddress, send
 //   SOLANA-COMPATIBLE ENDPOINTS    — Solana JSON-RPC compatibility layer
 //   NETWORK ENDPOINTS              — getPeers, getNetworkInfo, getClusterInfo
@@ -25,7 +25,7 @@
 //   NFT ENDPOINTS                  — getCollection, getNFT, getNFTsByOwner
 //   MARKETPLACE ENDPOINTS          — getMarketListings, getMarketSales
 //   ETHEREUM JSON-RPC LAYER        — eth_getBalance, eth_sendRawTransaction, …
-//   REEFSTAKE ENDPOINTS            — stakeToReefStake, unstakeFromReefStake
+//   MOSSSTAKE ENDPOINTS            — stakeToMossStake, unstakeFromMossStake
 //   TOKEN ENDPOINTS                — getTokenBalance, getTokenHolders, getTokenTransfers
 //   DEX REST API                    — /api/v1/* endpoints (dex.rs)
 //   DEX WEBSOCKET FEEDS             — orderbook, trades, ticker, candles (dex_ws.rs)
@@ -50,16 +50,16 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use lru::LruCache;
-use moltchain_core::account::Keypair as TreasuryKeypair;
-use moltchain_core::contract::{ContractAccount, ContractContext, ContractRuntime};
-use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
-use moltchain_core::{
-    compute_units_for_tx, decode_evm_transaction, shells_to_u256, simulate_evm_call,
+use lichen_core::account::Keypair as TreasuryKeypair;
+use lichen_core::contract::{ContractAccount, ContractContext, ContractRuntime};
+use lichen_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
+use lichen_core::{
+    compute_units_for_tx, decode_evm_transaction, simulate_evm_call, spores_to_u256,
     FinalityTracker, Hash, Instruction, MarketActivityKind, Message, Pubkey, StakePool, StateStore,
     SymbolRegistryEntry, Transaction, TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
 };
+use lru::LruCache;
 
 // RPC-H05: keep tx listing endpoints under ~600 DB reads/page by bounding page size.
 // Each tx can consume up to ~4 reads in the worst common path:
@@ -92,7 +92,7 @@ pub(crate) fn decode_transaction_bytes(bytes: &[u8]) -> Result<Transaction, RpcE
         })
 }
 use dashmap::DashMap;
-use moltchain_core::consensus::{compute_block_reward, ValidatorInfo, GENESIS_SUPPLY_SHELLS};
+use lichen_core::consensus::{compute_block_reward, ValidatorInfo, GENESIS_SUPPLY_SPORES};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
@@ -297,7 +297,7 @@ struct RpcState {
     /// P2P network (optional, for peer count queries)
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     /// Stake pool (optional, for staking queries)
-    stake_pool: Option<Arc<tokio::sync::RwLock<moltchain_core::StakePool>>>,
+    stake_pool: Option<Arc<tokio::sync::RwLock<lichen_core::StakePool>>>,
     chain_id: String,
     network_id: String,
     min_validator_stake: u64,
@@ -305,7 +305,7 @@ struct RpcState {
     evm_chain_id: u64,
     solana_tx_cache: Arc<RwLock<LruCache<Hash, SolanaTxRecord>>>,
     /// Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
-    /// Hot-rotatable: a background task re-reads MOLTCHAIN_ADMIN_TOKEN env var every 30s.
+    /// Hot-rotatable: a background task re-reads LICHEN_ADMIN_TOKEN env var every 30s.
     admin_token: Arc<std::sync::RwLock<Option<String>>>,
     /// T2.6: Per-IP rate limiter
     rate_limiter: Arc<RateLimiter>,
@@ -341,14 +341,14 @@ struct RpcState {
 const AIRDROP_COOLDOWN_SECS: u64 = 60;
 const AIRDROP_COOLDOWN_STALE_SECS: u64 = 120;
 const AIRDROP_COOLDOWN_MAX_ENTRIES: usize = 10_000;
-/// Daily per-address airdrop limit in MOLT (matches faucet-service).
-const AIRDROP_DAILY_LIMIT_MOLT: u64 = 150;
+/// Daily per-address airdrop limit in LICN (matches faucet-service).
+const AIRDROP_DAILY_LIMIT_LICN: u64 = 150;
 const AIRDROP_DAILY_WINDOW_SECS: u64 = 86_400;
 
 #[derive(Default)]
 struct AirdropCooldowns {
     by_address: HashMap<String, Instant>,
-    /// Per-address daily airdrop ledger: (timestamp, amount_molt) entries.
+    /// Per-address daily airdrop ledger: (timestamp, amount_licn) entries.
     daily_ledger: HashMap<String, Vec<(Instant, u64)>>,
     order: VecDeque<String>,
 }
@@ -388,7 +388,7 @@ impl AirdropCooldowns {
     fn check_daily_limit(
         &self,
         address: &str,
-        amount_molt: u64,
+        amount_licn: u64,
         now: Instant,
     ) -> Result<(), String> {
         let used: u64 = self
@@ -402,21 +402,21 @@ impl AirdropCooldowns {
                     .sum()
             })
             .unwrap_or(0);
-        if used.saturating_add(amount_molt) > AIRDROP_DAILY_LIMIT_MOLT {
+        if used.saturating_add(amount_licn) > AIRDROP_DAILY_LIMIT_LICN {
             return Err(format!(
-                "Daily airdrop limit reached for this address ({}/{} MOLT). Try again later.",
-                used, AIRDROP_DAILY_LIMIT_MOLT
+                "Daily airdrop limit reached for this address ({}/{} LICN). Try again later.",
+                used, AIRDROP_DAILY_LIMIT_LICN
             ));
         }
         Ok(())
     }
 
     /// Record an airdrop amount in the daily ledger.
-    fn record_daily(&mut self, address: &str, amount_molt: u64, now: Instant) {
+    fn record_daily(&mut self, address: &str, amount_licn: u64, now: Instant) {
         self.daily_ledger
             .entry(address.to_string())
             .or_default()
-            .push((now, amount_molt));
+            .push((now, amount_licn));
     }
 
     /// Returns Some(remaining_secs) if still cooling down, otherwise records access and returns None.
@@ -548,7 +548,7 @@ fn allow_legacy_admin_rpc(chain_id: &str, network_id: &str) -> bool {
 
     network.contains("local")
         || network.contains("dev")
-        || network == "molt-test"
+        || network == "lichen-test"
         || chain.contains("local")
         || chain.contains("dev")
 }
@@ -780,8 +780,8 @@ fn classify_method(method: &str) -> MethodTier {
         | "getAllSymbolRegistry"
         | "getPredictionMarkets"
         | "getPredictionLeaderboard"
-        | "batchReverseMoltNames"
-        | "searchMoltNames"
+        | "batchReverseLichenNames"
+        | "searchLichenNames"
         | "getUnstakingQueue" => MethodTier::Moderate,
 
         // Everything else is a cheap point lookup
@@ -1129,8 +1129,8 @@ fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
     }
     // Parse amount from data[1..9] for instruction types that carry an amount:
     // 0=Transfer, 2=Reward, 3=GrantRepay, 4=GenesisTransfer, 5=GenesisMint,
-    // 9=Stake, 10=Unstake, 13=ReefStakeDeposit, 14=ReefStakeUnstake,
-    // 16=ReefStakeTransfer, 19=FaucetAirdrop, 21=ProposeGovernedTransfer,
+    // 9=Stake, 10=Unstake, 13=MossStakeDeposit, 14=MossStakeUnstake,
+    // 16=MossStakeTransfer, 19=FaucetAirdrop, 21=ProposeGovernedTransfer,
     // 22=ApproveGovernedTransfer, 23=Shield, 24=Unshield
     match ix.data[0] {
         0 | 2 | 3 | 4 | 5 | 9 | 10 | 13 | 14 | 16 | 19 | 21 | 22 | 23 | 24 => {
@@ -1263,7 +1263,7 @@ fn emit_prediction_events_from_tx(state: &RpcState, tx: &Transaction) {
 }
 
 /// Extract token metadata from a contract-call instruction.
-/// Returns (symbol, token_amount_shells, decimals) if the target contract is a
+/// Returns (symbol, token_amount_spores, decimals) if the target contract is a
 /// token/wrapped contract and the function carries an amount argument.
 /// Extracts token info from a contract call instruction.
 /// Returns (symbol, amount, decimals, optional_recipient_base58).
@@ -1359,16 +1359,16 @@ fn instruction_type(ix: &Instruction) -> &'static str {
             return "RegisterEvmAddress";
         }
         if ix.data.first() == Some(&13) {
-            return "ReefStakeDeposit";
+            return "MossStakeDeposit";
         }
         if ix.data.first() == Some(&14) {
-            return "ReefStakeUnstake";
+            return "MossStakeUnstake";
         }
         if ix.data.first() == Some(&15) {
-            return "ReefStakeClaim";
+            return "MossStakeClaim";
         }
         if ix.data.first() == Some(&16) {
-            return "ReefStakeTransfer";
+            return "MossStakeTransfer";
         }
         if ix.data.first() == Some(&17) {
             return "DeployContract";
@@ -1528,7 +1528,7 @@ fn resolve_commitment_slot(state: &RpcState, commitment: &str) -> Result<u64, Rp
 fn anchored_block_context(
     state: &RpcState,
     commitment: &str,
-) -> Result<(u64, moltchain_core::Block, serde_json::Value), RpcError> {
+) -> Result<(u64, lichen_core::Block, serde_json::Value), RpcError> {
     let slot = resolve_commitment_slot(state, commitment)?;
     let block = state
         .state
@@ -1883,7 +1883,7 @@ fn tx_to_rpc_json(
     tx: &Transaction,
     slot: u64,
     timestamp: u64,
-    fee_config: &moltchain_core::FeeConfig,
+    fee_config: &lichen_core::FeeConfig,
     stored_cu: Option<u64>,
 ) -> serde_json::Value {
     let first_ix = tx.message.instructions.first();
@@ -1912,7 +1912,7 @@ fn tx_to_rpc_json(
         .collect();
 
     let signatures: Vec<String> = tx.signatures.iter().map(hex::encode).collect();
-    let amount_molt = amount
+    let amount_licn = amount
         .map(|val| val as f64 / 1_000_000_000.0)
         .unwrap_or(0.0);
 
@@ -1936,18 +1936,18 @@ fn tx_to_rpc_json(
         "status": "Success",
         "error": serde_json::Value::Null,
         "fee": fee,
-        "fee_shells": fee,
-        "fee_molt": fee as f64 / 1_000_000_000.0,
-        "base_fee_shells": base_fee,
-        "priority_fee_shells": priority_fee,
+        "fee_spores": fee,
+        "fee_licn": fee as f64 / 1_000_000_000.0,
+        "base_fee_spores": base_fee,
+        "priority_fee_spores": priority_fee,
         "compute_units": compute_units,
         "compute_budget": compute_budget,
         "compute_unit_price": compute_unit_price,
         "type": tx_type,
         "from": from,
         "to": to,
-        "amount": amount_molt,
-        "amount_shells": amount.unwrap_or(0),
+        "amount": amount_licn,
+        "amount_spores": amount.unwrap_or(0),
         "contract_function": contract_fn,
         "message": {
             "instructions": instructions,
@@ -2033,7 +2033,7 @@ pub fn build_rpc_router(
         p2p,
         chain_id,
         network_id,
-        moltchain_core::consensus::MIN_VALIDATOR_STAKE,
+        lichen_core::consensus::MIN_VALIDATOR_STAKE,
         admin_token,
         finality,
         dex_broadcaster,
@@ -2068,7 +2068,7 @@ pub fn build_rpc_router_with_min_validator_stake(
         info!("\u{1f512} Legacy dev-only admin RPC token configured");
     } else if admin_token.is_some() {
         warn!(
-            "Ignoring MOLTCHAIN_ADMIN_TOKEN on non-local/dev network {} — legacy admin RPCs are disabled",
+            "Ignoring LICHEN_ADMIN_TOKEN on non-local/dev network {} — legacy admin RPCs are disabled",
             network_id
         );
     } else {
@@ -2078,14 +2078,14 @@ pub fn build_rpc_router_with_min_validator_stake(
     }
     let admin_token = Arc::new(std::sync::RwLock::new(admin_token));
 
-    // Spawn background task to hot-reload admin token from MOLTCHAIN_ADMIN_TOKEN env var
+    // Spawn background task to hot-reload admin token from LICHEN_ADMIN_TOKEN env var
     {
         let token_ref = Arc::clone(&admin_token);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                if let Ok(new_val) = std::env::var("MOLTCHAIN_ADMIN_TOKEN") {
+                if let Ok(new_val) = std::env::var("LICHEN_ADMIN_TOKEN") {
                     let new_token = if new_val.is_empty() {
                         None
                     } else {
@@ -2093,7 +2093,7 @@ pub fn build_rpc_router_with_min_validator_stake(
                     };
                     if let Ok(mut guard) = token_ref.write() {
                         if *guard != new_token {
-                            info!("Admin token rotated via MOLTCHAIN_ADMIN_TOKEN env var");
+                            info!("Admin token rotated via LICHEN_ADMIN_TOKEN env var");
                             *guard = new_token;
                         }
                     }
@@ -2143,34 +2143,34 @@ pub fn build_rpc_router_with_min_validator_stake(
         treasury_keypair: treasury_keypair.map(Arc::new),
     };
 
-    // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
-    // (comma-separated).  Defaults to localhost-only + moltchain.network subdomains.
+    // D1-01: Configurable CORS origins via LICHEN_CORS_ORIGINS env var
+    // (comma-separated).  Defaults to localhost-only + lichen.network subdomains.
     // Set to "*" for development-only wildcard (NOT recommended for production).
-    let allowed_hosts: Vec<String> = std::env::var("MOLTCHAIN_CORS_ORIGINS")
+    let allowed_hosts: Vec<String> = std::env::var("LICHEN_CORS_ORIGINS")
         .ok()
         .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_else(|| {
             vec![
                 "localhost".to_string(),
                 "127.0.0.1".to_string(),
-                "moltchain.network".to_string(),
-                "www.moltchain.network".to_string(),
-                "app.moltchain.network".to_string(),
-                "rpc.moltchain.network".to_string(),
-                "api.moltchain.network".to_string(),
-                "explorer.moltchain.network".to_string(),
-                "dex.moltchain.network".to_string(),
-                "faucet.moltchain.network".to_string(),
-                "wallet.moltchain.network".to_string(),
-                "marketplace.moltchain.network".to_string(),
-                "programs.moltchain.network".to_string(),
-                "developers.moltchain.network".to_string(),
-                "monitoring.moltchain.network".to_string(),
-                "moltchain.io".to_string(),
-                "app.moltchain.io".to_string(),
-                "rpc.moltchain.io".to_string(),
-                "api.moltchain.io".to_string(),
-                "explorer.moltchain.io".to_string(),
+                "lichen.network".to_string(),
+                "www.lichen.network".to_string(),
+                "app.lichen.network".to_string(),
+                "rpc.lichen.network".to_string(),
+                "api.lichen.network".to_string(),
+                "explorer.lichen.network".to_string(),
+                "dex.lichen.network".to_string(),
+                "faucet.lichen.network".to_string(),
+                "wallet.lichen.network".to_string(),
+                "marketplace.lichen.network".to_string(),
+                "programs.lichen.network".to_string(),
+                "developers.lichen.network".to_string(),
+                "monitoring.lichen.network".to_string(),
+                "lichen.network".to_string(),
+                "app.lichen.network".to_string(),
+                "rpc.lichen.network".to_string(),
+                "api.lichen.network".to_string(),
+                "explorer.lichen.network".to_string(),
             ]
         });
 
@@ -2178,7 +2178,7 @@ pub fn build_rpc_router_with_min_validator_stake(
     // accidental open-CORS deployment in production.
     if rpc_state.network_id.contains("mainnet") && allowed_hosts.iter().any(|h| h == "*") {
         eprintln!(
-            "FATAL: MOLTCHAIN_CORS_ORIGINS contains wildcard '*' on mainnet. \
+            "FATAL: LICHEN_CORS_ORIGINS contains wildcard '*' on mainnet. \
              Set explicit origins or remove '*'. Aborting."
         );
         std::process::exit(1);
@@ -2221,7 +2221,7 @@ pub fn build_rpc_router_with_min_validator_stake(
             "/api/v1/prediction-market",
             prediction::build_prediction_router(),
         )
-        // ClawPump Launchpad REST API — /api/v1/launchpad/*
+        // SporePump Launchpad REST API — /api/v1/launchpad/*
         .nest("/api/v1/launchpad", launchpad::build_launchpad_router())
         // Shielded Pool REST API — /api/v1/shielded/*
         .nest("/api/v1/shielded", shielded::build_shielded_router())
@@ -2311,7 +2311,7 @@ async fn handle_rpc(
 
     // Route to appropriate handler
     let result = match req.method.as_str() {
-        // Basic queries (canonical Molt endpoints)
+        // Basic queries (canonical Lichen endpoints)
         "getBalance" => handle_get_balance(&state, req.params).await,
         "getAccount" => handle_get_account(&state, req.params).await,
         "getAccountAtSlot" => handle_get_account_at_slot(&state, req.params).await,
@@ -2379,12 +2379,12 @@ async fn handle_rpc(
         "getStakingStatus" => handle_get_staking_status(&state, req.params).await,
         "getStakingRewards" => handle_get_staking_rewards(&state, req.params).await,
 
-        // ReefStake liquid staking endpoints
-        "stakeToReefStake" => handle_stake_to_reefstake(&state, req.params).await,
-        "unstakeFromReefStake" => handle_unstake_from_reefstake(&state, req.params).await,
+        // MossStake liquid staking endpoints
+        "stakeToMossStake" => handle_stake_to_mossstake(&state, req.params).await,
+        "unstakeFromMossStake" => handle_unstake_from_mossstake(&state, req.params).await,
         "claimUnstakedTokens" => handle_claim_unstaked_tokens(&state, req.params).await,
         "getStakingPosition" => handle_get_staking_position(&state, req.params).await,
-        "getReefStakePoolInfo" => handle_get_reefstake_pool_info(&state).await,
+        "getMossStakePoolInfo" => handle_get_mossstake_pool_info(&state).await,
         "getUnstakingQueue" => handle_get_unstaking_queue(&state, req.params).await,
 
         // Price-based rewards
@@ -2410,19 +2410,21 @@ async fn handle_rpc(
         "getProgramCalls" => handle_get_program_calls(&state, req.params).await,
         "getProgramStorage" => handle_get_program_storage(&state, req.params).await,
 
-        // MoltyID endpoints
-        "getMoltyIdIdentity" => handle_get_moltyid_identity(&state, req.params).await,
-        "getMoltyIdReputation" => handle_get_moltyid_reputation(&state, req.params).await,
-        "getMoltyIdSkills" => handle_get_moltyid_skills(&state, req.params).await,
-        "getMoltyIdVouches" => handle_get_moltyid_vouches(&state, req.params).await,
-        "getMoltyIdAchievements" => handle_get_moltyid_achievements(&state, req.params).await,
-        "getMoltyIdProfile" => handle_get_moltyid_profile(&state, req.params).await,
-        "resolveMoltName" => handle_resolve_molt_name(&state, req.params).await,
-        "reverseMoltName" => handle_reverse_molt_name(&state, req.params).await,
-        "batchReverseMoltNames" => handle_batch_reverse_molt_names(&state, req.params).await,
-        "searchMoltNames" => handle_search_molt_names(&state, req.params).await,
-        "getMoltyIdAgentDirectory" => handle_get_moltyid_agent_directory(&state, req.params).await,
-        "getMoltyIdStats" => handle_get_moltyid_stats(&state).await,
+        // LichenID endpoints
+        "getLichenIdIdentity" => handle_get_lichenid_identity(&state, req.params).await,
+        "getLichenIdReputation" => handle_get_lichenid_reputation(&state, req.params).await,
+        "getLichenIdSkills" => handle_get_lichenid_skills(&state, req.params).await,
+        "getLichenIdVouches" => handle_get_lichenid_vouches(&state, req.params).await,
+        "getLichenIdAchievements" => handle_get_lichenid_achievements(&state, req.params).await,
+        "getLichenIdProfile" => handle_get_lichenid_profile(&state, req.params).await,
+        "resolveLichenName" => handle_resolve_licn_name(&state, req.params).await,
+        "reverseLichenName" => handle_reverse_licn_name(&state, req.params).await,
+        "batchReverseLichenNames" => handle_batch_reverse_licn_names(&state, req.params).await,
+        "searchLichenNames" => handle_search_licn_names(&state, req.params).await,
+        "getLichenIdAgentDirectory" => {
+            handle_get_lichenid_agent_directory(&state, req.params).await
+        }
+        "getLichenIdStats" => handle_get_lichenid_stats(&state).await,
         "getNameAuction" => handle_get_name_auction(&state, req.params).await,
 
         // EVM address registry
@@ -2476,30 +2478,30 @@ async fn handle_rpc(
         "getDexRouterStats" => handle_get_dex_router_stats(&state).await,
         "getDexAnalyticsStats" => handle_get_dex_analytics_stats(&state).await,
         "getDexGovernanceStats" => handle_get_dex_governance_stats(&state).await,
-        "getMoltswapStats" => handle_get_moltswap_stats(&state).await,
-        "getLobsterLendStats" => handle_get_lobsterlend_stats(&state).await,
-        "getClawPayStats" => handle_get_clawpay_stats(&state).await,
+        "getLichenSwapStats" => handle_get_lichenswap_stats(&state).await,
+        "getThallLendStats" => handle_get_thalllend_stats(&state).await,
+        "getSporePayStats" => handle_get_sporepay_stats(&state).await,
         "getBountyBoardStats" => handle_get_bountyboard_stats(&state).await,
         "getComputeMarketStats" => handle_get_compute_market_stats(&state).await,
-        "getReefStorageStats" => handle_get_reef_storage_stats(&state).await,
-        "getMoltMarketStats" => handle_get_moltmarket_stats(&state).await,
-        "getMoltAuctionStats" => handle_get_moltauction_stats(&state).await,
-        "getMoltPunksStats" => handle_get_moltpunks_stats(&state).await,
+        "getMossStorageStats" => handle_get_moss_storage_stats(&state).await,
+        "getLichenMarketStats" => handle_get_lichenmarket_stats(&state).await,
+        "getLichenAuctionStats" => handle_get_lichenauction_stats(&state).await,
+        "getLichenPunksStats" => handle_get_lichenpunks_stats(&state).await,
         // Token contract stats
         "getMusdStats" => handle_get_musd_stats(&state).await,
         "getWethStats" => handle_get_weth_stats(&state).await,
         "getWsolStats" => handle_get_wsol_stats(&state).await,
         "getWbnbStats" => handle_get_wbnb_stats(&state).await,
         // Platform contract stats — previously missing RPC wiring
-        "getClawVaultStats" => handle_get_clawvault_stats(&state).await,
-        "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
+        "getSporeVaultStats" => handle_get_sporevault_stats(&state).await,
+        "getLichenBridgeStats" => handle_get_lichenbridge_stats(&state).await,
         "createBridgeDeposit" => handle_create_bridge_deposit(&state, req.params).await,
         "getBridgeDeposit" => handle_get_bridge_deposit(&state, req.params).await,
         "getBridgeDepositsByRecipient" => {
             handle_get_bridge_deposits_by_recipient(&state, req.params).await
         }
-        "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
-        "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
+        "getLichenDaoStats" => handle_get_lichendao_stats(&state).await,
+        "getLichenOracleStats" => handle_get_lichenoracle_stats(&state).await,
 
         // ── Wallet price-feed methods ───────────────────────────────
         "getDexPairs" => handle_get_dex_pairs(&state).await,
@@ -2611,7 +2613,7 @@ async fn handle_solana_rpc(
         "getTransaction" => handle_solana_get_transaction(&state, req.params).await,
         "sendTransaction" => handle_solana_send_transaction(&state, req.params).await,
         "getHealth" => Ok(serde_json::json!("ok")),
-        "getVersion" => Ok(serde_json::json!({"solana-core": "moltchain", "feature-set": 0})),
+        "getVersion" => Ok(serde_json::json!({"solana-core": "lichen", "feature-set": 0})),
         _ => Err(RpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -2687,9 +2689,9 @@ async fn handle_evm_rpc(
         "eth_getTransactionReceipt" => handle_eth_get_transaction_receipt(&state, req.params).await,
         "eth_getTransactionByHash" => handle_eth_get_transaction_by_hash(&state, req.params).await,
         "eth_accounts" => Ok(serde_json::json!([])), // No accounts (users use MetaMask)
-        "net_version" => Ok(serde_json::json!("1297368660")), // "Molt" as decimal
+        "net_version" => Ok(serde_json::json!("1297368660")), // "Lichen" as decimal
         "eth_gasPrice" => handle_eth_gas_price(&state).await,
-        "eth_maxPriorityFeePerGas" => Ok(serde_json::json!("0x0")), // No priority fees in MoltChain
+        "eth_maxPriorityFeePerGas" => Ok(serde_json::json!("0x0")), // No priority fees in Lichen
         "eth_estimateGas" => handle_eth_estimate_gas(&state, req.params).await,
         "eth_getCode" => handle_eth_get_code(&state, req.params).await,
         "eth_getTransactionCount" => handle_eth_get_transaction_count(&state, req.params).await,
@@ -2698,7 +2700,7 @@ async fn handle_evm_rpc(
         "eth_getLogs" => handle_eth_get_logs(&state, req.params).await,
         "eth_getStorageAt" => handle_eth_get_storage_at(&state, req.params).await,
         "net_listening" => Ok(serde_json::json!(true)),
-        "web3_clientVersion" => Ok(serde_json::json!(format!("MoltChain/{}", state.version))),
+        "web3_clientVersion" => Ok(serde_json::json!(format!("Lichen/{}", state.version))),
         _ => Err(RpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -2724,7 +2726,7 @@ async fn handle_evm_rpc(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NATIVE MOLT RPC METHODS
+// NATIVE LICN RPC METHODS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// getEvmRegistration — check if a native address has an EVM address registered on-chain.
@@ -3028,20 +3030,20 @@ async fn handle_get_balance(
 
     match account {
         Some(acc) => {
-            // Convert helper for shells to MOLT (with precision)
-            let to_molt_str =
-                |shells: u64| -> String { format!("{:.4}", shells as f64 / 1_000_000_000.0) };
+            // Convert helper for spores to LICN (with precision)
+            let to_licn_str =
+                |spores: u64| -> String { format!("{:.4}", spores as f64 / 1_000_000_000.0) };
 
-            // Include ReefStake liquid staking position
-            let (reef_staked, reef_value) = state
+            // Include MossStake liquid staking position
+            let (moss_staked, moss_value) = state
                 .state
-                .get_reefstake_pool()
+                .get_mossstake_pool()
                 .ok()
                 .and_then(|pool| {
                     pool.positions.get(&pubkey).map(|p| {
                         (
-                            p.molt_deposited,
-                            pool.st_molt_token.st_molt_to_molt(p.st_molt_amount),
+                            p.licn_deposited,
+                            pool.st_licn_token.st_licn_to_licn(p.st_licn_amount),
                         )
                     })
                 })
@@ -3049,41 +3051,41 @@ async fn handle_get_balance(
 
             Ok(serde_json::json!({
                 // Total balance (backward compatible)
-                "shells": acc.shells,
-                "molt": to_molt_str(acc.shells),
+                "spores": acc.spores,
+                "licn": to_licn_str(acc.spores),
 
                 // Balance breakdown (NEW)
                 "spendable": acc.spendable,
-                "spendable_molt": to_molt_str(acc.spendable),
+                "spendable_licn": to_licn_str(acc.spendable),
 
                 "staked": acc.staked,
-                "staked_molt": to_molt_str(acc.staked),
+                "staked_licn": to_licn_str(acc.staked),
 
                 "locked": acc.locked,
-                "locked_molt": to_molt_str(acc.locked),
+                "locked_licn": to_licn_str(acc.locked),
 
-                // ReefStake liquid staking (separate from native validator staking)
-                "reef_staked": reef_staked,
-                "reef_staked_molt": to_molt_str(reef_staked),
-                "reef_value": reef_value,
-                "reef_value_molt": to_molt_str(reef_value),
+                // MossStake liquid staking (separate from native validator staking)
+                "moss_staked": moss_staked,
+                "moss_staked_licn": to_licn_str(moss_staked),
+                "moss_value": moss_value,
+                "moss_value_licn": to_licn_str(moss_value),
             }))
         }
         None => {
             // Account doesn't exist - return all zeros
             Ok(serde_json::json!({
-                "shells": 0,
-                "molt": "0.0000",
+                "spores": 0,
+                "licn": "0.0000",
                 "spendable": 0,
-                "spendable_molt": "0.0000",
+                "spendable_licn": "0.0000",
                 "staked": 0,
-                "staked_molt": "0.0000",
+                "staked_licn": "0.0000",
                 "locked": 0,
-                "locked_molt": "0.0000",
-                "reef_staked": 0,
-                "reef_staked_molt": "0.0000",
-                "reef_value": 0,
-                "reef_value_molt": "0.0000",
+                "locked_licn": "0.0000",
+                "moss_staked": 0,
+                "moss_staked_licn": "0.0000",
+                "moss_value": 0,
+                "moss_value_licn": "0.0000",
             }))
         }
     }
@@ -3120,20 +3122,20 @@ async fn handle_get_account(
 
     match account {
         Some(acc) => {
-            let to_molt_str =
-                |shells: u64| -> String { format!("{:.4}", shells as f64 / 1_000_000_000.0) };
+            let to_licn_str =
+                |spores: u64| -> String { format!("{:.4}", spores as f64 / 1_000_000_000.0) };
 
             Ok(serde_json::json!({
                 "pubkey": pubkey.to_base58(),
                 "evm_address": pubkey.to_evm(),
-                "shells": acc.shells,
-                "molt": to_molt_str(acc.shells),
+                "spores": acc.spores,
+                "licn": to_licn_str(acc.spores),
                 "spendable": acc.spendable,
-                "spendable_molt": to_molt_str(acc.spendable),
+                "spendable_licn": to_licn_str(acc.spendable),
                 "staked": acc.staked,
-                "staked_molt": to_molt_str(acc.staked),
+                "staked_licn": to_licn_str(acc.staked),
                 "locked": acc.locked,
-                "locked_molt": to_molt_str(acc.locked),
+                "locked_licn": to_licn_str(acc.locked),
                 "owner": acc.owner.to_base58(),
                 "executable": acc.executable,
                 "data_len": acc.data.len(),
@@ -3177,11 +3179,10 @@ async fn handle_get_account_at_slot(
             message: "Invalid params: expected slot number as second argument".to_string(),
         })?;
 
-    let pubkey =
-        moltchain_core::account::Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid pubkey: {}", e),
-        })?;
+    let pubkey = lichen_core::account::Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid pubkey: {}", e),
+    })?;
 
     if !state.state.is_archive_mode() {
         return Err(RpcError {
@@ -3200,20 +3201,20 @@ async fn handle_get_account_at_slot(
 
     match account {
         Some(acc) => {
-            let to_molt_str =
-                |shells: u64| -> String { format!("{:.4}", shells as f64 / 1_000_000_000.0) };
+            let to_licn_str =
+                |spores: u64| -> String { format!("{:.4}", spores as f64 / 1_000_000_000.0) };
 
             Ok(serde_json::json!({
                 "pubkey": pubkey.to_base58(),
                 "slot": target_slot,
-                "shells": acc.shells,
-                "molt": to_molt_str(acc.shells),
+                "spores": acc.spores,
+                "licn": to_licn_str(acc.spores),
                 "spendable": acc.spendable,
-                "spendable_molt": to_molt_str(acc.spendable),
+                "spendable_licn": to_licn_str(acc.spendable),
                 "staked": acc.staked,
-                "staked_molt": to_molt_str(acc.staked),
+                "staked_licn": to_licn_str(acc.staked),
                 "locked": acc.locked,
-                "locked_molt": to_molt_str(acc.locked),
+                "locked_licn": to_licn_str(acc.locked),
                 "owner": acc.owner.to_base58(),
                 "executable": acc.executable,
                 "data_len": acc.data.len(),
@@ -3246,14 +3247,20 @@ async fn handle_get_block(
             let fee_config = state
                 .state
                 .get_fee_config()
-                .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+                .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
             let block_hash = block.hash();
             let transactions: Vec<serde_json::Value> = block
                 .transactions
                 .iter()
                 .map(|tx| {
                     let cu = state.state.get_tx_meta_cu(&tx.signature()).ok().flatten();
-                    tx_to_rpc_json(tx, block.header.slot, block.header.timestamp, &fee_config, cu)
+                    tx_to_rpc_json(
+                        tx,
+                        block.header.slot,
+                        block.header.timestamp,
+                        &fee_config,
+                        cu,
+                    )
                 })
                 .collect();
 
@@ -3272,13 +3279,13 @@ async fn handle_get_block(
                 if block.header.slot == 0 || block.header.validator == [0u8; 32] {
                     0
                 } else {
-                    let total_supply = GENESIS_SUPPLY_SHELLS
+                    let total_supply = GENESIS_SUPPLY_SPORES
                         .saturating_add(state.state.get_total_minted().unwrap_or(0))
                         .saturating_sub(state.state.get_total_burned().unwrap_or(0));
                     compute_block_reward(block.header.slot, total_supply)
                 };
 
-            let current_epoch = moltchain_core::consensus::slot_to_epoch(block.header.slot);
+            let current_epoch = lichen_core::consensus::slot_to_epoch(block.header.slot);
 
             Ok(serde_json::json!({
                 "slot": block.header.slot,
@@ -3293,9 +3300,9 @@ async fn handle_get_block(
                 "transactions": transactions,
                 "block_reward": {
                     "amount": 0,
-                    "amount_molt": 0.0,
+                    "amount_licn": 0.0,
                     "projected_per_slot": projected_per_slot,
-                    "projected_per_slot_molt": projected_per_slot as f64 / 1_000_000_000.0,
+                    "projected_per_slot_licn": projected_per_slot as f64 / 1_000_000_000.0,
                     "distribution": "epoch",
                     "epoch": current_epoch,
                     "type": if has_user_txs { "transaction" } else { "heartbeat" },
@@ -3531,11 +3538,11 @@ async fn handle_get_fee_config(state: &RpcState) -> Result<serde_json::Value, Rp
     })?;
 
     Ok(serde_json::json!({
-        "base_fee_shells": config.base_fee,
-        "contract_deploy_fee_shells": config.contract_deploy_fee,
-        "contract_upgrade_fee_shells": config.contract_upgrade_fee,
-        "nft_mint_fee_shells": config.nft_mint_fee,
-        "nft_collection_fee_shells": config.nft_collection_fee,
+        "base_fee_spores": config.base_fee,
+        "contract_deploy_fee_spores": config.contract_deploy_fee,
+        "contract_upgrade_fee_spores": config.contract_upgrade_fee,
+        "nft_mint_fee_spores": config.nft_mint_fee,
+        "nft_collection_fee_spores": config.nft_collection_fee,
         "fee_burn_percent": config.fee_burn_percent,
         "fee_producer_percent": config.fee_producer_percent,
         "fee_voters_percent": config.fee_voters_percent,
@@ -3572,26 +3579,26 @@ async fn handle_set_fee_config(
         message: format!("Database error: {}", e),
     })?;
 
-    if let Some(value) = obj.get("base_fee_shells").and_then(|v| v.as_u64()) {
+    if let Some(value) = obj.get("base_fee_spores").and_then(|v| v.as_u64()) {
         config.base_fee = value;
     }
     if let Some(value) = obj
-        .get("contract_deploy_fee_shells")
+        .get("contract_deploy_fee_spores")
         .and_then(|v| v.as_u64())
     {
         config.contract_deploy_fee = value;
     }
     if let Some(value) = obj
-        .get("contract_upgrade_fee_shells")
+        .get("contract_upgrade_fee_spores")
         .and_then(|v| v.as_u64())
     {
         config.contract_upgrade_fee = value;
     }
-    if let Some(value) = obj.get("nft_mint_fee_shells").and_then(|v| v.as_u64()) {
+    if let Some(value) = obj.get("nft_mint_fee_spores").and_then(|v| v.as_u64()) {
         config.nft_mint_fee = value;
     }
     if let Some(value) = obj
-        .get("nft_collection_fee_shells")
+        .get("nft_collection_fee_spores")
         .and_then(|v| v.as_u64())
     {
         config.nft_collection_fee = value;
@@ -3658,7 +3665,7 @@ async fn handle_get_rent_params(state: &RpcState) -> Result<serde_json::Value, R
     })?;
 
     Ok(serde_json::json!({
-        "rent_rate_shells_per_kb_month": rate,
+        "rent_rate_spores_per_kb_month": rate,
         "rent_free_kb": free_kb,
     }))
 }
@@ -3688,7 +3695,7 @@ async fn handle_set_rent_params(
     })?;
 
     if let Some(value) = obj
-        .get("rent_rate_shells_per_kb_month")
+        .get("rent_rate_spores_per_kb_month")
         .and_then(|v| v.as_u64())
     {
         rate = value;
@@ -3747,7 +3754,7 @@ async fn handle_estimate_transaction_fee(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     let base_fee = TxProcessor::compute_base_fee(&tx, &fee_config);
     let priority_fee = TxProcessor::compute_priority_fee(&tx);
@@ -3757,10 +3764,10 @@ async fn handle_estimate_transaction_fee(
     let compute_unit_price = tx.message.effective_compute_unit_price();
 
     Ok(serde_json::json!({
-        "fee_shells": total_fee,
-        "fee_molt": total_fee as f64 / 1_000_000_000.0,
-        "base_fee_shells": base_fee,
-        "priority_fee_shells": priority_fee,
+        "fee_spores": total_fee,
+        "fee_licn": total_fee as f64 / 1_000_000_000.0,
+        "base_fee_spores": base_fee,
+        "priority_fee_spores": priority_fee,
         "compute_units": compute_units,
         "compute_budget": compute_budget,
         "compute_unit_price": compute_unit_price,
@@ -3790,7 +3797,7 @@ async fn handle_get_transaction(
             message: "Invalid params: expected [signature]".to_string(),
         })?;
 
-    let sig_hash = moltchain_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
+    let sig_hash = lichen_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid signature: {}", e),
     })?;
@@ -3845,7 +3852,7 @@ async fn handle_get_transaction(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     match tx {
         Some(tx) => {
@@ -3868,7 +3875,7 @@ async fn handle_get_transaction(
                                 serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32)),
                             );
                             obj.insert(
-                                "token_amount_shells".to_string(),
+                                "token_amount_spores".to_string(),
                                 serde_json::json!(token_amt),
                             );
                             obj.insert("token_decimals".to_string(), serde_json::json!(decimals));
@@ -3893,7 +3900,11 @@ async fn handle_get_transaction(
             if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
                 for block_tx in &block.transactions {
                     if block_tx.signature() == sig_hash {
-                        let cu = state.state.get_tx_meta_cu(&block_tx.signature()).ok().flatten();
+                        let cu = state
+                            .state
+                            .get_tx_meta_cu(&block_tx.signature())
+                            .ok()
+                            .flatten();
                         return Ok(tx_to_rpc_json(block_tx, slot, timestamp, &fee_config, cu));
                     }
                 }
@@ -3951,7 +3962,7 @@ async fn handle_get_transactions_by_address(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     // Use account->tx reverse index (CF_ACCOUNT_TXS) with cursor pagination.
     // Fetch one extra index row to compute has_more without extra scans.
@@ -4031,10 +4042,10 @@ async fn handle_get_transactions_by_address(
             "to": to,
             "type": tx_type,
             "amount": amount as f64 / 1_000_000_000.0,
-            "amount_shells": amount,
+            "amount_spores": amount,
             "fee": fee,
-            "fee_shells": fee,
-            "fee_molt": fee as f64 / 1_000_000_000.0,
+            "fee_spores": fee,
+            "fee_licn": fee as f64 / 1_000_000_000.0,
             "success": true,
         });
 
@@ -4050,7 +4061,7 @@ async fn handle_get_transactions_by_address(
                     entry["token_symbol"] = serde_json::json!(symbol);
                     entry["token_amount"] =
                         serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
-                    entry["token_amount_shells"] = serde_json::json!(token_amt);
+                    entry["token_amount_spores"] = serde_json::json!(token_amt);
                     entry["token_decimals"] = serde_json::json!(decimals);
                     if let Some(ref to_addr) = token_to {
                         entry["token_to"] = serde_json::json!(to_addr);
@@ -4097,7 +4108,7 @@ async fn handle_get_recent_transactions(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     // Use tx-by-slot reverse index (CF_TX_BY_SLOT), over-fetch by 1 for has_more.
     let fetch_limit = limit.saturating_add(1);
@@ -4167,10 +4178,10 @@ async fn handle_get_recent_transactions(
             "to": to,
             "type": tx_type,
             "amount": amount as f64 / 1_000_000_000.0,
-            "amount_shells": amount,
+            "amount_spores": amount,
             "fee": fee,
-            "fee_shells": fee,
-            "fee_molt": fee as f64 / 1_000_000_000.0,
+            "fee_spores": fee,
+            "fee_licn": fee as f64 / 1_000_000_000.0,
             "success": true,
         });
 
@@ -4186,7 +4197,7 @@ async fn handle_get_recent_transactions(
                     entry["token_symbol"] = serde_json::json!(symbol);
                     entry["token_amount"] =
                         serde_json::json!(token_amt as f64 / 10f64.powi(decimals as i32));
-                    entry["token_amount_shells"] = serde_json::json!(token_amt);
+                    entry["token_amount_spores"] = serde_json::json!(token_amt);
                     entry["token_decimals"] = serde_json::json!(decimals);
                     if let Some(ref to_addr) = token_to {
                         entry["token_to"] = serde_json::json!(to_addr);
@@ -4444,7 +4455,7 @@ async fn handle_confirm_transaction(
             message: "Invalid params: expected [signature] or {\"signature\": \"...\"}".to_string(),
         })?;
 
-    let sig_hash = moltchain_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
+    let sig_hash = lichen_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid signature: {}", e),
     })?;
@@ -4581,7 +4592,7 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
             code: -32602,
             message: "Missing blockhash".into(),
         })?;
-    let recent_blockhash = moltchain_core::Hash::from_hex(blockhash_str).map_err(|e| RpcError {
+    let recent_blockhash = lichen_core::Hash::from_hex(blockhash_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid blockhash: {}", e),
     })?;
@@ -4665,7 +4676,7 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
             })
             .unwrap_or_default();
 
-        instructions.push(moltchain_core::Instruction {
+        instructions.push(lichen_core::Instruction {
             program_id,
             accounts,
             data,
@@ -4684,13 +4695,13 @@ fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
 
     Ok(Transaction {
         signatures,
-        message: moltchain_core::Message {
+        message: lichen_core::Message {
             instructions,
             recent_blockhash,
             compute_budget,
             compute_unit_price,
         },
-        tx_type: moltchain_core::TransactionType::Native,
+        tx_type: lichen_core::TransactionType::Native,
     })
 }
 
@@ -4774,13 +4785,13 @@ async fn handle_send_transaction(
     // 4a. Validate compute budget is within protocol limits
     {
         let budget = tx.message.effective_compute_budget();
-        if budget > moltchain_core::MAX_COMPUTE_BUDGET {
+        if budget > lichen_core::MAX_COMPUTE_BUDGET {
             return Err(RpcError {
                 code: -32003,
                 message: format!(
                     "Compute budget {} exceeds maximum {}",
                     budget,
-                    moltchain_core::MAX_COMPUTE_BUDGET
+                    lichen_core::MAX_COMPUTE_BUDGET
                 ),
             });
         }
@@ -4799,7 +4810,7 @@ async fn handle_send_transaction(
             let fee_config = state
                 .state
                 .get_fee_config()
-                .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+                .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
             let expected_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
 
             if expected_fee > 0 {
@@ -4810,7 +4821,7 @@ async fn handle_send_transaction(
                             return Err(RpcError {
                                 code: -32003,
                                 message: format!(
-                                    "Insufficient MOLT balance for fees: need {} shells ({:.6} MOLT), have {} shells ({:.6} MOLT)",
+                                    "Insufficient LICN balance for fees: need {} spores ({:.6} LICN), have {} spores ({:.6} LICN)",
                                     expected_fee, expected_fee as f64 / 1_000_000_000.0,
                                     acct.spendable, acct.spendable as f64 / 1_000_000_000.0
                                 ),
@@ -4830,7 +4841,7 @@ async fn handle_send_transaction(
                 // Also check if the TX transfers value — verify total needed
                 // (fee + transfer amount) is covered
                 if let Some(first_ix) = tx.message.instructions.first() {
-                    if first_ix.program_id == moltchain_core::SYSTEM_PROGRAM_ID {
+                    if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
                         if let Some(&kind) = first_ix.data.first() {
                             if kind == 0 || kind == 1 {
                                 // Transfer or TransferWithMemo
@@ -4845,7 +4856,7 @@ async fn handle_send_transaction(
                                             return Err(RpcError {
                                                 code: -32003,
                                                 message: format!(
-                                                    "Insufficient MOLT for transfer + fees: need {} shells (transfer) + {} shells (fee) = {} total, have {} spendable",
+                                                    "Insufficient LICN for transfer + fees: need {} spores (transfer) + {} spores (fee) = {} total, have {} spendable",
                                                     transfer_amount, expected_fee,
                                                     transfer_amount.saturating_add(expected_fee),
                                                     acct.spendable
@@ -4867,7 +4878,7 @@ async fn handle_send_transaction(
     // 31 (DeregisterValidator) are fee-exempt. Reject from non-validators
     // to prevent free block-space griefing.
     if let Some(first_ix) = tx.message.instructions.first() {
-        if first_ix.program_id == moltchain_core::SYSTEM_PROGRAM_ID {
+        if first_ix.program_id == lichen_core::SYSTEM_PROGRAM_ID {
             if let Some(&opcode) = first_ix.data.first() {
                 if matches!(opcode, 26 | 27 | 30 | 31) {
                     let sender = tx.sender();
@@ -4908,7 +4919,7 @@ async fn handle_send_transaction(
     // Skip preflight for deploy transactions (data contains JSON with "Deploy" key).
     if !skip_preflight {
         let has_contract_call = tx.message.instructions.iter().any(|ix| {
-            ix.program_id == moltchain_core::CONTRACT_PROGRAM_ID
+            ix.program_id == lichen_core::CONTRACT_PROGRAM_ID
                 && !ix.data.starts_with(b"{\"Deploy\"") // skip deploys
         });
         if has_contract_call {
@@ -5446,7 +5457,7 @@ async fn handle_solana_get_account_info(
             serde_json::json!({
                 "data": [data, encoding],
                 "executable": account.executable,
-                "lamports": account.shells,
+                "lamports": account.spores,
                 "owner": account.owner.to_base58(),
                 "rentEpoch": account.rent_epoch,
                 "space": account.data.len(),
@@ -5770,7 +5781,7 @@ async fn handle_get_latest_block(state: &RpcState) -> Result<serde_json::Value, 
     }
 }
 
-/// Get total burned shells
+/// Get total burned spores
 async fn handle_get_total_burned(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let burned = state.state.get_total_burned().map_err(|e| RpcError {
         code: -32000,
@@ -5778,8 +5789,8 @@ async fn handle_get_total_burned(state: &RpcState) -> Result<serde_json::Value, 
     })?;
 
     Ok(serde_json::json!({
-        "shells": burned,
-        "molt": burned as f64 / 1_000_000_000.0,
+        "spores": burned,
+        "licn": burned as f64 / 1_000_000_000.0,
     }))
 }
 
@@ -5925,7 +5936,7 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
                 .get_account(&tpk)
                 .ok()
                 .flatten()
-                .map(|a| a.shells)
+                .map(|a| a.spores)
                 .unwrap_or(0);
             (bal, Some(tpk.to_base58()))
         }
@@ -5940,7 +5951,7 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
                 .get_account(&gpk)
                 .ok()
                 .flatten()
-                .map(|a| a.shells)
+                .map(|a| a.spores)
                 .unwrap_or(0);
             (bal, Some(gpk.to_base58()))
         }
@@ -5960,13 +5971,13 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
     let dist_wallets_json = {
         let ga = state.state.get_genesis_accounts().unwrap_or_default();
         let mut dw_map = serde_json::Map::new();
-        for (role, pubkey, _amount_molt, _pct) in &ga {
+        for (role, pubkey, _amount_licn, _pct) in &ga {
             let bal = state
                 .state
                 .get_account(pubkey)
                 .ok()
                 .flatten()
-                .map(|a| a.shells)
+                .map(|a| a.spores)
                 .unwrap_or(0);
             dw_map.insert(format!("{}_balance", role), serde_json::json!(bal));
             dw_map.insert(
@@ -5981,14 +5992,14 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
     let slot_duration_ms = state.state.get_slot_duration_ms();
 
     // Projected supply: include theoretical inflation accrued since last epoch boundary.
     // Actual minting happens at epoch boundaries, but this projection gives live feedback.
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let current_epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
-    let epoch_start = moltchain_core::consensus::epoch_start_slot(current_epoch);
+    let current_epoch = lichen_core::consensus::slot_to_epoch(current_slot);
+    let epoch_start = lichen_core::consensus::epoch_start_slot(current_epoch);
     let slots_into_epoch = current_slot.saturating_sub(epoch_start);
     let per_slot_reward = compute_block_reward(current_slot, metrics.total_supply);
     let projected_unminted = per_slot_reward as u128 * slots_into_epoch as u128;
@@ -6024,7 +6035,7 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "fee_burn_percent": fee_config.fee_burn_percent,
         "current_epoch": current_epoch,
         "slots_into_epoch": slots_into_epoch,
-        "inflation_rate_bps": moltchain_core::consensus::inflation_rate_bps(current_slot),
+        "inflation_rate_bps": lichen_core::consensus::inflation_rate_bps(current_slot),
     }))
 }
 
@@ -6042,15 +6053,15 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
     let mut result = Vec::new();
 
     // Add genesis wallet itself
-    // RPC-06: amount_molt = original allocation at genesis (constant 1B);
+    // RPC-06: amount_licn = original allocation at genesis (constant 1B);
     // current balance reflects actual holdings after distribution.
     if let Ok(Some(gpk)) = state.state.get_genesis_pubkey() {
         let acc = state.state.get_account(&gpk).ok().flatten();
-        let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+        let bal = acc.as_ref().map(|a| a.spores).unwrap_or(0);
         result.push(serde_json::json!({
             "role": "genesis",
             "pubkey": gpk.to_base58(),
-            "amount_molt": 1_000_000_000u64,
+            "amount_licn": 1_000_000_000u64,
             "percentage": 100,
             "balance": bal,
             "label": "Genesis Signer (original allocation)",
@@ -6058,14 +6069,14 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
     }
 
     // Add all distribution wallets
-    for (role, pubkey, amount_molt, percentage) in &accounts {
+    for (role, pubkey, amount_licn, percentage) in &accounts {
         let acc = state.state.get_account(pubkey).ok().flatten();
-        let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+        let bal = acc.as_ref().map(|a| a.spores).unwrap_or(0);
         let label = match role.as_str() {
             "validator_rewards" => "Validator Treasury",
             "community_treasury" => "Community Treasury",
             "builder_grants" => "Builder Grants",
-            "founding_moltys" => "Founding Moltys",
+            "founding_symbionts" => "Founding Symbionts",
             "ecosystem_partnerships" => "Ecosystem Partnerships",
             "reserve_pool" => "Reserve Pool",
             _ => role.as_str(),
@@ -6073,7 +6084,7 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
         result.push(serde_json::json!({
             "role": role,
             "pubkey": pubkey.to_base58(),
-            "amount_molt": amount_molt,
+            "amount_licn": amount_licn,
             "percentage": percentage,
             "balance": bal,
             "label": label,
@@ -6121,7 +6132,7 @@ async fn handle_get_governed_proposal(
         "source": proposal.source.to_base58(),
         "recipient": proposal.recipient.to_base58(),
         "amount": proposal.amount,
-        "amount_molt": proposal.amount / 1_000_000_000,
+        "amount_licn": proposal.amount / 1_000_000_000,
         "approvals": proposal.approvals.iter().map(|p| p.to_base58()).collect::<Vec<_>>(),
         "threshold": proposal.threshold,
         "executed": proposal.executed,
@@ -6138,7 +6149,7 @@ async fn handle_get_treasury_info(state: &RpcState) -> Result<serde_json::Value,
         match state.state.get_treasury_pubkey() {
             Ok(Some(tpk)) => {
                 let acc = state.state.get_account(&tpk).ok().flatten();
-                let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+                let bal = acc.as_ref().map(|a| a.spores).unwrap_or(0);
                 let stk = acc.as_ref().map(|a| a.staked).unwrap_or(0);
                 (Some(tpk.to_base58()), bal, stk)
             }
@@ -6148,7 +6159,7 @@ async fn handle_get_treasury_info(state: &RpcState) -> Result<serde_json::Value,
     let (genesis_pubkey, genesis_balance, genesis_staked) = match state.state.get_genesis_pubkey() {
         Ok(Some(gpk)) => {
             let acc = state.state.get_account(&gpk).ok().flatten();
-            let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+            let bal = acc.as_ref().map(|a| a.spores).unwrap_or(0);
             let stk = acc.as_ref().map(|a| a.staked).unwrap_or(0);
             (Some(gpk.to_base58()), bal, stk)
         }
@@ -6419,12 +6430,12 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
     let metrics = state.state.get_metrics();
 
     // Calculate epoch from consensus constant (SLOTS_PER_EPOCH = 432,000)
-    let epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
+    let epoch = lichen_core::consensus::slot_to_epoch(current_slot);
     // Block height is same as slot for now (1 block per slot)
     let block_height = current_slot;
 
     // Projected supply: include theoretical inflation accrued since last epoch
-    let epoch_start = moltchain_core::consensus::epoch_start_slot(epoch);
+    let epoch_start = lichen_core::consensus::epoch_start_slot(epoch);
     let slots_into_epoch = current_slot.saturating_sub(epoch_start);
     let per_slot_reward = compute_block_reward(current_slot, metrics.total_supply);
     let projected_unminted = per_slot_reward as u128 * slots_into_epoch as u128;
@@ -6471,7 +6482,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
         "chain_id": state.chain_id,
         "network": state.network_id,
         "is_healthy": is_healthy,
-        "inflation_rate_bps": moltchain_core::consensus::inflation_rate_bps(current_slot),
+        "inflation_rate_bps": lichen_core::consensus::inflation_rate_bps(current_slot),
     }))
 }
 
@@ -6744,12 +6755,12 @@ async fn handle_get_staking_rewards(
             // Epoch-based reward projection: compute this validator's estimated
             // share of the next epoch distribution based on current stake weight.
             let current_slot = state.state.get_last_slot().unwrap_or(0);
-            let total_supply = GENESIS_SUPPLY_SHELLS
+            let total_supply = GENESIS_SUPPLY_SPORES
                 .saturating_add(state.state.get_total_minted().unwrap_or(0))
                 .saturating_sub(state.state.get_total_burned().unwrap_or(0));
 
-            let current_epoch = moltchain_core::consensus::slot_to_epoch(current_slot);
-            let epoch_start = moltchain_core::consensus::epoch_start_slot(current_epoch);
+            let current_epoch = lichen_core::consensus::slot_to_epoch(current_slot);
+            let epoch_start = lichen_core::consensus::epoch_start_slot(current_epoch);
             let slots_into_epoch = current_slot.saturating_sub(epoch_start);
             let total_pool_stake = pool_guard.total_stake().max(1);
             let validator_stake = stake_info.total_stake();
@@ -6762,18 +6773,17 @@ async fn handle_get_staking_rewards(
             let projected_pending = (epoch_accrued as f64 * stake_share) as u64;
 
             // Full epoch projection (what they'd earn at next boundary)
-            let epoch_mint =
-                moltchain_core::consensus::compute_epoch_mint(epoch_start, total_supply);
+            let epoch_mint = lichen_core::consensus::compute_epoch_mint(epoch_start, total_supply);
             let projected_epoch_reward = (epoch_mint as f64 * stake_share) as u64;
 
             let current_reward = per_slot_reward;
-            let base_rate_molt = current_reward as f64 / 1_000_000_000.0;
+            let base_rate_licn = current_reward as f64 / 1_000_000_000.0;
             let reward_rate = if stake_info.is_active {
                 if stake_info.bootstrap_debt > 0 {
                     // During vesting: 50% goes to debt repayment, 50% liquid
-                    format!("{:.4}", base_rate_molt / 2.0)
+                    format!("{:.4}", base_rate_licn / 2.0)
                 } else {
-                    format!("{:.4}", base_rate_molt)
+                    format!("{:.4}", base_rate_licn)
                 }
             } else {
                 "0".to_string()
@@ -6865,7 +6875,7 @@ async fn handle_get_account_info(
     Ok(serde_json::json!({
         "pubkey": pubkey.to_base58(),
         "balance": balance,
-        "molt": balance as f64 / 1_000_000_000.0,
+        "licn": balance as f64 / 1_000_000_000.0,
         "exists": account.is_some(),
         "is_validator": is_validator,
         "is_executable": account.as_ref().map(|a| a.executable).unwrap_or(false),
@@ -6916,7 +6926,7 @@ async fn handle_get_transaction_history(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     // Use paginated reverse-iterator method
     let indexed = state
@@ -6983,9 +6993,9 @@ async fn handle_get_transaction_history(
             "to": to,
             "type": tx_type,
             "amount": amount as f64 / 1_000_000_000.0,
-            "amount_shells": amount,
+            "amount_spores": amount,
             "fee": fee,
-            "fee_molt": fee as f64 / 1_000_000_000.0,
+            "fee_licn": fee as f64 / 1_000_000_000.0,
             "success": true,
         }));
 
@@ -7045,7 +7055,7 @@ async fn handle_get_contract_info(
 
     // Try to parse ContractAccount to get rich metadata
     let (has_abi, abi_functions, code_hash, owner_b58, token_metadata) = if account.executable {
-        if let Ok(ca) = serde_json::from_slice::<moltchain_core::ContractAccount>(&account.data) {
+        if let Ok(ca) = serde_json::from_slice::<lichen_core::ContractAccount>(&account.data) {
             let func_count = ca.abi.as_ref().map(|a| a.functions.len()).unwrap_or(0);
             let abi_fn_names: Vec<String> = ca
                 .abi
@@ -7055,7 +7065,7 @@ async fn handle_get_contract_info(
 
             // Extract MT-20 token metadata from contract storage + registry.
             //
-            // All tokens use prefixed keys: {prefix}_supply (e.g. molt_supply, wbnb_supply).
+            // All tokens use prefixed keys: {prefix}_supply (e.g. licn_supply, wbnb_supply).
             // Primary source: symbol registry entry (has name, symbol, decimals).
             // Supply value: read directly via {symbol_lowercase}_supply key.
             let mut tmeta = serde_json::Map::new();
@@ -7131,7 +7141,7 @@ async fn handle_get_contract_info(
 
     // Extract version + previous_code_hash when available
     let (contract_version, prev_code_hash) = if account.executable {
-        if let Ok(ca) = serde_json::from_slice::<moltchain_core::ContractAccount>(&account.data) {
+        if let Ok(ca) = serde_json::from_slice::<lichen_core::ContractAccount>(&account.data) {
             (ca.version, ca.previous_code_hash.map(|h| h.to_hex()))
         } else {
             (1u32, None)
@@ -7279,7 +7289,7 @@ async fn handle_get_contract_abi(
         });
     }
 
-    let contract: moltchain_core::ContractAccount =
+    let contract: lichen_core::ContractAccount =
         serde_json::from_slice(&account.data).map_err(|e| RpcError {
             code: -32000,
             message: format!("Failed to decode contract: {}", e),
@@ -7332,7 +7342,7 @@ async fn handle_set_contract_abi(
         message: format!("Invalid contract ID: {}", e),
     })?;
 
-    let abi: moltchain_core::ContractAbi =
+    let abi: lichen_core::ContractAbi =
         serde_json::from_value(abi_value.clone()).map_err(|e| RpcError {
             code: -32602,
             message: format!("Invalid ABI format: {}", e),
@@ -7357,7 +7367,7 @@ async fn handle_set_contract_abi(
         });
     }
 
-    let mut contract: moltchain_core::ContractAccount = serde_json::from_slice(&account.data)
+    let mut contract: lichen_core::ContractAccount = serde_json::from_slice(&account.data)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Failed to decode contract: {}", e),
@@ -7557,14 +7567,14 @@ async fn handle_get_all_contracts(
 /// Params: [deployer_base58, code_base64, init_data_json_or_null, signature_hex]
 ///
 /// The deployer signs SHA-256(code_bytes) with their ed25519 key.
-/// Deploy fee (2.5 MOLT) is charged from the deployer's account.
+/// Deploy fee (2.5 LICN) is charged from the deployer's account.
 /// Contract address is derived as SHA-256(deployer_pubkey + code_bytes).
 async fn handle_deploy_contract(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     use base64::{engine::general_purpose, Engine as _};
-    use moltchain_core::account::Keypair as MoltKeypair;
+    use lichen_core::account::Keypair as LichenKeypair;
     use sha2::{Digest, Sha256};
 
     require_legacy_admin_rpc_enabled(state, "deployContract")?;
@@ -7655,7 +7665,7 @@ async fn handle_deploy_contract(
     let mut hasher = Sha256::new();
     hasher.update(&code_bytes);
     let code_hash = hasher.finalize();
-    if !MoltKeypair::verify(&deployer_pubkey, &code_hash, &sig_array) {
+    if !LichenKeypair::verify(&deployer_pubkey, &code_hash, &sig_array) {
         return Err(RpcError {
             code: -32003,
             message: "Invalid signature: deployer must sign SHA-256(code)".to_string(),
@@ -7696,8 +7706,8 @@ async fn handle_deploy_contract(
         });
     }
 
-    // Charge deploy fee (2.5 MOLT)
-    let deploy_fee = moltchain_core::CONTRACT_DEPLOY_FEE;
+    // Charge deploy fee (2.5 LICN)
+    let deploy_fee = lichen_core::CONTRACT_DEPLOY_FEE;
     let deployer_account = state
         .state
         .get_account(&deployer_pubkey)
@@ -7714,7 +7724,7 @@ async fn handle_deploy_contract(
         return Err(RpcError {
             code: -32000,
             message: format!(
-                "Insufficient spendable balance: need {} shells ({:.1} MOLT), have {} spendable ({:.1} MOLT)",
+                "Insufficient spendable balance: need {} spores ({:.1} LICN), have {} spendable ({:.1} LICN)",
                 deploy_fee,
                 deploy_fee as f64 / 1_000_000_000.0,
                 deployer_account.spendable,
@@ -7727,7 +7737,7 @@ async fn handle_deploy_contract(
     // deployer debit + treasury credit + contract account creation.
     let mut batch = state.state.begin_batch();
 
-    // Debit deployer using deduct_spendable to maintain shells == spendable + staked + locked
+    // Debit deployer using deduct_spendable to maintain spores == spendable + staked + locked
     let mut updated_deployer = deployer_account.clone();
     updated_deployer
         .deduct_spendable(deploy_fee)
@@ -7761,7 +7771,7 @@ async fn handle_deploy_contract(
             code: -32000,
             message: format!("Database error: {}", e),
         })?
-        .unwrap_or_else(|| moltchain_core::Account::new(0, treasury_pubkey));
+        .unwrap_or_else(|| lichen_core::Account::new(0, treasury_pubkey));
     treasury_account
         .add_spendable(deploy_fee)
         .map_err(|e| RpcError {
@@ -7777,7 +7787,7 @@ async fn handle_deploy_contract(
 
     // Create ContractAccount
     let contract = ContractAccount::new(code_bytes, deployer_pubkey);
-    let mut account = moltchain_core::Account::new(0, program_pubkey);
+    let mut account = lichen_core::Account::new(0, program_pubkey);
     account.data = serde_json::to_vec(&contract).map_err(|e| RpcError {
         code: -32000,
         message: format!("Failed to serialize contract: {}", e),
@@ -7835,7 +7845,7 @@ async fn handle_deploy_contract(
     }
 
     info!(
-        "deployContract: {} deployed contract at {} (code={} bytes, fee={} shells)",
+        "deployContract: {} deployed contract at {} (code={} bytes, fee={} spores)",
         deployer_pubkey.to_base58(),
         program_pubkey.to_base58(),
         account.data.len(),
@@ -7847,7 +7857,7 @@ async fn handle_deploy_contract(
         "deployer": deployer_pubkey.to_base58(),
         "code_size": account.data.len(),
         "deploy_fee": deploy_fee,
-        "deploy_fee_molt": deploy_fee as f64 / 1_000_000_000.0,
+        "deploy_fee_licn": deploy_fee as f64 / 1_000_000_000.0,
     }))
 }
 
@@ -7858,7 +7868,7 @@ async fn handle_upgrade_contract(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     use base64::{engine::general_purpose, Engine as _};
-    use moltchain_core::account::Keypair as MoltKeypair;
+    use lichen_core::account::Keypair as LichenKeypair;
     use sha2::{Digest, Sha256};
 
     require_legacy_admin_rpc_enabled(state, "upgradeContract")?;
@@ -7957,7 +7967,7 @@ async fn handle_upgrade_contract(
     let mut hasher = Sha256::new();
     hasher.update(&code_bytes);
     let code_hash_bytes = hasher.finalize();
-    if !MoltKeypair::verify(&owner_pubkey, &code_hash_bytes, &sig_array) {
+    if !LichenKeypair::verify(&owner_pubkey, &code_hash_bytes, &sig_array) {
         return Err(RpcError {
             code: -32003,
             message: "Invalid signature: owner must sign SHA-256(code)".to_string(),
@@ -7991,8 +8001,8 @@ async fn handle_upgrade_contract(
         });
     }
 
-    // Charge upgrade fee (10 MOLT)
-    let upgrade_fee = moltchain_core::CONTRACT_UPGRADE_FEE;
+    // Charge upgrade fee (10 LICN)
+    let upgrade_fee = lichen_core::CONTRACT_UPGRADE_FEE;
     let owner_account = state
         .state
         .get_account(&owner_pubkey)
@@ -8009,7 +8019,7 @@ async fn handle_upgrade_contract(
         return Err(RpcError {
             code: -32000,
             message: format!(
-                "Insufficient spendable balance: need {} shells ({:.1} MOLT), have {} spendable ({:.1} MOLT)",
+                "Insufficient spendable balance: need {} spores ({:.1} LICN), have {} spendable ({:.1} LICN)",
                 upgrade_fee,
                 upgrade_fee as f64 / 1_000_000_000.0,
                 owner_account.spendable,
@@ -8055,7 +8065,7 @@ async fn handle_upgrade_contract(
             code: -32000,
             message: format!("Database error: {}", e),
         })?
-        .unwrap_or_else(|| moltchain_core::Account::new(0, treasury_pubkey));
+        .unwrap_or_else(|| lichen_core::Account::new(0, treasury_pubkey));
     treasury_account
         .add_spendable(upgrade_fee)
         .map_err(|e| RpcError {
@@ -8080,7 +8090,7 @@ async fn handle_upgrade_contract(
     let new_hash = code_hasher.finalize();
     let mut hash_bytes = [0u8; 32];
     hash_bytes.copy_from_slice(&new_hash[..32]);
-    contract.code_hash = moltchain_core::Hash(hash_bytes);
+    contract.code_hash = lichen_core::Hash(hash_bytes);
     contract.code = code_bytes;
 
     // Serialize back
@@ -8104,7 +8114,7 @@ async fn handle_upgrade_contract(
     })?;
 
     info!(
-        "upgradeContract: {} upgraded {} v{} → v{} (code={} bytes, fee={} shells)",
+        "upgradeContract: {} upgraded {} v{} → v{} (code={} bytes, fee={} spores)",
         owner_pubkey.to_base58(),
         contract_pubkey.to_base58(),
         old_version,
@@ -8120,7 +8130,7 @@ async fn handle_upgrade_contract(
         "previous_version": old_version,
         "code_size": updated_account.data.len(),
         "upgrade_fee": upgrade_fee,
-        "upgrade_fee_molt": upgrade_fee as f64 / 1_000_000_000.0,
+        "upgrade_fee_licn": upgrade_fee as f64 / 1_000_000_000.0,
     }))
 }
 
@@ -8477,14 +8487,14 @@ async fn handle_get_program_storage(
 }
 
 // ============================================================================
-// MOLTYID ENDPOINTS
+// LICHENID ENDPOINTS
 // ============================================================================
 
-const MOLTYID_SYMBOL: &str = "YID";
-const MOLTYID_IDENTITY_SIZE: usize = 127;
+const LICHENID_SYMBOL: &str = "YID";
+const LICHENID_IDENTITY_SIZE: usize = 127;
 
 #[derive(Debug, Clone)]
-struct MoltyIdIdentityRecord {
+struct LichenIdIdentityRecord {
     owner: Pubkey,
     agent_type: u8,
     name: String,
@@ -8497,25 +8507,25 @@ struct MoltyIdIdentityRecord {
 }
 
 #[derive(Debug, Clone)]
-struct MoltyIdSkillRecord {
+struct LichenIdSkillRecord {
     name: String,
     proficiency: u8,
     timestamp: u64,
 }
 
 #[derive(Debug, Clone)]
-struct MoltyIdVouchRecord {
+struct LichenIdVouchRecord {
     voucher: Pubkey,
     timestamp: u64,
 }
 
 #[derive(Debug, Clone)]
-struct MoltyIdAchievementRecord {
+struct LichenIdAchievementRecord {
     id: u8,
     timestamp: u64,
 }
 
-fn moltyid_agent_type_name(agent_type: u8) -> &'static str {
+fn lichenid_agent_type_name(agent_type: u8) -> &'static str {
     match agent_type {
         0 => "System",
         1 => "Trading",
@@ -8531,7 +8541,7 @@ fn moltyid_agent_type_name(agent_type: u8) -> &'static str {
     }
 }
 
-fn moltyid_trust_tier(score: u64) -> u8 {
+fn lichenid_trust_tier(score: u64) -> u8 {
     if score >= 10_000 {
         5
     } else if score >= 5_000 {
@@ -8547,7 +8557,7 @@ fn moltyid_trust_tier(score: u64) -> u8 {
     }
 }
 
-fn moltyid_trust_tier_name(tier: u8) -> &'static str {
+fn lichenid_trust_tier_name(tier: u8) -> &'static str {
     match tier {
         1 => "Verified",
         2 => "Trusted",
@@ -8558,7 +8568,7 @@ fn moltyid_trust_tier_name(tier: u8) -> &'static str {
     }
 }
 
-fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
+fn lichenid_achievement_name(achievement_id: u8) -> &'static str {
     match achievement_id {
         // Identity (1-12)
         1 => "First Transaction",
@@ -8595,12 +8605,12 @@ fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
         // Staking (41-48)
         41 => "First Stake",
         42 => "Unstaked",
-        43 => "ReefStake Pioneer",
+        43 => "MossStake Pioneer",
         44 => "Locked Staker",
         45 => "Diamond Hands",
         46 => "Whale Staker",
         47 => "Reward Harvester",
-        48 => "stMOLT Transferrer",
+        48 => "stLICN Transferrer",
         // Bridge (51-56)
         51 => "Bridge Pioneer",
         52 => "Bridge Out",
@@ -8721,39 +8731,39 @@ fn extract_single_string(
         })
 }
 
-fn moltyid_hex(pubkey: &Pubkey) -> String {
+fn lichenid_hex(pubkey: &Pubkey) -> String {
     hex::encode(pubkey.0)
 }
 
-fn moltyid_identity_key(pubkey: &Pubkey) -> Vec<u8> {
-    format!("id:{}", moltyid_hex(pubkey)).into_bytes()
+fn lichenid_identity_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("id:{}", lichenid_hex(pubkey)).into_bytes()
 }
 
-fn moltyid_reputation_key(pubkey: &Pubkey) -> Vec<u8> {
-    format!("rep:{}", moltyid_hex(pubkey)).into_bytes()
+fn lichenid_reputation_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("rep:{}", lichenid_hex(pubkey)).into_bytes()
 }
 
-fn moltyid_reverse_name_key(pubkey: &Pubkey) -> Vec<u8> {
-    format!("name_rev:{}", moltyid_hex(pubkey)).into_bytes()
+fn lichenid_reverse_name_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("name_rev:{}", lichenid_hex(pubkey)).into_bytes()
 }
 
-fn moltyid_skill_key(pubkey: &Pubkey, index: u8) -> Vec<u8> {
-    format!("skill:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+fn lichenid_skill_key(pubkey: &Pubkey, index: u8) -> Vec<u8> {
+    format!("skill:{}:{}", lichenid_hex(pubkey), index).into_bytes()
 }
 
-fn moltyid_vouch_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
-    format!("vouch:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+fn lichenid_vouch_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
+    format!("vouch:{}:{}", lichenid_hex(pubkey), index).into_bytes()
 }
 
-fn moltyid_vouch_given_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
-    format!("vouch_given:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+fn lichenid_vouch_given_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
+    format!("vouch_given:{}:{}", lichenid_hex(pubkey), index).into_bytes()
 }
 
-fn moltyid_achievement_key(pubkey: &Pubkey, achievement_id: u8) -> Vec<u8> {
-    format!("ach:{}:{:02}", moltyid_hex(pubkey), achievement_id).into_bytes()
+fn lichenid_achievement_key(pubkey: &Pubkey, achievement_id: u8) -> Vec<u8> {
+    format!("ach:{}:{:02}", lichenid_hex(pubkey), achievement_id).into_bytes()
 }
 
-fn moltyid_skill_hash(skill_name: &str) -> [u8; 8] {
+fn lichenid_skill_hash(skill_name: &str) -> [u8; 8] {
     let mut out = [0u8; 8];
     for (index, byte) in skill_name.as_bytes().iter().enumerate() {
         if index >= 8 {
@@ -8764,18 +8774,18 @@ fn moltyid_skill_hash(skill_name: &str) -> [u8; 8] {
     out
 }
 
-fn moltyid_attestation_count_key(pubkey: &Pubkey, skill_name: &str) -> Vec<u8> {
-    let skill_hash = moltyid_skill_hash(skill_name);
+fn lichenid_attestation_count_key(pubkey: &Pubkey, skill_name: &str) -> Vec<u8> {
+    let skill_hash = lichenid_skill_hash(skill_name);
     format!(
         "attest_count_{}_{}",
-        moltyid_hex(pubkey),
+        lichenid_hex(pubkey),
         hex::encode(skill_hash)
     )
     .into_bytes()
 }
 
-fn parse_moltyid_identity_record(input: &[u8]) -> Option<MoltyIdIdentityRecord> {
-    if input.len() < MOLTYID_IDENTITY_SIZE {
+fn parse_lichenid_identity_record(input: &[u8]) -> Option<LichenIdIdentityRecord> {
+    if input.len() < LICHENID_IDENTITY_SIZE {
         return None;
     }
 
@@ -8790,7 +8800,7 @@ fn parse_moltyid_identity_record(input: &[u8]) -> Option<MoltyIdIdentityRecord> 
     }
     let name = String::from_utf8_lossy(&input[35..35 + name_len]).to_string();
 
-    Some(MoltyIdIdentityRecord {
+    Some(LichenIdIdentityRecord {
         owner,
         agent_type,
         name,
@@ -8803,7 +8813,7 @@ fn parse_moltyid_identity_record(input: &[u8]) -> Option<MoltyIdIdentityRecord> 
     })
 }
 
-fn parse_moltyid_skill_record(input: &[u8]) -> Option<MoltyIdSkillRecord> {
+fn parse_lichenid_skill_record(input: &[u8]) -> Option<LichenIdSkillRecord> {
     let name_len = *input.first()? as usize;
     if name_len == 0 || 1 + name_len + 1 + 8 > input.len() {
         return None;
@@ -8811,26 +8821,26 @@ fn parse_moltyid_skill_record(input: &[u8]) -> Option<MoltyIdSkillRecord> {
     let name = String::from_utf8_lossy(&input[1..1 + name_len]).to_string();
     let proficiency = input[1 + name_len];
     let timestamp = read_u64_le(input, 1 + name_len + 1)?;
-    Some(MoltyIdSkillRecord {
+    Some(LichenIdSkillRecord {
         name,
         proficiency,
         timestamp,
     })
 }
 
-fn parse_moltyid_vouch_record(input: &[u8]) -> Option<MoltyIdVouchRecord> {
+fn parse_lichenid_vouch_record(input: &[u8]) -> Option<LichenIdVouchRecord> {
     if input.len() < 40 {
         return None;
     }
     let mut voucher = [0u8; 32];
     voucher.copy_from_slice(&input[0..32]);
-    Some(MoltyIdVouchRecord {
+    Some(LichenIdVouchRecord {
         voucher: Pubkey(voucher),
         timestamp: read_u64_le(input, 32)?,
     })
 }
 
-fn parse_moltyid_vouch_given_record(input: &[u8]) -> Option<(Pubkey, u64)> {
+fn parse_lichenid_vouch_given_record(input: &[u8]) -> Option<(Pubkey, u64)> {
     if input.len() < 40 {
         return None;
     }
@@ -8840,39 +8850,39 @@ fn parse_moltyid_vouch_given_record(input: &[u8]) -> Option<(Pubkey, u64)> {
     Some((Pubkey(vouchee), timestamp))
 }
 
-fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRecord> {
+fn parse_lichenid_achievement_record(input: &[u8]) -> Option<LichenIdAchievementRecord> {
     if input.len() < 9 {
         return None;
     }
-    Some(MoltyIdAchievementRecord {
+    Some(LichenIdAchievementRecord {
         id: input[0],
         timestamp: read_u64_le(input, 1)?,
     })
 }
 
-/// CF-based MoltyID identity read — no full account deserialization.
-fn get_moltyid_identity(state: &RpcState, pubkey: &Pubkey) -> Option<MoltyIdIdentityRecord> {
+/// CF-based LichenID identity read — no full account deserialization.
+fn get_lichenid_identity(state: &RpcState, pubkey: &Pubkey) -> Option<LichenIdIdentityRecord> {
     state
         .state
-        .get_program_storage(MOLTYID_SYMBOL, &moltyid_identity_key(pubkey))
-        .and_then(|value| parse_moltyid_identity_record(&value))
+        .get_program_storage(LICHENID_SYMBOL, &lichenid_identity_key(pubkey))
+        .and_then(|value| parse_lichenid_identity_record(&value))
 }
 
-fn get_moltyid_reputation(state: &RpcState, pubkey: &Pubkey) -> Option<u64> {
+fn get_lichenid_reputation(state: &RpcState, pubkey: &Pubkey) -> Option<u64> {
     state
         .state
-        .get_program_storage(MOLTYID_SYMBOL, &moltyid_reputation_key(pubkey))
+        .get_program_storage(LICHENID_SYMBOL, &lichenid_reputation_key(pubkey))
         .and_then(|value| read_u64_le(&value, 0))
 }
 
-fn get_moltyid_name(state: &RpcState, pubkey: &Pubkey, current_slot: u64) -> Option<String> {
+fn get_lichenid_name(state: &RpcState, pubkey: &Pubkey, current_slot: u64) -> Option<String> {
     let raw_name = state
         .state
-        .get_program_storage(MOLTYID_SYMBOL, &moltyid_reverse_name_key(pubkey))?;
+        .get_program_storage(LICHENID_SYMBOL, &lichenid_reverse_name_key(pubkey))?;
     let label = String::from_utf8(raw_name).ok()?;
     let record = state
         .state
-        .get_program_storage(MOLTYID_SYMBOL, &format!("name:{}", label).into_bytes())?;
+        .get_program_storage(LICHENID_SYMBOL, &format!("name:{}", label).into_bytes())?;
     if record.len() < 48 {
         return None;
     }
@@ -8880,39 +8890,39 @@ fn get_moltyid_name(state: &RpcState, pubkey: &Pubkey, current_slot: u64) -> Opt
     if current_slot >= expiry_slot {
         return None;
     }
-    Some(format!("{}.molt", label))
+    Some(format!("{}.lichen", label))
 }
 
-fn moltyid_cf_get(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
-    state.state.get_program_storage(MOLTYID_SYMBOL, key)
+fn lichenid_cf_get(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
+    state.state.get_program_storage(LICHENID_SYMBOL, key)
 }
 
-async fn handle_get_moltyid_identity(
+async fn handle_get_lichenid_identity(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdIdentity")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdIdentity")?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(state, &pubkey) {
+    let identity = match get_lichenid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::Value::Null),
     };
 
-    let score = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
-    let tier = moltyid_trust_tier(score);
-    let molt_name = get_moltyid_name(state, &pubkey, current_slot);
+    let score = get_lichenid_reputation(state, &pubkey).unwrap_or(identity.reputation);
+    let tier = lichenid_trust_tier(score);
+    let licn_name = get_lichenid_name(state, &pubkey, current_slot);
 
     Ok(serde_json::json!({
         "address": pubkey.to_base58(),
         "owner": identity.owner.to_base58(),
         "name": identity.name,
-        "molt_name": molt_name,
+        "licn_name": licn_name,
         "agent_type": identity.agent_type,
-        "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+        "agent_type_name": lichenid_agent_type_name(identity.agent_type),
         "reputation": score,
         "trust_tier": tier,
-        "trust_tier_name": moltyid_trust_tier_name(tier),
+        "trust_tier_name": lichenid_trust_tier_name(tier),
         "created_at": identity.created_at,
         "updated_at": identity.updated_at,
         "skill_count": identity.skill_count,
@@ -8921,42 +8931,42 @@ async fn handle_get_moltyid_identity(
     }))
 }
 
-async fn handle_get_moltyid_reputation(
+async fn handle_get_lichenid_reputation(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdReputation")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdReputation")?;
 
-    let score = get_moltyid_reputation(state, &pubkey)
-        .or_else(|| get_moltyid_identity(state, &pubkey).map(|identity| identity.reputation))
+    let score = get_lichenid_reputation(state, &pubkey)
+        .or_else(|| get_lichenid_identity(state, &pubkey).map(|identity| identity.reputation))
         .unwrap_or(0);
-    let tier = moltyid_trust_tier(score);
+    let tier = lichenid_trust_tier(score);
 
     Ok(serde_json::json!({
         "address": pubkey.to_base58(),
         "score": score,
         "tier": tier,
-        "tier_name": moltyid_trust_tier_name(tier),
+        "tier_name": lichenid_trust_tier_name(tier),
     }))
 }
 
-async fn handle_get_moltyid_skills(
+async fn handle_get_lichenid_skills(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdSkills")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdSkills")?;
 
-    let identity = match get_moltyid_identity(state, &pubkey) {
+    let identity = match get_lichenid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::json!([])),
     };
 
     let mut skills = Vec::new();
     for index in 0..identity.skill_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
-            if let Some(skill) = parse_moltyid_skill_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_lichenid_skill_record(&raw) {
                 let attestations =
-                    moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                    lichenid_cf_get(state, &lichenid_attestation_count_key(&pubkey, &skill.name))
                         .and_then(|value| read_u64_le(&value, 0))
                         .unwrap_or(0);
 
@@ -8974,25 +8984,25 @@ async fn handle_get_moltyid_skills(
     Ok(serde_json::Value::Array(skills))
 }
 
-async fn handle_get_moltyid_vouches(
+async fn handle_get_lichenid_vouches(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdVouches")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdVouches")?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(state, &pubkey) {
+    let identity = match get_lichenid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::json!({"received": [], "given": []})),
     };
 
     let mut received = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_key(&pubkey, index)) {
-            if let Some(vouch) = parse_moltyid_vouch_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_lichenid_vouch_record(&raw) {
                 received.push(serde_json::json!({
                     "voucher": vouch.voucher.to_base58(),
-                    "voucher_name": get_moltyid_name(state, &vouch.voucher, current_slot),
+                    "voucher_name": get_lichenid_name(state, &vouch.voucher, current_slot),
                     "timestamp": vouch.timestamp,
                 }));
             }
@@ -9001,11 +9011,11 @@ async fn handle_get_moltyid_vouches(
 
     let mut given = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_given_key(&pubkey, index)) {
-            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_lichenid_vouch_given_record(&raw) {
                 given.push(serde_json::json!({
                     "vouchee": vouchee.to_base58(),
-                    "vouchee_name": get_moltyid_name(state, &vouchee, current_slot),
+                    "vouchee_name": get_lichenid_name(state, &vouchee, current_slot),
                     "timestamp": timestamp,
                 }));
             }
@@ -9014,7 +9024,7 @@ async fn handle_get_moltyid_vouches(
 
     // Backward compatibility for pre-indexed historical data — scan CF entries.
     if given.is_empty() {
-        let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+        let program = resolve_symbol_pubkey(state, LICHENID_SYMBOL)?;
         let entries = state
             .state
             .get_contract_storage_entries(&program, 10_000, None)
@@ -9023,18 +9033,18 @@ async fn handle_get_moltyid_vouches(
             if !key.starts_with(b"id:") {
                 continue;
             }
-            let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+            let Some(vouchee_identity) = parse_lichenid_identity_record(value) else {
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
                 if let Some(raw_vouch) =
-                    moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index))
+                    lichenid_cf_get(state, &lichenid_vouch_key(&vouchee_identity.owner, index))
                 {
-                    if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
+                    if let Some(vouch) = parse_lichenid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given.push(serde_json::json!({
                                 "vouchee": vouchee_identity.owner.to_base58(),
-                                "vouchee_name": get_moltyid_name(state, &vouchee_identity.owner, current_slot),
+                                "vouchee_name": get_lichenid_name(state, &vouchee_identity.owner, current_slot),
                                 "timestamp": vouch.timestamp,
                             }));
                         }
@@ -9050,24 +9060,25 @@ async fn handle_get_moltyid_vouches(
     }))
 }
 
-async fn handle_get_moltyid_achievements(
+async fn handle_get_lichenid_achievements(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdAchievements")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdAchievements")?;
 
-    if get_moltyid_identity(state, &pubkey).is_none() {
+    if get_lichenid_identity(state, &pubkey).is_none() {
         return Ok(serde_json::json!([]));
     }
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=128u8 {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
+        if let Some(raw) =
+            lichenid_cf_get(state, &lichenid_achievement_key(&pubkey, achievement_id))
         {
-            if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
+            if let Some(achievement) = parse_lichenid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
-                    "name": moltyid_achievement_name(achievement.id),
+                    "name": lichenid_achievement_name(achievement.id),
                     "timestamp": achievement.timestamp,
                 }));
             }
@@ -9077,28 +9088,28 @@ async fn handle_get_moltyid_achievements(
     Ok(serde_json::Value::Array(achievements))
 }
 
-async fn handle_get_moltyid_profile(
+async fn handle_get_lichenid_profile(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "getMoltyIdProfile")?;
+    let pubkey = extract_single_pubkey(&params, "getLichenIdProfile")?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(state, &pubkey) {
+    let identity = match get_lichenid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::Value::Null),
     };
 
-    let reputation = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
-    let tier = moltyid_trust_tier(reputation);
-    let molt_name = get_moltyid_name(state, &pubkey, current_slot);
+    let reputation = get_lichenid_reputation(state, &pubkey).unwrap_or(identity.reputation);
+    let tier = lichenid_trust_tier(reputation);
+    let licn_name = get_lichenid_name(state, &pubkey, current_slot);
 
     let mut skills = Vec::new();
     for index in 0..identity.skill_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
-            if let Some(skill) = parse_moltyid_skill_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_lichenid_skill_record(&raw) {
                 let attestations =
-                    moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                    lichenid_cf_get(state, &lichenid_attestation_count_key(&pubkey, &skill.name))
                         .and_then(|value| read_u64_le(&value, 0))
                         .unwrap_or(0);
 
@@ -9115,11 +9126,11 @@ async fn handle_get_moltyid_profile(
 
     let mut received_vouches = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_key(&pubkey, index)) {
-            if let Some(vouch) = parse_moltyid_vouch_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_lichenid_vouch_record(&raw) {
                 received_vouches.push(serde_json::json!({
                     "voucher": vouch.voucher.to_base58(),
-                    "voucher_name": get_moltyid_name(state, &vouch.voucher, current_slot),
+                    "voucher_name": get_lichenid_name(state, &vouch.voucher, current_slot),
                     "timestamp": vouch.timestamp,
                 }));
             }
@@ -9128,11 +9139,11 @@ async fn handle_get_moltyid_profile(
 
     let mut given_vouches = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_given_key(&pubkey, index)) {
-            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(&raw) {
+        if let Some(raw) = lichenid_cf_get(state, &lichenid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_lichenid_vouch_given_record(&raw) {
                 given_vouches.push(serde_json::json!({
                     "vouchee": vouchee.to_base58(),
-                    "vouchee_name": get_moltyid_name(state, &vouchee, current_slot),
+                    "vouchee_name": get_lichenid_name(state, &vouchee, current_slot),
                     "timestamp": timestamp,
                 }));
             }
@@ -9140,7 +9151,7 @@ async fn handle_get_moltyid_profile(
     }
 
     if given_vouches.is_empty() {
-        let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+        let program = resolve_symbol_pubkey(state, LICHENID_SYMBOL)?;
         let entries = state
             .state
             .get_contract_storage_entries(&program, 10_000, None)
@@ -9149,18 +9160,18 @@ async fn handle_get_moltyid_profile(
             if !key.starts_with(b"id:") {
                 continue;
             }
-            let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+            let Some(vouchee_identity) = parse_lichenid_identity_record(value) else {
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
                 if let Some(raw_vouch) =
-                    moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index))
+                    lichenid_cf_get(state, &lichenid_vouch_key(&vouchee_identity.owner, index))
                 {
-                    if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
+                    if let Some(vouch) = parse_lichenid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given_vouches.push(serde_json::json!({
                                 "vouchee": vouchee_identity.owner.to_base58(),
-                                "vouchee_name": get_moltyid_name(state, &vouchee_identity.owner, current_slot),
+                                "vouchee_name": get_lichenid_name(state, &vouchee_identity.owner, current_slot),
                                 "timestamp": vouch.timestamp,
                             }));
                         }
@@ -9172,36 +9183,37 @@ async fn handle_get_moltyid_profile(
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=128u8 {
-        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id))
+        if let Some(raw) =
+            lichenid_cf_get(state, &lichenid_achievement_key(&pubkey, achievement_id))
         {
-            if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
+            if let Some(achievement) = parse_lichenid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
-                    "name": moltyid_achievement_name(achievement.id),
+                    "name": lichenid_achievement_name(achievement.id),
                     "timestamp": achievement.timestamp,
                 }));
             }
         }
     }
 
-    let endpoint = moltyid_cf_get(
+    let endpoint = lichenid_cf_get(
         state,
-        &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes(),
+        &format!("endpoint:{}", lichenid_hex(&pubkey)).into_bytes(),
     )
     .and_then(|raw| String::from_utf8(raw).ok());
 
-    let metadata = moltyid_cf_get(
+    let metadata = lichenid_cf_get(
         state,
-        &format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes(),
+        &format!("metadata:{}", lichenid_hex(&pubkey)).into_bytes(),
     )
     .and_then(|raw| String::from_utf8(raw).ok())
     .map(|text| {
         serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!(text))
     });
 
-    let availability = moltyid_cf_get(
+    let availability = lichenid_cf_get(
         state,
-        &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes(),
+        &format!("availability:{}", lichenid_hex(&pubkey)).into_bytes(),
     )
     .and_then(|raw| raw.first().copied())
     .unwrap_or(0);
@@ -9212,9 +9224,9 @@ async fn handle_get_moltyid_profile(
         _ => "offline",
     };
 
-    let rate = moltyid_cf_get(
+    let rate = lichenid_cf_get(
         state,
-        &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes(),
+        &format!("rate:{}", lichenid_hex(&pubkey)).into_bytes(),
     )
     .and_then(|raw| read_u64_le(&raw, 0))
     .unwrap_or(0);
@@ -9230,8 +9242,8 @@ async fn handle_get_moltyid_profile(
         "slashing_events",
     ];
     for (index, label) in labels.iter().enumerate() {
-        let key = format!("cont:{}:{}", moltyid_hex(&pubkey), index).into_bytes();
-        let value = moltyid_cf_get(state, &key)
+        let key = format!("cont:{}:{}", lichenid_hex(&pubkey), index).into_bytes();
+        let value = lichenid_cf_get(state, &key)
             .and_then(|raw| read_u64_le(&raw, 0))
             .unwrap_or(0);
         contributions.insert((*label).to_string(), serde_json::json!(value));
@@ -9243,7 +9255,7 @@ async fn handle_get_moltyid_profile(
             "owner": identity.owner.to_base58(),
             "name": identity.name,
             "agent_type": identity.agent_type,
-            "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+            "agent_type_name": lichenid_agent_type_name(identity.agent_type),
             "reputation": reputation,
             "created_at": identity.created_at,
             "updated_at": identity.updated_at,
@@ -9251,11 +9263,11 @@ async fn handle_get_moltyid_profile(
             "vouch_count": identity.vouch_count,
             "is_active": identity.is_active,
         },
-        "molt_name": molt_name,
+        "licn_name": licn_name,
         "reputation": {
             "score": reputation,
             "tier": tier,
-            "tier_name": moltyid_trust_tier_name(tier),
+            "tier_name": lichenid_trust_tier_name(tier),
         },
         "skills": skills,
         "vouches": {
@@ -9274,20 +9286,20 @@ async fn handle_get_moltyid_profile(
     }))
 }
 
-fn normalize_molt_label(input: &str) -> String {
+fn normalize_licn_label(input: &str) -> String {
     input
         .trim()
         .to_ascii_lowercase()
-        .trim_end_matches(".molt")
+        .trim_end_matches(".lichen")
         .to_string()
 }
 
-async fn handle_resolve_molt_name(
+async fn handle_resolve_licn_name(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let raw_name = extract_single_string(&params, "resolveMoltName", "name")?;
-    let label = normalize_molt_label(&raw_name);
+    let raw_name = extract_single_string(&params, "resolveLichenName", "name")?;
+    let label = normalize_licn_label(&raw_name);
     if label.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -9295,7 +9307,7 @@ async fn handle_resolve_molt_name(
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let key = format!("name:{}", label).into_bytes();
 
-    let Some(record) = moltyid_cf_get(state, &key) else {
+    let Some(record) = lichenid_cf_get(state, &key) else {
         return Ok(serde_json::Value::Null);
     };
     if record.len() < 48 {
@@ -9310,26 +9322,26 @@ async fn handle_resolve_molt_name(
     owner_bytes.copy_from_slice(&record[0..32]);
     let owner = Pubkey(owner_bytes);
     Ok(serde_json::json!({
-        "name": format!("{}.molt", label),
+        "name": format!("{}.lichen", label),
         "owner": owner.to_base58(),
         "registered_slot": read_u64_le(&record, 32).unwrap_or(0),
         "expiry_slot": expiry_slot,
     }))
 }
 
-async fn handle_reverse_molt_name(
+async fn handle_reverse_licn_name(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let pubkey = extract_single_pubkey(&params, "reverseMoltName")?;
+    let pubkey = extract_single_pubkey(&params, "reverseLichenName")?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    match get_moltyid_name(state, &pubkey, current_slot) {
+    match get_lichenid_name(state, &pubkey, current_slot) {
         Some(name) => Ok(serde_json::json!({"name": name})),
         None => Ok(serde_json::Value::Null),
     }
 }
 
-async fn handle_batch_reverse_molt_names(
+async fn handle_batch_reverse_licn_names(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
@@ -9351,7 +9363,7 @@ async fn handle_batch_reverse_molt_names(
             continue;
         };
         let parsed = Pubkey::from_base58(address_str).ok();
-        let name = parsed.and_then(|pubkey| get_moltyid_name(state, &pubkey, current_slot));
+        let name = parsed.and_then(|pubkey| get_lichenid_name(state, &pubkey, current_slot));
         output.insert(
             address_str.to_string(),
             name.map(serde_json::Value::String)
@@ -9362,13 +9374,13 @@ async fn handle_batch_reverse_molt_names(
     Ok(serde_json::Value::Object(output))
 }
 
-async fn handle_search_molt_names(
+async fn handle_search_licn_names(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let prefix_raw = extract_single_string(&params, "searchMoltNames", "prefix")?;
-    let prefix = normalize_molt_label(&prefix_raw);
-    let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+    let prefix_raw = extract_single_string(&params, "searchLichenNames", "prefix")?;
+    let prefix = normalize_licn_label(&prefix_raw);
+    let program = resolve_symbol_pubkey(state, LICHENID_SYMBOL)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let entries = state
         .state
@@ -9396,7 +9408,7 @@ async fn handle_search_molt_names(
         if current_slot >= expiry_slot {
             continue;
         }
-        names.push(format!("{}.molt", label));
+        names.push(format!("{}.lichen", label));
     }
 
     names.sort_unstable();
@@ -9404,11 +9416,11 @@ async fn handle_search_molt_names(
     Ok(serde_json::json!(names))
 }
 
-async fn handle_get_moltyid_agent_directory(
+async fn handle_get_lichenid_agent_directory(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+    let program = resolve_symbol_pubkey(state, LICHENID_SYMBOL)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
     let mut filter_type: Option<u8> = None;
@@ -9449,7 +9461,7 @@ async fn handle_get_moltyid_agent_directory(
         if !key.starts_with(b"id:") {
             continue;
         }
-        let Some(identity) = parse_moltyid_identity_record(value) else {
+        let Some(identity) = parse_lichenid_identity_record(value) else {
             continue;
         };
         if !identity.is_active {
@@ -9462,16 +9474,16 @@ async fn handle_get_moltyid_agent_directory(
         }
 
         let pubkey = identity.owner;
-        let reputation = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
+        let reputation = get_lichenid_reputation(state, &pubkey).unwrap_or(identity.reputation);
         if let Some(minimum) = min_reputation {
             if reputation < minimum {
                 continue;
             }
         }
 
-        let availability = moltyid_cf_get(
+        let availability = lichenid_cf_get(
             state,
-            &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes(),
+            &format!("availability:{}", lichenid_hex(&pubkey)).into_bytes(),
         )
         .and_then(|raw| raw.first().copied())
         .unwrap_or(0);
@@ -9482,30 +9494,30 @@ async fn handle_get_moltyid_agent_directory(
             }
         }
 
-        let rate = moltyid_cf_get(
+        let rate = lichenid_cf_get(
             state,
-            &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes(),
+            &format!("rate:{}", lichenid_hex(&pubkey)).into_bytes(),
         )
         .and_then(|raw| read_u64_le(&raw, 0))
         .unwrap_or(0);
 
-        let endpoint = moltyid_cf_get(
+        let endpoint = lichenid_cf_get(
             state,
-            &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes(),
+            &format!("endpoint:{}", lichenid_hex(&pubkey)).into_bytes(),
         )
         .and_then(|raw| String::from_utf8(raw).ok());
 
-        let tier = moltyid_trust_tier(reputation);
+        let tier = lichenid_trust_tier(reputation);
 
         agents.push(serde_json::json!({
             "address": pubkey.to_base58(),
             "name": identity.name,
-            "molt_name": get_moltyid_name(state, &pubkey, current_slot),
+            "licn_name": get_lichenid_name(state, &pubkey, current_slot),
             "agent_type": identity.agent_type,
-            "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+            "agent_type_name": lichenid_agent_type_name(identity.agent_type),
             "reputation": reputation,
             "trust_tier": tier,
-            "trust_tier_name": moltyid_trust_tier_name(tier),
+            "trust_tier_name": lichenid_trust_tier_name(tier),
             "availability": availability,
             "available": is_available,
             "rate": rate,
@@ -9537,11 +9549,11 @@ async fn handle_get_moltyid_agent_directory(
     }))
 }
 
-async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+async fn handle_get_lichenid_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let program = resolve_symbol_pubkey(state, "YID")?;
 
     let total_identities = cf_stats_u64(state, "YID", b"mid_identity_count");
-    let total_names = cf_stats_u64(state, "YID", b"molt_name_count");
+    let total_names = cf_stats_u64(state, "YID", b"licn_name_count");
 
     // PERF-NOTE (P10-VAL-07): Full CF storage scan for tier distribution.
     // Acceptable for current identity counts. Consider caching or contract-side
@@ -9558,17 +9570,17 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
 
     for (key, value) in &entries {
         if key.starts_with(b"id:") {
-            let Some(identity) = parse_moltyid_identity_record(value) else {
+            let Some(identity) = parse_lichenid_identity_record(value) else {
                 continue;
             };
             // Read reputation from CF
-            let rep_key = moltyid_reputation_key(&identity.owner);
+            let rep_key = lichenid_reputation_key(&identity.owner);
             let score = state
                 .state
                 .get_program_storage("YID", &rep_key)
                 .and_then(|v| read_u64_le(&v, 0))
                 .unwrap_or(identity.reputation);
-            tier_distribution[moltyid_trust_tier(score) as usize] += 1;
+            tier_distribution[lichenid_trust_tier(score) as usize] += 1;
             total_skills += identity.skill_count as u64;
             total_vouches += identity.vouch_count as u64;
         } else if key.starts_with(b"attest_count_") {
@@ -9593,7 +9605,7 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
     }))
 }
 
-/// getNameAuction — Query auction state for a .molt name
+/// getNameAuction — Query auction state for a .lichen name
 async fn handle_get_name_auction(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -9608,15 +9620,15 @@ async fn handle_get_name_auction(
             message: "Expected [name] parameter".to_string(),
         })?;
 
-    // Normalize: strip .molt suffix
-    let normalized = name.to_lowercase().trim_end_matches(".molt").to_string();
+    // Normalize: strip .lichen suffix
+    let normalized = name.to_lowercase().trim_end_matches(".lichen").to_string();
 
     // Build the auction key: "name_auc:" + name bytes
     let mut key = Vec::with_capacity(9 + normalized.len());
     key.extend_from_slice(b"name_auc:");
     key.extend_from_slice(normalized.as_bytes());
 
-    let data = match moltyid_cf_get(state, &key) {
+    let data = match lichenid_cf_get(state, &key) {
         Some(d) if d.len() >= 65 => d,
         _ => return Ok(serde_json::Value::Null),
     };
@@ -10161,7 +10173,7 @@ fn parse_market_params(
     Ok((ext.collection, ext.limit))
 }
 
-fn market_activity_to_json(activity: &moltchain_core::MarketActivity) -> serde_json::Value {
+fn market_activity_to_json(activity: &lichen_core::MarketActivity) -> serde_json::Value {
     let kind = match activity.kind {
         MarketActivityKind::Listing => "listing",
         MarketActivityKind::Sale => "sale",
@@ -10188,7 +10200,7 @@ fn market_activity_to_json(activity: &moltchain_core::MarketActivity) -> serde_j
         "token": activity.token.as_ref().map(|p| p.to_base58()),
         "token_id": activity.token_id,
         "price": activity.price,
-        "price_molt": activity.price.map(|val| val as f64 / 1_000_000_000.0),
+        "price_licn": activity.price.map(|val| val as f64 / 1_000_000_000.0),
         "seller": activity.seller.as_ref().map(|p| p.to_base58()),
         "buyer": activity.buyer.as_ref().map(|p| p.to_base58()),
         "function": activity.function.clone(),
@@ -10235,10 +10247,10 @@ async fn handle_get_market_listings(
         })?;
 
     // Apply multi-criteria filters
-    let mut filtered: Vec<&moltchain_core::MarketActivity> = activity
+    let mut filtered: Vec<&lichen_core::MarketActivity> = activity
         .iter()
         .filter(|a| {
-            // Price range filter (in shells)
+            // Price range filter (in spores)
             if let Some(min) = filters.price_min {
                 if a.price.unwrap_or(0) < min {
                     return false;
@@ -10384,7 +10396,7 @@ async fn handle_get_market_offers(
         all_activity.extend(collection_activity);
     }
 
-    let mut filtered: Vec<&moltchain_core::MarketActivity> = all_activity
+    let mut filtered: Vec<&lichen_core::MarketActivity> = all_activity
         .iter()
         .filter(|a| {
             if !include_collection_offers && a.kind == MarketActivityKind::CollectionOffer {
@@ -10476,7 +10488,7 @@ async fn handle_eth_get_balance(
 
     // Parse EVM address
     let evm_address =
-        moltchain_core::StateStore::parse_evm_address(evm_address_str).map_err(|e| RpcError {
+        lichen_core::StateStore::parse_evm_address(evm_address_str).map_err(|e| RpcError {
             code: -32602,
             message: format!("Invalid EVM address: {}", e),
         })?;
@@ -10496,7 +10508,7 @@ async fn handle_eth_get_balance(
             message: format!("Database error: {}", e),
         })?;
         let spendable = account.map(|a| a.spendable).unwrap_or(0);
-        shells_to_u256(spendable)
+        spores_to_u256(spendable)
     } else if let Some(account) =
         state
             .state
@@ -10508,7 +10520,7 @@ async fn handle_eth_get_balance(
     {
         account.balance_u256()
     } else {
-        shells_to_u256(0)
+        spores_to_u256(0)
     };
 
     Ok(serde_json::json!(format!("0x{:x}", balance)))
@@ -10573,12 +10585,12 @@ async fn handle_eth_send_raw_transaction(
         data: raw,
     };
 
-    let message = moltchain_core::Message {
+    let message = lichen_core::Message {
         instructions: vec![instruction],
         // EVM transactions use the sentinel blockhash for backward compatibility.
         // The Transaction::new_evm() constructor sets tx_type = Evm which is the
         // primary detection path; the sentinel is kept as a legacy fallback.
-        recent_blockhash: moltchain_core::EVM_SENTINEL_BLOCKHASH,
+        recent_blockhash: lichen_core::EVM_SENTINEL_BLOCKHASH,
         compute_budget: None,
         compute_unit_price: None,
     };
@@ -10617,7 +10629,7 @@ async fn handle_eth_call(
     let gas = call.get("gas").and_then(|v| v.as_str()).unwrap_or("0x0");
 
     let to_address = to
-        .map(moltchain_core::StateStore::parse_evm_address)
+        .map(lichen_core::StateStore::parse_evm_address)
         .transpose()
         .map_err(|e| RpcError {
             code: -32602,
@@ -10626,7 +10638,7 @@ async fn handle_eth_call(
         .map(Address::from);
 
     let from_address = if let Some(from) = from {
-        let parsed = moltchain_core::StateStore::parse_evm_address(from).map_err(|e| RpcError {
+        let parsed = lichen_core::StateStore::parse_evm_address(from).map_err(|e| RpcError {
             code: -32602,
             message: format!("Invalid from address: {}", e),
         })?;
@@ -10694,7 +10706,7 @@ async fn handle_eth_get_transaction_receipt(
 
     // Parse transaction hash (strip 0x and convert to Hash)
     let tx_hash_str = tx_hash_str.strip_prefix("0x").unwrap_or(tx_hash_str);
-    let hash = moltchain_core::hash::Hash::from_hex(tx_hash_str).map_err(|e| RpcError {
+    let hash = lichen_core::hash::Hash::from_hex(tx_hash_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid transaction hash: {}", e),
     })?;
@@ -10775,7 +10787,7 @@ async fn handle_eth_get_transaction_by_hash(
 
     // Parse transaction hash
     let tx_hash_str = tx_hash_str.strip_prefix("0x").unwrap_or(tx_hash_str);
-    let hash = moltchain_core::hash::Hash::from_hex(tx_hash_str).map_err(|e| RpcError {
+    let hash = lichen_core::hash::Hash::from_hex(tx_hash_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid transaction hash: {}", e),
     })?;
@@ -10837,7 +10849,7 @@ fn parse_evm_block_tag(tag: &str, state: &RpcState) -> Result<u64, RpcError> {
 }
 
 /// Format a real Block into EVM-compatible JSON block object.
-fn format_evm_block(block: &moltchain_core::Block, include_txs: bool) -> serde_json::Value {
+fn format_evm_block(block: &lichen_core::Block, include_txs: bool) -> serde_json::Value {
     let slot = block.header.slot;
     // AUDIT-FIX P10-RPC-01: Use actual block hash, NOT state_root.
     // state_root is a Merkle root of account state — it is NOT the block identifier.
@@ -10933,11 +10945,10 @@ async fn handle_eth_get_code(
             message: "Invalid params: expected [address, block?]".to_string(),
         })?;
 
-    let evm_addr =
-        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid EVM address: {}", e),
-        })?;
+    let evm_addr = lichen_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid EVM address: {}", e),
+    })?;
 
     // 1. Check pure EVM account (has EVM bytecode stored directly)
     if let Ok(Some(acct)) = state.state.get_evm_account(&evm_addr) {
@@ -10990,11 +11001,10 @@ async fn handle_eth_get_transaction_count(
             message: "Invalid params: expected [address, block?]".to_string(),
         })?;
 
-    let evm_addr =
-        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid EVM address: {}", e),
-        })?;
+    let evm_addr = lichen_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid EVM address: {}", e),
+    })?;
 
     // 1. Check EVM account nonce
     if let Ok(Some(acct)) = state.state.get_evm_account(&evm_addr) {
@@ -11011,8 +11021,8 @@ async fn handle_eth_get_transaction_count(
 }
 
 /// eth_estimateGas — estimate gas for a transaction.
-/// MoltChain uses flat fees, not gas-based metering.
-/// Returns the actual fee (in shells) as the gas value with an implicit gasPrice of 1.
+/// Lichen uses flat fees, not gas-based metering.
+/// Returns the actual fee (in spores) as the gas value with an implicit gasPrice of 1.
 async fn handle_eth_estimate_gas(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -11020,7 +11030,7 @@ async fn handle_eth_estimate_gas(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
 
     let gas = if let Some(ref params) = params {
         if let Some(tx_obj) = params.as_array().and_then(|a| a.first()) {
@@ -11052,12 +11062,12 @@ async fn handle_eth_estimate_gas(
 }
 
 /// eth_gasPrice — return current gas price.
-/// AUDIT-FIX A11-01: MoltChain uses flat fees, so gasPrice = 1 (1 shell per gas unit).
-/// Total cost = gasPrice(1) × estimateGas(actual_fee_in_shells) = actual_fee.
+/// AUDIT-FIX A11-01: Lichen uses flat fees, so gasPrice = 1 (1 spore per gas unit).
+/// Total cost = gasPrice(1) × estimateGas(actual_fee_in_spores) = actual_fee.
 /// Previously this returned base_fee, causing MetaMask to display fee² (base_fee × base_fee).
 async fn handle_eth_gas_price(_state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    // gasPrice = 1 shell per gas unit.
-    // eth_estimateGas returns the actual fee in shells (= gas units consumed).
+    // gasPrice = 1 spore per gas unit.
+    // eth_estimateGas returns the actual fee in spores (= gas units consumed).
     // MetaMask/wallets compute: total = gasPrice × gasEstimate = 1 × fee = fee. ✓
     Ok(serde_json::json!("0x1"))
 }
@@ -11191,7 +11201,7 @@ async fn handle_eth_get_logs(
     let filter_addresses: Vec<[u8; 20]> = match filter.get("address") {
         Some(serde_json::Value::String(s)) => {
             vec![
-                moltchain_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
+                lichen_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
                     code: -32602,
                     message: format!("Invalid address filter: {}", e),
                 })?,
@@ -11201,12 +11211,12 @@ async fn handle_eth_get_logs(
             let mut addrs = Vec::with_capacity(arr.len());
             for v in arr {
                 if let Some(s) = v.as_str() {
-                    addrs.push(
-                        moltchain_core::StateStore::parse_evm_address(s).map_err(|e| RpcError {
+                    addrs.push(lichen_core::StateStore::parse_evm_address(s).map_err(|e| {
+                        RpcError {
                             code: -32602,
                             message: format!("Invalid address in array: {}", e),
-                        })?,
-                    );
+                        }
+                    })?);
                 }
             }
             addrs
@@ -11267,7 +11277,7 @@ async fn handle_eth_get_logs(
                 }
 
                 // Topic filter (EIP-1474)
-                if !moltchain_core::topics_match(&entry.log.topics, &filter_topics) {
+                if !lichen_core::topics_match(&entry.log.topics, &filter_topics) {
                     continue;
                 }
 
@@ -11301,7 +11311,7 @@ async fn handle_eth_get_logs(
             break;
         }
 
-        // ── Phase 2: Native MoltChain contract events (backward compat) ──
+        // ── Phase 2: Native Lichen contract events (backward compat) ──
         let events = state
             .state
             .get_events_by_slot(slot, 10_000)
@@ -11351,7 +11361,7 @@ async fn handle_eth_get_logs(
             }
 
             // Apply EIP-1474 topics filter
-            if !moltchain_core::topics_match(&topics, &filter_topics) {
+            if !lichen_core::topics_match(&topics, &filter_topics) {
                 continue;
             }
 
@@ -11458,11 +11468,10 @@ async fn handle_eth_get_storage_at(
             message: "Missing storage slot".to_string(),
         })?;
 
-    let evm_addr =
-        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
-            code: -32602,
-            message: format!("Invalid address: {}", e),
-        })?;
+    let evm_addr = lichen_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid address: {}", e),
+    })?;
 
     // Parse slot as a hex-encoded 32-byte value
     let slot_hex = slot_str.strip_prefix("0x").unwrap_or(slot_str);
@@ -11486,45 +11495,45 @@ async fn handle_eth_get_storage_at(
     Ok(serde_json::json!(format!("0x{:064x}", value)))
 }
 
-// ===== ReefStake Liquid Staking RPC Handlers =====
+// ===== MossStake Liquid Staking RPC Handlers =====
 
-/// Handle stakeToReefStake: Stake MOLT, receive stMOLT
-/// T2.5 fix: ReefStake deposit now requires a signed transaction.
-/// Use sendTransaction with instruction type 13 (ReefStake deposit).
+/// Handle stakeToMossStake: Stake LICN, receive stLICN
+/// T2.5 fix: MossStake deposit now requires a signed transaction.
+/// Use sendTransaction with instruction type 13 (MossStake deposit).
 /// Data format: [13, amount(8 bytes LE)]
 /// Accounts: [depositor_pubkey]
-async fn handle_stake_to_reefstake(
+async fn handle_stake_to_mossstake(
     _state: &RpcState,
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     Err(RpcError {
         code: -32601,
-        message: "stakeToReefStake is deprecated. Use sendTransaction with system instruction \
-                  type 13 (ReefStake deposit). Data: [13, amount_le_bytes(8)]. \
+        message: "stakeToMossStake is deprecated. Use sendTransaction with system instruction \
+                  type 13 (MossStake deposit). Data: [13, amount_le_bytes(8)]. \
                   Accounts: [depositor_pubkey]. The transaction must be signed by the depositor."
             .to_string(),
     })
 }
 
-/// T2.5 fix: ReefStake unstake now requires a signed transaction.
-/// Use sendTransaction with instruction type 14 (ReefStake unstake).
-/// Data format: [14, st_molt_amount(8 bytes LE)]
+/// T2.5 fix: MossStake unstake now requires a signed transaction.
+/// Use sendTransaction with instruction type 14 (MossStake unstake).
+/// Data format: [14, st_licn_amount(8 bytes LE)]
 /// Accounts: [user_pubkey]
-async fn handle_unstake_from_reefstake(
+async fn handle_unstake_from_mossstake(
     _state: &RpcState,
     _params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     Err(RpcError {
         code: -32601,
-        message: "unstakeFromReefStake is deprecated. Use sendTransaction with system instruction \
-                  type 14 (ReefStake unstake). Data: [14, st_molt_amount_le_bytes(8)]. \
+        message: "unstakeFromMossStake is deprecated. Use sendTransaction with system instruction \
+                  type 14 (MossStake unstake). Data: [14, st_licn_amount_le_bytes(8)]. \
                   Accounts: [user_pubkey]. The transaction must be signed by the user."
             .to_string(),
     })
 }
 
-/// T2.5 fix: ReefStake claim now requires a signed transaction.
-/// Use sendTransaction with instruction type 15 (ReefStake claim).
+/// T2.5 fix: MossStake claim now requires a signed transaction.
+/// Use sendTransaction with instruction type 15 (MossStake claim).
 /// Data format: [15]
 /// Accounts: [user_pubkey]
 async fn handle_claim_unstaked_tokens(
@@ -11534,13 +11543,13 @@ async fn handle_claim_unstaked_tokens(
     Err(RpcError {
         code: -32601,
         message: "claimUnstakedTokens is deprecated. Use sendTransaction with system instruction \
-                  type 15 (ReefStake claim). Data: [15]. \
+                  type 15 (MossStake claim). Data: [15]. \
                   Accounts: [user_pubkey]. The transaction must be signed by the user."
             .to_string(),
     })
 }
 
-/// Handle getStakingPosition: Get user's ReefStake position
+/// Handle getStakingPosition: Get user's MossStake position
 async fn handle_get_staking_position(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -11570,21 +11579,21 @@ async fn handle_get_staking_position(
         message: "Invalid pubkey format".to_string(),
     })?;
 
-    let pool = state.state.get_reefstake_pool().map_err(|e| RpcError {
+    let pool = state.state.get_mossstake_pool().map_err(|e| RpcError {
         code: -32603,
-        message: format!("Failed to get ReefStake pool: {}", e),
+        message: format!("Failed to get MossStake pool: {}", e),
     })?;
 
     if let Some(position) = pool.positions.get(&user) {
-        let current_value = pool.st_molt_token.st_molt_to_molt(position.st_molt_amount);
+        let current_value = pool.st_licn_token.st_licn_to_licn(position.st_licn_amount);
         let tier = position.lock_tier as u8;
         let tier_name = position.lock_tier.display_name();
         let multiplier = position.lock_tier.reward_multiplier_bp() as f64 / 10_000.0;
         Ok(serde_json::json!({
             "owner": user_pubkey,
-            "st_molt_amount": position.st_molt_amount,
-            "molt_deposited": position.molt_deposited,
-            "current_value_molt": current_value,
+            "st_licn_amount": position.st_licn_amount,
+            "licn_deposited": position.licn_deposited,
+            "current_value_licn": current_value,
             "rewards_earned": position.rewards_earned,
             "deposited_at": position.deposited_at,
             "lock_tier": tier,
@@ -11595,9 +11604,9 @@ async fn handle_get_staking_position(
     } else {
         Ok(serde_json::json!({
             "owner": user_pubkey,
-            "st_molt_amount": 0,
-            "molt_deposited": 0,
-            "current_value_molt": 0,
+            "st_licn_amount": 0,
+            "licn_deposited": 0,
+            "current_value_licn": 0,
             "rewards_earned": 0,
             "deposited_at": 0,
             "lock_tier": 0,
@@ -11608,13 +11617,13 @@ async fn handle_get_staking_position(
     }
 }
 
-/// Handle getReefStakePoolInfo: Get global ReefStake pool info
-async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    use moltchain_core::consensus::SLOTS_PER_YEAR;
+/// Handle getMossStakePoolInfo: Get global MossStake pool info
+async fn handle_get_mossstake_pool_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    use lichen_core::consensus::SLOTS_PER_YEAR;
 
-    let pool = state.state.get_reefstake_pool().map_err(|e| RpcError {
+    let pool = state.state.get_mossstake_pool().map_err(|e| RpcError {
         code: -32603,
-        message: format!("Failed to get ReefStake pool: {}", e),
+        message: format!("Failed to get MossStake pool: {}", e),
     })?;
 
     // Derive active validators count and APY from the consensus StakePool
@@ -11624,7 +11633,7 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         let slots_per_day = SLOTS_PER_YEAR / 365;
         // Use inflation-curve block reward based on current slot
         let current_slot = state.state.get_last_slot().unwrap_or(0);
-        let total_supply = GENESIS_SUPPLY_SHELLS
+        let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(state.state.get_total_minted().unwrap_or(0))
             .saturating_sub(state.state.get_total_burned().unwrap_or(0));
         let current_reward = compute_block_reward(current_slot, total_supply);
@@ -11635,9 +11644,9 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
     };
 
     Ok(serde_json::json!({
-        "total_supply_st_molt": pool.st_molt_token.total_supply,
-        "total_molt_staked": pool.st_molt_token.total_molt_staked,
-        "exchange_rate": pool.st_molt_token.exchange_rate_display(),
+        "total_supply_st_licn": pool.st_licn_token.total_supply,
+        "total_licn_staked": pool.st_licn_token.total_licn_staked,
+        "exchange_rate": pool.st_licn_token.exchange_rate_display(),
         "total_validators": active_validators,
         "average_apy_percent": apy_percent,
         "total_stakers": pool.positions.len(),
@@ -11683,9 +11692,9 @@ async fn handle_get_unstaking_queue(
 
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let pool = state.state.get_reefstake_pool().map_err(|e| RpcError {
+    let pool = state.state.get_mossstake_pool().map_err(|e| RpcError {
         code: -32603,
-        message: format!("Failed to get ReefStake pool: {}", e),
+        message: format!("Failed to get MossStake pool: {}", e),
     })?;
 
     let requests = pool.get_unstake_requests(&user);
@@ -11694,11 +11703,11 @@ async fn handle_get_unstaking_queue(
         .iter()
         .map(|request| {
             if request.claimable_at <= current_slot {
-                total_claimable += request.molt_to_receive;
+                total_claimable += request.licn_to_receive;
             }
             serde_json::json!({
-                "st_molt_amount": request.st_molt_amount,
-                "molt_to_receive": request.molt_to_receive,
+                "st_licn_amount": request.st_licn_amount,
+                "licn_to_receive": request.licn_to_receive,
                 "requested_at": request.requested_at,
                 "claimable_at": request.claimable_at,
             })
@@ -11716,9 +11725,9 @@ async fn handle_get_unstaking_queue(
 async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
-    use moltchain_core::consensus::{
+    use lichen_core::consensus::{
         compute_block_reward, compute_epoch_mint, inflation_rate_bps, BOOTSTRAP_GRANT_AMOUNT,
-        GENESIS_SUPPLY_SHELLS, INFLATION_DECAY_RATE_BPS, INITIAL_INFLATION_RATE_BPS,
+        GENESIS_SUPPLY_SPORES, INFLATION_DECAY_RATE_BPS, INITIAL_INFLATION_RATE_BPS,
         SLOTS_PER_EPOCH, SLOTS_PER_YEAR, TERMINAL_INFLATION_RATE_BPS,
     };
 
@@ -11737,8 +11746,8 @@ async fn handle_get_reward_adjustment_info(
     let fee_config = state
         .state
         .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-    let total_supply = GENESIS_SUPPLY_SHELLS
+        .unwrap_or_else(|_| lichen_core::FeeConfig::default_from_constants());
+    let total_supply = GENESIS_SUPPLY_SPORES
         .saturating_add(total_minted)
         .saturating_sub(total_burned);
 
@@ -11748,9 +11757,9 @@ async fn handle_get_reward_adjustment_info(
     let epochs_per_year = SLOTS_PER_YEAR / SLOTS_PER_EPOCH;
 
     // Price-adjusted reward (informational — epoch rewards use inflation curve directly)
-    let reward_config = moltchain_core::consensus::RewardConfig::new();
-    let molt_price = moltchain_core::consensus::molt_price_from_state(&state.state);
-    let adjusted_reward = reward_config.get_adjusted_reward(current_slot, total_supply, molt_price);
+    let reward_config = lichen_core::consensus::RewardConfig::new();
+    let licn_price = lichen_core::consensus::licn_price_from_state(&state.state);
+    let adjusted_reward = reward_config.get_adjusted_reward(current_slot, total_supply, licn_price);
 
     // Estimate APY: all inflation goes to stakers proportionally at epoch boundaries
     let annual_inflation = epoch_mint as f64 * epochs_per_year as f64;
@@ -11778,7 +11787,7 @@ async fn handle_get_reward_adjustment_info(
                     .get_account(&pk)
                     .ok()
                     .flatten()
-                    .map(|a| a.shells)
+                    .map(|a| a.spores)
                     .unwrap_or(0);
                 (pk.to_base58(), bal)
             }
@@ -11786,14 +11795,14 @@ async fn handle_get_reward_adjustment_info(
         };
         serde_json::json!({
             "pubkey": pubkey_str,
-            "balance_shells": balance,
-            "balance_molt": balance as f64 / 1_000_000_000.0,
+            "balance_spores": balance,
+            "balance_licn": balance as f64 / 1_000_000_000.0,
         })
     };
 
     Ok(serde_json::json!({
         "supplyModel": "inflationary_with_burn",
-        "genesisSupply": GENESIS_SUPPLY_SHELLS,
+        "genesisSupply": GENESIS_SUPPLY_SPORES,
         "totalMinted": total_minted,
         "totalBurned": total_burned,
         "totalSupply": total_supply,
@@ -11809,12 +11818,12 @@ async fn handle_get_reward_adjustment_info(
         "epochMint": epoch_mint,
         "slotsPerEpoch": SLOTS_PER_EPOCH,
         "epochsPerYear": epochs_per_year,
-        "priceAdjustmentMultiplier": if molt_price > 0.0 {
-            format!("{:.4}", (0.10 / molt_price).clamp(0.1, 10.0))
+        "priceAdjustmentMultiplier": if licn_price > 0.0 {
+            format!("{:.4}", (0.10 / licn_price).clamp(0.1, 10.0))
         } else {
             "1.0000".to_string()
         },
-        "moldPrice": molt_price,
+        "moldPrice": licn_price,
         "slotsPerYear": SLOTS_PER_YEAR,
         "currentSlot": current_slot,
         "minValidatorStake": state.min_validator_stake,
@@ -11835,7 +11844,7 @@ async fn handle_get_reward_adjustment_info(
             "validator_rewards_pct": 10,
             "community_treasury_pct": 25,
             "builder_grants_pct": 35,
-            "founding_moltys_pct": 10,
+            "founding_symbionts_pct": 10,
             "ecosystem_partnerships_pct": 10,
             "reserve_pool_pct": 10,
         },
@@ -11843,7 +11852,7 @@ async fn handle_get_reward_adjustment_info(
             "validator_rewards": wallet_info("validator_rewards"),
             "community_treasury": wallet_info("community_treasury"),
             "builder_grants": wallet_info("builder_grants"),
-            "founding_moltys": wallet_info("founding_moltys"),
+            "founding_symbionts": wallet_info("founding_symbionts"),
             "ecosystem_partnerships": wallet_info("ecosystem_partnerships"),
             "reserve_pool": wallet_info("reserve_pool"),
         },
@@ -12115,8 +12124,8 @@ async fn handle_get_contract_events(
 }
 
 /// Testnet-only airdrop: creates a signed consensus transaction (type 19)
-/// that transfers MOLT from treasury to a given address.
-/// Usage: requestAirdrop [address, amount_in_molt]
+/// that transfers LICN from treasury to a given address.
+/// Usage: requestAirdrop [address, amount_in_licn]
 /// The transaction goes through the mempool and consensus, ensuring all
 /// validators apply the same state change.
 async fn handle_request_airdrop(
@@ -12143,18 +12152,18 @@ async fn handle_request_airdrop(
 
     let params = params.ok_or(RpcError {
         code: -32602,
-        message: "Expected params: [address, amount_in_molt]".to_string(),
+        message: "Expected params: [address, amount_in_licn]".to_string(),
     })?;
 
     let arr = params.as_array().ok_or(RpcError {
         code: -32602,
-        message: "Expected array params: [address, amount_in_molt]".to_string(),
+        message: "Expected array params: [address, amount_in_licn]".to_string(),
     })?;
 
     if arr.len() < 2 {
         return Err(RpcError {
             code: -32602,
-            message: "Expected params: [address, amount_in_molt]".to_string(),
+            message: "Expected params: [address, amount_in_licn]".to_string(),
         });
     }
 
@@ -12163,15 +12172,15 @@ async fn handle_request_airdrop(
         message: "address must be a string".to_string(),
     })?;
 
-    let amount_molt = arr[1].as_u64().ok_or(RpcError {
+    let amount_licn = arr[1].as_u64().ok_or(RpcError {
         code: -32602,
-        message: "amount must be an integer (MOLT)".to_string(),
+        message: "amount must be an integer (LICN)".to_string(),
     })?;
 
-    if amount_molt == 0 || amount_molt > 10 {
+    if amount_licn == 0 || amount_licn > 10 {
         return Err(RpcError {
             code: -32602,
-            message: "Amount must be between 1 and 10 MOLT".to_string(),
+            message: "Amount must be between 1 and 10 LICN".to_string(),
         });
     }
 
@@ -12180,7 +12189,7 @@ async fn handle_request_airdrop(
         message: format!("Invalid address: {}", e),
     })?;
 
-    // AUDIT-FIX RPC-4: Per-address airdrop rate limiting (1 per 60 seconds + 150 MOLT/day)
+    // AUDIT-FIX RPC-4: Per-address airdrop rate limiting (1 per 60 seconds + 150 LICN/day)
     {
         let now = Instant::now();
         let mut cooldowns = state.airdrop_cooldowns.write().await;
@@ -12193,16 +12202,16 @@ async fn handle_request_airdrop(
                 ),
             });
         }
-        if let Err(msg) = cooldowns.check_daily_limit(address_str, amount_molt, now) {
+        if let Err(msg) = cooldowns.check_daily_limit(address_str, amount_licn, now) {
             return Err(RpcError {
                 code: -32005,
                 message: msg,
             });
         }
-        cooldowns.record_daily(address_str, amount_molt, now);
+        cooldowns.record_daily(address_str, amount_licn, now);
     }
 
-    let amount_shells = amount_molt * 1_000_000_000;
+    let amount_spores = amount_licn * 1_000_000_000;
 
     // Verify treasury has sufficient balance (pre-check, actual debit happens in consensus)
     let treasury_pubkey = treasury_kp.pubkey();
@@ -12218,7 +12227,7 @@ async fn handle_request_airdrop(
             message: "Treasury account not found".to_string(),
         })?;
 
-    if treasury_account.spendable < amount_shells {
+    if treasury_account.spendable < amount_spores {
         return Err(RpcError {
             code: -32000,
             message: "Insufficient treasury balance for airdrop".to_string(),
@@ -12243,9 +12252,9 @@ async fn handle_request_airdrop(
         })?;
     let recent_blockhash = block.hash();
 
-    // Build instruction type 19 (FaucetAirdrop): [19 | amount_shells(8 LE)]
+    // Build instruction type 19 (FaucetAirdrop): [19 | amount_spores(8 LE)]
     let mut ix_data = vec![19u8];
-    ix_data.extend_from_slice(&amount_shells.to_le_bytes());
+    ix_data.extend_from_slice(&amount_spores.to_le_bytes());
 
     let ix = Instruction {
         program_id: SYSTEM_PROGRAM_ID,
@@ -12265,16 +12274,16 @@ async fn handle_request_airdrop(
     submit_transaction(state, tx)?;
 
     info!(
-        "💧 Airdrop tx submitted: {} MOLT from treasury to {} (tx: {})",
-        amount_molt, address_str, tx_hash
+        "💧 Airdrop tx submitted: {} LICN from treasury to {} (tx: {})",
+        amount_licn, address_str, tx_hash
     );
 
     Ok(serde_json::json!({
         "success": true,
         "signature": tx_hash,
-        "amount": amount_molt,
+        "amount": amount_licn,
         "recipient": address_str,
-        "message": format!("{} MOLT airdrop transaction submitted", amount_molt),
+        "message": format!("{} LICN airdrop transaction submitted", amount_licn),
     }))
 }
 
@@ -13014,19 +13023,19 @@ async fn handle_get_dex_governance_stats(state: &RpcState) -> Result<serde_json:
     }))
 }
 
-/// getMoltswapStats — Legacy swap stats
-async fn handle_get_moltswap_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "MOLTSWAP")?;
+/// getLichenSwapStats — Legacy swap stats
+async fn handle_get_lichenswap_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "LICHENSWAP")?;
     Ok(serde_json::json!({
-        "swap_count": cf_stats_u64(state, "MOLTSWAP", b"ms_swap_count"),
-        "volume_a": cf_stats_u64(state, "MOLTSWAP", b"ms_volume_a"),
-        "volume_b": cf_stats_u64(state, "MOLTSWAP", b"ms_volume_b"),
-        "paused": cf_stats_bool(state, "MOLTSWAP", b"ms_paused"),
+        "swap_count": cf_stats_u64(state, "LICHENSWAP", b"ms_swap_count"),
+        "volume_a": cf_stats_u64(state, "LICHENSWAP", b"ms_volume_a"),
+        "volume_b": cf_stats_u64(state, "LICHENSWAP", b"ms_volume_b"),
+        "paused": cf_stats_bool(state, "LICHENSWAP", b"ms_paused"),
     }))
 }
 
-/// getLobsterLendStats — Lending protocol stats
-async fn handle_get_lobsterlend_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getThallLendStats — Lending protocol stats
+async fn handle_get_thalllend_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "LEND")?;
     Ok(serde_json::json!({
         "total_deposits": cf_stats_u64(state, "LEND", b"ll_total_deposits"),
@@ -13039,15 +13048,15 @@ async fn handle_get_lobsterlend_stats(state: &RpcState) -> Result<serde_json::Va
     }))
 }
 
-/// getClawPayStats — Streaming payments stats
-async fn handle_get_clawpay_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "CLAWPAY")?;
+/// getSporePayStats — Streaming payments stats
+async fn handle_get_sporepay_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "SPOREPAY")?;
     Ok(serde_json::json!({
-        "stream_count": cf_stats_u64(state, "CLAWPAY", b"stream_count"),
-        "total_streamed": cf_stats_u64(state, "CLAWPAY", b"cp_total_streamed"),
-        "total_withdrawn": cf_stats_u64(state, "CLAWPAY", b"cp_total_withdrawn"),
-        "cancel_count": cf_stats_u64(state, "CLAWPAY", b"cp_cancel_count"),
-        "paused": cf_stats_bool(state, "CLAWPAY", b"cp_paused"),
+        "stream_count": cf_stats_u64(state, "SPOREPAY", b"stream_count"),
+        "total_streamed": cf_stats_u64(state, "SPOREPAY", b"cp_total_streamed"),
+        "total_withdrawn": cf_stats_u64(state, "SPOREPAY", b"cp_total_withdrawn"),
+        "cancel_count": cf_stats_u64(state, "SPOREPAY", b"cp_cancel_count"),
+        "paused": cf_stats_bool(state, "SPOREPAY", b"cp_paused"),
     }))
 }
 
@@ -13073,18 +13082,18 @@ async fn handle_get_compute_market_stats(state: &RpcState) -> Result<serde_json:
     }))
 }
 
-/// getReefStorageStats — Decentralized storage stats
-async fn handle_get_reef_storage_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "REEF")?;
+/// getMossStorageStats — Decentralized storage stats
+async fn handle_get_moss_storage_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "MOSS")?;
     Ok(serde_json::json!({
-        "data_count": cf_stats_u64(state, "REEF", b"data_count"),
-        "total_bytes": cf_stats_u64(state, "REEF", b"reef_total_bytes"),
-        "challenge_count": cf_stats_u64(state, "REEF", b"reef_challenge_count"),
+        "data_count": cf_stats_u64(state, "MOSS", b"data_count"),
+        "total_bytes": cf_stats_u64(state, "MOSS", b"moss_total_bytes"),
+        "challenge_count": cf_stats_u64(state, "MOSS", b"moss_challenge_count"),
     }))
 }
 
-/// getMoltMarketStats — NFT marketplace stats
-async fn handle_get_moltmarket_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenMarketStats — NFT marketplace stats
+async fn handle_get_lichenmarket_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "MARKET")?;
     Ok(serde_json::json!({
         "listing_count": cf_stats_u64(state, "MARKET", b"mm_listing_count"),
@@ -13094,8 +13103,8 @@ async fn handle_get_moltmarket_stats(state: &RpcState) -> Result<serde_json::Val
     }))
 }
 
-/// getMoltAuctionStats — Auction stats
-async fn handle_get_moltauction_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenAuctionStats — Auction stats
+async fn handle_get_lichenauction_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "AUCTION")?;
     Ok(serde_json::json!({
         "auction_count": cf_stats_u64(state, "AUCTION", b"ma_auction_count"),
@@ -13105,8 +13114,8 @@ async fn handle_get_moltauction_stats(state: &RpcState) -> Result<serde_json::Va
     }))
 }
 
-/// getMoltPunksStats — NFT collection stats
-async fn handle_get_moltpunks_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenPunksStats — NFT collection stats
+async fn handle_get_lichenpunks_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "PUNKS")?;
     Ok(serde_json::json!({
         "total_minted": cf_stats_u64(state, "PUNKS", b"total_minted"),
@@ -13116,19 +13125,19 @@ async fn handle_get_moltpunks_stats(state: &RpcState) -> Result<serde_json::Valu
     }))
 }
 
-/// getMusdStats — mUSD stablecoin stats
+/// getMusdStats — lUSD stablecoin stats
 async fn handle_get_musd_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "MUSD")?;
+    resolve_symbol_pubkey(state, "LUSD")?;
     Ok(serde_json::json!({
-        "supply": cf_stats_u64(state, "MUSD", b"musd_supply"),
-        "total_minted": cf_stats_u64(state, "MUSD", b"musd_minted"),
-        "total_burned": cf_stats_u64(state, "MUSD", b"musd_burned"),
-        "mint_events": cf_stats_u64(state, "MUSD", b"musd_mint_evt"),
-        "burn_events": cf_stats_u64(state, "MUSD", b"musd_burn_evt"),
-        "transfer_count": cf_stats_u64(state, "MUSD", b"musd_xfer_cnt"),
-        "attestation_count": cf_stats_u64(state, "MUSD", b"musd_att_count"),
-        "reserve_attested": cf_stats_u64(state, "MUSD", b"musd_reserve_att"),
-        "paused": cf_stats_bool(state, "MUSD", b"musd_paused"),
+        "supply": cf_stats_u64(state, "LUSD", b"musd_supply"),
+        "total_minted": cf_stats_u64(state, "LUSD", b"musd_minted"),
+        "total_burned": cf_stats_u64(state, "LUSD", b"musd_burned"),
+        "mint_events": cf_stats_u64(state, "LUSD", b"musd_mint_evt"),
+        "burn_events": cf_stats_u64(state, "LUSD", b"musd_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "LUSD", b"musd_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "LUSD", b"musd_att_count"),
+        "reserve_attested": cf_stats_u64(state, "LUSD", b"musd_reserve_att"),
+        "paused": cf_stats_bool(state, "LUSD", b"musd_paused"),
     }))
 }
 
@@ -13180,22 +13189,22 @@ async fn handle_get_wbnb_stats(state: &RpcState) -> Result<serde_json::Value, Rp
     }))
 }
 
-/// getClawVaultStats — Yield vault stats
-async fn handle_get_clawvault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    resolve_symbol_pubkey(state, "CLAWVAULT")?;
+/// getSporeVaultStats — Yield vault stats
+async fn handle_get_sporevault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    resolve_symbol_pubkey(state, "SPOREVAULT")?;
     Ok(serde_json::json!({
-        "total_assets": cf_stats_u64(state, "CLAWVAULT", b"cv_total_assets"),
-        "total_shares": cf_stats_u64(state, "CLAWVAULT", b"cv_total_shares"),
-        "strategy_count": cf_stats_u64(state, "CLAWVAULT", b"cv_strategy_count"),
-        "total_earned": cf_stats_u64(state, "CLAWVAULT", b"cv_total_earned"),
-        "fees_earned": cf_stats_u64(state, "CLAWVAULT", b"cv_fees_earned"),
-        "protocol_fees": cf_stats_u64(state, "CLAWVAULT", b"cv_protocol_fees"),
-        "paused": cf_stats_bool(state, "CLAWVAULT", b"cv_paused"),
+        "total_assets": cf_stats_u64(state, "SPOREVAULT", b"cv_total_assets"),
+        "total_shares": cf_stats_u64(state, "SPOREVAULT", b"cv_total_shares"),
+        "strategy_count": cf_stats_u64(state, "SPOREVAULT", b"cv_strategy_count"),
+        "total_earned": cf_stats_u64(state, "SPOREVAULT", b"cv_total_earned"),
+        "fees_earned": cf_stats_u64(state, "SPOREVAULT", b"cv_fees_earned"),
+        "protocol_fees": cf_stats_u64(state, "SPOREVAULT", b"cv_protocol_fees"),
+        "paused": cf_stats_bool(state, "SPOREVAULT", b"cv_paused"),
     }))
 }
 
-/// getMoltBridgeStats — Cross-chain bridge stats
-async fn handle_get_moltbridge_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenBridgeStats — Cross-chain bridge stats
+async fn handle_get_lichenbridge_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "BRIDGE")?;
     Ok(serde_json::json!({
         "nonce": cf_stats_u64(state, "BRIDGE", b"bridge_nonce"),
@@ -13284,7 +13293,7 @@ async fn handle_create_bridge_deposit(
         });
     }
 
-    // Validate user_id is a valid MoltChain base58 public key (32 bytes)
+    // Validate user_id is a valid Lichen base58 public key (32 bytes)
     if bs58::decode(user_id)
         .into_vec()
         .map(|v| v.len())
@@ -13293,7 +13302,7 @@ async fn handle_create_bridge_deposit(
     {
         return Err(RpcError {
             code: -32602,
-            message: "user_id must be a valid MoltChain base58 public key (32 bytes)".to_string(),
+            message: "user_id must be a valid Lichen base58 public key (32 bytes)".to_string(),
         });
     }
 
@@ -13492,8 +13501,8 @@ async fn handle_get_bridge_deposits_by_recipient(
     Ok(body)
 }
 
-/// getMoltDaoStats — DAO governance stats
-async fn handle_get_moltdao_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenDaoStats — DAO governance stats
+async fn handle_get_lichendao_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "DAO")?;
     Ok(serde_json::json!({
         "proposal_count": cf_stats_u64(state, "DAO", b"proposal_count"),
@@ -13502,8 +13511,8 @@ async fn handle_get_moltdao_stats(state: &RpcState) -> Result<serde_json::Value,
     }))
 }
 
-/// getMoltOracleStats — Oracle price feed stats
-async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+/// getLichenOracleStats — Oracle price feed stats
+async fn handle_get_lichenoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     resolve_symbol_pubkey(state, "ORACLE")?;
     Ok(serde_json::json!({
         "queries": cf_stats_u64(state, "ORACLE", b"stats_queries"),
@@ -13524,8 +13533,8 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
 
     // Build symbol map from known token contracts
     let known_tokens: &[(&str, &str)] = &[
-        ("MOLT", "MOLT"),
-        ("MUSD", "mUSD"),
+        ("LICN", "LICN"),
+        ("LUSD", "lUSD"),
         ("WSOL", "wSOL"),
         ("WETH", "wETH"),
         ("WBNB", "wBNB"),
@@ -13548,8 +13557,8 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
                 base_bytes.copy_from_slice(&data[0..32]);
                 quote_bytes.copy_from_slice(&data[32..64]);
                 let pair_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
-                let base_pk = moltchain_core::Pubkey(base_bytes);
-                let quote_pk = moltchain_core::Pubkey(quote_bytes);
+                let base_pk = lichen_core::Pubkey(base_bytes);
+                let quote_pk = lichen_core::Pubkey(quote_bytes);
                 let base_str = base_pk.to_string();
                 let quote_str = quote_pk.to_string();
                 let base = symbol_for_addr
@@ -13569,17 +13578,17 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
                 let price = if lp_raw > 0 {
                     lp_raw as f64 / 1_000_000_000.0
                 } else {
-                    let base_usd = moltchain_core::consensus::consensus_oracle_price_from_state(
+                    let base_usd = lichen_core::consensus::consensus_oracle_price_from_state(
                         &state.state,
                         &base,
                     );
                     match quote.as_str() {
-                        "MOLT" => {
-                            let molt_usd =
-                                moltchain_core::consensus::molt_price_from_state(&state.state);
+                        "LICN" => {
+                            let licn_usd =
+                                lichen_core::consensus::licn_price_from_state(&state.state);
                             if let Some(base_usd) = base_usd {
-                                if molt_usd > 0.0 {
-                                    base_usd / molt_usd
+                                if licn_usd > 0.0 {
+                                    base_usd / licn_usd
                                 } else {
                                     0.0
                                 }
@@ -13606,13 +13615,12 @@ async fn handle_get_dex_pairs(state: &RpcState) -> Result<serde_json::Value, Rpc
 
 /// getOraclePrices — Returns current oracle prices for all known assets.
 async fn handle_get_oracle_prices(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let assets = ["MOLT", "wSOL", "wETH", "wBNB", "mUSD"];
+    let assets = ["LICN", "wSOL", "wETH", "wBNB", "lUSD"];
     let mut prices = serde_json::Map::new();
     prices.insert("source".to_string(), serde_json::json!("native_consensus"));
     for asset in &assets {
-        let price =
-            moltchain_core::consensus::consensus_oracle_price_from_state(&state.state, asset)
-                .unwrap_or(0.0);
+        let price = lichen_core::consensus::consensus_oracle_price_from_state(&state.state, asset)
+            .unwrap_or(0.0);
         prices.insert(asset.to_string(), serde_json::json!(price));
     }
     Ok(serde_json::Value::Object(prices))
@@ -13628,7 +13636,7 @@ mod tests {
         MethodTier, RpcError, RpcResponse, AIRDROP_COOLDOWN_MAX_ENTRIES, AIRDROP_COOLDOWN_SECS,
     };
     use axum::http::HeaderMap;
-    use moltchain_core::Hash;
+    use lichen_core::Hash;
     use std::time::{Duration, Instant};
 
     fn make_hash(value: u8) -> Hash {
@@ -13744,19 +13752,19 @@ mod tests {
 
     #[test]
     fn test_l01_rejects_too_many_instructions_on_incoming_transaction() {
-        let instruction = moltchain_core::Instruction {
-            program_id: moltchain_core::SYSTEM_PROGRAM_ID,
+        let instruction = lichen_core::Instruction {
+            program_id: lichen_core::SYSTEM_PROGRAM_ID,
             accounts: Vec::new(),
             data: vec![0],
         };
-        let tx = moltchain_core::Transaction {
+        let tx = lichen_core::Transaction {
             signatures: vec![[1u8; 64]],
-            message: moltchain_core::Message {
+            message: lichen_core::Message {
                 instructions: vec![
                     instruction;
-                    moltchain_core::transaction::MAX_INSTRUCTIONS_PER_TX + 1
+                    lichen_core::transaction::MAX_INSTRUCTIONS_PER_TX + 1
                 ],
-                recent_blockhash: moltchain_core::Hash([7u8; 32]),
+                recent_blockhash: lichen_core::Hash([7u8; 32]),
                 compute_budget: None,
                 compute_unit_price: None,
             },
@@ -13771,15 +13779,15 @@ mod tests {
 
     #[test]
     fn test_l01_rejects_oversized_instruction_data_on_incoming_transaction() {
-        let tx = moltchain_core::Transaction {
+        let tx = lichen_core::Transaction {
             signatures: vec![[2u8; 64]],
-            message: moltchain_core::Message {
-                instructions: vec![moltchain_core::Instruction {
-                    program_id: moltchain_core::SYSTEM_PROGRAM_ID,
+            message: lichen_core::Message {
+                instructions: vec![lichen_core::Instruction {
+                    program_id: lichen_core::SYSTEM_PROGRAM_ID,
                     accounts: Vec::new(),
-                    data: vec![0u8; moltchain_core::transaction::MAX_INSTRUCTION_DATA + 1],
+                    data: vec![0u8; lichen_core::transaction::MAX_INSTRUCTION_DATA + 1],
                 }],
-                recent_blockhash: moltchain_core::Hash([9u8; 32]),
+                recent_blockhash: lichen_core::Hash([9u8; 32]),
                 compute_budget: None,
                 compute_unit_price: None,
             },
@@ -13824,7 +13832,7 @@ mod tests {
         // Must contain "0x1" as the return value
         assert!(
             fn_body.contains("\"0x1\""),
-            "REGRESSION A11-01: eth_gasPrice must return \"0x1\" (1 shell per gas unit), \
+            "REGRESSION A11-01: eth_gasPrice must return \"0x1\" (1 spore per gas unit), \
              not base_fee. MetaMask computes total = gasPrice × estimateGas."
         );
         // Must NOT contain "fee_config.base_fee" in the function body

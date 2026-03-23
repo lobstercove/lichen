@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// MoltChain RPC — DEX WebSocket Feeds
+// Lichen RPC — DEX WebSocket Feeds
 // Real-time market data: orderbook, trades, ticker, candles, user events
 //
 // Extends the existing ws.rs subscription system with DEX-specific channels:

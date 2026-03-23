@@ -1,9 +1,9 @@
-import { MoltChainRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { decryptPrivateKey } from './crypto-service.js';
 import { buildAmountInstructionData, buildSignedSingleInstructionTransaction, encodeTransactionBase64 } from './tx-service.js';
 
-function validateAmount(amountMolt, label) {
-  const amount = Number(amountMolt);
+function validateAmount(amountLicn, label) {
+  const amount = Number(amountLicn);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error(`${label} must be a positive number`);
   }
@@ -16,26 +16,26 @@ function validateAmount(amountMolt, label) {
 export async function loadStakingSnapshot(address, network) {
   if (!address) return null;
 
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
   const position = await rpc.call('getStakingPosition', [address]).catch(() => null);
 
-  const stMolt = Number(position?.st_molt_amount || 0) / 1_000_000_000;
+  const stLicn = Number(position?.st_licn_amount || 0) / 1_000_000_000;
   const rewards = Number(position?.unclaimed_rewards || 0) / 1_000_000_000;
 
   return {
-    staked: stMolt,
+    staked: stLicn,
     rewards,
     validator: position?.validator || null,
-    active: stMolt > 0,
+    active: stLicn > 0,
     raw: position
   };
 }
 
-export async function stakeMolt({ wallet, password, amountMolt, tier = 0, network }) {
+export async function stakeLicn({ wallet, password, amountLicn, tier = 0, network }) {
   if (!wallet) throw new Error('No active wallet');
-  const amount = validateAmount(amountMolt, 'Stake amount');
+  const amount = validateAmount(amountLicn, 'Stake amount');
   const tierByte = Math.max(0, Math.min(3, Number(tier) || 0));
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
   const latestBlock = await rpc.getLatestBlock();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
@@ -56,10 +56,10 @@ export async function stakeMolt({ wallet, password, amountMolt, tier = 0, networ
   return { txHash };
 }
 
-export async function unstakeStMolt({ wallet, password, amountMolt, network }) {
+export async function unstakeStLicn({ wallet, password, amountLicn, network }) {
   if (!wallet) throw new Error('No active wallet');
-  const amount = validateAmount(amountMolt, 'Unstake amount');
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const amount = validateAmount(amountLicn, 'Unstake amount');
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
   const latestBlock = await rpc.getLatestBlock();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
@@ -79,13 +79,13 @@ export async function unstakeStMolt({ wallet, password, amountMolt, network }) {
   return { txHash };
 }
 
-export async function claimReefStake({ wallet, password, network }) {
+export async function claimMossStake({ wallet, password, network }) {
   if (!wallet) throw new Error('No active wallet');
-  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+  const rpc = new LichenRPC(await getConfiguredRpcEndpoint(network));
 
   const latestBlock = await rpc.getLatestBlock();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
-  // Instruction type 15 = ReefStakeClaim, no amount needed
+  // Instruction type 15 = MossStakeClaim, no amount needed
   const instructionData = new Uint8Array([15]);
 
   const transaction = await buildSignedSingleInstructionTransaction({

@@ -1,20 +1,20 @@
 [package]
-name = "moltchain-client-sdk"
+name = "lichen-client-sdk"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
-description = "MoltChain Rust SDK - Build on MoltChain with Rust"
+authors = ["Lichen Labs <hello@lichen.network>"]
+description = "Lichen Rust SDK - Build on Lichen with Rust"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lobstercove/moltchain"
-keywords = ["blockchain", "cryptocurrency", "moltchain"]
+repository = "https://github.com/lobstercove/lichen"
+keywords = ["blockchain", "cryptocurrency", "lichen"]
 categories = ["cryptography", "network-programming"]
 
 [lib]
-name = "moltchain_client_sdk"
+name = "lichen_client_sdk"
 path = "src/lib.rs"
 
 [dependencies]
-moltchain-core = { path = "../../core" }
+lichen-core = { path = "../../core" }
 tokio = { version = "1.35", features = ["full"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }

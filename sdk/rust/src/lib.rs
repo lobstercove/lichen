@@ -1,6 +1,6 @@
-//! # MoltChain Rust SDK
+//! # Lichen Rust SDK
 //!
-//! Official Rust SDK for interacting with MoltChain blockchain.
+//! Official Rust SDK for interacting with Lichen blockchain.
 //!
 //! ## Features
 //!
@@ -13,7 +13,7 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use moltchain_client_sdk::{Client, Keypair};
+//! use lichen_client_sdk::{Client, Keypair};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,7 +25,7 @@
 //!     
 //!     // Get balance
 //!     let balance = client.get_balance(&keypair.pubkey()).await?;
-//!     println!("Balance: {} MOLT", balance.molt());
+//!     println!("Balance: {} LICN", balance.licn());
 //!     
 //!     Ok(())
 //! }
@@ -45,7 +45,7 @@ pub use transaction::TransactionBuilder;
 pub use types::{Balance, Block, NetworkInfo, Transaction};
 
 // Re-export core types
-pub use moltchain_core::{Account, Hash, Instruction, Message, BASE_FEE, SYSTEM_PROGRAM_ID};
+pub use lichen_core::{Account, Hash, Instruction, Message, BASE_FEE, SYSTEM_PROGRAM_ID};
 
 /// SDK version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

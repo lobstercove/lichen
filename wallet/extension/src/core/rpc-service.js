@@ -1,15 +1,15 @@
 import { STORAGE_KEY } from './state-store.js';
 
 const NETWORKS = {
-  mainnet: 'https://rpc.moltchain.network',
-  testnet: 'https://testnet-rpc.moltchain.network',
+  mainnet: 'https://rpc.lichen.network',
+  testnet: 'https://testnet-rpc.lichen.network',
   'local-testnet': 'http://localhost:8899',
   'local-mainnet': 'http://localhost:9899'
 };
 
 const WS_ENDPOINTS = {
-  mainnet: 'wss://ws.moltchain.network',
-  testnet: 'wss://testnet-ws.moltchain.network',
+  mainnet: 'wss://ws.lichen.network',
+  testnet: 'wss://testnet-ws.lichen.network',
   'local-testnet': 'ws://localhost:8900',
   'local-mainnet': 'ws://localhost:9900'
 };
@@ -45,7 +45,7 @@ function toWsEndpoint(rpcEndpoint, fallbackNetwork = 'local-testnet') {
   }
 }
 
-export class MoltChainRPC {
+export class LichenRPC {
   constructor(url) {
     this.url = url;
   }

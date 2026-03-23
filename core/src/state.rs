@@ -1,4 +1,4 @@
-// MoltChain Core - State Management with Column Families
+// Lichen Core - State Management with Column Families
 
 use crate::account::{Account, Pubkey};
 use crate::block::Block;
@@ -6,7 +6,7 @@ use crate::contract::ContractEvent;
 use crate::evm::EvmAccount;
 use crate::evm::{EvmReceipt, EvmTxRecord};
 use crate::hash::Hash;
-use crate::reefstake::ReefStakePool;
+use crate::mossstake::MossStakePool;
 use crate::transaction::Transaction;
 use alloy_primitives::U256;
 use rocksdb::{
@@ -56,7 +56,7 @@ const CF_EVM_ACCOUNTS: &str = "evm_accounts"; // EVM address → account info
 const CF_EVM_STORAGE: &str = "evm_storage"; // EVM address + slot → value
 const CF_EVM_TXS: &str = "evm_txs"; // EVM tx hash → metadata
 const CF_EVM_RECEIPTS: &str = "evm_receipts"; // EVM tx hash → receipt
-const CF_REEFSTAKE: &str = "reefstake"; // ReefStake liquid staking pool
+const CF_MOSSSTAKE: &str = "mossstake"; // MossStake liquid staking pool
 const CF_STAKE_POOL: &str = "stake_pool"; // Validator stake pool
 const CF_NFT_BY_OWNER: &str = "nft_by_owner"; // Owner pubkey + token pubkey
 const CF_NFT_BY_COLLECTION: &str = "nft_by_collection"; // Collection pubkey + token pubkey
@@ -73,7 +73,7 @@ const CF_TX_TO_SLOT: &str = "tx_to_slot"; // tx hash -> slot (reverse index for 
 const CF_HOLDER_TOKENS: &str = "holder_tokens"; // Holder + token_program -> balance (reverse index)
 const CF_SYMBOL_BY_PROGRAM: &str = "symbol_by_program"; // Program pubkey -> symbol (reverse index for O(1) lookup)
 const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> event_key (secondary index)
-const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (MoltyID reputation etc.)
+const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (LichenID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
                                                 // Shielded pool (ZK privacy layer)
 const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
@@ -670,8 +670,8 @@ pub struct StateBatch {
     account_overlay: std::collections::HashMap<Pubkey, Account>,
     /// In-memory overlay for stake pool (set on put, read on get)
     stake_pool_overlay: Option<crate::consensus::StakePool>,
-    /// In-memory overlay for ReefStake pool (set on put, read on get)
-    reefstake_pool_overlay: Option<ReefStakePool>,
+    /// In-memory overlay for MossStake pool (set on put, read on get)
+    mossstake_pool_overlay: Option<MossStakePool>,
     /// Metric deltas accumulated during the batch (applied on commit)
     new_accounts: i64,
     active_account_delta: i64,
@@ -1063,7 +1063,7 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_SLOTS, small_cf_opts()),
             ColumnFamilyDescriptor::new(CF_STATS, write_heavy_opts(0)), // many per-slot seq counters + per-account atomic counters
             ColumnFamilyDescriptor::new(CF_VALIDATORS, small_cf_opts()),
-            ColumnFamilyDescriptor::new(CF_REEFSTAKE, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_MOSSSTAKE, small_cf_opts()),
             ColumnFamilyDescriptor::new(CF_STAKE_POOL, small_cf_opts()),
             ColumnFamilyDescriptor::new(CF_PROGRAMS, point_lookup_opts(32)),
             ColumnFamilyDescriptor::new(CF_SYMBOL_REGISTRY, small_cf_opts()),
@@ -1556,7 +1556,7 @@ impl StateStore {
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
         self.db
-            .put_cf(&cf, sig.0, &compute_units_used.to_le_bytes())
+            .put_cf(&cf, sig.0, compute_units_used.to_le_bytes())
             .map_err(|e| format!("Failed to store tx meta: {}", e))
     }
 
@@ -1679,7 +1679,7 @@ impl StateStore {
                             serde_json::from_slice::<Account>(data).ok()
                         }
                     })
-                    .map(|a| a.shells)
+                    .map(|a| a.spores)
                     .unwrap_or(0);
                 let new_flag = old_account.is_none();
                 (
@@ -1688,7 +1688,7 @@ impl StateStore {
                 )
             }
         };
-        let new_balance = account.shells;
+        let new_balance = account.spores;
 
         let mut value = Vec::with_capacity(256);
         value.push(0xBC);
@@ -2265,9 +2265,9 @@ impl StateStore {
         let total_minted = self.get_total_minted().unwrap_or(0);
 
         // Calculate total supply: genesis supply + minted - burned
-        // 1 MOLT = 1_000_000_000 shells, so 500M MOLT = 500_000_000_000_000_000 shells
-        use crate::consensus::GENESIS_SUPPLY_SHELLS;
-        let total_supply = GENESIS_SUPPLY_SHELLS
+        // 1 LICN = 1_000_000_000 spores, so 500M LICN = 500_000_000_000_000_000 spores
+        use crate::consensus::GENESIS_SUPPLY_SPORES;
+        let total_supply = GENESIS_SUPPLY_SPORES
             .saturating_add(total_minted)
             .saturating_sub(total_burned);
 
@@ -2338,7 +2338,7 @@ impl StateStore {
                 serde_json::from_slice::<Account>(&value).ok()
             };
             if let Some(account) = maybe_account {
-                if account.shells > 0 {
+                if account.spores > 0 {
                     count += 1;
                 }
             }
@@ -2362,20 +2362,20 @@ impl StateStore {
         Ok(())
     }
 
-    /// Get account balance in shells
+    /// Get account balance in spores
     pub fn get_balance(&self, pubkey: &Pubkey) -> Result<u64, String> {
         match self.get_account(pubkey)? {
-            Some(account) => Ok(account.shells),
+            Some(account) => Ok(account.spores),
             None => Ok(0),
         }
     }
 
     /// Get reputation score for an account.
-    /// Reads from the MoltyID contract storage via the symbol registry.
+    /// Reads from the LichenID contract storage via the symbol registry.
     /// Key format in CF_CONTRACT_STORAGE: program(32) + "rep:" + hex(pubkey).
     /// Returns 0 if no reputation data found.
     pub fn get_reputation(&self, pubkey: &Pubkey) -> Result<u64, String> {
-        // Build the MoltyID reputation storage key: "rep:" + hex(pubkey)
+        // Build the LichenID reputation storage key: "rep:" + hex(pubkey)
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
         let mut rep_key = Vec::with_capacity(4 + 64);
         rep_key.extend_from_slice(b"rep:");
@@ -2383,14 +2383,14 @@ impl StateStore {
             rep_key.push(hex_chars[(b >> 4) as usize]);
             rep_key.push(hex_chars[(b & 0x0f) as usize]);
         }
-        // Use get_program_storage_u64 which resolves "moltyid" → program Pubkey
+        // Use get_program_storage_u64 which resolves "lichenid" → program Pubkey
         // via the symbol registry, then reads program(32) + storage_key from
         // CF_CONTRACT_STORAGE. This is the correct key format.
-        Ok(self.get_program_storage_u64("moltyid", &rep_key))
+        Ok(self.get_program_storage_u64("lichenid", &rep_key))
     }
 
-    /// Transfer shells between accounts
-    pub fn transfer(&self, from: &Pubkey, to: &Pubkey, shells: u64) -> Result<(), String> {
+    /// Transfer spores between accounts
+    pub fn transfer(&self, from: &Pubkey, to: &Pubkey, spores: u64) -> Result<(), String> {
         if from == to {
             return Ok(());
         }
@@ -2402,7 +2402,7 @@ impl StateStore {
 
         // Check and deduct spendable balance
         from_account
-            .deduct_spendable(shells)
+            .deduct_spendable(spores)
             .map_err(|_| "Insufficient spendable balance".to_string())?;
 
         // Get or create receiver account
@@ -2412,7 +2412,7 @@ impl StateStore {
         let mut to_account = existing.unwrap_or_else(|| Account::new(0, *to));
 
         // Credit spendable balance
-        to_account.add_spendable(shells)?;
+        to_account.add_spendable(spores)?;
 
         // Reactivate dormant accounts upon receiving funds
         if to_account.dormant {
@@ -2494,7 +2494,7 @@ impl StateStore {
                             serde_json::from_slice::<Account>(data).ok()
                         }
                     })
-                    .map(|a| a.shells)
+                    .map(|a| a.spores)
                     .unwrap_or(0);
                 (old.is_none(), old_bal)
             };
@@ -2504,7 +2504,7 @@ impl StateStore {
             bincode::serialize_into(&mut value, account)
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
-            meta.push((pubkey, is_new, old_balance, account.shells));
+            meta.push((pubkey, is_new, old_balance, account.spores));
         }
 
         // Optionally fold burn counter into the same WriteBatch
@@ -2587,7 +2587,7 @@ impl StateStore {
                             serde_json::from_slice::<Account>(data).ok()
                         }
                     })
-                    .map(|a| a.shells)
+                    .map(|a| a.spores)
                     .unwrap_or(0);
                 (old.is_none(), old_bal)
             };
@@ -2597,7 +2597,7 @@ impl StateStore {
             bincode::serialize_into(&mut value, account)
                 .map_err(|e| format!("Failed to serialize account: {}", e))?;
             batch.put_cf(&cf, pubkey.0, &value);
-            meta.push((pubkey, is_new, old_balance, account.shells));
+            meta.push((pubkey, is_new, old_balance, account.spores));
         }
 
         // Fold mint counter into the same WriteBatch
@@ -2638,22 +2638,22 @@ impl StateStore {
     }
 
     /// L4-01 fix: Atomically persist an account mutation together with a
-    /// ReefStake pool update. The treasury debit and pool reward distribution
+    /// MossStake pool update. The treasury debit and pool reward distribution
     /// land in a single WriteBatch to prevent partial updates on crash.
-    pub fn atomic_put_account_with_reefstake(
+    pub fn atomic_put_account_with_mossstake(
         &self,
         acct_key: &Pubkey,
         acct: &Account,
-        pool: &ReefStakePool,
+        pool: &MossStakePool,
     ) -> Result<(), String> {
         let cf_accounts = self
             .db
             .cf_handle(CF_ACCOUNTS)
             .ok_or_else(|| "Accounts CF not found".to_string())?;
-        let cf_reef = self
+        let cf_moss = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
 
         // Read old account state for metrics
         let (is_new, old_balance) = {
@@ -2670,7 +2670,7 @@ impl StateStore {
                         serde_json::from_slice::<Account>(data).ok()
                     }
                 })
-                .map(|a| a.shells)
+                .map(|a| a.spores)
                 .unwrap_or(0);
             (old.is_none(), old_bal)
         };
@@ -2684,20 +2684,20 @@ impl StateStore {
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
         batch.put_cf(&cf_accounts, acct_key.0, &acct_bytes);
 
-        // ReefStake pool serialization
+        // MossStake pool serialization
         let pool_bytes = serde_json::to_vec(pool)
-            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
-        batch.put_cf(&cf_reef, b"pool", &pool_bytes);
+            .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
+        batch.put_cf(&cf_moss, b"pool", &pool_bytes);
 
         self.db
             .write(batch)
-            .map_err(|e| format!("Atomic account+reefstake write failed: {}", e))?;
+            .map_err(|e| format!("Atomic account+mossstake write failed: {}", e))?;
 
         // Post-commit metrics
         if is_new {
             self.metrics.increment_accounts();
         }
-        let new_balance = acct.shells;
+        let new_balance = acct.spores;
         if old_balance == 0 && new_balance > 0 {
             self.metrics.increment_active_accounts();
         } else if old_balance > 0 && new_balance == 0 {
@@ -2708,26 +2708,26 @@ impl StateStore {
         Ok(())
     }
 
-    /// Atomically update a ReefStake pool and increment the mint counter.
+    /// Atomically update a MossStake pool and increment the mint counter.
     ///
-    /// Used when minting the ReefStake share of block rewards: the new shells
+    /// Used when minting the MossStake share of block rewards: the new spores
     /// go directly into the pool (increasing exchange rate) and the mint
     /// counter is incremented — no intermediate account involved.
-    pub fn atomic_mint_reefstake(
+    pub fn atomic_mint_mossstake(
         &self,
-        pool: &ReefStakePool,
+        pool: &MossStakePool,
         mint_delta: u64,
     ) -> Result<(), String> {
-        let cf_reef = self
+        let cf_moss = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
 
         let mut batch = WriteBatch::default();
 
         let pool_bytes = serde_json::to_vec(pool)
-            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
-        batch.put_cf(&cf_reef, b"pool", &pool_bytes);
+            .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
+        batch.put_cf(&cf_moss, b"pool", &pool_bytes);
 
         let _minted_guard = if mint_delta > 0 {
             let guard = self
@@ -2748,7 +2748,7 @@ impl StateStore {
 
         self.db
             .write(batch)
-            .map_err(|e| format!("Atomic mint+reefstake write failed: {}", e))?;
+            .map_err(|e| format!("Atomic mint+mossstake write failed: {}", e))?;
 
         Ok(())
     }
@@ -4057,7 +4057,7 @@ impl StateStore {
             batch: WriteBatch::default(),
             account_overlay: std::collections::HashMap::new(),
             stake_pool_overlay: None,
-            reefstake_pool_overlay: None,
+            mossstake_pool_overlay: None,
             new_accounts: 0,
             active_account_delta: 0,
             burned_delta: 0,
@@ -4287,19 +4287,19 @@ impl StateBatch {
                 }
 
                 // Collect native balance updates for phase 2
-                if let Some((pubkey, shells)) = change.native_balance_update {
-                    native_updates.push((pubkey, shells));
+                if let Some((pubkey, spores)) = change.native_balance_update {
+                    native_updates.push((pubkey, spores));
                 }
             }
         }
 
         // Phase 2: Native account balance syncs (requires mutable self)
-        for (pubkey, shells) in native_updates {
+        for (pubkey, spores) in native_updates {
             let mut account = self
                 .get_account(&pubkey)?
                 .unwrap_or_else(|| Account::new(0, pubkey));
-            account.spendable = shells;
-            account.shells = account
+            account.spendable = spores;
+            account.spores = account
                 .spendable
                 .saturating_add(account.staked)
                 .saturating_add(account.locked);
@@ -4347,7 +4347,7 @@ impl StateBatch {
 
         // Check if this is a new account
         let old_balance = if let Some(existing) = self.account_overlay.get(pubkey) {
-            Some(existing.shells)
+            Some(existing.spores)
         } else {
             // Check disk
             match self.db.get_cf(&cf, pubkey.0) {
@@ -4357,7 +4357,7 @@ impl StateBatch {
                     } else {
                         serde_json::from_slice::<Account>(&data).ok()
                     };
-                    acct.map(|a| a.shells)
+                    acct.map(|a| a.spores)
                 }
                 _ => None,
             }
@@ -4365,7 +4365,7 @@ impl StateBatch {
 
         let is_new = old_balance.is_none();
         let old_bal = old_balance.unwrap_or(0);
-        let new_bal = account.shells;
+        let new_bal = account.spores;
 
         // Track metric deltas
         if is_new {
@@ -4398,8 +4398,8 @@ impl StateBatch {
         Ok(())
     }
 
-    /// Transfer shells between accounts within the batch.
-    pub fn transfer(&mut self, from: &Pubkey, to: &Pubkey, shells: u64) -> Result<(), String> {
+    /// Transfer spores between accounts within the batch.
+    pub fn transfer(&mut self, from: &Pubkey, to: &Pubkey, spores: u64) -> Result<(), String> {
         if from == to {
             return Ok(());
         }
@@ -4408,13 +4408,13 @@ impl StateBatch {
             .get_account(from)?
             .ok_or_else(|| "Sender account not found".to_string())?;
         from_account
-            .deduct_spendable(shells)
+            .deduct_spendable(spores)
             .map_err(|_| "Insufficient spendable balance".to_string())?;
 
         let mut to_account = self
             .get_account(to)?
             .unwrap_or_else(|| Account::new(0, *to));
-        to_account.add_spendable(shells)?;
+        to_account.add_spendable(spores)?;
 
         // Reactivate dormant accounts upon receiving funds
         if to_account.dormant {
@@ -4449,7 +4449,7 @@ impl StateBatch {
             .cf_handle(CF_TX_META)
             .ok_or_else(|| "TX meta CF not found".to_string())?;
         self.batch
-            .put_cf(&cf, sig.0, &compute_units_used.to_le_bytes());
+            .put_cf(&cf, sig.0, compute_units_used.to_le_bytes());
         Ok(())
     }
 
@@ -4484,32 +4484,32 @@ impl StateBatch {
         }
     }
 
-    /// Put ReefStake pool into the batch.
-    pub fn put_reefstake_pool(&mut self, pool: &ReefStakePool) -> Result<(), String> {
+    /// Put MossStake pool into the batch.
+    pub fn put_mossstake_pool(&mut self, pool: &MossStakePool) -> Result<(), String> {
         let cf = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
         let data = serde_json::to_vec(pool)
-            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
+            .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
         self.batch.put_cf(&cf, b"pool", &data);
-        self.reefstake_pool_overlay = Some(pool.clone());
+        self.mossstake_pool_overlay = Some(pool.clone());
         Ok(())
     }
 
-    /// Get ReefStake pool — checks overlay first, then falls through to disk.
-    pub fn get_reefstake_pool(&self) -> Result<ReefStakePool, String> {
-        if let Some(pool) = &self.reefstake_pool_overlay {
+    /// Get MossStake pool — checks overlay first, then falls through to disk.
+    pub fn get_mossstake_pool(&self) -> Result<MossStakePool, String> {
+        if let Some(pool) = &self.mossstake_pool_overlay {
             return Ok(pool.clone());
         }
         let cf = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
         match self.db.get_cf(&cf, b"pool") {
             Ok(Some(data)) => serde_json::from_slice(&data)
-                .map_err(|e| format!("Failed to deserialize ReefStake pool: {}", e)),
-            Ok(None) => Ok(ReefStakePool::new()),
+                .map_err(|e| format!("Failed to deserialize MossStake pool: {}", e)),
+            Ok(None) => Ok(MossStakePool::new()),
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
@@ -5351,7 +5351,7 @@ impl StateStore {
             .map_err(|e| format!("Failed to store stake pool: {}", e))
     }
 
-    /// Get total shells burned (fee burn)
+    /// Get total spores burned (fee burn)
     pub fn get_total_burned(&self) -> Result<u64, String> {
         let cf = self
             .db
@@ -5399,7 +5399,7 @@ impl StateStore {
             .map_err(|e| format!("Failed to store burned amount: {}", e))
     }
 
-    /// Get total shells minted (block rewards)
+    /// Get total spores minted (block rewards)
     pub fn get_total_minted(&self) -> Result<u64, String> {
         let cf = self
             .db
@@ -5471,7 +5471,7 @@ impl StateStore {
     }
 
     /// Store all genesis distribution accounts (role → pubkey mapping)
-    /// Serialized as JSON array: [{"role":"...","pubkey":"...","amount_molt":N,"percentage":N}]
+    /// Serialized as JSON array: [{"role":"...","pubkey":"...","amount_licn":N,"percentage":N}]
     pub fn set_genesis_accounts(
         &self,
         accounts: &[(String, Pubkey, u64, u8)],
@@ -5483,11 +5483,11 @@ impl StateStore {
 
         let entries: Vec<serde_json::Value> = accounts
             .iter()
-            .map(|(role, pubkey, amount_molt, percentage)| {
+            .map(|(role, pubkey, amount_licn, percentage)| {
                 serde_json::json!({
                     "role": role,
                     "pubkey": pubkey.to_base58(),
-                    "amount_molt": amount_molt,
+                    "amount_licn": amount_licn,
                     "percentage": percentage,
                 })
             })
@@ -5518,9 +5518,9 @@ impl StateStore {
                     let pubkey_str = entry["pubkey"].as_str().unwrap_or("");
                     let pubkey = Pubkey::from_base58(pubkey_str)
                         .map_err(|e| format!("Invalid pubkey '{}': {}", pubkey_str, e))?;
-                    let amount_molt = entry["amount_molt"].as_u64().unwrap_or(0);
+                    let amount_licn = entry["amount_licn"].as_u64().unwrap_or(0);
                     let percentage = entry["percentage"].as_u64().unwrap_or(0) as u8;
-                    result.push((role, pubkey, amount_molt, percentage));
+                    result.push((role, pubkey, amount_licn, percentage));
                 }
                 Ok(result)
             }
@@ -5532,7 +5532,7 @@ impl StateStore {
     /// Look up a specific genesis wallet pubkey by role name.
     ///
     /// Valid roles: "validator_rewards", "community_treasury", "builder_grants",
-    /// "founding_moltys", "ecosystem_partnerships", "reserve_pool".
+    /// "founding_symbionts", "ecosystem_partnerships", "reserve_pool".
     pub fn get_wallet_pubkey(&self, role: &str) -> Result<Option<Pubkey>, String> {
         let accounts = self.get_genesis_accounts()?;
         Ok(accounts
@@ -5551,9 +5551,9 @@ impl StateStore {
         self.get_wallet_pubkey("builder_grants")
     }
 
-    /// Get founding moltys wallet pubkey.
-    pub fn get_founding_moltys_pubkey(&self) -> Result<Option<Pubkey>, String> {
-        self.get_wallet_pubkey("founding_moltys")
+    /// Get founding symbionts wallet pubkey.
+    pub fn get_founding_symbionts_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("founding_symbionts")
     }
 
     /// Get ecosystem partnerships wallet pubkey.
@@ -5566,16 +5566,16 @@ impl StateStore {
         self.get_wallet_pubkey("reserve_pool")
     }
 
-    /// Store founding moltys vesting parameters (absolute Unix timestamps + total amount).
+    /// Store founding symbionts vesting parameters (absolute Unix timestamps + total amount).
     ///
     /// `cliff_end`: Unix timestamp when the 6-month cliff ends (first unlock).
     /// `vest_end`: Unix timestamp when vesting is fully complete (month 24).
-    /// `total_amount_shells`: Total founding moltys allocation in shells.
+    /// `total_amount_spores`: Total founding symbionts allocation in spores.
     pub fn set_founding_vesting_params(
         &self,
         cliff_end: u64,
         vest_end: u64,
-        total_amount_shells: u64,
+        total_amount_spores: u64,
     ) -> Result<(), String> {
         let cf = self
             .db
@@ -5588,7 +5588,7 @@ impl StateStore {
         batch.put_cf(
             &cf,
             b"founding_vest_total_amount",
-            total_amount_shells.to_le_bytes(),
+            total_amount_spores.to_le_bytes(),
         );
 
         self.db
@@ -5596,8 +5596,8 @@ impl StateStore {
             .map_err(|e| format!("Failed to store founding vesting params: {}", e))
     }
 
-    /// Load founding moltys vesting parameters.
-    /// Returns `Ok(Some((cliff_end, vest_end, total_amount_shells)))` if set.
+    /// Load founding symbionts vesting parameters.
+    /// Returns `Ok(Some((cliff_end, vest_end, total_amount_spores)))` if set.
     pub fn get_founding_vesting_params(&self) -> Result<Option<(u64, u64, u64)>, String> {
         let cf = self
             .db
@@ -5724,7 +5724,7 @@ impl StateStore {
     /// PHASE1-FIX S-6: Atomic WriteBatch for both rent parameters.
     pub fn set_rent_params(
         &self,
-        rate_shells_per_kb_month: u64,
+        rate_spores_per_kb_month: u64,
         free_kb: u64,
     ) -> Result<(), String> {
         let cf = self
@@ -5735,8 +5735,8 @@ impl StateStore {
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(
             &cf,
-            b"rent_rate_shells_per_kb_month",
-            rate_shells_per_kb_month.to_le_bytes(),
+            b"rent_rate_spores_per_kb_month",
+            rate_spores_per_kb_month.to_le_bytes(),
         );
         batch.put_cf(&cf, b"rent_free_kb", free_kb.to_le_bytes());
 
@@ -5752,7 +5752,7 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
-        let rate = match self.db.get_cf(&cf, b"rent_rate_shells_per_kb_month") {
+        let rate = match self.db.get_cf(&cf, b"rent_rate_spores_per_kb_month") {
             Ok(Some(data)) => {
                 let bytes: [u8; 8] = data
                     .as_slice()
@@ -5808,25 +5808,25 @@ impl StateStore {
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(&cf, b"fee_base_shells", config.base_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_base_spores", config.base_fee.to_le_bytes());
         batch.put_cf(
             &cf,
-            b"fee_contract_deploy_shells",
+            b"fee_contract_deploy_spores",
             config.contract_deploy_fee.to_le_bytes(),
         );
         batch.put_cf(
             &cf,
-            b"fee_contract_upgrade_shells",
+            b"fee_contract_upgrade_spores",
             config.contract_upgrade_fee.to_le_bytes(),
         );
         batch.put_cf(
             &cf,
-            b"fee_nft_mint_shells",
+            b"fee_nft_mint_spores",
             config.nft_mint_fee.to_le_bytes(),
         );
         batch.put_cf(
             &cf,
-            b"fee_nft_collection_shells",
+            b"fee_nft_collection_spores",
             config.nft_collection_fee.to_le_bytes(),
         );
         batch.put_cf(
@@ -5884,13 +5884,13 @@ impl StateStore {
         let defaults = crate::FeeConfig::default_from_constants();
 
         Ok(crate::FeeConfig {
-            base_fee: read_u64(b"fee_base_shells")?.unwrap_or(defaults.base_fee),
-            contract_deploy_fee: read_u64(b"fee_contract_deploy_shells")?
+            base_fee: read_u64(b"fee_base_spores")?.unwrap_or(defaults.base_fee),
+            contract_deploy_fee: read_u64(b"fee_contract_deploy_spores")?
                 .unwrap_or(defaults.contract_deploy_fee),
-            contract_upgrade_fee: read_u64(b"fee_contract_upgrade_shells")?
+            contract_upgrade_fee: read_u64(b"fee_contract_upgrade_spores")?
                 .unwrap_or(defaults.contract_upgrade_fee),
-            nft_mint_fee: read_u64(b"fee_nft_mint_shells")?.unwrap_or(defaults.nft_mint_fee),
-            nft_collection_fee: read_u64(b"fee_nft_collection_shells")?
+            nft_mint_fee: read_u64(b"fee_nft_mint_spores")?.unwrap_or(defaults.nft_mint_fee),
+            nft_collection_fee: read_u64(b"fee_nft_collection_spores")?
                 .unwrap_or(defaults.nft_collection_fee),
             fee_burn_percent: read_u64(b"fee_burn_percent")?.unwrap_or(defaults.fee_burn_percent),
             fee_producer_percent: read_u64(b"fee_producer_percent")?
@@ -5933,7 +5933,7 @@ impl StateStore {
     // ── Governance parameter changes (Task 2.11) ──
 
     /// Store the governance authority pubkey (the account authorized to submit
-    /// GovernanceParamChange instructions — typically the MoltDAO contract or
+    /// GovernanceParamChange instructions — typically the LichenDAO contract or
     /// a designated multisig).
     pub fn set_governance_authority(&self, authority: &Pubkey) -> Result<(), String> {
         let cf = self
@@ -6956,49 +6956,49 @@ impl StateStore {
     }
 
     /// Update spendable balance for a native account
-    pub fn set_spendable_balance(&self, pubkey: &Pubkey, shells: u64) -> Result<(), String> {
+    pub fn set_spendable_balance(&self, pubkey: &Pubkey, spores: u64) -> Result<(), String> {
         let mut account = self
             .get_account(pubkey)?
             .unwrap_or_else(|| Account::new(0, *pubkey));
-        account.spendable = shells;
-        account.shells = account
+        account.spendable = spores;
+        account.spores = account
             .spendable
             .saturating_add(account.staked)
             .saturating_add(account.locked);
         self.put_account(pubkey, &account)
     }
 
-    /// Get ReefStake pool (creates if doesn't exist)
-    pub fn get_reefstake_pool(&self) -> Result<ReefStakePool, String> {
+    /// Get MossStake pool (creates if doesn't exist)
+    pub fn get_mossstake_pool(&self) -> Result<MossStakePool, String> {
         let cf = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
 
         match self.db.get_cf(&cf, b"pool") {
             Ok(Some(data)) => serde_json::from_slice(&data)
-                .map_err(|e| format!("Failed to deserialize ReefStake pool: {}", e)),
+                .map_err(|e| format!("Failed to deserialize MossStake pool: {}", e)),
             Ok(None) => {
                 // Initialize new pool
-                Ok(ReefStakePool::new())
+                Ok(MossStakePool::new())
             }
             Err(e) => Err(format!("Database error: {}", e)),
         }
     }
 
-    /// Store ReefStake pool
-    pub fn put_reefstake_pool(&self, pool: &ReefStakePool) -> Result<(), String> {
+    /// Store MossStake pool
+    pub fn put_mossstake_pool(&self, pool: &MossStakePool) -> Result<(), String> {
         let cf = self
             .db
-            .cf_handle(CF_REEFSTAKE)
-            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+            .cf_handle(CF_MOSSSTAKE)
+            .ok_or_else(|| "MossStake CF not found".to_string())?;
 
         let data = serde_json::to_vec(pool)
-            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
+            .map_err(|e| format!("Failed to serialize MossStake pool: {}", e))?;
 
         self.db
             .put_cf(&cf, b"pool", data)
-            .map_err(|e| format!("Failed to store ReefStake pool: {}", e))
+            .map_err(|e| format!("Failed to store MossStake pool: {}", e))
     }
 
     // ─── Contract Event Storage ──────────────────────────────────────────────
@@ -8369,7 +8369,7 @@ mod tests {
 
         // Retrieve
         let retrieved = state.get_account(&pubkey).unwrap().unwrap();
-        assert_eq!(retrieved.shells, Account::molt_to_shells(100));
+        assert_eq!(retrieved.spores, Account::licn_to_spores(100));
     }
 
     #[test]
@@ -8380,22 +8380,22 @@ mod tests {
         let alice = Pubkey([1u8; 32]);
         let bob = Pubkey([2u8; 32]);
 
-        // Create Alice with 1000 MOLT
+        // Create Alice with 1000 LICN
         let alice_account = Account::new(1000, alice);
         state.put_account(&alice, &alice_account).unwrap();
 
-        // Transfer 100 MOLT to Bob
-        let shells = Account::molt_to_shells(100);
-        state.transfer(&alice, &bob, shells).unwrap();
+        // Transfer 100 LICN to Bob
+        let spores = Account::licn_to_spores(100);
+        state.transfer(&alice, &bob, spores).unwrap();
 
         // Check balances
         assert_eq!(
             state.get_balance(&alice).unwrap(),
-            Account::molt_to_shells(900)
+            Account::licn_to_spores(900)
         );
         assert_eq!(
             state.get_balance(&bob).unwrap(),
-            Account::molt_to_shells(100)
+            Account::licn_to_spores(100)
         );
     }
 
@@ -8593,7 +8593,7 @@ mod tests {
         let pk = Pubkey([0x77; 32]);
         state.put_account(&pk, &Account::new(100, pk)).unwrap();
 
-        let new_spendable = 500_000_000u64; // 0.5 MOLT in shells
+        let new_spendable = 500_000_000u64; // 0.5 LICN in spores
         let changes = vec![crate::evm::EvmStateChange {
             evm_address: [0xCC; 20],
             account: Some(crate::evm::EvmAccount {
@@ -8717,7 +8717,7 @@ mod tests {
 
         // Put accounts with a burn_delta
         let pk = Pubkey([0xCC; 32]);
-        let acct = Account::new(10, pk); // 10 MOLT
+        let acct = Account::new(10, pk); // 10 LICN
         state.atomic_put_accounts(&[(&pk, &acct)], 80).unwrap();
 
         // Total burned should be 280, not 80
@@ -8725,7 +8725,7 @@ mod tests {
 
         // Verify account was also written
         let loaded = state.get_account(&pk).unwrap().unwrap();
-        assert_eq!(loaded.shells, 10_000_000_000);
+        assert_eq!(loaded.spores, 10_000_000_000);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -8753,7 +8753,7 @@ mod tests {
             ),
             ("builder_grants".into(), Pubkey([0x03; 32]), 350_000_000, 35),
             (
-                "founding_moltys".into(),
+                "founding_symbionts".into(),
                 Pubkey([0x04; 32]),
                 100_000_000,
                 10,
@@ -8789,7 +8789,7 @@ mod tests {
             Some(Pubkey([0x03; 32]))
         );
         assert_eq!(
-            state.get_founding_moltys_pubkey().unwrap(),
+            state.get_founding_symbionts_pubkey().unwrap(),
             Some(Pubkey([0x04; 32]))
         );
         assert_eq!(
@@ -8808,7 +8808,7 @@ mod tests {
         let loaded = state.get_genesis_accounts().unwrap();
         assert_eq!(loaded.len(), 6);
         let total: u64 = loaded.iter().map(|(_, _, amt, _)| amt).sum();
-        assert_eq!(total, 1_000_000_000, "All 6 wallets must sum to 1B MOLT");
+        assert_eq!(total, 1_000_000_000, "All 6 wallets must sum to 1B LICN");
     }
 
     #[test]
@@ -9337,11 +9337,11 @@ mod tests {
         let pk3 = Pubkey([3u8; 32]);
 
         let mut a1 = Account::new(1_000_000, pk1);
-        a1.shells = 1_000_000;
+        a1.spores = 1_000_000;
         let mut a2 = Account::new(2_000_000, pk2);
-        a2.shells = 2_000_000;
+        a2.spores = 2_000_000;
         let mut a3 = Account::new(3_000_000, pk3);
-        a3.shells = 3_000_000;
+        a3.spores = 3_000_000;
 
         state.put_account(&pk1, &a1).unwrap();
         state.put_account(&pk2, &a2).unwrap();
@@ -9397,7 +9397,7 @@ mod tests {
 
         // Modify pk2 — pk1's proof should now be invalid against new root
         let mut a2 = Account::new(300, pk2);
-        a2.shells = 300;
+        a2.spores = 300;
         state.put_account(&pk2, &a2).unwrap();
         let root2 = state.compute_state_root();
         assert_ne!(root1, root2);
@@ -9705,9 +9705,9 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
 
         let pk = Pubkey([0x01; 32]);
-        let acc_v1 = Account::new(1, pk); // 1 MOLT = 1_000_000_000 shells
-        let acc_v2 = Account::new(2, pk); // 2 MOLT
-        let acc_v3 = Account::new(3, pk); // 3 MOLT
+        let acc_v1 = Account::new(1, pk); // 1 LICN = 1_000_000_000 spores
+        let acc_v2 = Account::new(2, pk); // 2 LICN
+        let acc_v3 = Account::new(3, pk); // 3 LICN
 
         // Write snapshots at slots 10, 20, 30
         state.put_account_snapshot(&pk, &acc_v1, 10).unwrap();
@@ -9716,19 +9716,19 @@ mod tests {
 
         // Exact slot lookups
         let r = state.get_account_at_slot(&pk, 10).unwrap().unwrap();
-        assert_eq!(r.shells, 1_000_000_000);
+        assert_eq!(r.spores, 1_000_000_000);
         let r = state.get_account_at_slot(&pk, 20).unwrap().unwrap();
-        assert_eq!(r.shells, 2_000_000_000);
+        assert_eq!(r.spores, 2_000_000_000);
         let r = state.get_account_at_slot(&pk, 30).unwrap().unwrap();
-        assert_eq!(r.shells, 3_000_000_000);
+        assert_eq!(r.spores, 3_000_000_000);
 
         // Intermediate slot: slot 25 → should return snapshot at slot 20
         let r = state.get_account_at_slot(&pk, 25).unwrap().unwrap();
-        assert_eq!(r.shells, 2_000_000_000);
+        assert_eq!(r.spores, 2_000_000_000);
 
         // Future slot: slot 100 → should return latest snapshot at slot 30
         let r = state.get_account_at_slot(&pk, 100).unwrap().unwrap();
-        assert_eq!(r.shells, 3_000_000_000);
+        assert_eq!(r.spores, 3_000_000_000);
     }
 
     #[test]
@@ -9737,7 +9737,7 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
 
         let pk = Pubkey([0x02; 32]);
-        let acc = Account::new(5, pk); // 5 MOLT
+        let acc = Account::new(5, pk); // 5 LICN
         state.put_account_snapshot(&pk, &acc, 50).unwrap();
 
         // Before any snapshot exists → None
@@ -9777,7 +9777,7 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
 
         let pk = Pubkey([0x03; 32]);
-        let acc = Account::new(10, pk); // 10 MOLT
+        let acc = Account::new(10, pk); // 10 LICN
 
         // Set slot to 42
         state.set_last_slot(42).unwrap();
@@ -9790,10 +9790,10 @@ mod tests {
         // Enable archive mode
         state.set_archive_mode(true);
 
-        let acc2 = Account::new(20, pk); // 20 MOLT
+        let acc2 = Account::new(20, pk); // 20 LICN
         state.put_account(&pk, &acc2).unwrap();
         let r = state.get_account_at_slot(&pk, 42).unwrap().unwrap();
-        assert_eq!(r.shells, 20_000_000_000);
+        assert_eq!(r.spores, 20_000_000_000);
     }
 
     #[test]
@@ -9807,14 +9807,14 @@ mod tests {
         state.set_last_slot(100).unwrap();
         state.set_archive_mode(true);
 
-        let acc = Account::new(50, pk); // 50 MOLT
+        let acc = Account::new(50, pk); // 50 LICN
         let mut batch = state.begin_batch();
         batch.put_account(&pk, &acc).unwrap();
         state.commit_batch(batch).unwrap();
 
         // Snapshot should exist at slot 100
         let r = state.get_account_at_slot(&pk, 100).unwrap().unwrap();
-        assert_eq!(r.shells, 50_000_000_000);
+        assert_eq!(r.spores, 50_000_000_000);
     }
 
     #[test]
@@ -9826,7 +9826,7 @@ mod tests {
         state.set_last_slot(200).unwrap();
         // archive_mode defaults to false
 
-        let acc = Account::new(30, pk); // 30 MOLT
+        let acc = Account::new(30, pk); // 30 LICN
         let mut batch = state.begin_batch();
         batch.put_account(&pk, &acc).unwrap();
         state.commit_batch(batch).unwrap();
@@ -9843,7 +9843,7 @@ mod tests {
 
         let pk = Pubkey([0x06; 32]);
         for slot in (10..=100).step_by(10) {
-            let acc = Account::new(slot, pk); // slot MOLT each
+            let acc = Account::new(slot, pk); // slot LICN each
             state.put_account_snapshot(&pk, &acc, slot).unwrap();
         }
 
@@ -9857,7 +9857,7 @@ mod tests {
 
         // Slot 50 should still exist
         let r = state.get_account_at_slot(&pk, 50).unwrap().unwrap();
-        assert_eq!(r.shells, 50_000_000_000); // 50 MOLT
+        assert_eq!(r.spores, 50_000_000_000); // 50 LICN
 
         // Oldest snapshot should be 50
         let oldest = state.get_oldest_snapshot_slot().unwrap().unwrap();
@@ -9881,16 +9881,16 @@ mod tests {
         let pk_a = Pubkey([0x0A; 32]);
         let pk_b = Pubkey([0x0B; 32]);
 
-        let acc_a = Account::new(1, pk_a); // 1 MOLT
-        let acc_b = Account::new(2, pk_b); // 2 MOLT
+        let acc_a = Account::new(1, pk_a); // 1 LICN
+        let acc_b = Account::new(2, pk_b); // 2 LICN
 
         state.put_account_snapshot(&pk_a, &acc_a, 10).unwrap();
         state.put_account_snapshot(&pk_b, &acc_b, 10).unwrap();
 
         let r_a = state.get_account_at_slot(&pk_a, 10).unwrap().unwrap();
         let r_b = state.get_account_at_slot(&pk_b, 10).unwrap().unwrap();
-        assert_eq!(r_a.shells, 1_000_000_000);
-        assert_eq!(r_b.shells, 2_000_000_000);
+        assert_eq!(r_a.spores, 1_000_000_000);
+        assert_eq!(r_b.spores, 2_000_000_000);
 
         // Cross-account isolation: querying pk_a at slot 10 should not return pk_b's data
         assert_eq!(r_a.owner, pk_a);

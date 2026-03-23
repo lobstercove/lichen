@@ -547,7 +547,7 @@ export function keccak256(input) {
 }
 
 /**
- * Derive EVM address from a MoltChain base58 address.
+ * Derive EVM address from a Lichen base58 address.
  * keccak256(32-byte pubkey) → last 20 bytes → 0x-prefixed hex.
  */
 export function generateEVMAddress(base58Address) {

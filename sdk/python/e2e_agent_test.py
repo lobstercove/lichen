@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-MoltChain End-to-End Agent Simulation Test
+Lichen End-to-End Agent Simulation Test
 ===========================================
 Simulates an external agent performing REAL on-chain operations with
 strict verification that every artifact was actually created:
 
 1. Agent wallet creation
-2. Receive 100 MOLT from treasury (genesis) -- verify exact balance
-3. Deploy a PROPER MT-20 token via init_data registration (using moltcoin.wasm)
+2. Receive 100 LICN from treasury (genesis) -- verify exact balance
+3. Deploy a PROPER MT-20 token via init_data registration (using lichencoin.wasm)
 4. Verify token appears in symbol registry with correct name/symbol/template
 5. Deploy an NFT collection -- verify on-chain
 6. Mint an NFT -- verify on-chain
-7. Send 5 MOLT back to treasury -- verify deploy fee deducted
+7. Send 5 LICN back to treasury -- verify deploy fee deducted
 8. Final on-chain verification of everything
 
-Uses moltcoin.wasm (5392 bytes) as the MT-20 WASM template.
+Uses lichencoin.wasm (5392 bytes) as the MT-20 WASM template.
 Passes init_data JSON to auto-register in symbol registry at deploy time.
-Deploy fee: 25 MOLT.
+Deploy fee: 25 LICN.
 """
 
 import asyncio
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from moltchain import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
+from lichen import Connection, Keypair, PublicKey, TransactionBuilder, Instruction
 
 import nacl.signing
 
@@ -36,18 +36,18 @@ import nacl.signing
 # Constants
 # ============================================================================
 RPC_URL = "http://127.0.0.1:8000"
-SHELLS_PER_MOLT = 1_000_000_000
+SPORES_PER_LICN = 1_000_000_000
 SYSTEM_PROGRAM = PublicKey(b'\x00' * 32)
 CONTRACT_PROGRAM = PublicKey(b'\xff' * 32)
 
 STATE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "state-8000"
-TREASURY_KEY_PATH = STATE_DIR / "genesis-keys" / "treasury-moltchain-testnet-1.json"
+TREASURY_KEY_PATH = STATE_DIR / "genesis-keys" / "treasury-lichen-testnet-1.json"
 
-# Use moltcoin.wasm -- the real MT-20 token template (5392 bytes)
-WASM_PATH = Path(__file__).resolve().parent.parent.parent / "contracts" / "moltcoin" / "moltcoin.wasm"
+# Use lichencoin.wasm -- the real MT-20 token template (5392 bytes)
+WASM_PATH = Path(__file__).resolve().parent.parent.parent / "contracts" / "lichencoin" / "lichencoin.wasm"
 
 # Agent token details
-AGENT_TOKEN_SYMBOL = "TLOBSTER"
+AGENT_TOKEN_SYMBOL = "TSYMBIONT"
 AGENT_TOKEN_NAME = "TradingLobster Token"
 AGENT_TOKEN_TEMPLATE = "mt20"
 AGENT_TOKEN_DECIMALS = 9
@@ -165,7 +165,7 @@ async def main():
     conn = Connection(RPC_URL)
     program_pubkey = None
 
-    print_header("MoltChain E2E Agent Simulation Test (FULL VERIFICATION)")
+    print_header("Lichen E2E Agent Simulation Test (FULL VERIFICATION)")
 
     # ------------------------------------------------------------------
     # PRE-CHECK: Verify chain is alive, genesis contracts exist
@@ -211,28 +211,28 @@ async def main():
 
     # Check treasury balance
     treasury_bal = await conn.get_balance(treasury.public_key())
-    treasury_molt = float(treasury_bal.get("molt", "0"))
-    print_ok(f"Treasury balance: {treasury_molt:.2f} MOLT")
-    assert treasury_molt > 100, f"Treasury too low: {treasury_molt}"
+    treasury_licn = float(treasury_bal.get("licn", "0"))
+    print_ok(f"Treasury balance: {treasury_licn:.2f} LICN")
+    assert treasury_licn > 100, f"Treasury too low: {treasury_licn}"
 
     # Agent should have 0
     agent_bal = await conn.get_balance(agent.public_key())
-    agent_molt = float(agent_bal.get("molt", "0"))
-    print_ok(f"Agent balance: {agent_molt:.2f} MOLT (should be 0)")
+    agent_licn = float(agent_bal.get("licn", "0"))
+    print_ok(f"Agent balance: {agent_licn:.2f} LICN (should be 0)")
 
     # ------------------------------------------------------------------
-    # Step 2: Transfer 100 MOLT from treasury to agent
+    # Step 2: Transfer 100 LICN from treasury to agent
     # ------------------------------------------------------------------
-    print_step(2, "Transfer 250 MOLT: Treasury -> Agent")
+    print_step(2, "Transfer 250 LICN: Treasury -> Agent")
 
-    amount_shells = 250 * SHELLS_PER_MOLT
+    amount_spores = 250 * SPORES_PER_LICN
     blockhash = await conn.get_recent_blockhash()
     print_info(f"Blockhash: {blockhash[:16]}...")
 
     transfer_ix = TransactionBuilder.transfer(
         treasury.public_key(),
         agent.public_key(),
-        amount_shells,
+        amount_spores,
     )
     tx = (
         TransactionBuilder()
@@ -247,28 +247,28 @@ async def main():
     await asyncio.sleep(2)
 
     agent_bal = await conn.get_balance(agent.public_key())
-    agent_molt = float(agent_bal.get("molt", "0"))
-    if agent_molt >= 249.9:
-        print_ok(f"Agent balance verified: {agent_molt:.4f} MOLT")
-        results.append(("Transfer 250 MOLT to Agent", True))
+    agent_licn = float(agent_bal.get("licn", "0"))
+    if agent_licn >= 249.9:
+        print_ok(f"Agent balance verified: {agent_licn:.4f} LICN")
+        results.append(("Transfer 250 LICN to Agent", True))
     else:
-        print_fail(f"Agent balance: {agent_molt:.4f} MOLT (expected ~250)")
-        results.append(("Transfer 250 MOLT to Agent", False))
+        print_fail(f"Agent balance: {agent_licn:.4f} LICN (expected ~250)")
+        results.append(("Transfer 250 LICN to Agent", False))
 
     # ------------------------------------------------------------------
     # Step 3: Agent deploys a PROPER MT-20 token via deployContract RPC
     #
-    # Uses moltcoin.wasm (5392 bytes) as the WASM template.
+    # Uses lichencoin.wasm (5392 bytes) as the WASM template.
     # Sends code as base64 + init_data as JSON via the deployContract
     # RPC endpoint (bypasses transaction instruction size limit).
     # Deployer signs SHA-256(code_bytes) to prove ownership.
-    # Deploy fee: 25 MOLT deducted from agent.
+    # Deploy fee: 25 LICN deducted from agent.
     # ------------------------------------------------------------------
-    print_step(3, "Agent deploys MT-20 token (TLOBSTER) via deployContract RPC")
+    print_step(3, "Agent deploys MT-20 token (TSYMBIONT) via deployContract RPC")
 
     if not WASM_PATH.exists():
         print_fail(f"WASM not found: {WASM_PATH}")
-        results.append(("Deploy MT-20 Token (TLOBSTER)", False))
+        results.append(("Deploy MT-20 Token (TSYMBIONT)", False))
     else:
         import base64 as b64
 
@@ -306,7 +306,7 @@ async def main():
                 signature.hex(),
             ])
             print_ok(f"deployContract result: program_id={deploy_result.get('program_id', '?')}")
-            print_ok(f"  code_size={deploy_result.get('code_size', '?')}, fee={deploy_result.get('deploy_fee_molt', '?')} MOLT")
+            print_ok(f"  code_size={deploy_result.get('code_size', '?')}, fee={deploy_result.get('deploy_fee_licn', '?')} LICN")
 
             # VERIFY 1: Contract exists on-chain
             deploy_ok = True
@@ -337,20 +337,20 @@ async def main():
                 print_fail(f"Symbol registry check failed: {e}")
                 deploy_ok = False
 
-            # VERIFY 3: Deploy fee was charged (agent should have ~75 MOLT now: 100 - 25)
+            # VERIFY 3: Deploy fee was charged (agent should have ~75 LICN now: 100 - 25)
             agent_bal_after = await conn.get_balance(agent.public_key())
-            agent_molt_after = float(agent_bal_after.get("molt", "0"))
-            print_info(f"Agent balance after deploy: {agent_molt_after:.4f} MOLT")
-            if agent_molt_after < 230.0:
-                print_ok(f"Deploy fee verified (deducted ~{250 - agent_molt_after:.1f} MOLT)")
+            agent_licn_after = float(agent_bal_after.get("licn", "0"))
+            print_info(f"Agent balance after deploy: {agent_licn_after:.4f} LICN")
+            if agent_licn_after < 230.0:
+                print_ok(f"Deploy fee verified (deducted ~{250 - agent_licn_after:.1f} LICN)")
             else:
-                print_info(f"Deploy fee may not have been charged (balance: {agent_molt_after})")
+                print_info(f"Deploy fee may not have been charged (balance: {agent_licn_after})")
 
-            results.append(("Deploy MT-20 Token (TLOBSTER)", deploy_ok))
+            results.append(("Deploy MT-20 Token (TSYMBIONT)", deploy_ok))
 
         except Exception as e:
             print_fail(f"deployContract RPC failed: {e}")
-            results.append(("Deploy MT-20 Token (TLOBSTER)", False))
+            results.append(("Deploy MT-20 Token (TSYMBIONT)", False))
 
     # ------------------------------------------------------------------
     # Step 4: Verify ALL symbol registry entries (26 genesis + 1 agent)
@@ -455,7 +455,7 @@ async def main():
     # System instruction type 7 = mint_nft
     mint_data = encode_mint_nft_data(
         token_id=token_id,
-        metadata_uri="https://moltchain.io/nft/agentpunks/1.json",
+        metadata_uri="https://lichen.network/nft/agentpunks/1.json",
     )
     ix_data = b'\x07' + mint_data
 
@@ -501,21 +501,21 @@ async def main():
         results.append(("Mint NFT #1", False))
 
     # ------------------------------------------------------------------
-    # Step 7: Agent sends 5 MOLT back to treasury
+    # Step 7: Agent sends 5 LICN back to treasury
     # ------------------------------------------------------------------
-    print_step(7, "Transfer 5 MOLT: Agent -> Treasury")
+    print_step(7, "Transfer 5 LICN: Agent -> Treasury")
 
     bal_before_send = await conn.get_balance(agent.public_key())
-    molt_before_send = float(bal_before_send.get("molt", "0"))
-    print_info(f"Agent balance before send: {molt_before_send:.4f} MOLT")
+    licn_before_send = float(bal_before_send.get("licn", "0"))
+    print_info(f"Agent balance before send: {licn_before_send:.4f} LICN")
 
-    amount_shells = 5 * SHELLS_PER_MOLT
+    amount_spores = 5 * SPORES_PER_LICN
     blockhash = await conn.get_recent_blockhash()
 
     transfer_ix = TransactionBuilder.transfer(
         agent.public_key(),
         treasury.public_key(),
-        amount_shells,
+        amount_spores,
     )
     tx = (
         TransactionBuilder()
@@ -529,19 +529,19 @@ async def main():
         print_ok(f"Transfer tx: {sig[:32] if sig else 'no sig'}...")
         await asyncio.sleep(2)
 
-        # VERIFY: Balance decreased by 5 MOLT
+        # VERIFY: Balance decreased by 5 LICN
         agent_bal_final = await conn.get_balance(agent.public_key())
-        agent_molt_final = float(agent_bal_final.get("molt", "0"))
-        delta = molt_before_send - agent_molt_final
-        if delta >= 4.9 and delta <= 6.0:  # 5 MOLT + possible tx fee
-            print_ok(f"Agent balance: {agent_molt_final:.4f} MOLT (sent {delta:.4f})")
-            results.append(("Send 5 MOLT to Treasury", True))
+        agent_licn_final = float(agent_bal_final.get("licn", "0"))
+        delta = licn_before_send - agent_licn_final
+        if delta >= 4.9 and delta <= 6.0:  # 5 LICN + possible tx fee
+            print_ok(f"Agent balance: {agent_licn_final:.4f} LICN (sent {delta:.4f})")
+            results.append(("Send 5 LICN to Treasury", True))
         else:
             print_fail(f"Unexpected balance delta: {delta:.4f} (expected ~5)")
-            results.append(("Send 5 MOLT to Treasury", False))
+            results.append(("Send 5 LICN to Treasury", False))
     except Exception as e:
         print_fail(f"Transfer failed: {e}")
-        results.append(("Send 5 MOLT to Treasury", False))
+        results.append(("Send 5 LICN to Treasury", False))
 
     # ------------------------------------------------------------------
     # Step 8: Final comprehensive on-chain verification
@@ -554,8 +554,8 @@ async def main():
     # Final balances
     treasury_bal_final = await conn.get_balance(treasury.public_key())
     agent_bal_final = await conn.get_balance(agent.public_key())
-    print_ok(f"Treasury final: {treasury_bal_final.get('molt', '?')} MOLT")
-    print_ok(f"Agent final:    {agent_bal_final.get('molt', '?')} MOLT")
+    print_ok(f"Treasury final: {treasury_bal_final.get('licn', '?')} LICN")
+    print_ok(f"Agent final:    {agent_bal_final.get('licn', '?')} LICN")
 
     # Contract count (should be 26 genesis + 1 agent = 27)
     try:
@@ -574,8 +574,8 @@ async def main():
     val_list = validators_final.get("validators", []) if isinstance(validators_final, dict) else validators_final if isinstance(validators_final, list) else []
     for v in val_list:
         stake = v.get("stake", 0)
-        stake_molt = stake / SHELLS_PER_MOLT if isinstance(stake, (int, float)) else 0
-        print_ok(f"Validator {v.get('pubkey', '?')[:12]}... stake={stake_molt:.0f} MOLT rep={v.get('reputation', '?')}")
+        stake_licn = stake / SPORES_PER_LICN if isinstance(stake, (int, float)) else 0
+        print_ok(f"Validator {v.get('pubkey', '?')[:12]}... stake={stake_licn:.0f} LICN rep={v.get('reputation', '?')}")
 
     # Verify agent token is visible in explorer-style queries
     if program_pubkey:

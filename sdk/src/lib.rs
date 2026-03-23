@@ -1,4 +1,4 @@
-// MoltChain Smart Contract SDK
+// Lichen Smart Contract SDK
 // Standard library for contract development
 
 #![no_std]
@@ -413,7 +413,7 @@ pub fn get_contract_address() -> Address {
     }
 }
 
-/// Get the value (shells) transferred with this contract call.
+/// Get the value (spores) transferred with this contract call.
 pub fn get_value() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {

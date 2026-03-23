@@ -1,5 +1,5 @@
 // ============================================================
-// MoltChain Developer Portal — Core JavaScript
+// Lichen Developer Portal — Core JavaScript
 // Pure vanilla JS, no external dependencies
 // ============================================================
 
@@ -41,18 +41,18 @@ function ensureDeveloperNavLinks() {
 }
 
 function rewriteProgramsLinks() {
-    if (typeof MOLT_CONFIG === 'undefined' || !MOLT_CONFIG.programs) return;
+    if (typeof LICHEN_CONFIG === 'undefined' || !LICHEN_CONFIG.programs) return;
 
     document.querySelectorAll('a[href^="../programs/"]').forEach((anchor) => {
         const href = anchor.getAttribute('href') || '';
         const path = href.replace(/^\.\.\/programs/, '');
-        anchor.href = MOLT_CONFIG.programs + path;
+        anchor.href = LICHEN_CONFIG.programs + path;
     });
 
     document.querySelectorAll('iframe[src^="../programs/"]').forEach((frame) => {
         const src = frame.getAttribute('src') || '';
         const path = src.replace(/^\.\.\/programs/, '');
-        frame.src = MOLT_CONFIG.programs + path;
+        frame.src = LICHEN_CONFIG.programs + path;
     });
 }
 
@@ -244,7 +244,7 @@ function initCodeCopy() {
 // 4. LANGUAGE TABS — Switch between JS/Python/Rust/CLI
 // ============================================================
 
-const LANG_STORAGE_KEY = 'moltdev_lang';
+const LANG_STORAGE_KEY = 'lichendev_lang';
 
 function initLangTabs() {
     const tabGroups = document.querySelectorAll('.lang-tabs');
@@ -321,29 +321,29 @@ function initLangTabs() {
 const SEARCH_INDEX = [
     // Getting Started
     { title: 'Quick Start Guide', desc: 'Set up your development environment in minutes', url: 'getting-started.html', category: 'Guide' },
-    { title: 'Install CLI', desc: 'Install the MoltChain SDK and CLI tools', url: 'getting-started.html#install-cli', category: 'Guide' },
-    { title: 'First Transfer Tutorial', desc: 'Send your first MoltChain transaction', url: 'getting-started.html#first-transfer', category: 'Tutorial' },
+    { title: 'Install CLI', desc: 'Install the Lichen SDK and CLI tools', url: 'getting-started.html#install-cli', category: 'Guide' },
+    { title: 'First Transfer Tutorial', desc: 'Send your first Lichen transaction', url: 'getting-started.html#first-transfer', category: 'Tutorial' },
     { title: 'Create Wallet', desc: 'Generate a wallet and get testnet tokens', url: 'getting-started.html#create-wallet', category: 'Guide' },
 
     // Architecture
-    { title: 'Architecture Overview', desc: 'Understanding MoltChain\'s design and components', url: 'architecture.html', category: 'Concepts' },
+    { title: 'Architecture Overview', desc: 'Understanding Lichen\'s design and components', url: 'architecture.html', category: 'Concepts' },
     { title: 'Consensus Mechanism', desc: 'Proof-of-Evolution consensus explained', url: 'architecture.html#consensus', category: 'Concepts' },
     { title: 'Transaction Lifecycle', desc: 'How transactions flow through the network', url: 'architecture.html#tx-lifecycle', category: 'Concepts' },
     { title: 'WASM Runtime', desc: 'WebAssembly smart contract execution engine', url: 'architecture.html#wasm', category: 'Concepts' },
     { title: 'State Model', desc: 'Account-based state management', url: 'architecture.html#state', category: 'Concepts' },
-    { title: 'MoltyID Integration', desc: 'On-chain identity and reputation system', url: 'architecture.html#moltyid-integration', category: 'Concepts' },
+    { title: 'LichenID Integration', desc: 'On-chain identity and reputation system', url: 'architecture.html#lichenid-integration', category: 'Concepts' },
 
     // JSON-RPC API
     { title: 'JSON-RPC API Reference', desc: 'Complete list of all RPC endpoints', url: 'rpc-reference.html', category: 'API' },
-    { title: 'molt_getBalance', desc: 'Get account balance by address', url: 'rpc-reference.html#getBalance', category: 'API' },
-    { title: 'molt_getBlock', desc: 'Retrieve a block by number or hash', url: 'rpc-reference.html#getBlock', category: 'API' },
-    { title: 'molt_sendTransaction', desc: 'Submit a signed transaction', url: 'rpc-reference.html#sendTransaction', category: 'API' },
-    { title: 'molt_getTransaction', desc: 'Get transaction details by hash', url: 'rpc-reference.html#getTransaction', category: 'API' },
-    { title: 'molt_simulateTransaction', desc: 'Simulate a transaction without sending', url: 'rpc-reference.html#simulateTransaction', category: 'API' },
-    { title: 'molt_getAccountInfo', desc: 'Get full account info including data', url: 'rpc-reference.html#getAccountInfo', category: 'API' },
+    { title: 'licn_getBalance', desc: 'Get account balance by address', url: 'rpc-reference.html#getBalance', category: 'API' },
+    { title: 'licn_getBlock', desc: 'Retrieve a block by number or hash', url: 'rpc-reference.html#getBlock', category: 'API' },
+    { title: 'licn_sendTransaction', desc: 'Submit a signed transaction', url: 'rpc-reference.html#sendTransaction', category: 'API' },
+    { title: 'licn_getTransaction', desc: 'Get transaction details by hash', url: 'rpc-reference.html#getTransaction', category: 'API' },
+    { title: 'licn_simulateTransaction', desc: 'Simulate a transaction without sending', url: 'rpc-reference.html#simulateTransaction', category: 'API' },
+    { title: 'licn_getAccountInfo', desc: 'Get full account info including data', url: 'rpc-reference.html#getAccountInfo', category: 'API' },
     { title: 'WebSocket Subscriptions', desc: 'Subscribe to real-time events via WebSocket', url: 'ws-reference.html#subscribeSlots', category: 'API' },
-    { title: 'molt_getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
-    { title: 'molt_getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
+    { title: 'licn_getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
+    { title: 'licn_getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
 
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },
@@ -354,29 +354,29 @@ const SEARCH_INDEX = [
     { title: 'Account Methods', desc: 'Query account balances and info', url: 'sdk-js.html#connection-account', category: 'SDK' },
 
     // Smart Contracts
-    { title: 'Smart Contracts Overview', desc: 'Writing and deploying contracts on MoltChain', url: 'contracts.html', category: 'Contracts' },
+    { title: 'Smart Contracts Overview', desc: 'Writing and deploying contracts on Lichen', url: 'contracts.html', category: 'Contracts' },
     { title: 'Contract Setup', desc: 'Tools and patterns for contract development', url: 'contracts.html#setup', category: 'Contracts' },
-    { title: 'Deploying Contracts', desc: 'Deploy smart contracts to MoltChain networks', url: 'contracts.html#deploy', category: 'Contracts' },
+    { title: 'Deploying Contracts', desc: 'Deploy smart contracts to Lichen networks', url: 'contracts.html#deploy', category: 'Contracts' },
     { title: 'Cross-Contract Calls', desc: 'Call between contracts on-chain', url: 'contracts.html#crosscall', category: 'Contracts' },
     { title: 'Contract Reference', desc: 'Full reference for all 27 on-chain contracts', url: 'contract-reference.html', category: 'Contracts' },
-    { title: 'MoltyID Identity', desc: 'On-chain identity, naming, and reputation', url: 'moltyid.html', category: 'Contracts' },
+    { title: 'LichenID Identity', desc: 'On-chain identity, naming, and reputation', url: 'lichenid.html', category: 'Contracts' },
 
     // CLI
     { title: 'CLI Reference', desc: 'Complete command-line tool documentation', url: 'cli-reference.html', category: 'CLI' },
-    { title: 'molt call', desc: 'Invoke a smart contract function', url: 'cli-reference.html#call', category: 'CLI' },
-    { title: 'molt deploy', desc: 'Deploy a contract to the network', url: 'cli-reference.html#deploy', category: 'CLI' },
-    { title: 'molt transfer', desc: 'Send MOLT between addresses', url: 'cli-reference.html#transfer', category: 'CLI' },
-    { title: 'molt wallet-create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
-    { title: 'molt balance', desc: 'Check address balance', url: 'cli-reference.html#balance', category: 'CLI' },
+    { title: 'lichen call', desc: 'Invoke a smart contract function', url: 'cli-reference.html#call', category: 'CLI' },
+    { title: 'lichen deploy', desc: 'Deploy a contract to the network', url: 'cli-reference.html#deploy', category: 'CLI' },
+    { title: 'lichen transfer', desc: 'Send LICN between addresses', url: 'cli-reference.html#transfer', category: 'CLI' },
+    { title: 'lichen wallet-create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
+    { title: 'lichen balance', desc: 'Check address balance', url: 'cli-reference.html#balance', category: 'CLI' },
 
     // Tokens
-    { title: 'Token Standard (MRC-20)', desc: 'Fungible token standard specification', url: 'contract-reference.html#musd-token', category: 'Tokens' },
-    { title: 'NFT Standard (MRC-721)', desc: 'Non-fungible token standard', url: 'contract-reference.html#moltpunks', category: 'Tokens' },
+    { title: 'Token Standard (MRC-20)', desc: 'Fungible token standard specification', url: 'contract-reference.html#lusd-token', category: 'Tokens' },
+    { title: 'NFT Standard (MRC-721)', desc: 'Non-fungible token standard', url: 'contract-reference.html#lichenpunks', category: 'Tokens' },
     { title: 'Creating a Token', desc: 'Step-by-step token creation guide', url: 'contracts.html#token', category: 'Tutorial' },
 
     // Validators
     { title: 'Running a Validator', desc: 'Set up and operate a validator node', url: 'validator.html', category: 'Validators' },
-    { title: 'Staking Guide', desc: 'Stake MOLT and earn rewards', url: 'validator.html#staking', category: 'Validators' },
+    { title: 'Staking Guide', desc: 'Stake LICN and earn rewards', url: 'validator.html#staking', category: 'Validators' },
     { title: 'Validator Requirements', desc: 'Hardware and network requirements', url: 'validator.html#requirements', category: 'Validators' },
 
     // WebSocket / Realtime
@@ -395,8 +395,8 @@ const SEARCH_INDEX = [
     { title: 'Shielded Notes', desc: 'How encrypted notes and commitments are formed', url: 'zk-privacy.html#notes', category: 'Privacy' },
     { title: 'Nullifiers', desc: 'Preventing double-spends in shielded pools', url: 'zk-privacy.html#nullifiers', category: 'Privacy' },
     { title: 'Merkle Tree', desc: 'Merkle roots and path verification for private spends', url: 'zk-privacy.html#merkle', category: 'Privacy' },
-    { title: 'MoltyID Trust Tiers', desc: 'Identity reputation tiers and network effects', url: 'moltyid.html#trust-tiers', category: 'Identity' },
-    { title: 'MoltyID Name Service', desc: 'Register and resolve .molt names', url: 'moltyid.html#name-service', category: 'Identity' },
+    { title: 'LichenID Trust Tiers', desc: 'Identity reputation tiers and network effects', url: 'lichenid.html#trust-tiers', category: 'Identity' },
+    { title: 'LichenID Name Service', desc: 'Register and resolve .lichen names', url: 'lichenid.html#name-service', category: 'Identity' },
 
     // Governance / Changelog / Ops
     { title: 'Changelog', desc: 'Release notes and platform changes', url: 'changelog.html', category: 'Ops' },
@@ -406,13 +406,13 @@ const SEARCH_INDEX = [
     // Playground / Contracts
     { title: 'Programs Playground', desc: 'Interactive browser IDE for contracts', url: 'playground.html#live-playground', category: 'Tools' },
     { title: 'Contract Reference', desc: 'Production contract catalog and interfaces', url: 'contract-reference.html', category: 'Contracts' },
-    { title: 'MoltBridge Contract', desc: 'Bridge lock/mint program reference', url: 'contract-reference.html#moltbridge', category: 'Contracts' },
+    { title: 'LichenBridge Contract', desc: 'Bridge lock/mint program reference', url: 'contract-reference.html#lichenbridge', category: 'Contracts' },
     { title: 'DEX Contracts', desc: 'Core DEX programs, governance and rewards', url: 'contract-reference.html#dex-core', category: 'Contracts' },
 
     // Tools
-    { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.explorer) || '../explorer/index.html', category: 'Tools' },
-    { title: 'Faucet', desc: 'Get testnet MOLT tokens', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) || '../faucet/index.html', category: 'Tools' },
-    { title: 'Marketplace', desc: 'MoltChain NFT and token marketplace', url: (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.marketplace) || '../marketplace/index.html', category: 'Tools' },
+    { title: 'Block Explorer', desc: 'Browse blocks, transactions, and accounts', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.explorer) || '../explorer/index.html', category: 'Tools' },
+    { title: 'Faucet', desc: 'Get testnet LICN tokens', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.faucet) || '../faucet/index.html', category: 'Tools' },
+    { title: 'Marketplace', desc: 'Lichen NFT and token marketplace', url: (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.marketplace) || '../marketplace/index.html', category: 'Tools' },
 ];
 
 function initSearch() {
@@ -463,8 +463,8 @@ function initSearch() {
         const queryWords = normalizeSearchText(query).split(/\s+/).filter(Boolean);
         filteredResults = SEARCH_INDEX.filter(item => {
             const title = item.title || '';
-            const rpcAlias = title.startsWith('molt_')
-                ? ` ${title.replace(/^molt_/, '')} ${title.replace(/^molt_/, 'molt ')}`
+            const rpcAlias = title.startsWith('licn_')
+                ? ` ${title.replace(/^lichen_/, '')} ${title.replace(/^lichen_/, 'lichen ')}`
                 : '';
             const haystack = normalizeSearchText(`${title} ${item.desc || ''} ${item.category || ''}${rpcAlias}`);
             return queryWords.every(word => haystack.includes(word));
@@ -576,18 +576,18 @@ function normalizeSearchText(text) {
 // 6. NETWORK SELECTOR — devnet / testnet / mainnet
 // ============================================================
 
-const NETWORK_STORAGE_KEY = 'moltchain_dev_network';
+const NETWORK_STORAGE_KEY = 'lichen_dev_network';
 
-// Network endpoints — centralized in shared-config.js (MOLT_CONFIG)
+// Network endpoints — centralized in shared-config.js (LICHEN_CONFIG)
 const NETWORK_ENDPOINTS = {};
 const NETWORK_WS_ENDPOINTS = {};
-for (const [k, v] of Object.entries(MOLT_CONFIG.networks)) {
+for (const [k, v] of Object.entries(LICHEN_CONFIG.networks)) {
     NETWORK_ENDPOINTS[k] = v.rpc;
     NETWORK_WS_ENDPOINTS[k] = v.ws;
 }
 
 function initNetworkSelector() {
-    MOLT_CONFIG.initNetworkSelector(
+    LICHEN_CONFIG.initNetworkSelector(
         document.getElementById('devNetworkSelect') || document.querySelector('.network-select'),
         NETWORK_STORAGE_KEY,
         (network, cfg) => {
@@ -596,29 +596,29 @@ function initNetworkSelector() {
     );
 
     // Set initial active network
-    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || MOLT_CONFIG.defaultNetwork;
-    setActiveNetwork(MOLT_CONFIG.resolveNetwork(savedNetwork));
+    const savedNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || LICHEN_CONFIG.defaultNetwork;
+    setActiveNetwork(LICHEN_CONFIG.resolveNetwork(savedNetwork));
 }
 
 function setActiveNetwork(network) {
-    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : MOLT_CONFIG.defaultNetwork;
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : LICHEN_CONFIG.defaultNetwork;
 
     // Update endpoint displays on the page
     document.querySelectorAll('.endpoint-display[data-type="rpc"]').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork);
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || LICHEN_CONFIG.rpc(resolvedNetwork);
     });
 
     document.querySelectorAll('.endpoint-display[data-type="ws"]').forEach(el => {
-        el.textContent = NETWORK_WS_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.ws(resolvedNetwork);
+        el.textContent = NETWORK_WS_ENDPOINTS[resolvedNetwork] || LICHEN_CONFIG.ws(resolvedNetwork);
     });
 
     // Update any generic endpoint display
     document.querySelectorAll('.endpoint-display:not([data-type])').forEach(el => {
-        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork);
+        el.textContent = NETWORK_ENDPOINTS[resolvedNetwork] || LICHEN_CONFIG.rpc(resolvedNetwork);
     });
 
     // Dispatch custom event for other scripts to react
-    document.dispatchEvent(new CustomEvent('moltchain:networkChange', {
+    document.dispatchEvent(new CustomEvent('lichen:networkChange', {
         detail: {
             network: resolvedNetwork,
             rpcEndpoint: NETWORK_ENDPOINTS[resolvedNetwork],
@@ -632,17 +632,17 @@ function setActiveNetwork(network) {
  * @returns {{ network: string, rpc: string, ws: string }}
  */
 function getActiveNetwork() {
-    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || MOLT_CONFIG.defaultNetwork;
-    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : MOLT_CONFIG.defaultNetwork;
+    const network = localStorage.getItem(NETWORK_STORAGE_KEY) || LICHEN_CONFIG.defaultNetwork;
+    const resolvedNetwork = NETWORK_ENDPOINTS[network] ? network : LICHEN_CONFIG.defaultNetwork;
     return {
         network: resolvedNetwork,
-        rpc: NETWORK_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.rpc(resolvedNetwork),
-        ws: NETWORK_WS_ENDPOINTS[resolvedNetwork] || MOLT_CONFIG.ws(resolvedNetwork)
+        rpc: NETWORK_ENDPOINTS[resolvedNetwork] || LICHEN_CONFIG.rpc(resolvedNetwork),
+        ws: NETWORK_WS_ENDPOINTS[resolvedNetwork] || LICHEN_CONFIG.ws(resolvedNetwork)
     };
 }
 
 // Expose globally for other scripts
-window.moltchainNetwork = { getActiveNetwork, NETWORK_ENDPOINTS, NETWORK_WS_ENDPOINTS };
+window.lichenNetwork = { getActiveNetwork, NETWORK_ENDPOINTS, NETWORK_WS_ENDPOINTS };
 
 
 // ============================================================

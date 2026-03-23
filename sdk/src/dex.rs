@@ -1,4 +1,4 @@
-// MoltSwap - Decentralized Exchange (DEX)
+// LichenSwap - Decentralized Exchange (DEX)
 // Automated Market Maker (AMM) using constant product formula: x * y = k
 
 use crate::{Address, ContractError, storage_get, storage_set, bytes_to_u64, u64_to_bytes};

@@ -5,7 +5,7 @@ fund-deployer.py — Verify and report deployer account funding status.
 Called by reset-blockchain.sh after genesis to confirm the deployer
 (genesis wallet) is properly funded on-chain before E2E tests run.
 
-The deployer IS the genesis wallet: it is auto-funded with 10,000 MOLT
+The deployer IS the genesis wallet: it is auto-funded with 10,000 LICN
 at genesis via the validator_rewards distribution pool.  This script
 verifies that funding happened and optionally tops up via the faucet.
 
@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 RPC_URL = "http://127.0.0.1:8899"
 DEPLOYER_PATH = ROOT / "keypairs" / "deployer.json"
-MIN_BALANCE_SHELLS = 1_000_000_000  # 1 MOLT minimum
+MIN_BALANCE_SHELLS = 1_000_000_000  # 1 LICN minimum
 
 # Parse args
 for i, arg in enumerate(sys.argv[1:]):
@@ -67,18 +67,18 @@ def main() -> int:
             result = rpc("getBalance", [pubkey])
             bal = result.get("result", {})
             if isinstance(bal, dict):
-                shells = int(bal.get("shells", bal.get("balance", 0)))
+                spores = int(bal.get("spores", bal.get("balance", 0)))
             else:
-                shells = int(bal or 0)
+                spores = int(bal or 0)
 
-            molt = shells / 1_000_000_000
-            print(f"  Deployer balance: {shells:,} shells ({molt:.4f} MOLT)")
+            licn = spores / 1_000_000_000
+            print(f"  Deployer balance: {spores:,} spores ({licn:.4f} LICN)")
 
-            if shells >= MIN_BALANCE_SHELLS:
-                print(f"  ✓ Deployer is funded ({molt:.4f} ≥ 1.0 MOLT)")
+            if spores >= MIN_BALANCE_SHELLS:
+                print(f"  ✓ Deployer is funded ({licn:.4f} ≥ 1.0 LICN)")
                 return 0
             else:
-                print(f"  ⚠  Balance too low: {shells:,} < {MIN_BALANCE_SHELLS:,} shells")
+                print(f"  ⚠  Balance too low: {spores:,} < {MIN_BALANCE_SHELLS:,} spores")
                 if attempt < 5:
                     print(f"     Waiting 3s for genesis state to settle (attempt {attempt}/5)...")
                     time.sleep(3)
@@ -88,8 +88,8 @@ def main() -> int:
                 time.sleep(3)
 
     print("  ✗ Deployer account not funded after retries.")
-    print("    The genesis wallet should be auto-funded with 10,000 MOLT.")
-    print("    Check validator logs: tail -f /tmp/moltchain-v1.log")
+    print("    The genesis wallet should be auto-funded with 10,000 LICN.")
+    print("    Check validator logs: tail -f /tmp/lichen-v1.log")
     return 1
 
 

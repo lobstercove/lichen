@@ -1,6 +1,6 @@
 import { patchState } from './state-store.js';
 
-const LOCK_ALARM_NAME = 'moltwallet-auto-lock';
+const LOCK_ALARM_NAME = 'lichenwallet-auto-lock';
 
 export async function scheduleAutoLock(lockTimeoutMs) {
   if (!lockTimeoutMs || lockTimeoutMs <= 0) {

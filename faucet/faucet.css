@@ -1,4 +1,4 @@
-/* MoltFaucet - Page-specific styles only */
+/* Lichen Faucet - Page-specific styles only */
 /* Base styles come from shared-base-styles.css + shared-theme.css */
 
 .container-narrow {
@@ -38,7 +38,7 @@
     align-items: center;
     justify-content: center;
     font-size: 1.2rem;
-    color: white;
+    color: #fff;
     flex-shrink: 0;
 }
 
@@ -65,7 +65,7 @@
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: radial-gradient(ellipse at center top, rgba(255, 107, 53, 0.08) 0%, transparent 60%);
+    background: radial-gradient(ellipse at center top, rgba(0, 201, 219, 0.08) 0%, transparent 60%);
     pointer-events: none;
 }
 
@@ -77,8 +77,8 @@
     gap: 0.5rem;
     padding: 0.5rem 1.25rem;
     border-radius: 24px;
-    background: rgba(255, 107, 53, 0.1);
-    border: 1px solid rgba(255, 107, 53, 0.2);
+    background: rgba(0, 201, 219, 0.1);
+    border: 1px solid rgba(0, 201, 219, 0.2);
     color: var(--primary);
     font-size: 0.9rem;
     font-weight: 600;
@@ -167,7 +167,7 @@
 
 .form-input:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.15);
+    box-shadow: 0 0 0 3px rgba(0, 201, 219, 0.15);
 }
 
 .form-input::placeholder {
@@ -275,7 +275,7 @@
     width: 40px;
     height: 40px;
     border-radius: 10px;
-    background: rgba(255, 107, 53, 0.1);
+    background: rgba(0, 201, 219, 0.1);
     display: flex;
     align-items: center;
     justify-content: center;

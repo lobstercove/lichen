@@ -1,21 +1,21 @@
-/* ===== MoltChain Playground CSS ===== */
+/* ===== Lichen Playground CSS ===== */
 /* Production-grade IDE styling - 3000+ lines */
 
 /* ===== CSS Variables ===== */
 :root {
     /* Primary Colors */
-    --primary: #FF6B35;
-    --primary-dark: #E5501B;
-    --primary-light: #FF8C5F;
+    --primary: #00C9DB;
+    --primary-dark: #008B9E;
+    --primary-light: #06B6D4;
     --secondary: #004E89;
-    --accent: #F77F00;
-    
+    --accent: #00E5FF;
+
     /* Status Colors */
-    --success: #06D6A0;
+    --success: #00C9DB;
     --warning: #FFD23F;
     --danger: #E63946;
     --info: #118AB2;
-    
+
     /* Background Colors */
     --bg-dark: #0A0E27;
     --bg-darker: #060812;
@@ -23,28 +23,28 @@
     --bg-card: #141830;
     --bg-code: #1E1E1E;
     --bg-hover: #1F2544;
-    
+
     /* Text Colors */
     --text-primary: #FFFFFF;
     --text-secondary: #B8C1EC;
     --text-muted: #6B7A99;
     --text-disabled: #4A5568;
-    
+
     /* Border Colors */
     --border: #1F2544;
     --border-light: #2A2F4F;
-    --border-focus: #FF6B35;
-    
+    --border-focus: #00C9DB;
+
     /* Shadow */
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.4);
     --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.5);
-    
+
     /* Gradients */
-    --gradient-primary: linear-gradient(135deg, #FF6B35 0%, #F77F00 100%);
+    --gradient-primary: linear-gradient(135deg, #0891B2 0%, #06B6D4 100%);
     --gradient-secondary: linear-gradient(135deg, #004E89 0%, #118AB2 100%);
-    --gradient-success: linear-gradient(135deg, #06D6A0 0%, #118AB2 100%);
-    
+    --gradient-success: linear-gradient(135deg, #0891B2 0%, #06B6D4 100%);
+
     /* Layout Dimensions */
     --navbar-height: 60px;
     --sidebar-left-width: 300px;
@@ -52,12 +52,12 @@
     --toolbar-height: 50px;
     --terminal-height: 280px;
     --terminal-collapsed: 40px;
-    
+
     /* Transitions */
     --transition-fast: 0.15s ease;
     --transition-normal: 0.3s ease;
     --transition-slow: 0.5s ease;
-    
+
     /* Z-Index */
     --z-modal: 1000;
     --z-modal-overlay: 999;
@@ -324,14 +324,14 @@ a {
 
 .btn-primary {
     background: var(--gradient-primary);
-    color: white;
+    color: #fff;
     box-shadow: var(--shadow);
 }
 
 .btn-primary:hover {
     filter: brightness(1.1);
     transform: translateY(-1px);
-    box-shadow: 0 6px 25px rgba(255, 107, 53, 0.4);
+    box-shadow: 0 6px 25px rgba(0, 201, 219, 0.4);
 }
 
 .btn-primary:active {
@@ -852,8 +852,8 @@ a {
 .example-lang {
     display: inline-block;
     padding: 0.125rem 0.5rem;
-    background: var(--primary);
-    color: white;
+    background: #0891B2;
+    color: #fff;
     border-radius: 12px;
     font-size: 0.75rem;
     font-weight: 600;
@@ -1004,8 +1004,8 @@ a {
 }
 
 .tool-btn.active {
-    background: var(--primary);
-    color: white;
+    background: #0891B2;
+    color: #fff;
     border-color: var(--primary);
 }
 
@@ -1497,6 +1497,7 @@ a {
         opacity: 0;
         transform: translateY(-20px) scale(0.95);
     }
+
     to {
         opacity: 1;
         transform: translateY(0) scale(1);
@@ -1828,7 +1829,7 @@ a {
     .ide-container {
         grid-template-columns: 280px 1fr 300px;
     }
-    
+
     --sidebar-left-width: 280px;
     --sidebar-right-width: 300px;
 }
@@ -1837,7 +1838,7 @@ a {
     .sidebar-right {
         display: none;
     }
-    
+
     .ide-container {
         grid-template-columns: 260px 1fr;
     }
@@ -1847,7 +1848,7 @@ a {
     .nav-menu {
         display: none;
     }
-    
+
     .sidebar-left {
         position: absolute;
         left: -100%;
@@ -1856,15 +1857,15 @@ a {
         z-index: 50;
         transition: var(--transition-normal);
     }
-    
+
     .sidebar-left.open {
         left: 0;
     }
-    
+
     .ide-container {
         grid-template-columns: 1fr;
     }
-    
+
     .tool-btn span {
         display: none;
     }
@@ -2076,6 +2077,7 @@ a {
     from {
         opacity: 0;
     }
+
     to {
         opacity: 1;
     }
@@ -2086,6 +2088,7 @@ a {
         transform: translateY(-10px);
         opacity: 0;
     }
+
     to {
         transform: translateY(0);
         opacity: 1;

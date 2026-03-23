@@ -1,4 +1,4 @@
-//! RPC client for MoltChain
+//! RPC client for Lichen
 
 use crate::error::{Error, Result};
 use crate::types::{Balance, Block, NetworkInfo};
@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// MoltChain RPC client
+/// Lichen RPC client
 #[derive(Debug, Clone)]
 pub struct Client {
     rpc_url: String,
@@ -26,9 +26,9 @@ impl Client {
         }
     }
 
-    /// Create a client using the MOLTCHAIN_RPC_URL env var, falling back to localhost:8899.
+    /// Create a client using the LICHEN_RPC_URL env var, falling back to localhost:8899.
     pub fn from_env() -> Self {
-        let url = std::env::var("MOLTCHAIN_RPC_URL")
+        let url = std::env::var("LICHEN_RPC_URL")
             .unwrap_or_else(|_| "http://localhost:8899".to_string());
         Self::new(url)
     }
@@ -76,11 +76,11 @@ impl Client {
     pub async fn get_balance(&self, pubkey: &Pubkey) -> Result<Balance> {
         let result = self.rpc_call("getBalance", json!([pubkey.to_base58()])).await?;
         
-        let shells = result["shells"]
+        let spores = result["spores"]
             .as_u64()
             .ok_or(Error::ParseError("Invalid balance format".to_string()))?;
         
-        Ok(Balance::from_shells(shells))
+        Ok(Balance::from_spores(spores))
     }
     
     /// Get block by slot
@@ -386,8 +386,8 @@ mod tests {
 
     #[test]
     fn test_client_new_custom_url() {
-        let client = Client::new("https://rpc.moltchain.io:443");
-        assert_eq!(client.rpc_url, "https://rpc.moltchain.io:443");
+        let client = Client::new("https://rpc.lichen.network:443");
+        assert_eq!(client.rpc_url, "https://rpc.lichen.network:443");
     }
 
     #[test]
@@ -401,17 +401,17 @@ mod tests {
     #[test]
     fn test_client_from_env_defaults_to_localhost() {
         // Clear the env var to ensure fallback
-        std::env::remove_var("MOLTCHAIN_RPC_URL");
+        std::env::remove_var("LICHEN_RPC_URL");
         let client = Client::from_env();
         assert_eq!(client.rpc_url, "http://localhost:8899");
     }
 
     #[test]
     fn test_client_from_env_uses_var() {
-        std::env::set_var("MOLTCHAIN_RPC_URL", "http://custom:9999");
+        std::env::set_var("LICHEN_RPC_URL", "http://custom:9999");
         let client = Client::from_env();
         assert_eq!(client.rpc_url, "http://custom:9999");
-        std::env::remove_var("MOLTCHAIN_RPC_URL");
+        std::env::remove_var("LICHEN_RPC_URL");
     }
 
     // ── ClientBuilder ───────────────────────────────────────────────

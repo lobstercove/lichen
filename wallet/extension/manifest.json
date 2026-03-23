@@ -1,20 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "MoltWallet",
-  "description": "Secure, fast, and agent-friendly wallet for MoltChain.",
+  "name": "LichenWallet",
+  "description": "Secure, fast, and agent-friendly wallet for Lichen.",
   "version": "0.1.0",
   "icons": {
-    "16": "MoltWallet_Logo_256.png",
-    "48": "MoltWallet_Logo_256.png",
-    "128": "MoltWallet_Logo_256.png"
+    "16": "LichenWallet_Logo_256.png",
+    "48": "LichenWallet_Logo_256.png",
+    "128": "LichenWallet_Logo_256.png"
   },
   "action": {
-    "default_title": "MoltWallet",
+    "default_title": "LichenWallet",
     "default_popup": "src/popup/popup.html",
     "default_icon": {
-      "16": "MoltWallet_Logo_256.png",
-      "24": "MoltWallet_Logo_256.png",
-      "32": "MoltWallet_Logo_256.png"
+      "16": "LichenWallet_Logo_256.png",
+      "24": "LichenWallet_Logo_256.png",
+      "32": "LichenWallet_Logo_256.png"
     }
   },
   "background": {
@@ -22,7 +22,7 @@
     "type": "module"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; connect-src https://rpc.moltchain.network https://testnet-rpc.moltchain.network http://localhost:8899 https://custody.moltchain.network https://testnet-custody.moltchain.network http://localhost:9105"
+    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; connect-src https://rpc.lichen.network https://testnet-rpc.lichen.network http://localhost:8899 https://custody.lichen.network https://testnet-custody.lichen.network http://localhost:9105"
   },
   "options_page": "src/pages/full.html",
   "permissions": [
@@ -32,11 +32,11 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://rpc.moltchain.network/*",
-    "https://testnet-rpc.moltchain.network/*",
+    "https://rpc.lichen.network/*",
+    "https://testnet-rpc.lichen.network/*",
     "http://localhost:8899/*",
-    "https://custody.moltchain.network/*",
-    "https://testnet-custody.moltchain.network/*",
+    "https://custody.lichen.network/*",
+    "https://testnet-custody.lichen.network/*",
     "http://localhost:9105/*"
   ],
   "content_scripts": [

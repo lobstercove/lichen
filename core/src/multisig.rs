@@ -1,4 +1,4 @@
-// MoltChain Multi-Signature Wallet Support
+// Lichen Multi-Signature Wallet Support
 
 use crate::{Keypair, Pubkey};
 use serde::{Deserialize, Serialize};
@@ -96,7 +96,7 @@ pub struct GovernedProposal {
     pub source: Pubkey,
     /// Recipient public key
     pub recipient: Pubkey,
-    /// Transfer amount in shells
+    /// Transfer amount in spores
     pub amount: u64,
     /// Pubkeys that have approved this proposal
     pub approvals: Vec<Pubkey>,
@@ -113,8 +113,8 @@ pub struct DistributionWallet {
     pub role: String,
     /// Public key for this wallet
     pub pubkey: Pubkey,
-    /// Allocation in MOLT
-    pub amount_molt: u64,
+    /// Allocation in LICN
+    pub amount_licn: u64,
     /// Percentage of total supply
     pub percentage: u8,
     /// Path to keypair file on disk
@@ -128,7 +128,7 @@ pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
     ("validator_rewards", 50_000_000, 10),
     ("community_treasury", 125_000_000, 25),
     ("builder_grants", 175_000_000, 35),
-    ("founding_moltys", 50_000_000, 10),
+    ("founding_symbionts", 50_000_000, 10),
     ("ecosystem_partnerships", 50_000_000, 10),
     ("reserve_pool", 50_000_000, 10),
 ];
@@ -148,7 +148,7 @@ pub struct GenesisWallet {
     pub treasury_keypair_path: Option<String>,
     /// Multi-sig configuration
     pub multisig: Option<MultiSigConfig>,
-    /// Whitepaper distribution wallets (6 allocations totaling 500M MOLT)
+    /// Whitepaper distribution wallets (6 allocations totaling 500M LICN)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribution_wallets: Option<Vec<DistributionWallet>>,
     /// Creation timestamp
@@ -200,7 +200,7 @@ impl GenesisWallet {
             None
         };
 
-        // Generate distribution keypairs per whitepaper (6 wallets totaling 500M MOLT)
+        // Generate distribution keypairs per whitepaper (6 wallets totaling 500M LICN)
         let mut distribution_keypairs = Vec::new();
         let mut distribution_wallets = Vec::new();
 
@@ -209,7 +209,7 @@ impl GenesisWallet {
             distribution_wallets.push(DistributionWallet {
                 role: role.to_string(),
                 pubkey: kp.pubkey(),
-                amount_molt: amount,
+                amount_licn: amount,
                 percentage: pct,
                 keypair_path: None, // filled by save_distribution_keypairs
             });
@@ -331,7 +331,7 @@ impl GenesisWallet {
                 "pubkey": kp.pubkey().to_base58(),
                 "secret_key": hex::encode(kp.secret()),
                 "role": dw.role,
-                "amount_molt": dw.amount_molt,
+                "amount_licn": dw.amount_licn,
                 "percentage": dw.percentage,
                 "chain_id": chain_id,
                 "created_at": chrono::Utc::now().to_rfc3339(),
@@ -366,12 +366,12 @@ mod tests {
         let dist = wallet.distribution_wallets.as_ref().unwrap();
         assert_eq!(dist.len(), 6);
         assert_eq!(dist[0].role, "validator_rewards");
-        assert_eq!(dist[0].amount_molt, 50_000_000);
+        assert_eq!(dist[0].amount_licn, 50_000_000);
         assert_eq!(dist[1].role, "community_treasury");
-        assert_eq!(dist[1].amount_molt, 125_000_000);
+        assert_eq!(dist[1].amount_licn, 125_000_000);
 
         // Total = 500M
-        let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
+        let total: u64 = dist.iter().map(|d| d.amount_licn).sum();
         assert_eq!(total, 500_000_000);
 
         // Treasury = validator_rewards
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(dist_keypairs.len(), 6);
         let dist = wallet.distribution_wallets.as_ref().unwrap();
         assert_eq!(dist.len(), 6);
-        let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
+        let total: u64 = dist.iter().map(|d| d.amount_licn).sum();
         assert_eq!(total, 500_000_000);
     }
 

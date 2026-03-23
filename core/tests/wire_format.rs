@@ -4,7 +4,7 @@
 // the same byte layout as the JS and Python SDK manual bincode encoders.
 // Also tests JSON (serde_json) round-trip with hex-string signatures.
 
-use moltchain_core::{Hash, Instruction, Message, Pubkey, Transaction};
+use lichen_core::{Hash, Instruction, Message, Pubkey, Transaction};
 
 // ─── Helper: build a reference transaction ───────────────────────────
 
@@ -31,7 +31,7 @@ fn make_test_transaction() -> Transaction {
 
 // ─── Helper: manually build bincode bytes matching JS/Python layout ──
 //
-// Layout (matching sdk/js/src/bincode.ts and sdk/python/moltchain/bincode.py):
+// Layout (matching sdk/js/src/bincode.ts and sdk/python/lichen/bincode.py):
 //   signatures: u64_le(count) + N * 64_raw_bytes
 //   message.instructions: u64_le(count) + N * instruction
 //   instruction: 32_bytes(program_id) + u64_le(accounts_count) + N*32 + u64_le(data_len) + data
@@ -91,9 +91,9 @@ fn build_expected_bincode(tx: &Transaction) -> Vec<u8> {
     // tx_type: enum variant index as u32 LE (bincode default)
     // Native = 0, Evm = 1, SolanaCompat = 2
     let variant = match tx.tx_type {
-        moltchain_core::TransactionType::Native => 0u32,
-        moltchain_core::TransactionType::Evm => 1u32,
-        moltchain_core::TransactionType::SolanaCompat => 2u32,
+        lichen_core::TransactionType::Native => 0u32,
+        lichen_core::TransactionType::Evm => 1u32,
+        lichen_core::TransactionType::SolanaCompat => 2u32,
     };
     out.extend_from_slice(&variant.to_le_bytes());
 
@@ -370,55 +370,55 @@ fn test_wire_envelope_round_trip_native() {
     let wire = tx.to_wire();
 
     // Check envelope header
-    assert_eq!(&wire[0..2], &moltchain_core::TX_WIRE_MAGIC);
-    assert_eq!(wire[2], moltchain_core::TX_WIRE_VERSION);
+    assert_eq!(&wire[0..2], &lichen_core::TX_WIRE_MAGIC);
+    assert_eq!(wire[2], lichen_core::TX_WIRE_VERSION);
     assert_eq!(wire[3], 0); // Native = 0
 
     // Round-trip
     let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
     assert_eq!(tx2.signatures, tx.signatures);
     assert_eq!(tx2.message.recent_blockhash, tx.message.recent_blockhash);
-    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Native);
+    assert_eq!(tx2.tx_type, lichen_core::TransactionType::Native);
 }
 
 #[test]
 fn test_wire_envelope_round_trip_evm() {
-    let ix = moltchain_core::Instruction {
+    let ix = lichen_core::Instruction {
         program_id: Pubkey([0xEE; 32]),
         accounts: vec![Pubkey([2; 32])],
         data: vec![1, 2, 3],
     };
-    let msg = moltchain_core::Message::new(vec![ix], Hash::default());
+    let msg = lichen_core::Message::new(vec![ix], Hash::default());
     let tx = Transaction {
         signatures: vec![[0x11; 64]],
         message: msg,
-        tx_type: moltchain_core::TransactionType::Evm,
+        tx_type: lichen_core::TransactionType::Evm,
     };
     let wire = tx.to_wire();
     assert_eq!(wire[3], 1); // Evm = 1
 
     let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Evm);
+    assert_eq!(tx2.tx_type, lichen_core::TransactionType::Evm);
 }
 
 #[test]
 fn test_wire_envelope_round_trip_solana_compat() {
-    let ix = moltchain_core::Instruction {
+    let ix = lichen_core::Instruction {
         program_id: Pubkey([1; 32]),
         accounts: vec![],
         data: vec![],
     };
-    let msg = moltchain_core::Message::new(vec![ix], Hash::default());
+    let msg = lichen_core::Message::new(vec![ix], Hash::default());
     let tx = Transaction {
         signatures: vec![[0xCC; 64]],
         message: msg,
-        tx_type: moltchain_core::TransactionType::SolanaCompat,
+        tx_type: lichen_core::TransactionType::SolanaCompat,
     };
     let wire = tx.to_wire();
     assert_eq!(wire[3], 2); // SolanaCompat = 2
 
     let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::SolanaCompat);
+    assert_eq!(tx2.tx_type, lichen_core::TransactionType::SolanaCompat);
 }
 
 #[test]
@@ -428,7 +428,7 @@ fn test_wire_envelope_backward_compat_legacy_bincode() {
     let legacy = bincode::serialize(&tx).unwrap();
 
     // First two bytes should NOT be the magic (they're the sig count u64 LE)
-    assert_ne!(&legacy[0..2], &moltchain_core::TX_WIRE_MAGIC);
+    assert_ne!(&legacy[0..2], &lichen_core::TX_WIRE_MAGIC);
 
     // from_wire must still decode legacy bincode
     let tx2 = Transaction::from_wire(&legacy, MAX_TEST_LIMIT).unwrap();
@@ -499,7 +499,7 @@ fn test_wire_envelope_type_overrides_payload() {
     wire.extend_from_slice(&payload);
 
     let tx2 = Transaction::from_wire(&wire, MAX_TEST_LIMIT).unwrap();
-    assert_eq!(tx2.tx_type, moltchain_core::TransactionType::Evm);
+    assert_eq!(tx2.tx_type, lichen_core::TransactionType::Evm);
 }
 
 #[test]

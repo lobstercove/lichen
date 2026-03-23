@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use moltchain_core::Hash;
+use lichen_core::Hash;
 
 fuzz_target!(|data: &[u8]| {
     // Fuzz hash computation — must never panic on any input size.

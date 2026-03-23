@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Changelog - MoltChain Developer Portal</title>
+    <title>Changelog - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -64,7 +64,7 @@
         </div>
 
         <h1>Changelog</h1>
-        <p class="changelog-lead">A complete history of every MoltChain release — new features, improvements, breaking
+        <p class="changelog-lead">A complete history of every Lichen release — new features, improvements, breaking
             changes, and fixes.</p>
 
         <!-- Filters -->
@@ -200,10 +200,10 @@
                             reclaims freed bytes. Prevents unbounded state growth (Task 4.3, M-4)
                         </li>
                         <li><strong>IBC Exploration &amp; Roadmap</strong> &mdash; comprehensive research document at
-                            <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing MoltChain
+                            <code>docs/strategy/IBC_EXPLORATION.md</code> covering IBC requirements, existing Lichen
                             building blocks (commit certificates, anchored account inclusion proofs, BFT finality), gap
                             analysis, and phased
-                            implementation roadmap. Full IBC deferred; MoltBridge adequate for current phase (Task 4.4,
+                            implementation roadmap. Full IBC deferred; LichenBridge adequate for current phase (Task 4.4,
                             H-14)
                         </li>
                     </ul>
@@ -214,7 +214,7 @@
                     <ul>
                         <li><strong>Fee Discount MEV Vector Removed</strong> &mdash; deprecated
                             <code>apply_reputation_fee_discount()</code>; all transactions now pay the flat base fee
-                            regardless of MoltyID reputation score. Eliminates identity-based fee manipulation and
+                            regardless of LichenID reputation score. Eliminates identity-based fee manipulation and
                             aligns with standard blockchain fee models (Task 4.2, M-7)
                         </li>
                     </ul>
@@ -232,10 +232,10 @@
                 <div class="changelog-section" data-type="fixed">
                     <h4><i class="fas fa-bug" style="color: #e74c3c"></i> Fixes</h4>
                     <ul>
-                        <li>Keypair path stability: validator keypairs now resolve via <code>MOLTCHAIN_REAL_HOME</code>
+                        <li>Keypair path stability: validator keypairs now resolve via <code>LICHEN_REAL_HOME</code>
                             env var, preventing keypair loss when <code>HOME</code> is overridden by the start script
                         </li>
-                        <li>Shared keypair path (<code>~/.moltchain/validators/</code>) now survives state flushes
+                        <li>Shared keypair path (<code>~/.lichen/validators/</code>) now survives state flushes
                             &mdash; no more ghost validators from keypair regeneration</li>
                     </ul>
                 </div>
@@ -243,9 +243,9 @@
                 <div class="changelog-section" data-type="improved">
                     <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
                     <ul>
-                        <li>Start script exports <code>MOLTCHAIN_REAL_HOME</code> before HOME override so the
+                        <li>Start script exports <code>LICHEN_REAL_HOME</code> before HOME override so the
                             validator binary can locate the operator&rsquo;s true home directory</li>
-                        <li>Three-layer ghost prevention: path stability (MOLTCHAIN_REAL_HOME) + fingerprint
+                        <li>Three-layer ghost prevention: path stability (LICHEN_REAL_HOME) + fingerprint
                             pre-check + startup purge</li>
                     </ul>
                 </div>
@@ -273,7 +273,7 @@
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
                         <li>CLI: <code>--supply &lt;amount&gt;</code> flag sets initial total supply on deploy
-                            (auto-converted to shells via decimals)</li>
+                            (auto-converted to spores via decimals)</li>
                         <li>CLI: <code>--metadata &lt;json&gt;</code> flag attaches custom metadata to the symbol
                             registry entry</li>
                         <li>CLI: On-chain verification after deploy &mdash; polls <code>getAccountInfo</code> to confirm
@@ -281,7 +281,7 @@
                         <li>WASM runtime: <code>host_poseidon_hash</code> host function &mdash; BN254 Poseidon hash for
                             Merkle trees and ZK circuits (2,000 CU)</li>
                         <li>Contract SDK: <code>poseidon_hash(left, right) &rarr; [u8; 32]</code> wrapper in
-                            <code>moltchain-contract-sdk</code>
+                            <code>lichen-contract-sdk</code>
                         </li>
                     </ul>
                 </div>
@@ -337,10 +337,10 @@
                             reduce-only validation</li>
                         <li>New dex-margin opcode 26: <code>query_user_open_position</code> — queries open position for
                             a trader on a specific pair</li>
-                        <li>MoltyID integration in DEX wallet — <code>.molt</code> name resolution and reputation badge
+                        <li>LichenID integration in DEX wallet — <code>.lichen</code> name resolution and reputation badge
                             display on connect</li>
-                        <li>Batch <code>.molt</code> name resolution for saved wallets via
-                            <code>batchReverseMoltNames</code> RPC
+                        <li>Batch <code>.lichen</code> name resolution for saved wallets via
+                            <code>batchReverseLichenNames</code> RPC
                         </li>
                     </ul>
                 </div>
@@ -348,8 +348,8 @@
                 <div class="changelog-section" data-type="improved">
                     <h4><i class="fas fa-wrench" style="color: var(--primary)"></i> Improvements</h4>
                     <ul>
-                        <li>Tokenomics rebalance — reward pool reduced to 100K MOLT/month with epoch cap enforcement;
-                            listing liquidity threshold lowered to 10K MOLT</li>
+                        <li>Tokenomics rebalance — reward pool reduced to 100K LICN/month with epoch cap enforcement;
+                            listing liquidity threshold lowered to 10K LICN</li>
                         <li>Prediction market sell math rewritten — binary search over <code>total_a_for_sets()</code>
                             replaces broken equal-partition heuristic for multi-outcome markets</li>
                         <li>Prediction market return data — <code>create_market</code>, <code>add_liquidity</code>,
@@ -445,17 +445,17 @@
                     <span class="changelog-version">v0.10.0</span>
                     <span class="changelog-date">February 10, 2026</span>
                 </div>
-                <h3 class="changelog-title">MoltyID Universal Identity</h3>
+                <h3 class="changelog-title">LichenID Universal Identity</h3>
 
                 <div class="changelog-section" data-type="new">
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
-                        <li>.molt naming system — register, resolve, transfer, renew, and release human-readable names
+                        <li>.lichen naming system — register, resolve, transfer, renew, and release human-readable names
                         </li>
                         <li>Agent Discovery Registry with endpoints, metadata, availability signalling, and rate-limit
                             config</li>
                         <li>Trust tiers (0–5) integrated with fee discounts</li>
-                        <li>Identity-gated access on MoltBridge, Compute Market, BountyBoard, ClawPay, and MoltSwap</li>
+                        <li>Identity-gated access on LichenBridge, Compute Market, BountyBoard, SporePay, and LichenSwap</li>
                         <li>Fee-only mempool ordering — fair priority for all participants</li>
                         <li>113 tests added across 7 previously-untested contracts</li>
                     </ul>
@@ -466,7 +466,7 @@
                     <ul>
                         <li>8 new fuzz targets covering consensus, block, mempool, account, hash, and RPC subsystems
                         </li>
-                        <li>Whitepaper updated with full MoltyID specification</li>
+                        <li>Whitepaper updated with full LichenID specification</li>
                     </ul>
                 </div>
 
@@ -490,7 +490,7 @@
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
                         <li>98/98 fix plan items completed — full production hardening pass</li>
-                        <li>5 vision contracts: reef_storage, moltbridge, compute_market, clawpay, bountyboard</li>
+                        <li>5 vision contracts: moss_storage, lichenbridge, compute_market, sporepay, bountyboard</li>
                         <li>SDK test_mock framework for contract testing without a running node</li>
                         <li>Parallel transaction processing scaffold for future throughput scaling</li>
                         <li>Privacy layer scaffold — encrypted memo fields and stealth address generation</li>
@@ -503,7 +503,7 @@
                     <ul>
                         <li>WriteBatch atomicity enforced for all state mutations — no partial writes</li>
                         <li>Bootstrap sybil protection prevents address flooding during peer discovery</li>
-                        <li>ReefStake RPC authentication — endpoints now require valid signatures</li>
+                        <li>MossStake RPC authentication — endpoints now require valid signatures</li>
                         <li>P2P TLS enforcement — plaintext connections rejected</li>
                         <li>EVM balance commit correctness — balances now round-trip through EVM without drift</li>
                         <li>ForkChoice with proper chain scoring — heaviest-chain rule replaces naive longest-chain</li>
@@ -522,10 +522,10 @@
                 <div class="changelog-section" data-type="new">
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
-                        <li>Explorer (Reef Explorer) — full blockchain explorer with block, transaction, and account
+                        <li>Explorer (Lichen Explorer) — full blockchain explorer with block, transaction, and account
                             views</li>
-                        <li>Marketplace (Molt Market) — NFT marketplace with listing, bidding, and royalties</li>
-                        <li>Wallet (Molt Wallet) — browser wallet with BIP39 seed phrase and hardware key support</li>
+                        <li>Marketplace (Lichen Market) — NFT marketplace with listing, bidding, and royalties</li>
+                        <li>Wallet (Lichen Wallet) — browser wallet with BIP39 seed phrase and hardware key support</li>
                         <li>Website landing page with live on-chain stats</li>
                         <li>Programs Playground — web-based contract IDE with compile, deploy, and interact</li>
                         <li>JS/TS, Python, and Rust SDKs for full-stack application development</li>
@@ -546,8 +546,8 @@
                     <h4><i class="fas fa-plus-circle" style="color: var(--success)"></i> New Features</h4>
                     <ul>
                         <li>Initial blockchain with Proof of Contribution consensus mechanism</li>
-                        <li>11 smart contracts: moltcoin, moltdao, moltswap, moltyid, moltoracle, moltauction,
-                            moltmarket, moltpunks, clawpump, clawvault, lobsterlend</li>
+                        <li>11 smart contracts: lichencoin, lichendao, lichenswap, lichenid, lichenoracle, lichenauction,
+                            lichenmarket, lichenpunks, sporepump, sporevault, thalllend</li>
                         <li>CLI with wallet, validator, and query commands</li>
                         <li>P2P networking with gossip protocol for block and transaction propagation</li>
                         <li>RPC server with JSON-RPC 2.0 compliant API</li>

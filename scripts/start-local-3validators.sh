@@ -9,8 +9,8 @@ PID_FILE="$ART_DIR/pids.txt"
 LOG1="$ART_DIR/v1.log"
 LOG2="$ART_DIR/v2.log"
 LOG3="$ART_DIR/v3.log"
-STAGGER_SECS="${MOLT_LOCAL_STAGGER_SECS:-15}"
-NETWORK="${MOLT_LOCAL_NETWORK:-testnet}"
+STAGGER_SECS="${LICN_LOCAL_STAGGER_SECS:-15}"
+NETWORK="${LICN_LOCAL_NETWORK:-testnet}"
 
 case "$NETWORK" in
   testnet)
@@ -83,9 +83,9 @@ stop_cluster() {
 
   pkill -f "$ROOT/scripts/validator-supervisor.sh ${NETWORK}-v" 2>/dev/null || true
   pkill -f "$ROOT/run-validator.sh ${NETWORK} " 2>/dev/null || true
-  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P1}" 2>/dev/null || true
-  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P2}" 2>/dev/null || true
-  pkill -f "moltchain-validator.*--network ${NETWORK}.*--p2p-port ${P2P3}" 2>/dev/null || true
+  pkill -f "lichen-validator.*--network ${NETWORK}.*--p2p-port ${P2P1}" 2>/dev/null || true
+  pkill -f "lichen-validator.*--network ${NETWORK}.*--p2p-port ${P2P2}" 2>/dev/null || true
+  pkill -f "lichen-validator.*--network ${NETWORK}.*--p2p-port ${P2P3}" 2>/dev/null || true
   sleep 1
 
   for port in "$RPC1" "$RPC2" "$RPC3" "$WS1" "$WS2" "$WS3" "$P2P1" "$P2P2" "$P2P3" 9301 9302 9303; do
@@ -125,17 +125,17 @@ start_cluster() {
   fi
 
   echo "[local-3validators] starting V1 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
+  LICHEN_SIGNER_BIND=127.0.0.1:9301 RUST_LOG=warn "$RUNNER" "$NETWORK" 1 --dev-mode >"$LOG1" 2>&1 &
   V1PID=$!
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V2 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9302 RUST_LOG=warn "$RUNNER" "$NETWORK" 2 --dev-mode >"$LOG2" 2>&1 &
+  LICHEN_SIGNER_BIND=127.0.0.1:9302 RUST_LOG=warn "$RUNNER" "$NETWORK" 2 --dev-mode >"$LOG2" 2>&1 &
   V2PID=$!
   sleep "$STAGGER_SECS"
 
   echo "[local-3validators] starting V3 via run-validator.sh ($NETWORK)"
-  MOLTCHAIN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
+  LICHEN_SIGNER_BIND=127.0.0.1:9303 RUST_LOG=warn "$RUNNER" "$NETWORK" 3 --dev-mode >"$LOG3" 2>&1 &
   V3PID=$!
 
   if ! wait_rpc "$RPC1" 90 1 || ! wait_rpc "$RPC2" 90 1 || ! wait_rpc "$RPC3" 90 1; then

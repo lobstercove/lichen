@@ -1,10 +1,10 @@
 import { decryptPrivateKey, signTransaction, bytesToHex } from './crypto-service.js';
-import { MoltChainRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
+import { LichenRPC, getConfiguredRpcEndpoint } from './rpc-service.js';
 import { patchState } from './state-store.js';
 import { serializeMessageForSigning } from './tx-service.js';
 
-const APPROVED_ORIGINS_KEY = 'moltApprovedOrigins';
-const APPROVED_ORIGINS_META_KEY = 'moltApprovedOriginsMeta';
+const APPROVED_ORIGINS_KEY = 'lichenApprovedOrigins';
+const APPROVED_ORIGINS_META_KEY = 'lichenApprovedOriginsMeta';
 const APPROVED_ORIGIN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const pendingRequests = new Map();
 const MAX_PENDING_REQUESTS = 200;
@@ -229,41 +229,41 @@ function normalizeParams(payload) {
 function normalizeMethod(rawMethod) {
   const method = String(rawMethod || '').trim();
   const aliasMap = {
-    molt_getAccounts: 'molt_accounts',
-    molt_request_accounts: 'molt_requestAccounts',
-    molt_sign_message: 'molt_signMessage',
-    molt_sign_transaction: 'molt_signTransaction',
-    molt_send_transaction: 'molt_sendTransaction',
-    molt_get_transactions: 'molt_getTransactions',
-    molt_get_transactions_by_address: 'molt_getTransactions',
-    molt_latest_block: 'molt_getLatestBlock',
-    molt_get_provider_state: 'molt_getProviderState',
-    molt_is_connected: 'molt_isConnected',
-    eth_accounts: 'molt_accounts',
-    eth_requestAccounts: 'molt_requestAccounts',
-    personal_sign: 'molt_signMessage',
-    eth_sign: 'molt_signMessage',
-    eth_signTransaction: 'molt_signTransaction',
-    eth_sendTransaction: 'molt_sendTransaction',
-    eth_getBalance: 'molt_getBalance',
-    eth_getTransactionCount: 'molt_getTransactions',
-    eth_chainId: 'molt_ethChainId',
-    net_version: 'molt_netVersion',
-    eth_coinbase: 'molt_coinbase',
-    molt_connect: 'molt_requestAccounts',
-    wallet_getPermissions: 'molt_permissions',
-    wallet_requestPermissions: 'molt_requestAccounts',
-    wallet_revokePermissions: 'molt_disconnect',
-    molt_getPermissions: 'molt_permissions',
-    wallet_switchEthereumChain: 'molt_switchNetwork',
-    wallet_addEthereumChain: 'molt_addNetwork',
-    wallet_watchAsset: 'molt_watchAsset',
-    eth_blockNumber: 'molt_blockNumber',
-    eth_getCode: 'molt_getCode',
-    eth_estimateGas: 'molt_estimateGas',
-    eth_gasPrice: 'molt_gasPrice',
-    web3_clientVersion: 'molt_clientVersion',
-    net_listening: 'molt_netListening'
+    licn_getAccounts: 'licn_accounts',
+    licn_request_accounts: 'licn_requestAccounts',
+    licn_sign_message: 'licn_signMessage',
+    licn_sign_transaction: 'licn_signTransaction',
+    licn_send_transaction: 'licn_sendTransaction',
+    licn_get_transactions: 'licn_getTransactions',
+    licn_get_transactions_by_address: 'licn_getTransactions',
+    licn_latest_block: 'licn_getLatestBlock',
+    licn_get_provider_state: 'licn_getProviderState',
+    licn_is_connected: 'licn_isConnected',
+    eth_accounts: 'licn_accounts',
+    eth_requestAccounts: 'licn_requestAccounts',
+    personal_sign: 'licn_signMessage',
+    eth_sign: 'licn_signMessage',
+    eth_signTransaction: 'licn_signTransaction',
+    eth_sendTransaction: 'licn_sendTransaction',
+    eth_getBalance: 'licn_getBalance',
+    eth_getTransactionCount: 'licn_getTransactions',
+    eth_chainId: 'licn_ethChainId',
+    net_version: 'licn_netVersion',
+    eth_coinbase: 'licn_coinbase',
+    licn_connect: 'licn_requestAccounts',
+    wallet_getPermissions: 'licn_permissions',
+    wallet_requestPermissions: 'licn_requestAccounts',
+    wallet_revokePermissions: 'licn_disconnect',
+    licn_getPermissions: 'licn_permissions',
+    wallet_switchEthereumChain: 'licn_switchNetwork',
+    wallet_addEthereumChain: 'licn_addNetwork',
+    wallet_watchAsset: 'licn_watchAsset',
+    eth_blockNumber: 'licn_blockNumber',
+    eth_getCode: 'licn_getCode',
+    eth_estimateGas: 'licn_estimateGas',
+    eth_gasPrice: 'licn_gasPrice',
+    web3_clientVersion: 'lichen_clientVersion',
+    net_listening: 'licn_netListening'
   };
   return aliasMap[method] || method;
 }
@@ -387,11 +387,11 @@ function messageBytesForSigning(txObject) {
 
 async function getRpcForContext(context = {}) {
   const endpoint = await getConfiguredRpcEndpoint(context.network || 'local-testnet');
-  return new MoltChainRPC(endpoint);
+  return new LichenRPC(endpoint);
 }
 
 function getChainId(context = {}) {
-  return `molt:${context.network || 'local-testnet'}`;
+  return `lichen:${context.network || 'local-testnet'}`;
 }
 
 async function resolveAddressForReadMethod(payload, connectedAddress) {
@@ -559,7 +559,7 @@ async function finalizePendingRequest(requestId, approved, context = {}, approva
     await approveOrigin(request.origin);
   }
 
-  if (method === 'molt_requestAccounts') {
+  if (method === 'licn_requestAccounts') {
     const activeAddress = context.activeAddress || null;
     if (!activeAddress) {
       request.finalized = { ok: false, error: 'No active wallet' };
@@ -572,19 +572,19 @@ async function finalizePendingRequest(requestId, approved, context = {}, approva
     return { ok: true };
   }
 
-  if (method === 'molt_signMessage') {
+  if (method === 'licn_signMessage') {
     request.finalized = await finalizeSignMessage(request, context, approvalInput);
     request.finalizedAt = Date.now();
     return { ok: true };
   }
 
-  if (method === 'molt_signTransaction') {
+  if (method === 'licn_signTransaction') {
     request.finalized = await finalizeSignTransaction(request, context, approvalInput);
     request.finalizedAt = Date.now();
     return { ok: true };
   }
 
-  if (method === 'molt_sendTransaction') {
+  if (method === 'licn_sendTransaction') {
     request.finalized = await finalizeSendTransaction(request, context, approvalInput);
     request.finalizedAt = Date.now();
     return { ok: true };
@@ -609,7 +609,7 @@ export async function handleProviderRequest(payload, context = {}) {
   const activeAddress = connected && !isLocked ? (context.activeAddress || null) : null;
 
   switch (method) {
-    case 'molt_getProviderState':
+    case 'licn_getProviderState':
       return {
         ok: true,
         result: {
@@ -623,19 +623,19 @@ export async function handleProviderRequest(payload, context = {}) {
         }
       };
 
-    case 'molt_isConnected':
+    case 'licn_isConnected':
       return {
         ok: true,
         result: connected
       };
 
-    case 'molt_chainId':
+    case 'licn_chainId':
       return {
         ok: true,
         result: chainId
       };
 
-    case 'molt_network':
+    case 'licn_network':
       return {
         ok: true,
         result: {
@@ -644,55 +644,55 @@ export async function handleProviderRequest(payload, context = {}) {
         }
       };
 
-    case 'molt_ethChainId': {
+    case 'licn_ethChainId': {
       return {
         ok: true,
         result: getNetworkMeta(context.network || 'local-testnet').chainHex
       };
     }
 
-    case 'molt_netVersion': {
+    case 'licn_netVersion': {
       return {
         ok: true,
         result: getNetworkMeta(context.network || 'local-testnet').netVersion
       };
     }
 
-    case 'molt_coinbase': {
+    case 'licn_coinbase': {
       return {
         ok: true,
         result: activeAddress || null
       };
     }
 
-    case 'molt_blockNumber': {
+    case 'licn_blockNumber': {
       const rpc = await getRpcForContext(context);
       const latest = await rpc.getLatestBlock();
       const number = Number(latest?.height ?? latest?.number ?? 0);
       return { ok: true, result: toHexQuantity(number) };
     }
 
-    case 'molt_getCode': {
+    case 'licn_getCode': {
       return { ok: true, result: '0x' };
     }
 
-    case 'molt_estimateGas': {
+    case 'licn_estimateGas': {
       return { ok: true, result: '0x5208' };
     }
 
-    case 'molt_gasPrice': {
+    case 'licn_gasPrice': {
       return { ok: true, result: '0x3b9aca00' };
     }
 
-    case 'molt_clientVersion': {
-      return { ok: true, result: `MoltWallet/${context.appVersion || '0.1.0'}` };
+    case 'lichen_clientVersion': {
+      return { ok: true, result: `LichenWallet/${context.appVersion || '0.1.0'}` };
     }
 
-    case 'molt_netListening': {
+    case 'licn_netListening': {
       return { ok: true, result: true };
     }
 
-    case 'molt_switchNetwork': {
+    case 'licn_switchNetwork': {
       const params = normalizeParams(payload);
       const argObject = Array.isArray(params?.args) ? params.args[0] : params;
       const targetChainId = argObject?.chainId;
@@ -705,7 +705,7 @@ export async function handleProviderRequest(payload, context = {}) {
       return { ok: true, result: null };
     }
 
-    case 'molt_addNetwork': {
+    case 'licn_addNetwork': {
       const params = normalizeParams(payload);
       const spec = Array.isArray(params?.args) ? params.args[0] : params;
       const chainId = spec?.chainId;
@@ -728,23 +728,23 @@ export async function handleProviderRequest(payload, context = {}) {
       return { ok: true, result: null };
     }
 
-    case 'molt_watchAsset': {
+    case 'licn_watchAsset': {
       return { ok: true, result: true };
     }
 
-    case 'molt_version':
+    case 'licn_version':
       return {
         ok: true,
         result: context.appVersion || '0.1.0'
       };
 
-    case 'molt_accounts':
+    case 'licn_accounts':
       return {
         ok: true,
         result: activeAddress ? [activeAddress] : []
       };
 
-    case 'molt_disconnect':
+    case 'licn_disconnect':
       if (!origin) {
         return { ok: false, error: 'Origin unavailable' };
       }
@@ -755,7 +755,7 @@ export async function handleProviderRequest(payload, context = {}) {
         result: true
       };
 
-    case 'molt_permissions': {
+    case 'licn_permissions': {
       const accounts = activeAddress ? [activeAddress] : [];
       if (!connected || !accounts.length) {
         return { ok: true, result: [] };
@@ -779,32 +779,32 @@ export async function handleProviderRequest(payload, context = {}) {
       };
     }
 
-    case 'molt_getBalance': {
+    case 'licn_getBalance': {
       const address = await resolveAddressForReadMethod(payload, activeAddress);
       const rpc = await getRpcForContext(context);
       const result = await rpc.getBalance(address);
       const requestedMethod = String(payload?.method || '').trim();
       if (requestedMethod === 'eth_getBalance') {
-        const shells = Number(result?.spendable ?? result?.balance ?? 0);
-        return { ok: true, result: toHexQuantity(shells) };
+        const spores = Number(result?.spendable ?? result?.balance ?? 0);
+        return { ok: true, result: toHexQuantity(spores) };
       }
       return { ok: true, result };
     }
 
-    case 'molt_getAccount': {
+    case 'licn_getAccount': {
       const address = await resolveAddressForReadMethod(payload, activeAddress);
       const rpc = await getRpcForContext(context);
       const result = await rpc.getAccount(address);
       return { ok: true, result };
     }
 
-    case 'molt_getLatestBlock': {
+    case 'licn_getLatestBlock': {
       const rpc = await getRpcForContext(context);
       const result = await rpc.getLatestBlock();
       return { ok: true, result };
     }
 
-    case 'molt_getTransactions': {
+    case 'licn_getTransactions': {
       const params = normalizeParams(payload);
       const address = await resolveAddressForReadMethod(payload, activeAddress);
       const argsLimit = Array.isArray(params.args) ? Number(params.args[1]) : NaN;
@@ -825,7 +825,7 @@ export async function handleProviderRequest(payload, context = {}) {
       return { ok: true, result };
     }
 
-    case 'molt_requestAccounts': {
+    case 'licn_requestAccounts': {
       if (isLocked) {
         return { ok: false, error: 'Wallet is locked' };
       }
@@ -845,7 +845,7 @@ export async function handleProviderRequest(payload, context = {}) {
       };
     }
 
-    case 'molt_signMessage': {
+    case 'licn_signMessage': {
       const requestId = createPendingRequest(payload, context);
       return {
         ok: true,
@@ -854,7 +854,7 @@ export async function handleProviderRequest(payload, context = {}) {
       };
     }
 
-    case 'molt_signTransaction': {
+    case 'licn_signTransaction': {
       const requestId = createPendingRequest(payload, context);
       return {
         ok: true,
@@ -863,7 +863,7 @@ export async function handleProviderRequest(payload, context = {}) {
       };
     }
 
-    case 'molt_sendTransaction': {
+    case 'licn_sendTransaction': {
       const requestId = createPendingRequest(payload, context);
       return {
         ok: true,

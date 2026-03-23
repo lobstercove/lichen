@@ -1,7 +1,7 @@
-// MoltChain Explorer - Utilities (thin wrapper)
-// Common functions (formatNumber, formatHash, formatAddress, formatMolt, formatTime,
+// Lichen Explorer - Utilities (thin wrapper)
+// Common functions (formatNumber, formatHash, formatAddress, formatLicn, formatTime,
 // timeAgo, formatBytes, formatSlot, copyToClipboard, safeCopy, showToast, escapeHtml,
-// readLeU64, serializeMessageBincode, formatMoltShells) are provided by ../shared/utils.js.
+// readLeU64, serializeMessageBincode, formatLicnSpores) are provided by ../shared/utils.js.
 // This file adds explorer-specific helpers only.
 
 function formatValidator(validator) {
@@ -12,8 +12,8 @@ function formatValidator(validator) {
     return formatAddress(validator);
 }
 
-function resolveTxAmountShells(tx, instruction) {
-    if (tx.amount_shells !== undefined) return tx.amount_shells;
+function resolveTxAmountSpores(tx, instruction) {
+    if (tx.amount_spores !== undefined) return tx.amount_spores;
     if (tx.amount !== undefined) return Math.round(tx.amount * 1_000_000_000);
     const SYSTEM_ID = typeof SYSTEM_PROGRAM_ID !== 'undefined'
         ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111';
@@ -37,8 +37,8 @@ function resolveTxType(tx, instruction) {
             4: 'GenesisTransfer', 5: 'GenesisMint', 6: 'CreateCollection',
             7: 'MintNFT', 8: 'TransferNFT', 9: 'Stake', 10: 'Unstake',
             11: 'ClaimUnstake', 12: 'RegisterEvmAddress',
-            13: 'ReefStakeDeposit', 14: 'ReefStakeUnstake',
-            15: 'ReefStakeClaim', 16: 'ReefStakeTransfer',
+            13: 'MossStakeDeposit', 14: 'MossStakeUnstake',
+            15: 'MossStakeClaim', 16: 'MossStakeTransfer',
             17: 'DeployContract', 18: 'SetContractABI',
             19: 'FaucetAirdrop', 20: 'RegisterSymbol',
             21: 'ProposeGovernedTransfer', 22: 'ApproveGovernedTransfer',

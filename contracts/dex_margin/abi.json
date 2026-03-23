@@ -225,7 +225,7 @@
       ]
     },
     {
-      "name": "set_moltcoin_address",
+      "name": "set_lichencoin_address",
       "opcode": 15,
       "params": [
         {

@@ -30,8 +30,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use moltchain_core::zk::MerkleTree;
-use moltchain_core::zk::{
+use lichen_core::zk::MerkleTree;
+use lichen_core::zk::{
     circuits::shield::ShieldCircuit, circuits::transfer::TransferCircuit,
     circuits::unshield::UnshieldCircuit, fr_to_bytes, poseidon_hash_fr, Prover, TREE_DEPTH,
 };
@@ -110,7 +110,7 @@ struct PoolStateResponse {
     merkle_root: String,
     commitment_count: u64,
     total_shielded: u64,
-    total_shielded_molt: String,
+    total_shielded_licn: String,
     vk_shield_hash: String,
     vk_unshield_hash: String,
     vk_transfer_hash: String,
@@ -185,7 +185,7 @@ async fn rest_get_pool_state(State(state): State<Arc<RpcState>>) -> Response {
             merkle_root: hex::encode(pool.merkle_root),
             commitment_count: pool.commitment_count,
             total_shielded: pool.total_shielded,
-            total_shielded_molt: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
+            total_shielded_licn: format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
             vk_shield_hash: hex::encode(pool.vk_shield_hash),
             vk_unshield_hash: hex::encode(pool.vk_unshield_hash),
             vk_transfer_hash: hex::encode(pool.vk_transfer_hash),
@@ -360,7 +360,7 @@ async fn submit_shielded_tx(
     };
 
     // M-6: Decode via wire-format envelope (supports V1 envelope, legacy bincode, JSON)
-    let tx: moltchain_core::Transaction = match crate::decode_transaction_bytes(&tx_bytes) {
+    let tx: lichen_core::Transaction = match crate::decode_transaction_bytes(&tx_bytes) {
         Ok(t) => t,
         Err(e) => return api_err(&format!("Invalid transaction: {}", e.message)),
     };
@@ -369,7 +369,7 @@ async fn submit_shielded_tx(
     // expected type.  The first instruction must target SYSTEM_PROGRAM_ID with
     // data[0] == expected_type.
     let valid = tx.message.instructions.iter().any(|ix| {
-        ix.program_id == moltchain_core::SYSTEM_PROGRAM_ID
+        ix.program_id == lichen_core::SYSTEM_PROGRAM_ID
             && ix.data.first().copied() == Some(expected_type)
     });
 
@@ -710,8 +710,8 @@ pub(crate) async fn handle_generate_shield_proof(
     let blinding_fr = parse_hex_to_fr(blinding_hex)?;
 
     let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_SHIELD_PK_PATH", &key_dir, "pk_shield.bin")?;
-    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_SHIELD_VK_PATH", &key_dir, "vk_shield.bin")?;
+    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_SHIELD_PK_PATH", &key_dir, "pk_shield.bin")?;
+    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_SHIELD_VK_PATH", &key_dir, "vk_shield.bin")?;
 
     let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding_fr);
     let commitment = fr_to_bytes(&commitment_fr);
@@ -726,8 +726,8 @@ pub(crate) async fn handle_generate_shield_proof(
     proof.public_inputs = vec![fr_to_bytes(&Fr::from(amount)), commitment];
 
     let vk =
-        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = moltchain_core::zk::Verifier::from_vk_shield(vk);
+        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = lichen_core::zk::Verifier::from_vk_shield(vk);
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -852,8 +852,8 @@ pub(crate) async fn handle_generate_unshield_proof(
     };
 
     let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_UNSHIELD_PK_PATH", &key_dir, "pk_unshield.bin")?;
-    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_UNSHIELD_VK_PATH", &key_dir, "vk_unshield.bin")?;
+    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_UNSHIELD_PK_PATH", &key_dir, "pk_unshield.bin")?;
+    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_UNSHIELD_VK_PATH", &key_dir, "vk_unshield.bin")?;
 
     let nullifier_fr = poseidon_hash_fr(serial_fr, spending_key_fr);
     let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_bytes);
@@ -886,8 +886,8 @@ pub(crate) async fn handle_generate_unshield_proof(
     ];
 
     let vk =
-        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = moltchain_core::zk::Verifier::from_vk_unshield(vk);
+        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = lichen_core::zk::Verifier::from_vk_unshield(vk);
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -1144,8 +1144,8 @@ pub(crate) async fn handle_generate_transfer_proof(
     );
 
     let key_dir = resolve_zk_key_dir();
-    let pk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_TRANSFER_PK_PATH", &key_dir, "pk_transfer.bin")?;
-    let vk_bytes = load_zk_key_bytes("MOLTCHAIN_ZK_TRANSFER_VK_PATH", &key_dir, "vk_transfer.bin")?;
+    let pk_bytes = load_zk_key_bytes("LICHEN_ZK_TRANSFER_PK_PATH", &key_dir, "pk_transfer.bin")?;
+    let vk_bytes = load_zk_key_bytes("LICHEN_ZK_TRANSFER_VK_PATH", &key_dir, "vk_transfer.bin")?;
 
     let mut prover = Prover::new();
     prover
@@ -1162,8 +1162,8 @@ pub(crate) async fn handle_generate_transfer_proof(
     ];
 
     let vk =
-        moltchain_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
-    let verifier = moltchain_core::zk::Verifier::from_vk_transfer(vk);
+        lichen_core::zk::setup::load_verification_key(&vk_bytes).map_err(internal_rpc_err)?;
+    let verifier = lichen_core::zk::Verifier::from_vk_transfer(vk);
     let valid = verifier
         .verify(&proof)
         .map_err(|e| internal_rpc_err(e.to_string()))?;
@@ -1224,7 +1224,7 @@ fn first_param_object(
 fn resolve_zk_key_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".moltchain")
+        .join(".lichen")
         .join("zk")
 }
 
@@ -1302,9 +1302,9 @@ fn parse_recipient_32(input: &str) -> Result<[u8; 32], RpcError> {
     Ok(out)
 }
 
-fn shielded_pool_stats_json(pool: &moltchain_core::zk::ShieldedPoolState) -> serde_json::Value {
+fn shielded_pool_stats_json(pool: &lichen_core::zk::ShieldedPoolState) -> serde_json::Value {
     let merkle_root = hex::encode(pool.merkle_root);
-    let total_shielded_molt = format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0);
+    let total_shielded_licn = format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0);
     let vk_shield_hash = hex::encode(pool.vk_shield_hash);
     let vk_unshield_hash = hex::encode(pool.vk_unshield_hash);
     let vk_transfer_hash = hex::encode(pool.vk_transfer_hash);
@@ -1314,7 +1314,7 @@ fn shielded_pool_stats_json(pool: &moltchain_core::zk::ShieldedPoolState) -> ser
         "merkleRoot": merkle_root,
         "commitmentCount": pool.commitment_count,
         "totalShielded": pool.total_shielded,
-        "totalShieldedMolt": total_shielded_molt,
+        "totalShieldedLicn": total_shielded_licn,
         "nullifierCount": pool.nullifier_count,
         "shieldCount": pool.shield_count,
         "unshieldCount": pool.unshield_count,
@@ -1327,9 +1327,9 @@ fn shielded_pool_stats_json(pool: &moltchain_core::zk::ShieldedPoolState) -> ser
         "merkle_root": hex::encode(pool.merkle_root),
         "commitment_count": pool.commitment_count,
         "pool_balance": pool.total_shielded,
-        "pool_balance_molt": pool.total_shielded as f64 / 1_000_000_000.0,
+        "pool_balance_licn": pool.total_shielded as f64 / 1_000_000_000.0,
         "total_shielded": pool.total_shielded,
-        "total_shielded_molt": format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
+        "total_shielded_licn": format!("{:.9}", pool.total_shielded as f64 / 1_000_000_000.0),
         "nullifier_count": pool.nullifier_count,
         "shield_count": pool.shield_count,
         "unshield_count": pool.unshield_count,
@@ -1403,7 +1403,7 @@ mod tests {
             merkle_root: "abc123".to_string(),
             commitment_count: 42,
             total_shielded: 1_000_000_000,
-            total_shielded_molt: "1.000000000".to_string(),
+            total_shielded_licn: "1.000000000".to_string(),
             vk_shield_hash: "def456".to_string(),
             vk_unshield_hash: "789abc".to_string(),
             vk_transfer_hash: "0ed123".to_string(),

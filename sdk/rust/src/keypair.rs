@@ -1,6 +1,6 @@
 //! Keypair and public key management
 
-pub use moltchain_core::{Keypair as CoreKeypair, Pubkey};
+pub use lichen_core::{Keypair as CoreKeypair, Pubkey};
 
 /// Keypair wrapper with SDK convenience methods
 pub struct Keypair(CoreKeypair);
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn sign_produces_64_bytes() {
         let kp = Keypair::new();
-        let sig = kp.sign(b"hello moltchain");
+        let sig = kp.sign(b"hello lichen");
         assert_eq!(sig.len(), 64);
     }
 

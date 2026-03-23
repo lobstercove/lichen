@@ -1,4 +1,4 @@
-// MoltChain WebSocket Server
+// Lichen WebSocket Server
 // Real-time event subscriptions for blocks, transactions, accounts, and logs
 
 use crate::dex_ws::{DexChannel, DexEventBroadcaster};
@@ -12,7 +12,7 @@ use axum::{
     routing::get,
     Router,
 };
-use moltchain_core::{
+use lichen_core::{
     Block, FinalityTracker, Hash, MarketActivity, Pubkey, StateStore, Transaction,
 };
 use serde::{Deserialize, Serialize};
@@ -1624,7 +1624,7 @@ fn market_activity_json(activity: &MarketActivity, event: &str) -> serde_json::V
         "token": activity.token.as_ref().map(|p| p.to_base58()),
         "token_id": activity.token_id,
         "price": activity.price,
-        "price_molt": activity.price.map(|val| val as f64 / 1_000_000_000.0),
+        "price_licn": activity.price.map(|val| val as f64 / 1_000_000_000.0),
         "seller": activity.seller.as_ref().map(|p| p.to_base58()),
         "buyer": activity.buyer.as_ref().map(|p| p.to_base58()),
         "function": activity.function.clone(),
@@ -1654,7 +1654,7 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
         Event::AccountChange { pubkey, balance } => serde_json::json!({
             "pubkey": pubkey.to_base58(),
             "balance": balance,
-            "molt": balance / 1_000_000_000,
+            "licn": balance / 1_000_000_000,
         }),
         Event::Log { contract, message } => serde_json::json!({
             "contract": contract.to_base58(),
@@ -2294,7 +2294,7 @@ mod tests {
     #[test]
     fn ws_state_new_creates_broadcasters() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = moltchain_core::StateStore::open(tmp.path()).unwrap();
+        let state = lichen_core::StateStore::open(tmp.path()).unwrap();
         let (ws_state, _event_tx, _dex_bc, _pred_bc) = WsState::new(state, None);
         assert_eq!(ws_state.active_connections.load(Ordering::SeqCst), 0);
     }

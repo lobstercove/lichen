@@ -345,7 +345,7 @@ async function onExportKeystore() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `molt-wallet-keystore-${wallet.name}-${Date.now()}.json`;
+    a.download = `lichen-wallet-keystore-${wallet.name}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
 
@@ -366,8 +366,8 @@ async function onDownloadPrivateKey() {
   try {
     const password = requireExportPassword();
     const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
-    const content = `MoltWallet Private Key\nWallet: ${wallet.name}\nAddress: ${wallet.address}\nExported: ${new Date().toISOString()}\n\nPrivate Key (Hex):\n${privateKeyHex}\n`;
-    downloadTextFile(`molt-wallet-private-key-${wallet.name}-${Date.now()}.txt`, content);
+    const content = `LichenWallet Private Key\nWallet: ${wallet.name}\nAddress: ${wallet.address}\nExported: ${new Date().toISOString()}\n\nPrivate Key (Hex):\n${privateKeyHex}\n`;
+    downloadTextFile(`lichen-wallet-private-key-${wallet.name}-${Date.now()}.txt`, content);
     setStatus('Private key file downloaded');
   } catch (error) {
     setStatus(`Download failed: ${error?.message || error}`);
@@ -384,8 +384,8 @@ async function onDownloadMnemonic() {
   try {
     const password = requireExportPassword();
     const mnemonic = await decryptPrivateKey(wallet.encryptedMnemonic, password);
-    const content = `MoltWallet Seed Phrase\nWallet: ${wallet.name}\nAddress: ${wallet.address}\nExported: ${new Date().toISOString()}\n\nSeed Phrase (12 words):\n${mnemonic}\n`;
-    downloadTextFile(`molt-wallet-seed-${wallet.name}-${Date.now()}.txt`, content);
+    const content = `LichenWallet Seed Phrase\nWallet: ${wallet.name}\nAddress: ${wallet.address}\nExported: ${new Date().toISOString()}\n\nSeed Phrase (12 words):\n${mnemonic}\n`;
+    downloadTextFile(`lichen-wallet-seed-${wallet.name}-${Date.now()}.txt`, content);
     setStatus('Seed phrase file downloaded');
   } catch (error) {
     setStatus(`Download failed: ${error?.message || error}`);
@@ -404,7 +404,7 @@ async function onCopyExportOutput() {
 }
 
 async function loadApprovedOrigins() {
-  const response = await chrome.runtime.sendMessage({ type: 'MOLT_PROVIDER_LIST_ORIGINS' }).catch(() => null);
+  const response = await chrome.runtime.sendMessage({ type: 'LICHEN_PROVIDER_LIST_ORIGINS' }).catch(() => null);
   if (!response?.ok) {
     setOriginsHtml('<div>Failed to load approved origins</div>');
     return;
@@ -442,7 +442,7 @@ async function onOriginsClick(event) {
   }
 
   const response = await chrome.runtime.sendMessage({
-    type: 'MOLT_PROVIDER_REVOKE_ORIGIN',
+    type: 'LICHEN_PROVIDER_REVOKE_ORIGIN',
     origin
   }).catch(() => null);
 

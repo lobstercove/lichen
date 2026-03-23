@@ -1,7 +1,7 @@
 //! Generate test transactions
 
-use moltchain_client_sdk::{Client, Keypair, TransactionBuilder};
-use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
+use lichen_client_sdk::{Client, Keypair, TransactionBuilder};
+use lichen_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

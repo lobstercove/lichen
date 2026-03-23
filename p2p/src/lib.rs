@@ -1,4 +1,4 @@
-// MoltChain P2P Networking
+// Lichen P2P Networking
 // QUIC-based peer-to-peer communication for distributed consensus
 
 pub mod erasure;

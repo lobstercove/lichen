@@ -1,4 +1,4 @@
-// MoltChain SDK - PublicKey Utilities
+// Lichen SDK - PublicKey Utilities
 
 import bs58 from 'bs58';
 

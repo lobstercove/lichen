@@ -1,25 +1,25 @@
-// Molt Explorer - MoltChain Blockchain Explorer
+// Lichen Explorer - Lichen Blockchain Explorer
 // Real-time blockchain data with RPC
 
-// Network config is now centralized in shared-config.js (MOLT_CONFIG)
+// Network config is now centralized in shared-config.js (LICHEN_CONFIG)
 const NETWORK_STORAGE_KEY = 'explorer_network';
-let currentNetwork = MOLT_CONFIG.currentNetwork(NETWORK_STORAGE_KEY);
+let currentNetwork = LICHEN_CONFIG.currentNetwork(NETWORK_STORAGE_KEY);
 
 function resolveNetwork(name) {
-    return MOLT_CONFIG.resolveNetwork(name);
+    return LICHEN_CONFIG.resolveNetwork(name);
 }
 
 function getNetworkConfig(name) {
     const resolved = resolveNetwork(name);
-    return MOLT_CONFIG.networks[resolved];
+    return LICHEN_CONFIG.networks[resolved];
 }
 
 let RPC_URL = getNetworkConfig(currentNetwork).rpc;
 let WS_URL = getNetworkConfig(currentNetwork).ws;
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 
-// RPC Client (from actual MoltChain RPC implementation)
-class MoltChainRPC {
+// RPC Client (from actual Lichen RPC implementation)
+class LichenRPC {
     constructor(url) {
         this.url = url;
     }
@@ -111,13 +111,13 @@ class MoltChainRPC {
 
     // Staking
     async getStakingStatus(pubkey) { return this.call('getStakingStatus', [pubkey]); }
-    async getReefStakePoolInfo() { return this.call('getReefStakePoolInfo'); }
+    async getMossStakePoolInfo() { return this.call('getMossStakePoolInfo'); }
 }
 
-let rpc = new MoltChainRPC(RPC_URL);
+let rpc = new LichenRPC(RPC_URL);
 
 // WebSocket Client (for real-time updates)
-class MoltChainWS {
+class LichenWS {
     constructor(url) {
         this.url = url;
         this.ws = null;
@@ -304,7 +304,7 @@ class MoltChainWS {
 
 let ws;
 if (WS_URL) {
-    ws = new MoltChainWS(WS_URL);
+    ws = new LichenWS(WS_URL);
 }
 
 function getExplorerRpcUrl() {
@@ -323,11 +323,11 @@ function setExplorerNetwork(name, options = {}) {
     const config = getNetworkConfig(currentNetwork);
     RPC_URL = config.rpc;
     WS_URL = config.ws;
-    rpc = new MoltChainRPC(RPC_URL);
+    rpc = new LichenRPC(RPC_URL);
     if (ws && typeof ws.close === 'function') {
         ws.close();
     }
-    ws = WS_URL ? new MoltChainWS(WS_URL) : undefined;
+    ws = WS_URL ? new LichenWS(WS_URL) : undefined;
 
     if (reload) {
         window.location.reload();
@@ -340,7 +340,7 @@ function setExplorerNetwork(name, options = {}) {
 }
 
 function initExplorerNetworkSelector() {
-    MOLT_CONFIG.initNetworkSelector('explorerNetworkSelect', NETWORK_STORAGE_KEY, (network) => {
+    LICHEN_CONFIG.initNetworkSelector('explorerNetworkSelect', NETWORK_STORAGE_KEY, (network) => {
         setExplorerNetwork(network, { reload: true });
     });
 }
@@ -350,7 +350,7 @@ window.getExplorerNetwork = getExplorerNetwork;
 window.setExplorerNetwork = setExplorerNetwork;
 window.initExplorerNetworkSelector = initExplorerNetworkSelector;
 
-const moltNameCache = new Map();
+const lichenNameCache = new Map();
 
 function escapeExplorerHtml(value) {
     return String(value)
@@ -361,18 +361,18 @@ function escapeExplorerHtml(value) {
         .replace(/'/g, '&#039;');
 }
 
-function isLikelyMoltAddress(value) {
+function isLikelyLicnAddress(value) {
     if (!value || typeof value !== 'string') return false;
     return /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(value);
 }
 
-async function resolveMoltNameForAddress(address) {
-    if (!isLikelyMoltAddress(address)) return null;
-    if (moltNameCache.has(address)) return moltNameCache.get(address);
+async function resolveLichenNameForAddress(address) {
+    if (!isLikelyLicnAddress(address)) return null;
+    if (lichenNameCache.has(address)) return lichenNameCache.get(address);
 
     let resolved = null;
     try {
-        const result = await rpc.call('reverseMoltName', [address]);
+        const result = await rpc.call('reverseLichenName', [address]);
         if (typeof result === 'string' && result) {
             resolved = result;
         } else if (result && typeof result.name === 'string' && result.name) {
@@ -381,18 +381,18 @@ async function resolveMoltNameForAddress(address) {
     } catch (_) {
         resolved = null;
     }
-    moltNameCache.set(address, resolved);
+    lichenNameCache.set(address, resolved);
     return resolved;
 }
 
-async function batchResolveMoltNames(addresses) {
-    const unique = [...new Set((addresses || []).filter(isLikelyMoltAddress))];
-    const unresolved = unique.filter(address => !moltNameCache.has(address));
+async function batchResolveLichenNames(addresses) {
+    const unique = [...new Set((addresses || []).filter(isLikelyLicnAddress))];
+    const unresolved = unique.filter(address => !lichenNameCache.has(address));
 
     if (unresolved.length > 0) {
         let batchMap = null;
         try {
-            batchMap = await rpc.call('batchReverseMoltNames', [unresolved]);
+            batchMap = await rpc.call('batchReverseLichenNames', [unresolved]);
         } catch (_) {
             batchMap = null;
         }
@@ -401,28 +401,28 @@ async function batchResolveMoltNames(addresses) {
             unresolved.forEach(address => {
                 const value = batchMap[address];
                 if (typeof value === 'string' && value) {
-                    moltNameCache.set(address, value);
+                    lichenNameCache.set(address, value);
                 } else if (value && typeof value.name === 'string' && value.name) {
-                    moltNameCache.set(address, value.name);
+                    lichenNameCache.set(address, value.name);
                 } else {
-                    moltNameCache.set(address, null);
+                    lichenNameCache.set(address, null);
                 }
             });
         } else {
             await Promise.all(unresolved.map(async (address) => {
-                await resolveMoltNameForAddress(address);
+                await resolveLichenNameForAddress(address);
             }));
         }
     }
 
     const result = {};
     unique.forEach(address => {
-        result[address] = moltNameCache.get(address) || null;
+        result[address] = lichenNameCache.get(address) || null;
     });
     return result;
 }
 
-function formatAddressWithMoltName(address, name, options = {}) {
+function formatAddressWithLichenName(address, name, options = {}) {
     const { includeAddressInLabel = false } = options;
     if (!address) return 'N/A';
 
@@ -430,7 +430,7 @@ function formatAddressWithMoltName(address, name, options = {}) {
     const shortAddress = formatHash(addr, 6);
 
     if (name && typeof name === 'string') {
-        const safeName = escapeExplorerHtml(name.endsWith('.molt') ? name : `${name}.molt`);
+        const safeName = escapeExplorerHtml(name.endsWith('.lichen') ? name : `${name}.lichen`);
         if (includeAddressInLabel) {
             return `<span title="${escapeExplorerHtml(addr)}">${safeName} (${escapeExplorerHtml(shortAddress)})</span>`;
         }
@@ -439,10 +439,10 @@ function formatAddressWithMoltName(address, name, options = {}) {
     return `<span title="${escapeExplorerHtml(addr)}">${escapeExplorerHtml(shortAddress)}</span>`;
 }
 
-window.resolveMoltNameForAddress = resolveMoltNameForAddress;
-window.batchResolveMoltNames = batchResolveMoltNames;
-window.formatAddressWithMoltName = formatAddressWithMoltName;
-window.isLikelyMoltAddress = isLikelyMoltAddress;
+window.resolveLichenNameForAddress = resolveLichenNameForAddress;
+window.batchResolveLichenNames = batchResolveLichenNames;
+window.formatAddressWithLichenName = formatAddressWithLichenName;
+window.isLikelyLicnAddress = isLikelyLicnAddress;
 
 async function navigateExplorerSearch(query) {
     const value = String(query || '').trim();
@@ -473,11 +473,11 @@ async function navigateExplorerSearch(query) {
     }
 
     const lower = value.toLowerCase();
-    if (lower.endsWith('.molt')) {
+    if (lower.endsWith('.lichen')) {
         const label = lower.slice(0, -5);
         if (label.length > 0) {
             try {
-                const resolved = await rpc.call('resolveMoltName', [label]);
+                const resolved = await rpc.call('resolveLichenName', [label]);
                 const owner = resolved?.owner || resolved?.address || null;
                 if (owner) {
                     window.location.href = `address.html?address=${encodeURIComponent(owner)}`;
@@ -501,7 +501,7 @@ async function navigateExplorerSearch(query) {
 window.navigateExplorerSearch = navigateExplorerSearch;
 
 // Utility functions are in utils.js (loaded before explorer.js).
-// NETWORKS, SYSTEM_PROGRAM_ID, MoltChainRPC, MoltChainWS stay here.
+// NETWORKS, SYSTEM_PROGRAM_ID, LichenRPC, LichenWS stay here.
 
 // Dashboard Updates
 async function updateDashboardStats() {
@@ -569,21 +569,20 @@ async function updateDashboardStats() {
 
         // Get total burned
         const burned = await rpc.getTotalBurned();
-        if (burned && burned.molt !== undefined) {
+        if (burned && burned.licn !== undefined) {
             const totalBurnedEl = document.getElementById('totalBurned');
-            if (totalBurnedEl) totalBurnedEl.textContent = burned.molt.toFixed(4) + ' MOLT';
+            if (totalBurnedEl) totalBurnedEl.textContent = burned.licn.toFixed(4) + ' LICN';
         }
 
         // Get supply info (total supply, total minted, inflation rate)
         const rewardInfo = await rpc.getRewardAdjustmentInfo();
         if (rewardInfo) {
-            const SHELLS_PER_MOLT_LOCAL = 1_000_000_000;
-            const settledSupplyShells = rewardInfo.totalSupply;
-            if (settledSupplyShells !== undefined) {
+            const settledSupplySpores = rewardInfo.totalSupply;
+            if (settledSupplySpores !== undefined) {
                 const totalSupplyEl = document.getElementById('totalSupply');
                 if (totalSupplyEl) {
-                    const supplyMolt = settledSupplyShells / SHELLS_PER_MOLT_LOCAL;
-                    totalSupplyEl.textContent = formatNumber(Math.floor(supplyMolt)) + ' MOLT';
+                    const supplyLicn = settledSupplySpores / SPORES_PER_LICN;
+                    totalSupplyEl.textContent = formatNumber(Math.floor(supplyLicn)) + ' LICN';
                 }
             }
             const supplyChangeEl = document.getElementById('supplyChange');
@@ -593,8 +592,8 @@ async function updateDashboardStats() {
             if (rewardInfo.totalMinted !== undefined) {
                 const totalMintedEl = document.getElementById('totalMinted');
                 if (totalMintedEl) {
-                    const mintedMolt = rewardInfo.totalMinted / SHELLS_PER_MOLT_LOCAL;
-                    totalMintedEl.textContent = mintedMolt.toFixed(4) + ' MOLT';
+                    const mintedLicn = rewardInfo.totalMinted / SPORES_PER_LICN;
+                    totalMintedEl.textContent = mintedLicn.toFixed(4) + ' LICN';
                 }
             }
 
@@ -621,9 +620,9 @@ async function updateDashboardStats() {
                 const totalStake = validatorsResult.validators.reduce((sum, v) => {
                     return sum + (v.stake || 0);
                 }, 0);
-                // Convert shells to MOLT (1 MOLT = 1B shells)
-                const totalStakeMOLT = totalStake / SHELLS_PER_MOLT;
-                totalStakeEl.textContent = formatNumber(Math.floor(totalStakeMOLT)) + ' MOLT';
+                // Convert spores to LICN (1 LICN = 1B spores)
+                const totalStakeLICN = totalStake / SPORES_PER_LICN;
+                totalStakeEl.textContent = formatNumber(Math.floor(totalStakeLICN)) + ' LICN';
             }
         }
 
@@ -644,7 +643,7 @@ async function updateDashboardStats() {
             totalSupply: '—', totalMinted: '—',
             supplyChange: '',
             validatorCount: '0', totalStake: '—',
-            shieldedBalance: '0 MOLT', shieldedBalanceShells: '0 shells', commitmentCount: '0',
+            shieldedBalance: '0 LICN', shieldedBalanceSpores: '0 spores', commitmentCount: '0',
             nullifierCount: '0', shieldedTxCount: '0',
             shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0',
             burnPctLabel: '—', slotTimeLabel: '—'
@@ -664,7 +663,7 @@ async function updateShieldedOverview() {
         const pick = (...vals) => vals.find(v => v !== undefined && v !== null);
 
         const totalShielded = pick(stats?.totalShielded, stats?.pool_balance, 0);
-        const balanceMolt = pick(stats?.totalShieldedMolt, stats?.pool_balance_molt, (totalShielded / SHELLS_PER_MOLT));
+        const balanceLicn = pick(stats?.totalShieldedLicn, stats?.pool_balance_licn, (totalShielded / SPORES_PER_LICN));
         const commitmentCount = pick(stats?.commitmentCount, stats?.commitment_count, 0);
         const nullifierCount = pick(stats?.nullifierCount, stats?.nullifier_count, 0);
         const shieldCount = pick(stats?.shieldCount, stats?.shield_count, 0);
@@ -674,7 +673,7 @@ async function updateShieldedOverview() {
         const merkleRoot = pick(stats?.merkleRoot, stats?.merkle_root, '0'.repeat(64));
 
         const shieldedBalanceEl = document.getElementById('shieldedBalance');
-        const shieldedBalanceShellsEl = document.getElementById('shieldedBalanceShells');
+        const shieldedBalanceSporesEl = document.getElementById('shieldedBalanceSpores');
         const commitmentCountEl = document.getElementById('commitmentCount');
         const nullifierCountEl = document.getElementById('nullifierCount');
         const shieldedTxCountEl = document.getElementById('shieldedTxCount');
@@ -682,13 +681,13 @@ async function updateShieldedOverview() {
         const merkleRootEl = document.getElementById('merkleRoot');
 
         if (shieldedBalanceEl) {
-            const balance = Number(balanceMolt) || 0;
+            const balance = Number(balanceLicn) || 0;
             shieldedBalanceEl.textContent = balance.toLocaleString(undefined, {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 4,
-            }) + ' MOLT';
+            }) + ' LICN';
         }
-        if (shieldedBalanceShellsEl) shieldedBalanceShellsEl.textContent = formatNumber(totalShielded) + ' shells';
+        if (shieldedBalanceSporesEl) shieldedBalanceSporesEl.textContent = formatNumber(totalShielded) + ' spores';
         if (commitmentCountEl) commitmentCountEl.textContent = formatNumber(commitmentCount);
         if (nullifierCountEl) nullifierCountEl.textContent = formatNumber(nullifierCount);
         if (shieldedTxCountEl) shieldedTxCountEl.textContent = formatNumber(txCount);
@@ -765,10 +764,10 @@ async function updateLatestTransactions() {
             const signature = tx.hash || tx.signature || 'unknown';
             const type = tx.type || 'Transfer';
             const pillClass = getTransactionPillClass(type);
-            const amountShells = tx.amount_shells || (tx.amount !== undefined ? Math.round(tx.amount * SHELLS_PER_MOLT) : 0);
+            const amountSpores = tx.amount_spores || (tx.amount !== undefined ? Math.round(tx.amount * SPORES_PER_LICN) : 0);
             const amountDisplay = tx.token_symbol
                 ? formatNumber(tx.token_amount || 0) + ' ' + tx.token_symbol
-                : (amountShells ? formatMolt(amountShells) : '-');
+                : (amountSpores ? formatLicn(amountSpores) : '-');
             const timestamp = tx.timestamp || 0;
             const isError = isFailedTransactionStatus(tx);
             const statusClass = isError ? 'error' : 'success';
@@ -866,7 +865,7 @@ function setupSearch() {
 
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', () => {
-    // console.log('🦞 Molt Explorer loaded');
+    // console.log('🦞 Lichen Explorer loaded');
 
     initExplorerNetworkSelector();
 

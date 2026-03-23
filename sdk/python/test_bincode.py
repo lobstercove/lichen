@@ -1,7 +1,7 @@
 """Tests for bincode encoding — verifies signature format matches Rust bincode Vec<[u8; 64]>."""
 
 import struct
-from moltchain.bincode import encode_transaction, _encode_u64
+from lichen.bincode import encode_transaction, _encode_u64
 
 def test_encode_transaction_signature_format():
     """Signatures must be encoded as raw 64-byte arrays (no per-element length prefix)."""

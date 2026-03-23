@@ -6,9 +6,9 @@
 use dex_amm::*;
 
 fn setup() -> [u8; 32] {
-    moltchain_sdk::test_mock::reset();
+    lichen_sdk::test_mock::reset();
     let admin = [1u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
     admin
 }
@@ -34,8 +34,8 @@ fn test_tick_liquidity_after_remove() {
     // BUG DOCUMENTATION: tick data should decrease when liquidity is removed
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
 
     // Add liquidity in range [-120, 120] (tick_spacing=60 for 30bps fee tier)
     assert_eq!(
@@ -45,10 +45,10 @@ fn test_tick_liquidity_after_remove() {
 
     // Check tick data at lower tick
     let lower_key = format!("amm_tick_1_n120");
-    let lower_before = moltchain_sdk::storage_get(lower_key.as_bytes())
+    let lower_before = lichen_sdk::storage_get(lower_key.as_bytes())
         .map(|d| {
             if d.len() >= 8 {
-                moltchain_sdk::bytes_to_u64(&d)
+                lichen_sdk::bytes_to_u64(&d)
             } else {
                 0
             }
@@ -60,10 +60,10 @@ fn test_tick_liquidity_after_remove() {
     assert_eq!(remove_liquidity(provider.as_ptr(), 1, lower_before), 0);
 
     // Check tick data — documenting the bug: tick data is NOT decremented
-    let lower_after = moltchain_sdk::storage_get(lower_key.as_bytes())
+    let lower_after = lichen_sdk::storage_get(lower_key.as_bytes())
         .map(|d| {
             if d.len() >= 8 {
-                moltchain_sdk::bytes_to_u64(&d)
+                lichen_sdk::bytes_to_u64(&d)
             } else {
                 0
             }
@@ -159,8 +159,8 @@ fn test_create_pool_max_pools() {
 fn test_add_liquidity_inverted_ticks() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     // lower >= upper should be rejected
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, 120, -120, 100_000, 100_000),
@@ -176,8 +176,8 @@ fn test_add_liquidity_inverted_ticks() {
 fn test_add_liquidity_out_of_range_ticks() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     // Beyond MAX_TICK / MIN_TICK
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -887_280, 0, 100_000, 100_000),
@@ -193,8 +193,8 @@ fn test_add_liquidity_out_of_range_ticks() {
 fn test_add_liquidity_below_minimum() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     // FIXED: amounts (1,1) are now below MIN_AMOUNT (100) and get rejected.
     let result = add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1, 1);
     assert_eq!(
@@ -207,8 +207,8 @@ fn test_add_liquidity_below_minimum() {
 fn test_remove_liquidity_more_than_owned() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 100_000, 100_000),
         0
@@ -227,13 +227,13 @@ fn test_remove_liquidity_not_owner() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let attacker = [99u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 100_000, 100_000),
         0
     );
-    moltchain_sdk::test_mock::set_caller(attacker);
+    lichen_sdk::test_mock::set_caller(attacker);
     assert_eq!(
         remove_liquidity(attacker.as_ptr(), 1, 1000),
         2,
@@ -248,9 +248,9 @@ fn test_remove_liquidity_not_owner() {
 #[test]
 fn test_swap_zero_liquidity_pool() {
     let (_admin, pool_id) = setup_with_pool();
-    moltchain_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_slot(100);
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     // Swap on a pool with no liquidity — should fail with insufficient output
     let result = swap_exact_in(trader.as_ptr(), pool_id, true, 1_000_000, 1, 0);
     assert_eq!(
@@ -263,8 +263,8 @@ fn test_swap_zero_liquidity_pool() {
 fn test_swap_zero_amount() {
     let (_admin, pool_id) = setup_with_pool();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(
         swap_exact_in(trader.as_ptr(), pool_id, true, 0, 0, 0),
         6,
@@ -277,14 +277,14 @@ fn test_swap_expired_deadline() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let trader = [3u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
 
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     // Set deadline in the past
     let result = swap_exact_in(trader.as_ptr(), pool_id, true, 1000, 0, 50);
     assert_eq!(result, 3, "expired deadline should be rejected");
@@ -295,14 +295,14 @@ fn test_swap_slippage_protection() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let trader = [3u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
 
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     // Set min_out impossibly high
     let result = swap_exact_in(trader.as_ptr(), pool_id, true, 1000, u64::MAX, 0);
     assert_eq!(
@@ -316,14 +316,14 @@ fn test_swap_exact_out_max_in_too_low() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let trader = [3u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
 
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     // Want a large output but cap input very low
     let result = swap_exact_out(trader.as_ptr(), pool_id, true, 100_000, 1, 0);
     assert_eq!(result, 4, "should fail when max_in is insufficient");
@@ -337,8 +337,8 @@ fn test_swap_exact_out_max_in_too_low() {
 fn test_collect_fees_before_any_swap() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
@@ -346,10 +346,10 @@ fn test_collect_fees_before_any_swap() {
 
     // Collect fees before any swap — should return 0 fees
     assert_eq!(collect_fees(provider.as_ptr(), 1), 0);
-    let ret = moltchain_sdk::test_mock::get_return_data();
+    let ret = lichen_sdk::test_mock::get_return_data();
     if ret.len() >= 16 {
-        let fee_a = moltchain_sdk::bytes_to_u64(&ret[0..8]);
-        let fee_b = moltchain_sdk::bytes_to_u64(&ret[8..16]);
+        let fee_a = lichen_sdk::bytes_to_u64(&ret[0..8]);
+        let fee_b = lichen_sdk::bytes_to_u64(&ret[8..16]);
         assert_eq!(fee_a, 0, "no fees should be accrued before any swap");
         assert_eq!(fee_b, 0, "no fees should be accrued before any swap");
     }
@@ -360,13 +360,13 @@ fn test_collect_fees_not_owner() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let attacker = [99u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
-    moltchain_sdk::test_mock::set_caller(attacker);
+    lichen_sdk::test_mock::set_caller(attacker);
     assert_eq!(
         collect_fees(attacker.as_ptr(), 1),
         2,
@@ -382,7 +382,7 @@ fn test_collect_fees_not_owner() {
 fn test_set_pool_protocol_fee_non_admin() {
     let (_admin, pool_id) = setup_with_pool();
     let rando = [99u8; 32];
-    moltchain_sdk::test_mock::set_caller(rando);
+    lichen_sdk::test_mock::set_caller(rando);
     assert_eq!(set_pool_protocol_fee(rando.as_ptr(), pool_id, 10), 1);
 }
 
@@ -405,16 +405,16 @@ fn test_emergency_pause_blocks_swaps() {
     let (admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let trader = [3u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
 
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let result = swap_exact_in(trader.as_ptr(), pool_id, true, 1000, 0, 0);
     assert_eq!(result, 1, "swaps should be blocked when paused");
 }
@@ -423,10 +423,10 @@ fn test_emergency_pause_blocks_swaps() {
 fn test_emergency_pause_blocks_add_liquidity() {
     let (admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_slot(100);
 
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_caller(provider);
     let result = add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000);
     assert_eq!(result, 1, "adding liquidity should be blocked when paused");
 }
@@ -440,14 +440,14 @@ fn test_swap_very_large_amount() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
     let trader = [3u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     assert_eq!(
         add_liquidity(provider.as_ptr(), pool_id, -120, 120, 1_000_000, 1_000_000),
         0
     );
 
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     // Swap an extremely large amount — should not panic due to u128→u64 truncation
     let result = swap_exact_in(trader.as_ptr(), pool_id, true, u64::MAX, 0, 0);
     // Should either succeed with some output or fail gracefully
@@ -462,8 +462,8 @@ fn test_swap_very_large_amount() {
 fn test_add_liquidity_u64_max_amounts() {
     let (_admin, pool_id) = setup_with_pool();
     let provider = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(100);
-    moltchain_sdk::test_mock::set_caller(provider);
+    lichen_sdk::test_mock::set_slot(100);
+    lichen_sdk::test_mock::set_caller(provider);
     // FIXED: compute_liquidity now uses checked_mul — no panic on extreme inputs.
     // With u64::MAX amounts, liquidity computation clamps and proceeds gracefully.
     let result = add_liquidity(provider.as_ptr(), pool_id, -120, 120, u64::MAX, u64::MAX);

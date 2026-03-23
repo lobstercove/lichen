@@ -1,13 +1,13 @@
 /**
- * MoltChain Shared Wallet Connect Utility
+ * Lichen Shared Wallet Connect Utility
  * 
- * Provides a unified wallet connection experience across all MoltChain frontends.
- * Uses the MoltChain SDK for real keypair generation and signing.
+ * Provides a unified wallet connection experience across all Lichen frontends.
+ * Uses the Lichen SDK for real keypair generation and signing.
  * 
  * Usage:
  *   <script src="../shared/wallet-connect.js"></script>
  *   <script>
- *     const wallet = new MoltWallet({ rpcUrl: 'http://localhost:8899' });
+ *     const wallet = new LichenWallet({ rpcUrl: 'http://localhost:8899' });
  *     wallet.bindConnectButton('#connectWallet');
  *     wallet.onConnect(info => console.log('Connected:', info.address));
  *   </script>
@@ -30,26 +30,26 @@ function formatHash(hash, len) {
 
 /**
  * Resolve the RPC URL from config or default
- * Checks window.moltConfig, window.moltMarketConfig, window.moltExplorerConfig
+ * Checks window.lichenConfig, window.lichenMarketConfig, window.lichenExplorerConfig
  * @returns {string}
  */
-function getMoltRpcUrl() {
-    if (typeof MOLT_CONFIG !== 'undefined' && typeof MOLT_CONFIG.rpc === 'function') return MOLT_CONFIG.rpc();
-    if (window.moltConfig && window.moltConfig.rpcUrl) return window.moltConfig.rpcUrl;
-    if (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) return window.moltMarketConfig.rpcUrl;
-    if (window.moltExplorerConfig && window.moltExplorerConfig.rpcUrl) return window.moltExplorerConfig.rpcUrl;
+function getLichenRpcUrl() {
+    if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') return LICHEN_CONFIG.rpc();
+    if (window.lichenConfig && window.lichenConfig.rpcUrl) return window.lichenConfig.rpcUrl;
+    if (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) return window.lichenMarketConfig.rpcUrl;
+    if (window.lichenExplorerConfig && window.lichenExplorerConfig.rpcUrl) return window.lichenExplorerConfig.rpcUrl;
     return 'http://localhost:8899';
 }
 
 /**
- * Make a JSON-RPC call to the MoltChain node
+ * Make a JSON-RPC call to the Lichen node
  * @param {string} method - RPC method name
  * @param {Array|Object} params - Method params
  * @param {string} [rpcUrl] - Override RPC URL
  * @returns {Promise<any>}
  */
-async function moltRpcCall(method, params, rpcUrl) {
-    var url = rpcUrl || getMoltRpcUrl();
+async function lichenRpcCall(method, params, rpcUrl) {
+    var url = rpcUrl || getLichenRpcUrl();
     var response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,17 +70,17 @@ async function moltRpcCall(method, params, rpcUrl) {
 // ─── Wallet Manager ──────────────────────────────────────
 
 /**
- * MoltWallet - Unified wallet connection manager
+ * LichenWallet - Unified wallet connection manager
  * 
  * @param {Object} options
  * @param {string} [options.rpcUrl] - RPC endpoint URL
- * @param {string} [options.storageKey='molt_wallet'] - localStorage key
+ * @param {string} [options.storageKey='lichen_wallet'] - localStorage key
  * @param {boolean} [options.persist=true] - Auto-save to localStorage
  */
-function MoltWallet(options) {
+function LichenWallet(options) {
     options = options || {};
-    this.rpcUrl = options.rpcUrl || getMoltRpcUrl();
-    this.storageKey = options.storageKey || 'molt_wallet';
+    this.rpcUrl = options.rpcUrl || getLichenRpcUrl();
+    this.storageKey = options.storageKey || 'lichen_wallet';
     this.persist = options.persist !== false;
     
     this.address = null;
@@ -99,28 +99,28 @@ function MoltWallet(options) {
 }
 
 /** Check if a wallet is currently connected */
-MoltWallet.prototype.isConnected = function() {
+LichenWallet.prototype.isConnected = function() {
     return this.address !== null;
 };
 
 /**
  * Connect wallet - creates or imports a wallet
- * If MoltChain SDK is available, uses real keypair generation
+ * If Lichen SDK is available, uses real keypair generation
  * Otherwise falls back to address-only mode with server-side wallet
  * @param {Object} [importData] - Import data { seed, hex, json }
  * @returns {Promise<Object>} - { address, balance }
  */
-MoltWallet.prototype.connect = async function(importData) {
-    // Try MoltChain SDK first (real wallet)
-    if (window.MoltChain && window.MoltChain.Wallet) {
+LichenWallet.prototype.connect = async function(importData) {
+    // Try Lichen SDK first (real wallet)
+    if (window.Lichen && window.Lichen.Wallet) {
         try {
             var wallet;
             if (importData && importData.seed) {
-                wallet = MoltChain.Wallet.import({ seed: importData.seed }, '');
+                wallet = Lichen.Wallet.import({ seed: importData.seed }, '');
             } else if (importData && importData.json) {
-                wallet = MoltChain.Wallet.import(importData.json, importData.password || '');
+                wallet = Lichen.Wallet.import(importData.json, importData.password || '');
             } else {
-                wallet = new MoltChain.Wallet();
+                wallet = new Lichen.Wallet();
             }
             this.address = wallet.address || wallet.publicKey;
             this._walletData = {
@@ -129,7 +129,7 @@ MoltWallet.prototype.connect = async function(importData) {
                 created: Date.now()
             };
         } catch (err) {
-            console.warn('MoltChain SDK wallet creation failed, using RPC wallet:', err);
+            console.warn('Lichen SDK wallet creation failed, using RPC wallet:', err);
             this._createRpcWallet();
         }
     } else {
@@ -160,9 +160,9 @@ MoltWallet.prototype.connect = async function(importData) {
 };
 
 /** Create wallet via RPC (address-only, no local keys) */
-MoltWallet.prototype._createRpcWallet = async function() {
+LichenWallet.prototype._createRpcWallet = async function() {
     try {
-        var result = await moltRpcCall('createWallet', [], this.rpcUrl);
+        var result = await lichenRpcCall('createWallet', [], this.rpcUrl);
         this.address = result.address || result.pubkey || result;
         this._walletData = {
             address: this.address,
@@ -185,7 +185,7 @@ MoltWallet.prototype._createRpcWallet = async function() {
             // No crypto library available — prompt user to install extension
             this.address = null;
             var errorMsg = 'Wallet creation failed: no wallet extension or cryptographic library available. ' +
-                'Please install the MoltChain wallet extension or import a private key directly.';
+                'Please install the Lichen wallet extension or import a private key directly.';
             console.error(errorMsg);
             throw new Error(errorMsg);
         }
@@ -193,7 +193,7 @@ MoltWallet.prototype._createRpcWallet = async function() {
 };
 
 /** Disconnect wallet and clear state */
-MoltWallet.prototype.disconnect = function() {
+LichenWallet.prototype.disconnect = function() {
     var oldAddr = this.address;
     this.address = null;
     this.balance = 0;
@@ -213,7 +213,7 @@ MoltWallet.prototype.disconnect = function() {
 };
 
 /** Toggle connect/disconnect */
-MoltWallet.prototype.toggle = async function() {
+LichenWallet.prototype.toggle = async function() {
     if (this.isConnected()) {
         this.disconnect();
     } else {
@@ -222,10 +222,10 @@ MoltWallet.prototype.toggle = async function() {
 };
 
 /** Refresh wallet balance from RPC */
-MoltWallet.prototype.refreshBalance = async function() {
+LichenWallet.prototype.refreshBalance = async function() {
     if (!this.address) return 0;
     try {
-        var result = await moltRpcCall('getBalance', [this.address], this.rpcUrl);
+        var result = await lichenRpcCall('getBalance', [this.address], this.rpcUrl);
         this.balance = (typeof result === 'object') ? (result.balance || result.value || 0) : (result || 0);
     } catch (err) {
         // Balance fetch failed, keep existing
@@ -239,7 +239,7 @@ MoltWallet.prototype.refreshBalance = async function() {
 };
 
 /** Start polling for balance updates */
-MoltWallet.prototype._startBalancePolling = function() {
+LichenWallet.prototype._startBalancePolling = function() {
     this._stopBalancePolling();
     var self = this;
     this._balanceInterval = setInterval(function() {
@@ -248,7 +248,7 @@ MoltWallet.prototype._startBalancePolling = function() {
 };
 
 /** Stop balance polling */
-MoltWallet.prototype._stopBalancePolling = function() {
+LichenWallet.prototype._stopBalancePolling = function() {
     if (this._balanceInterval) {
         clearInterval(this._balanceInterval);
         this._balanceInterval = null;
@@ -256,7 +256,7 @@ MoltWallet.prototype._stopBalancePolling = function() {
 };
 
 /** Restore wallet from localStorage */
-MoltWallet.prototype._restore = function() {
+LichenWallet.prototype._restore = function() {
     try {
         var stored = localStorage.getItem(this.storageKey);
         if (stored) {
@@ -274,7 +274,7 @@ MoltWallet.prototype._restore = function() {
 // ─── Event Callbacks ─────────────────────────────────────
 
 /** Register callback for wallet connect events */
-MoltWallet.prototype.onConnect = function(cb) {
+LichenWallet.prototype.onConnect = function(cb) {
     this._connectCallbacks.push(cb);
     // Fire immediately if already connected
     if (this.isConnected()) {
@@ -283,12 +283,12 @@ MoltWallet.prototype.onConnect = function(cb) {
 };
 
 /** Register callback for wallet disconnect events */
-MoltWallet.prototype.onDisconnect = function(cb) {
+LichenWallet.prototype.onDisconnect = function(cb) {
     this._disconnectCallbacks.push(cb);
 };
 
 /** Register callback for balance update events */
-MoltWallet.prototype.onBalanceUpdate = function(cb) {
+LichenWallet.prototype.onBalanceUpdate = function(cb) {
     this._balanceCallbacks.push(cb);
 };
 
@@ -298,10 +298,10 @@ MoltWallet.prototype.onBalanceUpdate = function(cb) {
  * Bind to a connect/disconnect button element
  * @param {string|Element} selector - CSS selector or DOM element
  */
-MoltWallet.prototype.bindConnectButton = function(selector) {
+LichenWallet.prototype.bindConnectButton = function(selector) {
     var el = (typeof selector === 'string') ? document.querySelector(selector) : selector;
     if (!el) {
-        console.warn('MoltWallet: Connect button not found:', selector);
+        console.warn('LichenWallet: Connect button not found:', selector);
         return;
     }
     
@@ -318,7 +318,7 @@ MoltWallet.prototype.bindConnectButton = function(selector) {
 };
 
 /** Update the connect button display */
-MoltWallet.prototype._updateButton = function() {
+LichenWallet.prototype._updateButton = function() {
     if (!this._buttonEl) return;
     
     if (this.isConnected()) {
@@ -337,7 +337,7 @@ MoltWallet.prototype._updateButton = function() {
 // ─── Export ──────────────────────────────────────────────
 
 // Make available globally
-window.MoltWallet = MoltWallet;
+window.LichenWallet = LichenWallet;
 window.formatHash = window.formatHash || formatHash;
-window.getMoltRpcUrl = window.getMoltRpcUrl || getMoltRpcUrl;
-window.moltRpcCall = window.moltRpcCall || moltRpcCall;
+window.getLichenRpcUrl = window.getLichenRpcUrl || getLichenRpcUrl;
+window.lichenRpcCall = window.lichenRpcCall || lichenRpcCall;

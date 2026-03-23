@@ -1,6 +1,6 @@
 import { loadState } from '../core/state-store.js';
 import { loadIdentitySnapshot, registerIdentity, addIdentitySkill } from '../core/identity-service.js';
-import { loadStakingSnapshot, stakeMolt, unstakeStMolt } from '../core/staking-service.js';
+import { loadStakingSnapshot, stakeLicn, unstakeStLicn } from '../core/staking-service.js';
 import { loadBridgeSnapshot, requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
 import { loadNftSnapshot } from '../core/nft-service.js';
 import { isValidAddress } from '../core/crypto-service.js';
@@ -14,8 +14,8 @@ const BRIDGE_STATUS_MAP = {
   issued: 'Waiting for deposit...',
   pending: 'Deposit detected, confirming...',
   confirmed: 'Deposit confirmed! Sweeping to treasury...',
-  swept: 'Swept. Minting wrapped tokens on MoltChain...',
-  credited: 'Deposit credited on MoltChain',
+  swept: 'Swept. Minting wrapped tokens on Lichen...',
+  credited: 'Deposit credited on Lichen',
   expired: 'Deposit expired'
 };
 
@@ -137,8 +137,8 @@ async function loadSnapshots() {
     setHtml('stakingSnapshot', 'Staking service unavailable');
   } else {
     setHtml('stakingSnapshot', `
-      <div><strong>Staked:</strong> ${staking.staked.toFixed(4)} stMOLT</div>
-      <div><strong>Rewards:</strong> ${staking.rewards.toFixed(4)} MOLT</div>
+      <div><strong>Staked:</strong> ${staking.staked.toFixed(4)} stLICN</div>
+      <div><strong>Rewards:</strong> ${staking.rewards.toFixed(4)} LICN</div>
       <div><strong>Validator:</strong> ${staking.validator || '—'}</div>
     `);
   }
@@ -228,7 +228,7 @@ async function requestDepositAddressAction() {
 
   try {
     setActionStatus(`Requesting ${asset.toUpperCase()} deposit address on ${chain}...`);
-    const wsStatus = await chrome.runtime.sendMessage({ type: 'MOLT_WS_STATUS' }).catch(() => null);
+    const wsStatus = await chrome.runtime.sendMessage({ type: 'LICHEN_WS_STATUS' }).catch(() => null);
     const hasWsSubscription = Boolean(wsStatus?.ok && wsStatus?.result?.subscribed);
     const pollIntervalMs = hasWsSubscription ? 30000 : 5000;
 
@@ -272,7 +272,7 @@ async function requestDepositAddressAction() {
 }
 
 async function refreshWsStatus() {
-  const result = await chrome.runtime.sendMessage({ type: 'MOLT_WS_STATUS' }).catch(() => null);
+  const result = await chrome.runtime.sendMessage({ type: 'LICHEN_WS_STATUS' }).catch(() => null);
   if (!result?.ok) {
     setHtml('wsSnapshot', 'Unavailable');
     return;
@@ -301,7 +301,7 @@ async function withActiveWalletAction(run) {
 
 async function handleStake() {
   await withActiveWalletAction(async ({ activeWallet, network }) => {
-    const amountText = prompt('Stake amount (MOLT):', '1');
+    const amountText = prompt('Stake amount (LICN):', '1');
     if (!amountText) return;
     let amount;
     try {
@@ -316,8 +316,8 @@ async function handleStake() {
     if (!password) return;
 
     try {
-      setActionStatus(`Submitting stake of ${amount} MOLT...`);
-      const result = await stakeMolt({ wallet: activeWallet, password, amountMolt: amount, network });
+      setActionStatus(`Submitting stake of ${amount} LICN...`);
+      const result = await stakeLicn({ wallet: activeWallet, password, amountLicn: amount, network });
       setActionStatus(`Stake submitted: ${String(result.txHash).slice(0, 20)}...`);
       alert(`Stake submitted: ${String(result.txHash).slice(0, 20)}...`);
       await loadSnapshots();
@@ -330,7 +330,7 @@ async function handleStake() {
 
 async function handleUnstake() {
   await withActiveWalletAction(async ({ activeWallet, network }) => {
-    const amountText = prompt('Unstake amount (stMOLT):', '1');
+    const amountText = prompt('Unstake amount (stLICN):', '1');
     if (!amountText) return;
     let amount;
     try {
@@ -345,8 +345,8 @@ async function handleUnstake() {
     if (!password) return;
 
     try {
-      setActionStatus(`Submitting unstake of ${amount} stMOLT...`);
-      const result = await unstakeStMolt({ wallet: activeWallet, password, amountMolt: amount, network });
+      setActionStatus(`Submitting unstake of ${amount} stLICN...`);
+      const result = await unstakeStLicn({ wallet: activeWallet, password, amountLicn: amount, network });
       setActionStatus(`Unstake submitted: ${String(result.txHash).slice(0, 20)}...`);
       alert(`Unstake submitted: ${String(result.txHash).slice(0, 20)}...`);
       await loadSnapshots();
@@ -359,7 +359,7 @@ async function handleUnstake() {
 
 async function handleRegisterIdentity() {
   await withActiveWalletAction(async ({ activeWallet, network }) => {
-    const displayName = prompt('Display name (MoltyID):', activeWallet.name || 'MoltUser');
+    const displayName = prompt('Display name (LichenID):', activeWallet.name || 'LicnUser');
     if (!displayName) return;
     if (displayName.trim().length < 2 || displayName.trim().length > 32) {
       setActionStatus('Identity registration failed: name must be 2-32 chars');
@@ -436,7 +436,7 @@ async function handleAddSkill() {
 document.getElementById('refreshAll')?.addEventListener('click', loadSnapshots);
 document.getElementById('requestBridgeAddress')?.addEventListener('click', requestDepositAddressAction);
 document.getElementById('refreshWs')?.addEventListener('click', async () => {
-  await chrome.runtime.sendMessage({ type: 'MOLT_WS_SYNC' }).catch(() => null);
+  await chrome.runtime.sendMessage({ type: 'LICHEN_WS_SYNC' }).catch(() => null);
   await refreshWsStatus();
 });
 document.getElementById('openApproveQueue')?.addEventListener('click', () => {

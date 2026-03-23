@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MoltChain Adversarial Security Test Suite
+Lichen Adversarial Security Test Suite
 ==========================================
 Comprehensive attack simulation:
   - RPC flooding / DDoS
@@ -33,9 +33,9 @@ import sys
 import ssl
 import concurrent.futures
 
-RPC = os.environ.get("MOLTCHAIN_RPC", "http://127.0.0.1:8000")
-WS_PORT = int(os.environ.get("MOLTCHAIN_WS_PORT", "8899"))
-P2P_PORT = int(os.environ.get("MOLTCHAIN_P2P_PORT", "3007"))
+RPC = os.environ.get("LICHEN_RPC", "http://127.0.0.1:8000")
+WS_PORT = int(os.environ.get("LICHEN_WS_PORT", "8899"))
+P2P_PORT = int(os.environ.get("LICHEN_P2P_PORT", "3007"))
 HOST = "127.0.0.1"
 
 PASS = 0
@@ -356,7 +356,7 @@ def test_double_spend_concurrent():
         result("Concurrent double-spend", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [addr, 2000000000])  # 2 MOLT
+    rpc("requestAirdrop", [addr, 2000000000])  # 2 LICN
     time.sleep(2)
 
     # Create recipient
@@ -366,7 +366,7 @@ def test_double_spend_concurrent():
         result("Concurrent double-spend", True, "Skipped")
         return
 
-    # Try to send 1.5 MOLT to recv twice simultaneously (only 2 MOLT available minus fees)
+    # Try to send 1.5 LICN to recv twice simultaneously (only 2 LICN available minus fees)
     results_list = []
     def do_transfer():
         r = rpc("transfer", [addr, recv, 1500000000, "dspend_wallet"], timeout=5)
@@ -407,7 +407,7 @@ def test_self_transfer_drain():
         result("Self-transfer fee drain", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [addr, 100000000])  # 0.1 MOLT
+    rpc("requestAirdrop", [addr, 100000000])  # 0.1 LICN
     time.sleep(2)
 
     initial = rpc("getBalance", [addr])
@@ -536,8 +536,8 @@ def test_admin_brute_force():
     """Try common/weak admin tokens."""
     weak_tokens = [
         "", "admin", "password", "123456", "token", "secret",
-        "moltchain", "admin123", "test", "root", "changeme",
-        "default", "validator", "molt", "blockchain",
+        "lichen", "admin123", "test", "root", "changeme",
+        "default", "validator", "licn", "blockchain",
         "\x00", "\x00" * 32, "A" * 1000,
     ]
     bypassed = False
@@ -704,14 +704,14 @@ def test_transfer_from_foreign_wallet():
         result("Foreign wallet transfer", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [victim_addr, 5000000000])  # 5 MOLT to victim
+    rpc("requestAirdrop", [victim_addr, 5000000000])  # 5 LICN to victim
     time.sleep(2)
 
     # Try to transfer from victim using attacker's wallet
     r = rpc("transfer", [victim_addr, attacker_addr, 1000000000, "foreign_attacker"], timeout=5)
     time.sleep(2)
 
-    # Check victim's balance -- should still be ~5 MOLT
+    # Check victim's balance -- should still be ~5 LICN
     bal = rpc("getBalance", [victim_addr])
     victim_bal = bal.get("result", 0)
     if isinstance(victim_bal, dict):
@@ -948,7 +948,7 @@ def test_concurrent_deploys():
         result("Concurrent deploy stress", True, "Skipped")
         return
 
-    rpc("requestAirdrop", [addr, 50000000000])  # 50 MOLT
+    rpc("requestAirdrop", [addr, 50000000000])  # 50 LICN
     time.sleep(2)
 
     # Minimal valid-ish WASM
@@ -1007,7 +1007,7 @@ def test_content_type_attacks():
 
 def main():
     print("=" * 70)
-    print("  MoltChain Adversarial Security Test Suite")
+    print("  Lichen Adversarial Security Test Suite")
     print("=" * 70)
     print(f"  RPC: {RPC}")
     print(f"  WS:  {HOST}:{WS_PORT}")

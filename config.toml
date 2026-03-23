@@ -1,13 +1,13 @@
-# MoltChain Validator Configuration
+# Lichen Validator Configuration
 # Production configuration template
 
 [validator]
 # Validator identity keypair path
-# Generate with: molt init --output ~/.moltchain/validator-keypair.json
-keypair_path = "~/.moltchain/validator-keypair.json"
+# Generate with: lichen init --output ~/.lichen/validator-keypair.json
+keypair_path = "~/.lichen/validator-keypair.json"
 
 # Data directory for blockchain state
-data_dir = "~/.moltchain/data"
+data_dir = "~/.lichen/data"
 
 # Enable validator mode (vs. full node observer mode)
 enable_validation = true
@@ -21,8 +21,8 @@ rpc_port = 8899
 
 # Bootstrap seed nodes (comma-separated)
 # Override this with actual seed addresses for your network.
-# Testnet: seed-01.moltchain.network:7001,seed-02.moltchain.network:7001,seed-03.moltchain.network:7001
-# Mainnet: seed-01.moltchain.network:8001,seed-02.moltchain.network:8001,seed-03.moltchain.network:8001
+# Testnet: seed-01.lichen.network:7001,seed-02.lichen.network:7001,seed-03.lichen.network:7001
+# Mainnet: seed-01.lichen.network:8001,seed-02.lichen.network:8001,seed-03.lichen.network:8001
 # When empty, the validator uses compile-time embedded seeds from core/src/network.rs.
 seed_nodes = []
 
@@ -46,13 +46,13 @@ cleanup_timeout = 300
 # max_peers = 20
 
 # Reserved relay/seed addresses (never evicted during peer cleanup)
-# reserved_peers = ["seed-01.moltchain.network:8001", "seed-02.moltchain.network:8001"]
+# reserved_peers = ["seed-01.lichen.network:8001", "seed-02.lichen.network:8001"]
 
 [consensus]
-# Minimum stake required to validate (in shells)
+# Minimum stake required to validate (in spores)
 # This template defaults to testnet-scale staking.
-# Testnet: 75 MOLT (bootstrap grants are 100 MOLT)
-# Mainnet genesis uses 75,000 MOLT and should be configured from the canonical mainnet genesis.json.
+# Testnet: 75 LICN (bootstrap grants are 100 LICN)
+# Mainnet genesis uses 75,000 LICN and should be configured from the canonical mainnet genesis.json.
 min_validator_stake = 75000000000
 
 # Slot duration in milliseconds
@@ -72,9 +72,9 @@ bind_address = "0.0.0.0"
 enable_cors = true
 
 # D1-01: Allowed CORS origins (comma-separated hostnames).
-# Override via env var: MOLTCHAIN_CORS_ORIGINS="localhost,127.0.0.1,developers.moltchain.network"
-# Default: localhost, 127.0.0.1, moltchain.network, developers/rpc/explorer.moltchain.network
-# cors_origins = "localhost,127.0.0.1,moltchain.network,developers.moltchain.network,rpc.moltchain.network,explorer.moltchain.network,monitoring.moltchain.network"
+# Override via env var: LICHEN_CORS_ORIGINS="localhost,127.0.0.1,developers.lichen.network"
+# Default: localhost, 127.0.0.1, lichen.network, developers/rpc/explorer.lichen.network
+# cors_origins = "localhost,127.0.0.1,lichen.network,developers.lichen.network,rpc.lichen.network,explorer.lichen.network,monitoring.lichen.network"
 
 # Maximum concurrent connections
 max_connections = 10000
@@ -85,7 +85,7 @@ level = "info"
 
 # Log to file
 log_to_file = false
-log_file_path = "~/.moltchain/validator.log"
+log_file_path = "~/.lichen/validator.log"
 
 # Log format: json, text
 log_format = "text"
@@ -106,7 +106,7 @@ enable_health_check = true
 genesis_path = "./genesis.json"
 
 # Chain ID (must match genesis)
-chain_id = "moltchain-testnet-1"
+chain_id = "lichen-testnet-1"
 
 [performance]
 # Number of worker threads (0 = auto-detect CPU cores)
@@ -135,5 +135,5 @@ rpc_rate_limit = 100
 # Generate a strong random token before production:  openssl rand -hex 32
 # SECURITY: If empty, ALL admin endpoints are disabled (return error).
 #           For production, set a unique 64-char hex token and keep it secret.
-#           Can also be set via MOLTCHAIN_ADMIN_TOKEN env var or --admin-token CLI flag.
+#           Can also be set via LICHEN_ADMIN_TOKEN env var or --admin-token CLI flag.
 admin_token = ""

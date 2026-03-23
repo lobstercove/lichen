@@ -1,4 +1,4 @@
-// PredictionReef — Core Unit Tests (Phase A)
+// Prediction Market — Core Unit Tests (Phase A)
 //
 // Tests for: initialization, market creation, AMM math, binary/multi-outcome pricing,
 // buy/sell operations, mint/redeem complete sets, market lifecycle state machine,
@@ -14,15 +14,15 @@ use prediction_market::*;
 
 /// Reset everything and initialize with admin = [1u8; 32].
 fn setup() -> [u8; 32] {
-    moltchain_sdk::test_mock::reset();
+    lichen_sdk::test_mock::reset();
     let admin = [1u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_slot(1000);
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_slot(1000);
     assert_eq!(initialize(admin.as_ptr()), 0, "initialize failed");
-    // Configure mUSD + self addresses so transfer_musd_out succeeds (fail-closed audit fix)
-    moltchain_sdk::test_mock::set_caller(admin);
+    // Configure lUSD + self addresses so transfer_musd_out succeeds (fail-closed audit fix)
+    lichen_sdk::test_mock::set_caller(admin);
     set_musd_address(admin.as_ptr(), &[0xAAu8; 32] as *const u8);
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     set_self_address(admin.as_ptr(), &[0xBBu8; 32] as *const u8);
     admin
 }
@@ -34,8 +34,8 @@ fn setup_with_market() -> ([u8; 32], u64) {
     let question_hash = [42u8; 32];
     let close_slot: u64 = 1000 + 100_000;
 
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         2, // CRYPTO category
@@ -53,13 +53,13 @@ fn setup_with_market() -> ([u8; 32], u64) {
     (admin, market_id as u64)
 }
 
-/// Create a binary market and add initial liquidity (10 mUSD, equal odds).
+/// Create a binary market and add initial liquidity (10 lUSD, equal odds).
 fn setup_active_market() -> ([u8; 32], u64) {
     let (admin, market_id) = setup_with_market();
-    let amount: u64 = 10_000_000; // 10 mUSD
+    let amount: u64 = 10_000_000; // 10 lUSD
 
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(amount);
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(amount);
     let result = add_initial_liquidity(
         admin.as_ptr(),
         market_id,
@@ -78,8 +78,8 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     let question_hash = [99u8; 32];
     let close_slot: u64 = 1000 + 200_000;
 
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         1, // SPORTS
@@ -92,9 +92,9 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     assert!(market_id > 0);
     let mid = market_id as u64;
 
-    let amount: u64 = 40_000_000; // 40 mUSD
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(amount);
+    let amount: u64 = 40_000_000; // 40 lUSD
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(amount);
     let result = add_initial_liquidity(admin.as_ptr(), mid, amount, core::ptr::null(), 0);
     assert_eq!(result, 1);
     (admin, mid)
@@ -102,7 +102,7 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
 
 /// Read u64 from return_data (first 8 bytes LE).
 fn read_return_u64() -> u64 {
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert!(rd.len() >= 8, "return_data too short: {} bytes", rd.len());
     u64::from_le_bytes(rd[0..8].try_into().unwrap())
 }
@@ -141,7 +141,7 @@ fn itoa_test(n: u64) -> Vec<u8> {
 /// Read position from storage directly.
 fn read_position(market_id: u64, addr: &[u8; 32], outcome: u8) -> (u64, u64) {
     let key = position_key_for_test(market_id, addr, outcome);
-    match moltchain_sdk::test_mock::get_storage(&key) {
+    match lichen_sdk::test_mock::get_storage(&key) {
         Some(data) if data.len() >= 16 => {
             let shares = u64::from_le_bytes(data[0..8].try_into().unwrap());
             let cost = u64::from_le_bytes(data[8..16].try_into().unwrap());
@@ -168,9 +168,9 @@ fn read_price(market_id: u64, outcome: u8) -> u64 {
 
 #[test]
 fn test_initialize_basic() {
-    moltchain_sdk::test_mock::reset();
+    lichen_sdk::test_mock::reset();
     let admin = [1u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let result = initialize(admin.as_ptr());
     assert_eq!(result, 0, "Initialize should return 0 (success)");
     assert_eq!(get_market_count(), 0);
@@ -180,7 +180,7 @@ fn test_initialize_basic() {
 fn test_initialize_rejects_reinit() {
     let _admin = setup();
     let other = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(other);
+    lichen_sdk::test_mock::set_caller(other);
     let result = initialize(other.as_ptr());
     assert_eq!(result, 1, "Re-init should be rejected");
 }
@@ -191,7 +191,7 @@ fn test_initialize_sets_counters_to_zero() {
     assert_eq!(get_market_count(), 0);
     let r = get_platform_stats();
     assert_eq!(r, 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd.len(), 40);
     let mc = u64::from_le_bytes(rd[0..8].try_into().unwrap());
     assert_eq!(mc, 0);
@@ -215,8 +215,8 @@ fn test_create_market_multiple() {
         let mut qh = [0u8; 32];
         qh[0] = i + 10;
         let q = b"Test question";
-        moltchain_sdk::test_mock::set_caller(admin);
-        moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+        lichen_sdk::test_mock::set_caller(admin);
+        lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         let mid = create_market(
             admin.as_ptr(),
             0,
@@ -237,7 +237,7 @@ fn test_create_market_rejects_caller_mismatch() {
     let faker = [99u8; 32];
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         faker.as_ptr(),
         0,
@@ -255,7 +255,7 @@ fn test_create_market_rejects_outcome_count_1() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -273,7 +273,7 @@ fn test_create_market_rejects_outcome_count_9() {
     let admin = setup();
     let qh = [43u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -291,7 +291,7 @@ fn test_create_market_rejects_invalid_category() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         8,
@@ -309,7 +309,7 @@ fn test_create_market_rejects_past_close_slot() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -327,7 +327,7 @@ fn test_create_market_rejects_too_short_duration() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -345,7 +345,7 @@ fn test_create_market_rejects_too_long_duration() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Test";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -363,7 +363,7 @@ fn test_create_market_rejects_empty_question() {
     let admin = setup();
     let qh = [42u8; 32];
     let q: &[u8] = b"";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -382,7 +382,7 @@ fn test_create_market_rejects_duplicate_question_hash() {
     let admin = [1u8; 32];
     let qh = [42u8; 32]; // same hash as first market
     let q = b"Duplicate question";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = create_market(
         admin.as_ptr(),
         0,
@@ -402,8 +402,8 @@ fn test_create_market_all_valid_categories() {
         let mut qh = [0u8; 32];
         qh[0] = cat + 200;
         let q = b"Category test";
-        moltchain_sdk::test_mock::set_caller(admin);
-        moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+        lichen_sdk::test_mock::set_caller(admin);
+        lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         let r = create_market(
             admin.as_ptr(),
             cat,
@@ -422,8 +422,8 @@ fn test_create_multi_outcome_market() {
     let admin = setup();
     let qh = [42u8; 32];
     let q = b"Multi outcome test";
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(
         admin.as_ptr(),
         0,
@@ -435,7 +435,7 @@ fn test_create_multi_outcome_market() {
     );
     assert!(mid > 0);
     assert_eq!(get_market(mid as u64), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert!(rd.len() >= 192);
     assert_eq!(rd[65], 5); // outcome_count at byte 65
 }
@@ -448,11 +448,11 @@ fn test_create_multi_outcome_market() {
 fn test_add_initial_liquidity_basic() {
     let (admin, market_id) = setup_with_market();
     let amount: u64 = 5_000_000;
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, amount, core::ptr::null(), 0);
     assert_eq!(r, 1, "Should succeed");
     assert_eq!(get_market(market_id), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd[64], 1); // STATUS_ACTIVE
 }
 
@@ -473,7 +473,7 @@ fn test_initial_liquidity_custom_odds() {
     let mut odds = [0u8; 4];
     odds[0..2].copy_from_slice(&7000u16.to_le_bytes());
     odds[2..4].copy_from_slice(&3000u16.to_le_bytes());
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, amount, odds.as_ptr(), 4);
     assert_eq!(r, 1);
     let price_yes = read_price(market_id, 0);
@@ -488,7 +488,7 @@ fn test_initial_liquidity_custom_odds() {
 fn test_initial_liquidity_rejects_non_creator() {
     let (_admin, market_id) = setup_with_market();
     let other = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(other);
+    lichen_sdk::test_mock::set_caller(other);
     let r = add_initial_liquidity(other.as_ptr(), market_id, 5_000_000, core::ptr::null(), 0);
     assert_eq!(r, 0, "Non-creator must be rejected");
 }
@@ -496,7 +496,7 @@ fn test_initial_liquidity_rejects_non_creator() {
 #[test]
 fn test_initial_liquidity_rejects_below_minimum() {
     let (admin, market_id) = setup_with_market();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, 500, core::ptr::null(), 0);
     assert_eq!(r, 0, "Below minimum must be rejected");
 }
@@ -504,7 +504,7 @@ fn test_initial_liquidity_rejects_below_minimum() {
 #[test]
 fn test_initial_liquidity_rejects_double_activation() {
     let (admin, market_id) = setup_active_market();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, 5_000_000, core::ptr::null(), 0);
     assert_eq!(
         r, 0,
@@ -518,7 +518,7 @@ fn test_initial_liquidity_rejects_bad_odds_sum() {
     let mut odds = [0u8; 4];
     odds[0..2].copy_from_slice(&6000u16.to_le_bytes());
     odds[2..4].copy_from_slice(&5000u16.to_le_bytes());
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = add_initial_liquidity(admin.as_ptr(), market_id, 10_000_000, odds.as_ptr(), 4);
     assert_eq!(r, 0, "Odds not summing to 10000 must be rejected");
 }
@@ -552,7 +552,7 @@ fn test_buy_yes_increases_yes_price() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     let price_before = read_price(market_id, 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let r = buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
     assert!(r > 0, "buy_shares failed");
     let price_after = read_price(market_id, 0);
@@ -569,7 +569,7 @@ fn test_buy_no_decreases_yes_price() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     let price_before = read_price(market_id, 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let r = buy_shares(trader.as_ptr(), market_id, 1, 1_000_000);
     assert!(r > 0);
     let price_after = read_price(market_id, 0);
@@ -585,7 +585,7 @@ fn test_buy_no_decreases_yes_price() {
 fn test_prices_sum_after_trade() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 3_000_000);
     let p0 = read_price(market_id, 0);
     let p1 = read_price(market_id, 1);
@@ -603,12 +603,12 @@ fn test_prices_sum_after_trade() {
 fn test_sell_reverses_buy_position() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let shares_bought = buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
     assert!(shares_bought > 0);
     let (pos_shares, _) = read_position(market_id, &trader, 0);
     assert!(pos_shares > 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let musd_back = sell_shares(trader.as_ptr(), market_id, 0, pos_shares);
     assert!(musd_back > 0);
     let (pos_after, _) = read_position(market_id, &trader, 0);
@@ -620,7 +620,7 @@ fn test_mint_complete_set_no_price_impact() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
     let price_before = read_price(market_id, 0);
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     let r = mint_complete_set(user.as_ptr(), market_id, 5_000_000);
     assert_eq!(r, 1);
     let price_after = read_price(market_id, 0);
@@ -634,7 +634,7 @@ fn test_mint_complete_set_no_price_impact() {
 fn test_redeem_complete_set_returns_collateral() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     assert_eq!(mint_complete_set(user.as_ptr(), market_id, 3_000_000), 1);
     for outcome in 0..2u8 {
         let (shares, _) = read_position(market_id, &user, outcome);
@@ -644,7 +644,7 @@ fn test_redeem_complete_set_returns_collateral() {
             outcome
         );
     }
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     let returned = redeem_complete_set(user.as_ptr(), market_id, 3_000_000);
     assert_eq!(returned, 3_000_000, "Should return full collateral");
     for outcome in 0..2u8 {
@@ -659,7 +659,7 @@ fn test_quote_buy_matches_actual_buy() {
     let trader = [2u8; 32];
     assert_eq!(quote_buy(market_id, 0, 2_000_000), 1);
     let quoted = read_return_u64();
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
     let (actual, _) = read_position(market_id, &trader, 0);
     assert_eq!(
@@ -673,7 +673,7 @@ fn test_quote_buy_matches_actual_buy() {
 fn test_zero_amount_buy_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 0), 0);
 }
 
@@ -681,7 +681,7 @@ fn test_zero_amount_buy_rejected() {
 fn test_sell_without_shares_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(sell_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
 }
 
@@ -689,7 +689,7 @@ fn test_sell_without_shares_rejected() {
 fn test_invalid_outcome_index_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(buy_shares(trader.as_ptr(), market_id, 2, 1_000_000), 0);
 }
 
@@ -701,7 +701,7 @@ fn test_invalid_outcome_index_rejected() {
 fn test_market_status_active_after_liquidity() {
     let (_, market_id) = setup_active_market();
     assert_eq!(get_market(market_id), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd[64], 1); // STATUS_ACTIVE
 }
 
@@ -709,8 +709,8 @@ fn test_market_status_active_after_liquidity() {
 fn test_trading_rejected_after_close_slot() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_slot(101_001);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_slot(101_001);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
 }
 
@@ -718,9 +718,9 @@ fn test_trading_rejected_after_close_slot() {
 fn test_emergency_pause_stops_trading() {
     let (admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(emergency_pause(admin.as_ptr()), 1);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000), 0);
 }
 
@@ -728,11 +728,11 @@ fn test_emergency_pause_stops_trading() {
 fn test_emergency_unpause_resumes_trading() {
     let (admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     emergency_pause(admin.as_ptr());
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     emergency_unpause(admin.as_ptr());
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert!(buy_shares(trader.as_ptr(), market_id, 0, 1_000_000) > 0);
 }
 
@@ -740,17 +740,17 @@ fn test_emergency_unpause_resumes_trading() {
 fn test_only_admin_can_pause() {
     let _admin = setup();
     let non_admin = [99u8; 32];
-    moltchain_sdk::test_mock::set_caller(non_admin);
+    lichen_sdk::test_mock::set_caller(non_admin);
     assert_eq!(emergency_pause(non_admin.as_ptr()), 0);
 }
 
 #[test]
 fn test_only_admin_can_unpause() {
     let admin = setup();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     emergency_pause(admin.as_ptr());
     let non_admin = [99u8; 32];
-    moltchain_sdk::test_mock::set_caller(non_admin);
+    lichen_sdk::test_mock::set_caller(non_admin);
     assert_eq!(emergency_unpause(non_admin.as_ptr()), 0);
 }
 
@@ -762,7 +762,7 @@ fn test_only_admin_can_unpause() {
 fn test_add_liquidity_to_active_market() {
     let (_admin, market_id) = setup_active_market();
     let lp = [3u8; 32];
-    moltchain_sdk::test_mock::set_caller(lp);
+    lichen_sdk::test_mock::set_caller(lp);
     let r = add_liquidity(lp.as_ptr(), market_id, 5_000_000);
     assert!(r > 0, "add_liquidity should return LP shares");
     assert_eq!(get_lp_balance(market_id, lp.as_ptr()), 1);
@@ -774,7 +774,7 @@ fn test_add_liquidity_to_active_market() {
 fn test_add_liquidity_rejects_non_active() {
     let (_admin, market_id) = setup_with_market();
     let lp = [3u8; 32];
-    moltchain_sdk::test_mock::set_caller(lp);
+    lichen_sdk::test_mock::set_caller(lp);
     assert_eq!(add_liquidity(lp.as_ptr(), market_id, 5_000_000), 0);
 }
 
@@ -785,7 +785,7 @@ fn test_withdraw_liquidity_basic() {
     let lp_bal = read_return_u64();
     assert!(lp_bal > 0);
     let half = lp_bal / 2;
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     let r = withdraw_liquidity(admin.as_ptr(), market_id, half);
     assert!(r > 0);
     assert_eq!(get_lp_balance(market_id, admin.as_ptr()), 1);
@@ -796,7 +796,7 @@ fn test_withdraw_liquidity_basic() {
 #[test]
 fn test_withdraw_liquidity_rejects_excess() {
     let (admin, market_id) = setup_active_market();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(withdraw_liquidity(admin.as_ptr(), market_id, u64::MAX), 0);
 }
 
@@ -809,7 +809,7 @@ fn test_submit_resolution_rejects_active_market() {
     let (_admin, market_id) = setup_active_market();
     let resolver = [5u8; 32];
     let att_hash = [77u8; 32];
-    moltchain_sdk::test_mock::set_caller(resolver);
+    lichen_sdk::test_mock::set_caller(resolver);
     assert_eq!(
         submit_resolution(
             resolver.as_ptr(),
@@ -826,7 +826,7 @@ fn test_submit_resolution_rejects_active_market() {
 fn test_dao_resolve_rejects_non_disputed() {
     let (_admin, market_id) = setup_active_market();
     let admin = [1u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_resolve(admin.as_ptr(), market_id, 0), 0);
 }
 
@@ -834,7 +834,7 @@ fn test_dao_resolve_rejects_non_disputed() {
 fn test_dao_resolve_rejects_non_admin() {
     let (_admin, market_id) = setup_active_market();
     let non_admin = [99u8; 32];
-    moltchain_sdk::test_mock::set_caller(non_admin);
+    lichen_sdk::test_mock::set_caller(non_admin);
     assert_eq!(dao_resolve(non_admin.as_ptr(), market_id, 0), 0);
 }
 
@@ -845,10 +845,10 @@ fn test_dao_resolve_rejects_non_admin() {
 #[test]
 fn test_dao_void_active_market() {
     let (admin, market_id) = setup_active_market();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
     assert_eq!(get_market(market_id), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd[64], 6); // STATUS_VOIDED
 }
 
@@ -856,11 +856,11 @@ fn test_dao_void_active_market() {
 fn test_voided_market_refund() {
     let (admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 2_000_000);
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     let refund = reclaim_collateral(trader.as_ptr(), market_id);
     assert_eq!(refund, 1, "Should get refund from voided market");
 }
@@ -868,7 +868,7 @@ fn test_voided_market_refund() {
 #[test]
 fn test_cannot_void_pending_market() {
     let (admin, market_id) = setup_with_market();
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_void(admin.as_ptr(), market_id), 0);
 }
 
@@ -876,7 +876,7 @@ fn test_cannot_void_pending_market() {
 fn test_cannot_void_non_admin() {
     let (_admin, market_id) = setup_active_market();
     let non_admin = [99u8; 32];
-    moltchain_sdk::test_mock::set_caller(non_admin);
+    lichen_sdk::test_mock::set_caller(non_admin);
     assert_eq!(dao_void(non_admin.as_ptr(), market_id), 0);
 }
 
@@ -885,18 +885,18 @@ fn test_cannot_void_non_admin() {
 // ============================================================================
 
 #[test]
-fn test_set_moltyid_address() {
+fn test_set_lichenid_address() {
     let admin = setup();
     let addr = [42u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
-    assert_eq!(set_moltyid_address(admin.as_ptr(), addr.as_ptr()), 1);
+    lichen_sdk::test_mock::set_caller(admin);
+    assert_eq!(set_lichenid_address(admin.as_ptr(), addr.as_ptr()), 1);
 }
 
 #[test]
 fn test_set_oracle_address() {
     let admin = setup();
     let addr = [43u8; 32];
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(set_oracle_address(admin.as_ptr(), addr.as_ptr()), 1);
 }
 
@@ -905,8 +905,8 @@ fn test_set_addresses_admin_only() {
     let _admin = setup();
     let non_admin = [99u8; 32];
     let addr = [50u8; 32];
-    moltchain_sdk::test_mock::set_caller(non_admin);
-    assert_eq!(set_moltyid_address(non_admin.as_ptr(), addr.as_ptr()), 0);
+    lichen_sdk::test_mock::set_caller(non_admin);
+    assert_eq!(set_lichenid_address(non_admin.as_ptr(), addr.as_ptr()), 0);
     assert_eq!(set_oracle_address(non_admin.as_ptr(), addr.as_ptr()), 0);
     assert_eq!(set_musd_address(non_admin.as_ptr(), addr.as_ptr()), 0);
     assert_eq!(set_dex_gov_address(non_admin.as_ptr(), addr.as_ptr()), 0);
@@ -932,7 +932,7 @@ fn test_get_outcome_pool_nonexistent() {
 fn test_get_pool_reserves_binary() {
     let (_, market_id) = setup_active_market();
     assert_eq!(get_pool_reserves(market_id), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd.len(), 16);
     let r0 = u64::from_le_bytes(rd[0..8].try_into().unwrap());
     let r1 = u64::from_le_bytes(rd[8..16].try_into().unwrap());
@@ -944,7 +944,7 @@ fn test_get_pool_reserves_binary() {
 fn test_get_platform_stats_initial() {
     let _admin = setup();
     assert_eq!(get_platform_stats(), 1);
-    let rd = moltchain_sdk::test_mock::get_return_data();
+    let rd = lichen_sdk::test_mock::get_return_data();
     assert_eq!(rd.len(), 40);
     let mc = u64::from_le_bytes(rd[0..8].try_into().unwrap());
     assert_eq!(mc, 0);
@@ -955,10 +955,10 @@ fn test_get_user_markets_tracking() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     assert_eq!(get_user_markets(trader.as_ptr()), 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
     assert_eq!(get_user_markets(trader.as_ptr()), 1);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
     assert_eq!(
         get_user_markets(trader.as_ptr()),
@@ -972,7 +972,7 @@ fn test_fee_treasury_accumulates() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
     assert_eq!(get_fee_treasury(), 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 5_000_000);
     assert!(get_fee_treasury() > 0, "Fees should accumulate");
 }
@@ -988,11 +988,11 @@ fn test_multiple_traders_same_market() {
     let t2 = [3u8; 32];
     let t3 = [4u8; 32];
 
-    moltchain_sdk::test_mock::set_caller(t1);
+    lichen_sdk::test_mock::set_caller(t1);
     assert!(buy_shares(t1.as_ptr(), market_id, 0, 2_000_000) > 0);
-    moltchain_sdk::test_mock::set_caller(t2);
+    lichen_sdk::test_mock::set_caller(t2);
     assert!(buy_shares(t2.as_ptr(), market_id, 1, 1_000_000) > 0);
-    moltchain_sdk::test_mock::set_caller(t3);
+    lichen_sdk::test_mock::set_caller(t3);
     assert!(buy_shares(t3.as_ptr(), market_id, 0, 3_000_000) > 0);
 
     let p0 = read_price(market_id, 0);
@@ -1020,9 +1020,9 @@ fn test_multiple_traders_same_market() {
 fn test_redeem_complete_set_rejects_insufficient() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     mint_complete_set(user.as_ptr(), market_id, 2_000_000);
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     assert_eq!(redeem_complete_set(user.as_ptr(), market_id, 3_000_000), 0);
 }
 
@@ -1030,7 +1030,7 @@ fn test_redeem_complete_set_rejects_insufficient() {
 fn test_mint_zero_amount_rejected() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     assert_eq!(mint_complete_set(user.as_ptr(), market_id, 0), 0);
 }
 
@@ -1042,7 +1042,7 @@ fn test_mint_zero_amount_rejected() {
 fn test_large_buy_hits_circuit_breaker() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(buy_shares(trader.as_ptr(), market_id, 0, 60_000_000_000), 0);
 }
 
@@ -1050,9 +1050,9 @@ fn test_large_buy_hits_circuit_breaker() {
 fn test_sell_more_than_owned_rejected() {
     let (_admin, market_id) = setup_active_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 0, 1_000_000);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert_eq!(sell_shares(trader.as_ptr(), market_id, 0, u64::MAX), 0);
 }
 
@@ -1090,7 +1090,7 @@ fn test_multi_outcome_buy_increases_price() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let trader = [2u8; 32];
     let p_before = read_price(market_id, 0);
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     assert!(buy_shares(trader.as_ptr(), market_id, 0, 2_000_000) > 0);
     let p_after = read_price(market_id, 0);
     assert!(p_after > p_before);
@@ -1100,7 +1100,7 @@ fn test_multi_outcome_buy_increases_price() {
 fn test_multi_outcome_prices_sum_after_trade() {
     let (_admin, market_id) = setup_multi_outcome_market();
     let trader = [2u8; 32];
-    moltchain_sdk::test_mock::set_caller(trader);
+    lichen_sdk::test_mock::set_caller(trader);
     buy_shares(trader.as_ptr(), market_id, 2, 5_000_000);
     let mut total: u64 = 0;
     for i in 0..4u8 {
@@ -1122,8 +1122,8 @@ fn test_max_outcomes_8_accepted() {
     let admin = setup();
     let qh = [88u8; 32];
     let q = b"8 outcome market";
-    moltchain_sdk::test_mock::set_caller(admin);
-    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
+    lichen_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     assert!(
         create_market(
             admin.as_ptr(),
@@ -1142,7 +1142,7 @@ fn test_outcome_9_rejected() {
     let admin = setup();
     let qh = [89u8; 32];
     let q = b"9 outcome market";
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(
         create_market(
             admin.as_ptr(),
@@ -1167,21 +1167,21 @@ fn test_full_binary_lifecycle_to_void() {
     let t1 = [2u8; 32];
     let t2 = [3u8; 32];
 
-    moltchain_sdk::test_mock::set_caller(t1);
+    lichen_sdk::test_mock::set_caller(t1);
     assert!(buy_shares(t1.as_ptr(), market_id, 0, 3_000_000) > 0);
-    moltchain_sdk::test_mock::set_caller(t2);
+    lichen_sdk::test_mock::set_caller(t2);
     assert!(buy_shares(t2.as_ptr(), market_id, 1, 2_000_000) > 0);
 
     let (s1, _) = read_position(market_id, &t1, 0);
     let (s2, _) = read_position(market_id, &t2, 1);
     assert!(s1 > 0 && s2 > 0);
 
-    moltchain_sdk::test_mock::set_caller(admin);
+    lichen_sdk::test_mock::set_caller(admin);
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
 
-    moltchain_sdk::test_mock::set_caller(t1);
+    lichen_sdk::test_mock::set_caller(t1);
     assert_eq!(reclaim_collateral(t1.as_ptr(), market_id), 1);
-    moltchain_sdk::test_mock::set_caller(t2);
+    lichen_sdk::test_mock::set_caller(t2);
     assert_eq!(reclaim_collateral(t2.as_ptr(), market_id), 1);
 }
 
@@ -1190,11 +1190,11 @@ fn test_mint_then_sell_one_side() {
     let (_admin, market_id) = setup_active_market();
     let user = [2u8; 32];
 
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     mint_complete_set(user.as_ptr(), market_id, 5_000_000);
 
     let (yes_shares, _) = read_position(market_id, &user, 0);
-    moltchain_sdk::test_mock::set_caller(user);
+    lichen_sdk::test_mock::set_caller(user);
     let musd_back = sell_shares(user.as_ptr(), market_id, 0, yes_shares);
     assert!(musd_back > 0);
 
@@ -1209,7 +1209,7 @@ fn test_multiple_lps_and_withdrawal() {
     let (admin, market_id) = setup_active_market();
     let lp2 = [3u8; 32];
 
-    moltchain_sdk::test_mock::set_caller(lp2);
+    lichen_sdk::test_mock::set_caller(lp2);
     let lp_shares = add_liquidity(lp2.as_ptr(), market_id, 5_000_000);
     assert!(lp_shares > 0);
 
@@ -1220,7 +1220,7 @@ fn test_multiple_lps_and_withdrawal() {
     assert!(admin_lp > 0 && lp2_bal > 0);
 
     let half = lp2_bal / 2;
-    moltchain_sdk::test_mock::set_caller(lp2);
+    lichen_sdk::test_mock::set_caller(lp2);
     assert!(withdraw_liquidity(lp2.as_ptr(), market_id, half) > 0);
 
     assert_eq!(get_lp_balance(market_id, lp2.as_ptr()), 1);

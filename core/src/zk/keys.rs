@@ -45,11 +45,11 @@ impl ShieldedKeypair {
     }
 
     /// Derive a shielded keypair from an existing seed (e.g., wallet seed phrase)
-    /// Uses HKDF-like derivation: spending_key = SHA256(seed || "moltchain-shielded-key")
+    /// Uses HKDF-like derivation: spending_key = SHA256(seed || "lichen-shielded-key")
     pub fn from_seed(seed: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(seed);
-        hasher.update(b"moltchain-shielded-spending-key-v1");
+        hasher.update(b"lichen-shielded-spending-key-v1");
         let hash = hasher.finalize();
 
         let spending_key = SpendingKey(Fr::from_le_bytes_mod_order(&hash));

@@ -1,16 +1,16 @@
-MoltChain Dual License
+Lichen Dual License
 ======================
 
-MoltChain Core (core/, validator/, p2p/, consensus/) is licensed under the
+Lichen Core (core/, validator/, p2p/, consensus/) is licensed under the
 Apache License, Version 2.0.
 
-MoltChain SDK, CLI, tools, and auxiliary packages are licensed under the
+Lichen SDK, CLI, tools, and auxiliary packages are licensed under the
 MIT License.
 
 See the respective sections below for full license texts.
 
 ================================================================================
-APACHE LICENSE, VERSION 2.0 — MoltChain Core
+APACHE LICENSE, VERSION 2.0 — Lichen Core
 ================================================================================
 
                                  Apache License
@@ -190,7 +190,7 @@ APACHE LICENSE, VERSION 2.0 — MoltChain Core
 
    END OF TERMS AND CONDITIONS
 
-   Copyright 2025 MoltChain Contributors
+   Copyright 2025 Lichen Contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -205,12 +205,12 @@ APACHE LICENSE, VERSION 2.0 — MoltChain Core
    limitations under the License.
 
 ================================================================================
-MIT LICENSE — MoltChain SDK, CLI, and Tools
+MIT LICENSE — Lichen SDK, CLI, and Tools
 ================================================================================
 
 MIT License
 
-Copyright (c) 2025 MoltChain Contributors
+Copyright (c) 2025 Lichen Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

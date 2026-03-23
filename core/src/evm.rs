@@ -1,4 +1,4 @@
-// MoltChain EVM integration
+// Lichen EVM integration
 
 use crate::{Pubkey, StateStore};
 use alloy_consensus::{transaction::Transaction as AlloyTransaction, TxEnvelope};
@@ -31,7 +31,7 @@ pub struct EvmStateChange {
     pub account: Option<EvmAccount>,
     /// Storage changes: `(slot, Some(value))` = set, `(slot, None)` = delete
     pub storage_changes: Vec<([u8; 32], Option<U256>)>,
-    /// Native account balance sync: `Some((pubkey, spendable_shells))`
+    /// Native account balance sync: `Some((pubkey, spendable_spores))`
     pub native_balance_update: Option<(Pubkey, u64)>,
 }
 
@@ -282,41 +282,41 @@ pub fn decode_evm_transaction(raw: &[u8]) -> Result<EvmTx, String> {
     }
 }
 
-pub fn u256_is_multiple_of_shell(value: &U256) -> bool {
+pub fn u256_is_multiple_of_spore(value: &U256) -> bool {
     let divisor = U256::from(1_000_000_000u64);
     value % divisor == U256::ZERO
 }
 
-/// MoltChain EVM chain ID
-pub const MOLTCHAIN_CHAIN_ID: u64 = 8001;
+/// Lichen EVM chain ID
+pub const LICHEN_CHAIN_ID: u64 = 8001;
 
-pub fn u256_to_shells(value: &U256) -> u64 {
+pub fn u256_to_spores(value: &U256) -> u64 {
     let divisor = U256::from(1_000_000_000u64);
-    let shells = *value / divisor;
+    let spores = *value / divisor;
     // T3.9 fix: reject values that exceed u64::MAX instead of silently clamping
-    shells.try_into().unwrap_or({
+    spores.try_into().unwrap_or({
         // In a Result-returning context this would be Err;
-        // Here we saturate but callers should use u256_to_shells_checked.
+        // Here we saturate but callers should use u256_to_spores_checked.
         u64::MAX
     })
 }
 
-/// Checked conversion — returns Err if value exceeds u64::MAX shells
-pub fn u256_to_shells_checked(value: &U256) -> Result<u64, String> {
+/// Checked conversion — returns Err if value exceeds u64::MAX spores
+pub fn u256_to_spores_checked(value: &U256) -> Result<u64, String> {
     let divisor = U256::from(1_000_000_000u64);
-    let shells = *value / divisor;
+    let spores = *value / divisor;
     let max = U256::from(u64::MAX);
-    if shells > max {
+    if spores > max {
         return Err(format!(
-            "EVM value {} exceeds maximum representable shells",
+            "EVM value {} exceeds maximum representable spores",
             value
         ));
     }
-    Ok(shells.try_into().unwrap_or(u64::MAX))
+    Ok(spores.try_into().unwrap_or(u64::MAX))
 }
 
-pub fn shells_to_u256(shells: u64) -> U256 {
-    U256::from(shells) * U256::from(1_000_000_000u64)
+pub fn spores_to_u256(spores: u64) -> U256 {
+    U256::from(spores) * U256::from(1_000_000_000u64)
 }
 
 #[derive(Debug)]
@@ -358,7 +358,7 @@ impl StateEvmDb {
             let account = self.state.get_account(&pubkey).map_err(EvmDbError)?;
             if let Some(acc) = account {
                 // Use only spendable balance — staked/locked funds must not be EVM-accessible
-                return Ok(Some(revm_u256_from_alloy(shells_to_u256(acc.spendable))));
+                return Ok(Some(revm_u256_from_alloy(spores_to_u256(acc.spendable))));
             }
             return Ok(Some(RevmU256::ZERO));
         }
@@ -510,24 +510,24 @@ impl DatabaseCommit for StateEvmDb {
             }
 
             // T3.8 fix: Always write back native balance, even if not a perfect
-            // shell multiple. Round down to nearest shell to avoid fractional
-            // shell amounts in the native account system.
+            // spore multiple. Round down to nearest spore to avoid fractional
+            // spore amounts in the native account system.
             if let Ok(Some(pubkey)) = self.state.lookup_evm_address(&address_bytes) {
                 let balance = alloy_u256_from_revm(account.info.balance);
                 let divisor = U256::from(1_000_000_000u64);
-                let shells = balance / divisor;
+                let spores = balance / divisor;
                 // M9 fix: reject overflow instead of saturating to u64::MAX (prevents silent inflation)
-                let shells_u64: u64 = match shells.try_into() {
+                let spores_u64: u64 = match spores.try_into() {
                     Ok(v) => v,
                     Err(_) => {
                         self.commit_errors.push(format!(
-                            "EVM balance overflow for {:?}: shells {} exceeds u64::MAX",
-                            address_bytes, shells
+                            "EVM balance overflow for {:?}: spores {} exceeds u64::MAX",
+                            address_bytes, spores
                         ));
                         continue;
                     }
                 };
-                if let Err(e) = self.state.set_spendable_balance(&pubkey, shells_u64) {
+                if let Err(e) = self.state.set_spendable_balance(&pubkey, spores_u64) {
                     self.commit_errors
                         .push(format!("commit native balance for {:?}: {}", pubkey, e));
                 }
@@ -535,7 +535,7 @@ impl DatabaseCommit for StateEvmDb {
                 let remainder = balance % divisor;
                 if remainder != U256::ZERO {
                     eprintln!(
-                        "T3.8: EVM balance for {:?} has sub-shell remainder {} wei (dropped)",
+                        "T3.8: EVM balance for {:?} has sub-spore remainder {} wei (dropped)",
                         address_bytes, remainder
                     );
                 }
@@ -561,19 +561,19 @@ pub fn execute_evm_transaction(
         return Err("Transaction must include chain_id (EIP-155)".to_string());
     }
 
-    if !u256_is_multiple_of_shell(&tx.value) {
+    if !u256_is_multiple_of_spore(&tx.value) {
         return Err("EVM value must be multiple of 1e9 wei".to_string());
     }
-    if !u256_is_multiple_of_shell(&tx.gas_price) {
+    if !u256_is_multiple_of_spore(&tx.gas_price) {
         return Err("EVM gas price must be multiple of 1e9 wei".to_string());
     }
     if let Some(max_fee) = tx.max_fee_per_gas {
-        if !u256_is_multiple_of_shell(&max_fee) {
+        if !u256_is_multiple_of_spore(&max_fee) {
             return Err("EVM max fee must be multiple of 1e9 wei".to_string());
         }
     }
     if let Some(priority_fee) = tx.max_priority_fee_per_gas {
-        if !u256_is_multiple_of_shell(&priority_fee) {
+        if !u256_is_multiple_of_spore(&priority_fee) {
             return Err("EVM priority fee must be multiple of 1e9 wei".to_string());
         }
     }
@@ -734,22 +734,22 @@ fn convert_revm_state_to_deferred(
             Ok(Some(pubkey)) => {
                 let balance = alloy_u256_from_revm(account.info.balance);
                 let divisor = U256::from(1_000_000_000u64);
-                let shells = balance / divisor;
-                match shells.try_into() {
-                    Ok(shells_u64) => {
+                let spores = balance / divisor;
+                match spores.try_into() {
+                    Ok(spores_u64) => {
                         let remainder = balance % divisor;
                         if remainder != U256::ZERO {
                             eprintln!(
-                                "H3: EVM balance for {:?} has sub-shell remainder {} wei (dropped)",
+                                "H3: EVM balance for {:?} has sub-spore remainder {} wei (dropped)",
                                 address_bytes, remainder
                             );
                         }
-                        Some((pubkey, shells_u64))
+                        Some((pubkey, spores_u64))
                     }
                     Err(_) => {
                         errors.push(format!(
-                            "EVM balance overflow for {:?}: shells {} exceeds u64::MAX",
-                            address_bytes, shells
+                            "EVM balance overflow for {:?}: spores {} exceeds u64::MAX",
+                            address_bytes, spores
                         ));
                         None
                     }
@@ -785,7 +785,7 @@ pub fn simulate_evm_call(
     gas_limit: u64,
     chain_id: u64,
 ) -> Result<Vec<u8>, String> {
-    if !u256_is_multiple_of_shell(&value) {
+    if !u256_is_multiple_of_spore(&value) {
         return Err("EVM value must be multiple of 1e9 wei".to_string());
     }
 
@@ -1030,10 +1030,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_shells_to_u256_conversion() {
-        let shells: u64 = 1_000_000_000; // 1 MOLT
-        let u256 = shells_to_u256(shells);
-        // shells_to_u256 converts shells → wei (1 shell = 10^9 wei)
+    fn test_spores_to_u256_conversion() {
+        let spores: u64 = 1_000_000_000; // 1 LICN
+        let u256 = spores_to_u256(spores);
+        // spores_to_u256 converts spores → wei (1 spore = 10^9 wei)
         assert!(u256 > U256::ZERO);
     }
 
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_evm_uses_spendable_balance() {
-        // This test verifies that the EVM bridge uses acc.spendable, not acc.shells
+        // This test verifies that the EVM bridge uses acc.spendable, not acc.spores
         use crate::{Account, Pubkey, StateStore};
         use tempfile::tempdir;
 
@@ -1055,11 +1055,11 @@ mod tests {
         let state = StateStore::open(temp.path()).unwrap();
 
         let pk = Pubkey::new([1u8; 32]);
-        let mut account = Account::new(100, pk); // 100 MOLT total
+        let mut account = Account::new(100, pk); // 100 LICN total
                                                  // Stake half — spendable should be reduced
-        account.staked = Account::molt_to_shells(50);
-        account.spendable = Account::molt_to_shells(50);
-        // shells stays at 100 MOLT total
+        account.staked = Account::licn_to_spores(50);
+        account.spendable = Account::licn_to_spores(50);
+        // spores stays at 100 LICN total
         state.put_account(&pk, &account).unwrap();
 
         // Map an EVM address to this account
@@ -1070,11 +1070,11 @@ mod tests {
         let revm_addr = RevmAddress::from(evm_addr);
         let balance = db.get_native_balance(revm_addr).unwrap();
 
-        // Should reflect spendable (50 MOLT), not total (100 MOLT)
+        // Should reflect spendable (50 LICN), not total (100 LICN)
         assert!(balance.is_some());
         let balance_u256 = balance.unwrap();
-        let total_u256 = revm_u256_from_alloy(shells_to_u256(Account::molt_to_shells(100)));
-        let spendable_u256 = revm_u256_from_alloy(shells_to_u256(Account::molt_to_shells(50)));
+        let total_u256 = revm_u256_from_alloy(spores_to_u256(Account::licn_to_spores(100)));
+        let spendable_u256 = revm_u256_from_alloy(spores_to_u256(Account::licn_to_spores(50)));
 
         assert_eq!(
             balance_u256, spendable_u256,
@@ -1082,7 +1082,7 @@ mod tests {
         );
         assert_ne!(
             balance_u256, total_u256,
-            "EVM balance should NOT equal total shells"
+            "EVM balance should NOT equal total spores"
         );
     }
 

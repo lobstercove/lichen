@@ -1,11 +1,11 @@
-//! MoltChain Genesis — shared library for genesis block creation and contract deployment.
+//! Lichen Genesis — shared library for genesis block creation and contract deployment.
 //!
 //! This module contains all genesis-related logic extracted from the validator.
 //! Used by:
-//!   - `moltchain-genesis` CLI binary (creates a fresh chain DB)
-//!   - `moltchain-validator` (replays genesis contract deployment on sync)
+//!   - `lichen-genesis` CLI binary (creates a fresh chain DB)
+//!   - `lichen-validator` (replays genesis contract deployment on sync)
 
-use moltchain_core::{
+use lichen_core::{
     Account, ContractAccount, ContractContext, ContractRuntime, Hash, ProgramCallActivity, Pubkey,
     StateStore, SymbolRegistryEntry,
 };
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 /// Fallback genesis prices (used only if env vars are not set).
-const DEFAULT_MOLT_PRICE_8DEC: u64 = 10_000_000;
+const DEFAULT_LICN_PRICE_8DEC: u64 = 10_000_000;
 const DEFAULT_WSOL_PRICE_8DEC: u64 = 8_970_000_000;
 const DEFAULT_WETH_PRICE_8DEC: u64 = 215_229_000_000;
 const DEFAULT_WBNB_PRICE_8DEC: u64 = 64_249_000_000;
@@ -30,7 +30,7 @@ fn usd_to_8dec(usd: f64) -> u64 {
     (usd * 100_000_000.0) as u64
 }
 
-/// Read a genesis price from environment variable (set by moltchain-start.sh
+/// Read a genesis price from environment variable (set by lichen-start.sh
 /// which fetches real-time Binance prices), falling back to the compiled default.
 fn env_price_8dec(var_name: &str, default: u64) -> u64 {
     std::env::var(var_name)
@@ -41,9 +41,9 @@ fn env_price_8dec(var_name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// Live genesis price for MOLT (env: GENESIS_MOLT_USD, default $0.10).
-pub fn genesis_molt_price_8dec() -> u64 {
-    env_price_8dec("GENESIS_MOLT_USD", DEFAULT_MOLT_PRICE_8DEC)
+/// Live genesis price for LICN (env: GENESIS_LICN_USD, default $0.10).
+pub fn genesis_licn_price_8dec() -> u64 {
+    env_price_8dec("GENESIS_LICN_USD", DEFAULT_LICN_PRICE_8DEC)
 }
 /// Live genesis price for wSOL (env: GENESIS_SOL_USD, default $89.70).
 pub fn genesis_wsol_price_8dec() -> u64 {
@@ -59,13 +59,13 @@ pub fn genesis_wbnb_price_8dec() -> u64 {
 }
 
 /// Backward-compat aliases — prefer the function forms above.
-pub const GENESIS_MOLT_PRICE_8DEC: u64 = DEFAULT_MOLT_PRICE_8DEC;
+pub const GENESIS_LICN_PRICE_8DEC: u64 = DEFAULT_LICN_PRICE_8DEC;
 pub const GENESIS_WSOL_PRICE_8DEC: u64 = DEFAULT_WSOL_PRICE_8DEC;
 pub const GENESIS_WETH_PRICE_8DEC: u64 = DEFAULT_WETH_PRICE_8DEC;
 pub const GENESIS_WBNB_PRICE_8DEC: u64 = DEFAULT_WBNB_PRICE_8DEC;
 
 fn resolve_contracts_dir() -> Option<PathBuf> {
-    if let Ok(value) = std::env::var("MOLTCHAIN_CONTRACTS_DIR") {
+    if let Ok(value) = std::env::var("LICHEN_CONTRACTS_DIR") {
         let path = PathBuf::from(value);
         if path.exists() {
             return Some(path);
@@ -74,8 +74,8 @@ fn resolve_contracts_dir() -> Option<PathBuf> {
 
     for candidate in [
         PathBuf::from("contracts"),
-        PathBuf::from("/var/lib/moltchain/contracts"),
-        PathBuf::from("/usr/local/share/moltchain/contracts"),
+        PathBuf::from("/var/lib/lichen/contracts"),
+        PathBuf::from("/usr/local/share/lichen/contracts"),
     ] {
         if candidate.exists() {
             return Some(candidate);
@@ -105,32 +105,32 @@ fn price_8dec_to_f64(price: u64) -> f64 {
 }
 
 fn genesis_pair_prices() -> [(u64, f64); 7] {
-    let molt_usd = price_8dec_to_f64(genesis_molt_price_8dec());
+    let licn_usd = price_8dec_to_f64(genesis_licn_price_8dec());
     let wsol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
     let weth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
     let wbnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
 
     [
-        (1, molt_usd),
+        (1, licn_usd),
         (2, wsol_usd),
         (3, weth_usd),
-        (4, wsol_usd / molt_usd),
-        (5, weth_usd / molt_usd),
+        (4, wsol_usd / licn_usd),
+        (5, weth_usd / licn_usd),
         (6, wbnb_usd),
-        (7, wbnb_usd / molt_usd),
+        (7, wbnb_usd / licn_usd),
     ]
 }
 
 pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     // Core token
-    ("moltcoin", "MOLT", "MoltCoin", "token"),
+    ("lichencoin", "LICN", "LichenCoin", "token"),
     // Wrapped tokens
-    ("musd_token", "MUSD", "Wrapped USD", "wrapped"),
+    ("lusd_token", "LUSD", "Wrapped USD", "wrapped"),
     ("wsol_token", "WSOL", "Wrapped SOL", "wrapped"),
     ("weth_token", "WETH", "Wrapped ETH", "wrapped"),
     ("wbnb_token", "WBNB", "Wrapped BNB", "wrapped"),
     // DEX
-    ("dex_core", "DEX", "MoltChain DEX Core", "dex"),
+    ("dex_core", "DEX", "Lichen DEX Core", "dex"),
     ("dex_amm", "DEXAMM", "DEX AMM Engine", "dex"),
     ("dex_router", "DEXROUTER", "DEX Smart Router", "dex"),
     ("dex_margin", "DEXMARGIN", "DEX Margin Trading", "dex"),
@@ -138,23 +138,23 @@ pub const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("dex_governance", "DEXGOV", "DEX Governance", "dex"),
     ("dex_analytics", "ANALYTICS", "DEX Analytics", "dex"),
     // DeFi
-    ("moltswap", "MOLTSWAP", "MoltSwap AMM", "defi"),
-    ("moltbridge", "BRIDGE", "MoltBridge", "bridge"),
-    ("moltmarket", "MARKET", "MoltMarket", "marketplace"),
-    ("moltoracle", "ORACLE", "MoltOracle", "oracle"),
-    ("moltauction", "AUCTION", "MoltAuction", "auction"),
-    ("moltdao", "DAO", "MoltDAO Governance", "governance"),
-    ("lobsterlend", "LEND", "LobsterLend", "lending"),
+    ("lichenswap", "LICHENSWAP", "LichenSwap AMM", "defi"),
+    ("lichenbridge", "BRIDGE", "LichenBridge", "bridge"),
+    ("lichenmarket", "MARKET", "LichenMarket", "marketplace"),
+    ("lichenoracle", "ORACLE", "LichenOracle", "oracle"),
+    ("lichenauction", "AUCTION", "LichenAuction", "auction"),
+    ("lichendao", "DAO", "LichenDAO Governance", "governance"),
+    ("thalllend", "LEND", "ThallLend", "lending"),
     // NFT / Identity
-    ("moltpunks", "PUNKS", "MoltPunks NFT", "nft"),
-    ("moltyid", "YID", "MoltyID Identity", "identity"),
+    ("lichenpunks", "PUNKS", "LichenPunks NFT", "nft"),
+    ("lichenid", "YID", "LichenID Identity", "identity"),
     // Infrastructure
-    ("clawpay", "CLAWPAY", "ClawPay Payments", "payments"),
-    ("clawpump", "CLAWPUMP", "ClawPump Launchpad", "launchpad"),
-    ("clawvault", "CLAWVAULT", "ClawVault", "vault"),
+    ("sporepay", "SPOREPAY", "SporePay Payments", "payments"),
+    ("sporepump", "SPOREPUMP", "SporePump Launchpad", "launchpad"),
+    ("sporevault", "SPOREVAULT", "SporeVault", "vault"),
     ("bountyboard", "BOUNTY", "BountyBoard", "bounty"),
     ("compute_market", "COMPUTE", "Compute Market", "compute"),
-    ("reef_storage", "REEF", "Reef Storage", "storage"),
+    ("moss_storage", "MOSS", "Moss Storage", "storage"),
     ("shielded_pool", "SHIELDED", "Shielded Pool", "shielded"),
     // Prediction Markets
     ("prediction_market", "PREDICT", "Prediction Markets", "defi"),
@@ -252,7 +252,7 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
         // Enrich token/wrapped contracts with MT-20 metadata
         match template {
             "token" => {
-                // MOLT native token: 500M initial supply, 9 decimals, mintable (inflationary via block rewards)
+                // LICN native token: 500M initial supply, 9 decimals, mintable (inflationary via block rewards)
                 meta["total_supply"] = serde_json::json!(500_000_000_u64 * 1_000_000_000_u64);
                 meta["decimals"] = serde_json::json!(9);
                 meta["mintable"] = serde_json::json!(true);
@@ -262,13 +262,13 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                 meta["description"] = serde_json::json!(
                     "The Native Home of Agents. Portable identity + rep tiers \u{2022} Agents run validators & earn \u{2022} DeFi \u{2022} DAO \u{2022} DApps \u{2022} DEX \u{2022} Oracles \u{2022} Storage \u{2022} Vault \u{2022} Pools \u{2022} Bounty"
                 );
-                meta["website"] = serde_json::json!("https://moltchain.network");
+                meta["website"] = serde_json::json!("https://lichen.network");
                 meta["logo_url"] = serde_json::json!(
-                    "https://moltchain.network/assets/img/coins/128x128/molt.png"
+                    "https://lichen.network/assets/img/coins/128x128/licn.png"
                 );
                 meta["icon_class"] = serde_json::json!("fas fa-fire");
-                meta["twitter"] = serde_json::json!("https://x.com/MoltChainHQ");
-                meta["telegram"] = serde_json::json!("https://t.me/moltchainhq");
+                meta["twitter"] = serde_json::json!("https://x.com/LichenHQ");
+                meta["telegram"] = serde_json::json!("https://t.me/lichenhq");
                 meta["discord"] = serde_json::json!("https://discord.gg/gkQmsHXRXp");
             }
             "wrapped" => {
@@ -279,27 +279,27 @@ pub fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: 
                 meta["burnable"] = serde_json::json!(true);
                 // Logo and description per wrapped asset
                 let (desc, logo, logo_url) = match symbol {
-                    "MUSD" | "mUSD" => (
-                        "MoltChain-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on MoltyDEX.",
+                    "LUSD" | "lUSD" => (
+                        "Lichen-wrapped USD stablecoin (1:1 USD peg), used as the primary quote currency on Lichen DEX.",
                         "fas fa-dollar-sign",
-                        "https://moltchain.network/assets/img/coins/128x128/musd.png",
+                        "https://lichen.network/assets/img/coins/128x128/musd.png",
                     ),
                     "WSOL" | "wSOL" => (
-                        "Wrapped Solana (SOL) on MoltChain — bridged 1:1 from the Solana network.",
+                        "Wrapped Solana (SOL) on Lichen — bridged 1:1 from the Solana network.",
                         "fab fa-solana",
                         "https://s2.coinmarketcap.com/static/img/coins/128x128/5426.png",
                     ),
                     "WETH" | "wETH" => (
-                        "Wrapped Ether (ETH) on MoltChain — bridged 1:1 from the Ethereum network.",
+                        "Wrapped Ether (ETH) on Lichen — bridged 1:1 from the Ethereum network.",
                         "fab fa-ethereum",
                         "https://s2.coinmarketcap.com/static/img/coins/128x128/1027.png",
                     ),
                     "WBNB" | "wBNB" => (
-                        "Wrapped BNB on MoltChain — bridged 1:1 from BNB Chain.",
+                        "Wrapped BNB on Lichen — bridged 1:1 from BNB Chain.",
                         "fas fa-coins",
                         "https://s2.coinmarketcap.com/static/img/coins/128x128/1839.png",
                     ),
-                    _ => ("Wrapped asset on MoltChain.", "fas fa-coins", ""),
+                    _ => ("Wrapped asset on Lichen.", "fas fa-coins", ""),
                 };
                 meta["description"] = serde_json::json!(desc);
                 meta["icon_class"] = serde_json::json!(logo);
@@ -540,53 +540,53 @@ pub fn genesis_initialize_contracts(
         admin.to_vec()
     }
 
-    // Resolve token contract addresses for moltswap and moltdao
-    let molt_addr = address_map
-        .get("moltcoin")
+    // Resolve token contract addresses for lichenswap and lichendao
+    let licn_addr = address_map
+        .get("lichencoin")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
     let musd_addr = address_map
-        .get("musd_token")
+        .get("lusd_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
 
-    // DAO: governance_token = MOLT address, treasury = community_treasury wallet,
-    // min_proposal_threshold = 10,000 MOLT in shells (10_000 * 1e9)
+    // DAO: governance_token = LICN address, treasury = community_treasury wallet,
+    // min_proposal_threshold = 10,000 LICN in spores (10_000 * 1e9)
     let dao_treasury = state
         .get_community_treasury_pubkey()
         .ok()
         .flatten()
         .map(|pk| pk.0)
         .unwrap_or(admin); // Fallback to deployer if community_treasury not set yet
-    let dao_threshold: u64 = 10_000_000_000_000; // 10,000 MOLT
+    let dao_threshold: u64 = 10_000_000_000_000; // 10,000 LICN
     let mut dao_args = Vec::with_capacity(72);
-    dao_args.extend_from_slice(&molt_addr); // governance_token (32B)
+    dao_args.extend_from_slice(&licn_addr); // governance_token (32B)
     dao_args.extend_from_slice(&dao_treasury); // treasury (32B = community_treasury wallet)
     dao_args.extend_from_slice(&dao_threshold.to_le_bytes()); // min_proposal_threshold (8B)
 
-    // MoltSwap: token_a = MOLT, token_b = MUSD
-    let mut moltswap_args = Vec::with_capacity(64);
-    moltswap_args.extend_from_slice(&molt_addr);
-    moltswap_args.extend_from_slice(&musd_addr);
+    // LichenSwap: token_a = LICN, token_b = LUSD
+    let mut lichenswap_args = Vec::with_capacity(64);
+    lichenswap_args.extend_from_slice(&licn_addr);
+    lichenswap_args.extend_from_slice(&musd_addr);
 
-    // MoltMarket: owner(32B) + fee_addr(32B) = deployer for both initially
-    let mut moltmarket_args = Vec::with_capacity(64);
-    moltmarket_args.extend_from_slice(&admin);
-    moltmarket_args.extend_from_slice(&admin); // fee recipient = deployer initially
+    // LichenMarket: owner(32B) + fee_addr(32B) = deployer for both initially
+    let mut lichenmarket_args = Vec::with_capacity(64);
+    lichenmarket_args.extend_from_slice(&admin);
+    lichenmarket_args.extend_from_slice(&admin); // fee recipient = deployer initially
 
-    // MoltAuction: initialize(marketplace_addr) + initialize_ma_admin(admin)
-    // marketplace_addr = moltmarket address for integration
-    let moltmarket_addr = address_map.get("moltmarket").map(|p| p.0).unwrap_or(admin);
+    // LichenAuction: initialize(marketplace_addr) + initialize_ma_admin(admin)
+    // marketplace_addr = lichenmarket address for integration
+    let lichenmarket_addr = address_map.get("lichenmarket").map(|p| p.0).unwrap_or(admin);
 
     let specs: Vec<InitSpec> = vec![
         // ── Layer 0: Tokens ──
         InitSpec {
-            dir_name: "moltcoin",
+            dir_name: "lichencoin",
             function: "initialize",
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "musd_token",
+            dir_name: "lusd_token",
             function: "initialize",
             args: named_init_args(&admin),
         },
@@ -607,7 +607,7 @@ pub fn genesis_initialize_contracts(
         },
         // ── Layer 1: Identity ──
         InitSpec {
-            dir_name: "moltyid",
+            dir_name: "lichenid",
             function: "initialize",
             args: named_init_args(&admin),
         },
@@ -650,55 +650,55 @@ pub fn genesis_initialize_contracts(
         },
         // ── Layer 4: DeFi protocols ──
         InitSpec {
-            dir_name: "moltswap",
+            dir_name: "lichenswap",
             function: "initialize",
-            args: moltswap_args,
+            args: lichenswap_args,
         },
         InitSpec {
-            dir_name: "moltbridge",
+            dir_name: "lichenbridge",
             function: "initialize",
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "moltoracle",
+            dir_name: "lichenoracle",
             function: "initialize_oracle",
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "lobsterlend",
+            dir_name: "thalllend",
             function: "initialize",
             args: named_init_args(&admin),
         },
         // ── Layer 4b: Governance ──
         InitSpec {
-            dir_name: "moltdao",
+            dir_name: "lichendao",
             function: "initialize_dao",
             args: dao_args,
         },
         // ── Layer 5: Marketplaces ──
         InitSpec {
-            dir_name: "moltmarket",
+            dir_name: "lichenmarket",
             function: "initialize",
-            args: moltmarket_args,
+            args: lichenmarket_args,
         },
         InitSpec {
-            dir_name: "moltpunks",
+            dir_name: "lichenpunks",
             function: "initialize",
             args: named_init_args(&admin),
         },
         // ── Layer 5b: Infrastructure ──
         InitSpec {
-            dir_name: "clawpay",
+            dir_name: "sporepay",
             function: "initialize_cp_admin",
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "clawpump",
+            dir_name: "sporepump",
             function: "initialize",
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "clawvault",
+            dir_name: "sporevault",
             function: "initialize",
             args: named_init_args(&admin),
         },
@@ -708,7 +708,7 @@ pub fn genesis_initialize_contracts(
             args: named_init_args(&admin),
         },
         InitSpec {
-            dir_name: "reef_storage",
+            dir_name: "moss_storage",
             function: "initialize",
             args: named_init_args(&admin),
         },
@@ -766,18 +766,18 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // MoltAuction requires TWO init calls:
+    // LichenAuction requires TWO init calls:
     // 1. initialize(marketplace_addr) — sets escrow address
     // 2. initialize_ma_admin(admin) — sets admin
-    if let Some(auction_pk) = address_map.get("moltauction") {
-        let mkt_args = moltmarket_addr.to_vec();
+    if let Some(auction_pk) = address_map.get("lichenauction") {
+        let mkt_args = lichenmarket_addr.to_vec();
         if genesis_exec_contract(
             state,
             auction_pk,
             deployer_pubkey,
             "initialize",
             &mkt_args,
-            "moltauction(escrow)",
+            "lichenauction(escrow)",
         ) {
             if genesis_exec_contract(
                 state,
@@ -785,9 +785,9 @@ pub fn genesis_initialize_contracts(
                 deployer_pubkey,
                 "initialize_ma_admin",
                 admin.as_ref(),
-                "moltauction(admin)",
+                "lichenauction(admin)",
             ) {
-                info!("  INIT moltauction (escrow + admin)");
+                info!("  INIT lichenauction (escrow + admin)");
                 initialized += 1;
             } else {
                 skipped += 1;
@@ -798,24 +798,24 @@ pub fn genesis_initialize_contracts(
     }
 
     // ── Prediction Market: wire up cross-contract addresses ──
-    // Set oracle, musd, moltyid, and dex_gov addresses via opcode dispatch.
-    // Opcodes: 18=set_moltyid, 19=set_oracle, 20=set_musd, 21=set_dex_gov
+    // Set oracle, musd, lichenid, and dex_gov addresses via opcode dispatch.
+    // Opcodes: 18=set_lichenid, 19=set_oracle, 20=set_musd, 21=set_dex_gov
     // Format: [opcode][admin 32B][address 32B] = 65 bytes
     if let Some(predict_pk) = address_map.get("prediction_market") {
-        let oracle_addr = address_map.get("moltoracle").map(|p| p.0).unwrap_or(admin);
-        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let oracle_addr = address_map.get("lichenoracle").map(|p| p.0).unwrap_or(admin);
+        let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let dex_gov_addr = address_map
             .get("dex_governance")
             .map(|p| p.0)
             .unwrap_or(admin);
 
-        // NOTE: MoltyID address IS set here. The processor's cross-contract
-        // storage injection reads the caller's MoltyID reputation from
+        // NOTE: LichenID address IS set here. The processor's cross-contract
+        // storage injection reads the caller's LichenID reputation from
         // CF_CONTRACT_STORAGE and injects it into the contract's execution
         // context before WASM runs. The contract's load_u64("rep:{hex}")
         // call finds the injected value in ctx.storage.
         let configs: &[(u8, &[u8; 32], &str)] = &[
-            (18, &moltyid_addr, "prediction_market(moltyid)"),
+            (18, &lichenid_addr, "prediction_market(lichenid)"),
             (19, &oracle_addr, "prediction_market(oracle)"),
             (20, &musd_addr, "prediction_market(musd)"),
             (21, &dex_gov_addr, "prediction_market(dex_gov)"),
@@ -834,32 +834,32 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Governance: wire up MoltyID address for reputation verification ──
-    // Opcode 14 = set_moltyid_address. Format: [14][admin 32B][moltyid_addr 32B]
+    // ── DEX Governance: wire up LichenID address for reputation verification ──
+    // Opcode 14 = set_lichenid_address. Format: [14][admin 32B][lichenid_addr 32B]
     if let Some(dex_gov_pk) = address_map.get("dex_governance") {
-        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(65);
         args.push(14u8);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&moltyid_addr);
+        args.extend_from_slice(&lichenid_addr);
         if genesis_exec_contract(
             state,
             dex_gov_pk,
             deployer_pubkey,
             "call",
             &args,
-            "dex_governance(moltyid)",
+            "dex_governance(lichenid)",
         ) {
-            info!("  SET dex_governance(moltyid)");
+            info!("  SET dex_governance(lichenid)");
         } else {
-            warn!("  WARN: Failed to set dex_governance(moltyid)");
+            warn!("  WARN: Failed to set dex_governance(lichenid)");
         }
     }
 
     // ── DEX Rewards: set builder_grants wallet as rewards pool source ──
-    // The dex_rewards contract pays out MOLT from its own balance (self-custody).
+    // The dex_rewards contract pays out LICN from its own balance (self-custody).
     // Wire builder_grants as the source, then seed the contract with 1 year of
-    // rewards (1.2M MOLT = 100K/month × 12) so claims work from day one.
+    // rewards (1.2M LICN = 100K/month × 12) so claims work from day one.
     if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
         let builder_grants_addr = state
             .get_builder_grants_pubkey()
@@ -888,13 +888,13 @@ pub fn genesis_initialize_contracts(
 
         // Seed the contract with 1 year of rewards from builder_grants.
         // Contract uses self-custody: it pays from its own address, so it needs
-        // MOLT deposited into the contract's account.
-        let seed_molt: u64 = 1_200_000; // 100K/month × 12 months
-        let seed_shells = seed_molt * 1_000_000_000;
+        // LICN deposited into the contract's account.
+        let seed_licn: u64 = 1_200_000; // 100K/month × 12 months
+        let seed_spores = seed_licn * 1_000_000_000;
         let bg_pubkey = Pubkey(builder_grants_addr);
         if let Ok(Some(mut bg_acct)) = state.get_account(&bg_pubkey) {
-            if bg_acct.spendable >= seed_shells {
-                bg_acct.deduct_spendable(seed_shells).ok();
+            if bg_acct.spendable >= seed_spores {
+                bg_acct.deduct_spendable(seed_spores).ok();
                 state.put_account(&bg_pubkey, &bg_acct).ok();
 
                 let mut contract_acct = state
@@ -902,27 +902,27 @@ pub fn genesis_initialize_contracts(
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| Account::new(0, *dex_rewards_pk));
-                contract_acct.add_spendable(seed_shells).ok();
+                contract_acct.add_spendable(seed_spores).ok();
                 state.put_account(dex_rewards_pk, &contract_acct).ok();
-                info!("  💰 Seeded dex_rewards contract with {} MOLT from builder_grants (1 year of rewards)", seed_molt);
+                info!("  💰 Seeded dex_rewards contract with {} LICN from builder_grants (1 year of rewards)", seed_licn);
             } else {
                 warn!("  WARN: builder_grants has insufficient balance to seed dex_rewards");
             }
         }
     }
 
-    // ── DEX Router: wire dex_core, dex_amm, moltswap addresses ──
-    // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B][moltswap 32B]
+    // ── DEX Router: wire dex_core, dex_amm, lichenswap addresses ──
+    // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B][lichenswap 32B]
     if let Some(router_pk) = address_map.get("dex_router") {
         let dex_core_addr = address_map.get("dex_core").map(|p| p.0).unwrap_or(admin);
         let dex_amm_addr = address_map.get("dex_amm").map(|p| p.0).unwrap_or(admin);
-        let moltswap_addr = address_map.get("moltswap").map(|p| p.0).unwrap_or(admin);
+        let lichenswap_addr = address_map.get("lichenswap").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(129);
         args.push(1u8); // opcode 1 = set_addresses
         args.extend_from_slice(&admin);
         args.extend_from_slice(&dex_core_addr);
         args.extend_from_slice(&dex_amm_addr);
-        args.extend_from_slice(&moltswap_addr);
+        args.extend_from_slice(&lichenswap_addr);
         if genesis_exec_contract(
             state,
             router_pk,
@@ -955,13 +955,13 @@ pub fn genesis_initialize_contracts(
         // (token_in, token_out, pair_id, pool_id, label)
         type RoutePair = ([u8; 32], [u8; 32], u64, u64, &'static str);
         let route_pairs: [RoutePair; 7] = [
-            (molt_addr, musd_addr, 1, 1, "MOLT/mUSD"),
-            (wsol_addr, musd_addr, 2, 2, "wSOL/mUSD"),
-            (weth_addr, musd_addr, 3, 3, "wETH/mUSD"),
-            (wsol_addr, molt_addr, 4, 4, "wSOL/MOLT"),
-            (weth_addr, molt_addr, 5, 5, "wETH/MOLT"),
-            (wbnb_addr, musd_addr, 6, 6, "wBNB/mUSD"),
-            (wbnb_addr, molt_addr, 7, 7, "wBNB/MOLT"),
+            (licn_addr, musd_addr, 1, 1, "LICN/lUSD"),
+            (wsol_addr, musd_addr, 2, 2, "wSOL/lUSD"),
+            (weth_addr, musd_addr, 3, 3, "wETH/lUSD"),
+            (wsol_addr, licn_addr, 4, 4, "wSOL/LICN"),
+            (weth_addr, licn_addr, 5, 5, "wETH/LICN"),
+            (wbnb_addr, musd_addr, 6, 6, "wBNB/lUSD"),
+            (wbnb_addr, licn_addr, 7, 7, "wBNB/LICN"),
         ];
 
         for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
@@ -1065,114 +1065,114 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── DEX Rewards: wire MOLT token address for reward payouts ──
-    // Opcode 12 = set_moltcoin_address. Format: [12][admin 32B][moltcoin_addr 32B]
+    // ── DEX Rewards: wire LICN token address for reward payouts ──
+    // Opcode 12 = set_lichencoin_address. Format: [12][admin 32B][lichencoin_addr 32B]
     // Without this, claim_trading_rewards / claim_lp_rewards / claim_referral_rewards
     // all fail with error 5 — rewards cannot be claimed.
     if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
         let mut args = Vec::with_capacity(65);
-        args.push(12u8); // opcode 12 = set_moltcoin_address
+        args.push(12u8); // opcode 12 = set_lichencoin_address
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
             dex_rewards_pk,
             deployer_pubkey,
             "call",
             &args,
-            "dex_rewards(set_moltcoin_address)",
+            "dex_rewards(set_lichencoin_address)",
         ) {
-            info!("  SET dex_rewards(set_moltcoin_address)");
+            info!("  SET dex_rewards(set_lichencoin_address)");
         } else {
-            warn!("  WARN: Failed to set dex_rewards moltcoin address");
+            warn!("  WARN: Failed to set dex_rewards lichencoin address");
         }
     }
 
-    // ── ClawPay: wire MOLT token address + self-address for stream escrow ──
+    // ── SporePay: wire LICN token address + self-address for stream escrow ──
     // Without set_token_address, create_stream fails with error 30.
     // Without set_self_address, create_stream fails with error 31.
-    if let Some(clawpay_pk) = address_map.get("clawpay") {
-        // Named export: set_token_address. Args: [admin 32B][moltcoin_addr 32B]
+    if let Some(sporepay_pk) = address_map.get("sporepay") {
+        // Named export: set_token_address. Args: [admin 32B][lichencoin_addr 32B]
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
-            clawpay_pk,
+            sporepay_pk,
             deployer_pubkey,
             "set_token_address",
             &args,
-            "clawpay(set_token_address)",
+            "sporepay(set_token_address)",
         ) {
-            info!("  SET clawpay(set_token_address)");
+            info!("  SET sporepay(set_token_address)");
         } else {
-            warn!("  WARN: Failed to set clawpay token address");
+            warn!("  WARN: Failed to set sporepay token address");
         }
 
-        // Named export: set_self_address. Args: [admin 32B][clawpay_addr 32B]
+        // Named export: set_self_address. Args: [admin 32B][sporepay_addr 32B]
         let mut self_args = Vec::with_capacity(64);
         self_args.extend_from_slice(&admin);
-        self_args.extend_from_slice(&clawpay_pk.0);
+        self_args.extend_from_slice(&sporepay_pk.0);
         if genesis_exec_contract(
             state,
-            clawpay_pk,
+            sporepay_pk,
             deployer_pubkey,
             "set_self_address",
             &self_args,
-            "clawpay(set_self_address)",
+            "sporepay(set_self_address)",
         ) {
-            info!("  SET clawpay(set_self_address)");
+            info!("  SET sporepay(set_self_address)");
         } else {
-            warn!("  WARN: Failed to set clawpay self address");
+            warn!("  WARN: Failed to set sporepay self address");
         }
     }
 
-    // ── ClawPump: wire MOLT token address for sell() payouts ──
+    // ── SporePump: wire LICN token address for sell() payouts ──
     // Without this, sell() silently fails (returns 0), locking seller funds.
-    if let Some(clawpump_pk) = address_map.get("clawpump") {
+    if let Some(sporepump_pk) = address_map.get("sporepump") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
-            clawpump_pk,
+            sporepump_pk,
             deployer_pubkey,
-            "set_molt_token",
+            "set_licn_token",
             &args,
-            "clawpump(set_molt_token)",
+            "sporepump(set_licn_token)",
         ) {
-            info!("  SET clawpump(set_molt_token)");
+            info!("  SET sporepump(set_licn_token)");
         } else {
-            warn!("  WARN: Failed to set clawpump molt token address");
+            warn!("  WARN: Failed to set sporepump licn token address");
         }
     }
 
-    // ── ClawVault: wire MOLT token address for withdraw() payouts ──
+    // ── SporeVault: wire LICN token address for withdraw() payouts ──
     // Without this, withdraw() silently fails, locking depositor funds.
-    if let Some(clawvault_pk) = address_map.get("clawvault") {
+    if let Some(sporevault_pk) = address_map.get("sporevault") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
-            clawvault_pk,
+            sporevault_pk,
             deployer_pubkey,
-            "set_molt_token",
+            "set_licn_token",
             &args,
-            "clawvault(set_molt_token)",
+            "sporevault(set_licn_token)",
         ) {
-            info!("  SET clawvault(set_molt_token)");
+            info!("  SET sporevault(set_licn_token)");
         } else {
-            warn!("  WARN: Failed to set clawvault molt token address");
+            warn!("  WARN: Failed to set sporevault licn token address");
         }
     }
 
-    // ── Compute Market: wire MOLT token address for job escrow ──
+    // ── Compute Market: wire LICN token address for job escrow ──
     // Without this, submit_job fails — job creation blocked entirely.
     if let Some(compute_pk) = address_map.get("compute_market") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
             compute_pk,
@@ -1187,105 +1187,105 @@ pub fn genesis_initialize_contracts(
         }
     }
 
-    // ── MoltDAO: wire MoltyID address for identity verification ──
-    // Named export: set_moltyid_address. Args: [admin 32B][moltyid_addr 32B]
-    if let Some(dao_pk) = address_map.get("moltdao") {
-        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+    // ── LichenDAO: wire LichenID address for identity verification ──
+    // Named export: set_lichenid_address. Args: [admin 32B][lichenid_addr 32B]
+    if let Some(dao_pk) = address_map.get("lichendao") {
+        let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&moltyid_addr);
+        args.extend_from_slice(&lichenid_addr);
         if genesis_exec_contract(
             state,
             dao_pk,
             deployer_pubkey,
-            "set_moltyid_address",
+            "set_lichenid_address",
             &args,
-            "moltdao(moltyid)",
+            "lichendao(lichenid)",
         ) {
-            info!("  SET moltdao(moltyid)");
+            info!("  SET lichendao(lichenid)");
         } else {
-            warn!("  WARN: Failed to set moltdao moltyid address");
+            warn!("  WARN: Failed to set lichendao lichenid address");
         }
     }
 
-    // ── MoltSwap: wire MoltyID address for identity verification ──
-    // Named export: set_moltyid_address. Args: [admin 32B][moltyid_addr 32B]
-    if let Some(swap_pk) = address_map.get("moltswap") {
-        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+    // ── LichenSwap: wire LichenID address for identity verification ──
+    // Named export: set_lichenid_address. Args: [admin 32B][lichenid_addr 32B]
+    if let Some(swap_pk) = address_map.get("lichenswap") {
+        let lichenid_addr = address_map.get("lichenid").map(|p| p.0).unwrap_or(admin);
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&moltyid_addr);
+        args.extend_from_slice(&lichenid_addr);
         if genesis_exec_contract(
             state,
             swap_pk,
             deployer_pubkey,
-            "set_moltyid_address",
+            "set_lichenid_address",
             &args,
-            "moltswap(moltyid)",
+            "lichenswap(lichenid)",
         ) {
-            info!("  SET moltswap(moltyid)");
+            info!("  SET lichenswap(lichenid)");
         } else {
-            warn!("  WARN: Failed to set moltswap moltyid address");
+            warn!("  WARN: Failed to set lichenswap lichenid address");
         }
     }
 
-    // ── Reef Storage: wire MOLT token address ──
-    // Named export: set_molt_token. Args: [admin 32B][moltcoin_addr 32B]
-    if let Some(reef_pk) = address_map.get("reef_storage") {
+    // ── Moss Storage: wire LICN token address ──
+    // Named export: set_licn_token. Args: [admin 32B][lichencoin_addr 32B]
+    if let Some(moss_pk) = address_map.get("moss_storage") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
-            reef_pk,
+            moss_pk,
             deployer_pubkey,
-            "set_molt_token",
+            "set_licn_token",
             &args,
-            "reef_storage(moltcoin)",
+            "moss_storage(lichencoin)",
         ) {
-            info!("  SET reef_storage(moltcoin)");
+            info!("  SET moss_storage(lichencoin)");
         } else {
-            warn!("  WARN: Failed to set reef_storage molt token address");
+            warn!("  WARN: Failed to set moss_storage licn token address");
         }
     }
 
-    // ── LobsterLend: wire MOLT token address ──
-    // Named export: set_moltcoin_address. Args: [admin 32B][moltcoin_addr 32B]
-    if let Some(lend_pk) = address_map.get("lobsterlend") {
+    // ── ThallLend: wire LICN token address ──
+    // Named export: set_lichencoin_address. Args: [admin 32B][lichencoin_addr 32B]
+    if let Some(lend_pk) = address_map.get("thalllend") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
             lend_pk,
             deployer_pubkey,
-            "set_moltcoin_address",
+            "set_lichencoin_address",
             &args,
-            "lobsterlend(moltcoin)",
+            "thalllend(lichencoin)",
         ) {
-            info!("  SET lobsterlend(moltcoin)");
+            info!("  SET thalllend(lichencoin)");
         } else {
-            warn!("  WARN: Failed to set lobsterlend moltcoin address");
+            warn!("  WARN: Failed to set thalllend lichencoin address");
         }
     }
 
-    // ── MoltBridge: wire MOLT token + add first bridge validator ──
-    // Named export: set_token_address. Args: [admin 32B][moltcoin_addr 32B]
-    if let Some(bridge_pk) = address_map.get("moltbridge") {
+    // ── LichenBridge: wire LICN token + add first bridge validator ──
+    // Named export: set_token_address. Args: [admin 32B][lichencoin_addr 32B]
+    if let Some(bridge_pk) = address_map.get("lichenbridge") {
         let mut args = Vec::with_capacity(64);
         args.extend_from_slice(&admin);
-        args.extend_from_slice(&molt_addr);
+        args.extend_from_slice(&licn_addr);
         if genesis_exec_contract(
             state,
             bridge_pk,
             deployer_pubkey,
             "set_token_address",
             &args,
-            "moltbridge(token)",
+            "lichenbridge(token)",
         ) {
-            info!("  SET moltbridge(token)");
+            info!("  SET lichenbridge(token)");
         } else {
-            warn!("  WARN: Failed to set moltbridge token address");
+            warn!("  WARN: Failed to set lichenbridge token address");
         }
 
         // Add deployer as first bridge validator
@@ -1299,20 +1299,20 @@ pub fn genesis_initialize_contracts(
             deployer_pubkey,
             "add_bridge_validator",
             &val_args,
-            "moltbridge(bridge_validator)",
+            "lichenbridge(bridge_validator)",
         ) {
-            info!("  SET moltbridge(bridge_validator)");
+            info!("  SET lichenbridge(bridge_validator)");
         } else {
-            warn!("  WARN: Failed to add bridge validator to moltbridge");
+            warn!("  WARN: Failed to add bridge validator to lichenbridge");
         }
     }
 
-    // ── MoltyID: Bootstrap admin reputation ──
+    // ── LichenID: Bootstrap admin reputation ──
     // The admin (deployer) needs reputation >= 1000 to create prediction markets,
     // submit governance proposals, resolve markets, etc. The initial identity
-    // registration gives only 100. Write directly to MoltyID's contract storage
+    // registration gives only 100. Write directly to LichenID's contract storage
     // so the admin has the required reputation from genesis.
-    if let Some(moltyid_pk) = address_map.get("moltyid") {
+    if let Some(lichenid_pk) = address_map.get("lichenid") {
         let admin_rep: u64 = 5000; // "Elite" tier — full access to all features
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
         let mut rep_key = Vec::with_capacity(68);
@@ -1321,22 +1321,22 @@ pub fn genesis_initialize_contracts(
             rep_key.push(hex_chars[(b >> 4) as usize]);
             rep_key.push(hex_chars[(b & 0x0f) as usize]);
         }
-        if let Err(e) = state.put_contract_storage(moltyid_pk, &rep_key, &admin_rep.to_le_bytes()) {
-            warn!("  WARN: Failed to set admin reputation in MoltyID: {}", e);
+        if let Err(e) = state.put_contract_storage(lichenid_pk, &rep_key, &admin_rep.to_le_bytes()) {
+            warn!("  WARN: Failed to set admin reputation in LichenID: {}", e);
         } else {
             info!(
-                "  SET admin MoltyID reputation = {} (Elite tier)",
+                "  SET admin LichenID reputation = {} (Elite tier)",
                 admin_rep
             );
         }
     }
 
-    // ── MoltyID: Register reserved .molt names at genesis ──
+    // ── LichenID: Register reserved .lichen names at genesis ──
     // Uses admin_register_reserved_name to bypass reserved-name checks.
     // Format: admin_register_reserved_name(admin_ptr, owner_ptr, name_ptr, name_len, agent_type)
     // Since this is a named export, args = [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
-    if let Some(moltyid_pk) = address_map.get("moltyid") {
-        // Genesis .molt name registrations:
+    if let Some(lichenid_pk) = address_map.get("lichenid") {
+        // Genesis .lichen name registrations:
         // System wallets get their canonical names
         struct GenesisName {
             label: &'static str,
@@ -1347,7 +1347,7 @@ pub fn genesis_initialize_contracts(
         let genesis_names: &[GenesisName] = &[
             // ── System / Admin wallets ──
             GenesisName {
-                label: "moltchain",
+                label: "lichen",
                 owner_key: "admin",
                 agent_type: 0,
             },
@@ -1373,14 +1373,14 @@ pub fn genesis_initialize_contracts(
             },
             // ── Core token ──
             GenesisName {
-                label: "moltcoin",
-                owner_key: "moltcoin",
+                label: "lichencoin",
+                owner_key: "lichencoin",
                 agent_type: 0,
             },
             // ── Wrapped tokens ──
             GenesisName {
                 label: "musd",
-                owner_key: "musd_token",
+                owner_key: "lusd_token",
                 agent_type: 0,
             },
             GenesisName {
@@ -1436,66 +1436,66 @@ pub fn genesis_initialize_contracts(
             },
             // ── DeFi protocols ──
             GenesisName {
-                label: "moltswap",
-                owner_key: "moltswap",
+                label: "lichenswap",
+                owner_key: "lichenswap",
                 agent_type: 0,
             },
             GenesisName {
                 label: "bridge",
-                owner_key: "moltbridge",
+                owner_key: "lichenbridge",
                 agent_type: 0,
             },
             GenesisName {
                 label: "oracle",
-                owner_key: "moltoracle",
+                owner_key: "lichenoracle",
                 agent_type: 0,
             },
             GenesisName {
                 label: "dao",
-                owner_key: "moltdao",
+                owner_key: "lichendao",
                 agent_type: 0,
             },
             GenesisName {
                 label: "lending",
-                owner_key: "lobsterlend",
+                owner_key: "thalllend",
                 agent_type: 0,
             },
             // ── Marketplaces ──
             GenesisName {
                 label: "marketplace",
-                owner_key: "moltmarket",
+                owner_key: "lichenmarket",
                 agent_type: 0,
             },
             GenesisName {
                 label: "auction",
-                owner_key: "moltauction",
+                owner_key: "lichenauction",
                 agent_type: 0,
             },
             GenesisName {
-                label: "moltpunks",
-                owner_key: "moltpunks",
+                label: "lichenpunks",
+                owner_key: "lichenpunks",
                 agent_type: 0,
             },
             // ── Identity ──
             GenesisName {
-                label: "moltyid",
-                owner_key: "moltyid",
+                label: "lichenid",
+                owner_key: "lichenid",
                 agent_type: 0,
             },
             // ── Infrastructure ──
             GenesisName {
-                label: "clawpay",
-                owner_key: "clawpay",
+                label: "sporepay",
+                owner_key: "sporepay",
                 agent_type: 0,
             },
             GenesisName {
-                label: "clawpump",
-                owner_key: "clawpump",
+                label: "sporepump",
+                owner_key: "sporepump",
                 agent_type: 0,
             },
             GenesisName {
-                label: "clawvault",
-                owner_key: "clawvault",
+                label: "sporevault",
+                owner_key: "sporevault",
                 agent_type: 0,
             },
             GenesisName {
@@ -1509,8 +1509,8 @@ pub fn genesis_initialize_contracts(
                 agent_type: 0,
             },
             GenesisName {
-                label: "reefstake",
-                owner_key: "reef_storage",
+                label: "mossstake",
+                owner_key: "moss_storage",
                 agent_type: 0,
             },
             // ── Prediction Markets ──
@@ -1540,14 +1540,14 @@ pub fn genesis_initialize_contracts(
 
             if genesis_exec_contract(
                 state,
-                moltyid_pk,
+                lichenid_pk,
                 deployer_pubkey,
                 "admin_register_reserved_name",
                 &args,
-                &format!("moltyid(name:{})", gn.label),
+                &format!("lichenid(name:{})", gn.label),
             ) {
                 info!(
-                    "  NAME {}.molt → {}",
+                    "  NAME {}.lichen → {}",
                     gn.label,
                     if gn.owner_key == "admin" {
                         "deployer"
@@ -1556,11 +1556,11 @@ pub fn genesis_initialize_contracts(
                     }
                 );
             } else {
-                warn!("  WARN: Failed to register {}.molt", gn.label);
+                warn!("  WARN: Failed to register {}.lichen", gn.label);
             }
         }
 
-        // ── MoltyID: Genesis cross-attestations between system identities ──
+        // ── LichenID: Genesis cross-attestations between system identities ──
         // After all reserved names are registered (each creating an identity with
         // 3 skills: Infrastructure, Consensus, Security), have system identities
         // attest each other's skills to seed the attestation system. This makes
@@ -1663,7 +1663,7 @@ pub fn genesis_initialize_contracts(
                 att_data.extend_from_slice(&genesis_timestamp.to_le_bytes());
 
                 if state
-                    .put_contract_storage(moltyid_pk, &att_key, &att_data)
+                    .put_contract_storage(lichenid_pk, &att_key, &att_data)
                     .is_err()
                 {
                     continue;
@@ -1682,7 +1682,7 @@ pub fn genesis_initialize_contracts(
 
                 // Read existing count and increment
                 let existing = state
-                    .get_contract_storage(moltyid_pk, &count_key)
+                    .get_contract_storage(lichenid_pk, &count_key)
                     .ok()
                     .flatten()
                     .map(|d| {
@@ -1694,7 +1694,7 @@ pub fn genesis_initialize_contracts(
                     })
                     .unwrap_or(0);
                 let new_count = (existing + 1).to_le_bytes().to_vec();
-                let _ = state.put_contract_storage(moltyid_pk, &count_key, &new_count);
+                let _ = state.put_contract_storage(lichenid_pk, &count_key, &new_count);
                 attest_entries.push(AttestEntry {
                     key: count_key,
                     value: new_count,
@@ -1706,7 +1706,7 @@ pub fn genesis_initialize_contracts(
 
         // Also update embedded ContractAccount storage so RPC reads see it
         if attest_count > 0 {
-            if let Ok(Some(yid_account)) = state.get_account(moltyid_pk) {
+            if let Ok(Some(yid_account)) = state.get_account(lichenid_pk) {
                 if let Ok(mut yid_contract) =
                     serde_json::from_slice::<ContractAccount>(&yid_account.data)
                 {
@@ -1716,7 +1716,7 @@ pub fn genesis_initialize_contracts(
                     if let Ok(data) = serde_json::to_vec(&yid_contract) {
                         let mut updated = yid_account;
                         updated.data = data;
-                        let _ = state.put_account(moltyid_pk, &updated);
+                        let _ = state.put_account(lichenid_pk, &updated);
                     }
                 }
             }
@@ -1739,8 +1739,8 @@ pub fn genesis_initialize_contracts(
 
 // ========================================================================
 //  GENESIS PHASE 3 — Create trading pairs and AMM pools at genesis.
-//  Auto-lists MOLT/mUSD pair on dex_core and creates the corresponding
-//  AMM pool on dex_amm.  WSOL/mUSD and WETH/mUSD are deferred until the
+//  Auto-lists LICN/lUSD pair on dex_core and creates the corresponding
+//  AMM pool on dex_amm.  WSOL/lUSD and WETH/lUSD are deferred until the
 //  bridge & custody systems are live and tokens have real supply.
 // ========================================================================
 
@@ -1768,10 +1768,10 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     };
 
     // Resolve token addresses
-    let molt_addr = derive_contract_address(deployer_pubkey, "moltcoin")
+    let licn_addr = derive_contract_address(deployer_pubkey, "lichencoin")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
-    let musd_addr = derive_contract_address(deployer_pubkey, "musd_token")
+    let musd_addr = derive_contract_address(deployer_pubkey, "lusd_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
     let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
@@ -1788,31 +1788,31 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
 
     // Genesis pair parameters (reasonable defaults for launch):
-    // tick_size: 1 (minimum price increment in shells)
+    // tick_size: 1 (minimum price increment in spores)
     // lot_size: 1_000_000 (minimum order lot = 0.001 tokens)
-    // min_order: 1_000 (minimum order value in shells = MIN_ORDER_VALUE)
+    // min_order: 1_000 (minimum order value in spores = MIN_ORDER_VALUE)
     let tick_size: u64 = 1;
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    // All genesis CLOB pairs: 4 mUSD-quoted + 3 MOLT-quoted = 7 pairs
+    // All genesis CLOB pairs: 4 lUSD-quoted + 3 LICN-quoted = 7 pairs
     let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
-        ("MOLT/mUSD", molt_addr, musd_addr),
-        ("wSOL/mUSD", wsol_addr, musd_addr),
-        ("wETH/mUSD", weth_addr, musd_addr),
-        ("wSOL/MOLT", wsol_addr, molt_addr),
-        ("wETH/MOLT", weth_addr, molt_addr),
-        ("wBNB/mUSD", wbnb_addr, musd_addr),
-        ("wBNB/MOLT", wbnb_addr, molt_addr),
+        ("LICN/lUSD", licn_addr, musd_addr),
+        ("wSOL/lUSD", wsol_addr, musd_addr),
+        ("wETH/lUSD", weth_addr, musd_addr),
+        ("wSOL/LICN", wsol_addr, licn_addr),
+        ("wETH/LICN", weth_addr, licn_addr),
+        ("wBNB/lUSD", wbnb_addr, musd_addr),
+        ("wBNB/LICN", wbnb_addr, licn_addr),
     ];
 
     let mut created_pairs: usize = 0;
     let mut created_pools: usize = 0;
     let mut allowed_quotes_set: usize = 0;
 
-    // ── Step 1: Set allowed quote tokens (mUSD + MOLT) on dex_core ──
+    // ── Step 1: Set allowed quote tokens (lUSD + LICN) on dex_core ──
     // opcode 21 = add_allowed_quote: [0x15][caller 32B][quote_addr 32B]
-    for (sym, addr) in &[("mUSD", musd_addr), ("MOLT", molt_addr)] {
+    for (sym, addr) in &[("lUSD", musd_addr), ("LICN", licn_addr)] {
         let mut args = Vec::with_capacity(65);
         args.push(0x15); // opcode 21  = add_allowed_quote
         args.extend_from_slice(&admin);
@@ -1834,7 +1834,7 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // ── Step 1b: Set allowed quote tokens on dex_governance too ──
     // opcode 15 = add_allowed_quote: [0x0F][caller 32B][quote_addr 32B]
     if let Some(ref gov_pk) = dex_gov_pk {
-        for (sym, addr) in &[("mUSD", musd_addr), ("MOLT", molt_addr)] {
+        for (sym, addr) in &[("lUSD", musd_addr), ("LICN", licn_addr)] {
             let mut args = Vec::with_capacity(65);
             args.push(0x0F); // opcode 15 = add_allowed_quote
             args.extend_from_slice(&admin);
@@ -1884,14 +1884,14 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
     //
-    let molt_usd = price_8dec_to_f64(genesis_molt_price_8dec());
+    let licn_usd = price_8dec_to_f64(genesis_licn_price_8dec());
     let sol_usd = price_8dec_to_f64(genesis_wsol_price_8dec());
     let eth_usd = price_8dec_to_f64(genesis_weth_price_8dec());
     let bnb_usd = price_8dec_to_f64(genesis_wbnb_price_8dec());
 
     info!(
-        "  Genesis prices: MOLT=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
-        molt_usd, sol_usd, eth_usd, bnb_usd
+        "  Genesis prices: LICN=${:.4}, SOL=${:.2}, ETH=${:.2}, BNB=${:.2}",
+        licn_usd, sol_usd, eth_usd, bnb_usd
     );
 
     // sqrt_price = floor(sqrt(price) * 2^32)
@@ -1901,27 +1901,27 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
     let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
-        ("MOLT/mUSD", molt_addr, musd_addr, sqrt_price(molt_usd)),
-        ("wSOL/mUSD", wsol_addr, musd_addr, sqrt_price(sol_usd)),
-        ("wETH/mUSD", weth_addr, musd_addr, sqrt_price(eth_usd)),
+        ("LICN/lUSD", licn_addr, musd_addr, sqrt_price(licn_usd)),
+        ("wSOL/lUSD", wsol_addr, musd_addr, sqrt_price(sol_usd)),
+        ("wETH/lUSD", weth_addr, musd_addr, sqrt_price(eth_usd)),
         (
-            "wSOL/MOLT",
+            "wSOL/LICN",
             wsol_addr,
-            molt_addr,
-            sqrt_price(sol_usd / molt_usd),
+            licn_addr,
+            sqrt_price(sol_usd / licn_usd),
         ),
         (
-            "wETH/MOLT",
+            "wETH/LICN",
             weth_addr,
-            molt_addr,
-            sqrt_price(eth_usd / molt_usd),
+            licn_addr,
+            sqrt_price(eth_usd / licn_usd),
         ),
-        ("wBNB/mUSD", wbnb_addr, musd_addr, sqrt_price(bnb_usd)),
+        ("wBNB/lUSD", wbnb_addr, musd_addr, sqrt_price(bnb_usd)),
         (
-            "wBNB/MOLT",
+            "wBNB/LICN",
             wbnb_addr,
-            molt_addr,
-            sqrt_price(bnb_usd / molt_usd),
+            licn_addr,
+            sqrt_price(bnb_usd / licn_usd),
         ),
     ];
 
@@ -1957,7 +1957,7 @@ pub fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey
 
 // ========================================================================
 //  GENESIS PHASE 4 — Seed Oracle Price Feeds
-//  Authorizes the genesis admin as a MOLT price feeder on the moltoracle
+//  Authorizes the genesis admin as a LICN price feeder on the lichenoracle
 //  contract, then submits the initial launch price ($0.10).
 //  This ensures oracle-adjusted rewards work from the very first block.
 // ========================================================================
@@ -1974,18 +1974,18 @@ pub fn genesis_seed_oracle(
 
     let admin = deployer_pubkey.0;
 
-    // Resolve moltoracle contract address
-    let oracle_pk = match derive_contract_address(deployer_pubkey, "moltoracle") {
+    // Resolve lichenoracle contract address
+    let oracle_pk = match derive_contract_address(deployer_pubkey, "lichenoracle") {
         Some(pk) => pk,
         None => {
-            warn!("  SKIP oracle seeding: moltoracle address not derived");
+            warn!("  SKIP oracle seeding: lichenoracle address not derived");
             return;
         }
     };
 
-    // Step 1: Authorize genesis admin as MOLT price feeder
+    // Step 1: Authorize genesis admin as LICN price feeder
     // add_price_feeder(feeder_ptr: 32, asset_ptr: N, asset_len: u32) -> u32
-    let asset = b"MOLT";
+    let asset = b"LICN";
     let mut feeder_args = Vec::with_capacity(32 + asset.len() + 4);
     feeder_args.extend_from_slice(&admin); // feeder pubkey (32 bytes)
     feeder_args.extend_from_slice(asset); // asset name
@@ -1997,15 +1997,15 @@ pub fn genesis_seed_oracle(
         deployer_pubkey,
         "add_price_feeder",
         &feeder_args,
-        "moltoracle.add_price_feeder(MOLT)",
+        "lichenoracle.add_price_feeder(LICN)",
     ) {
-        info!("  FEEDER authorized: genesis admin → MOLT");
+        info!("  FEEDER authorized: genesis admin → LICN");
     } else {
         warn!("  SKIP feeder authorization failed");
         return;
     }
 
-    // Step 2: Submit initial MOLT price ($0.10 with 8 decimals = 10_000_000)
+    // Step 2: Submit initial LICN price ($0.10 with 8 decimals = 10_000_000)
     // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
     let launch_price: u64 = 10_000_000; // $0.10 with 8 decimals
     let decimals: u8 = 8;
@@ -2022,9 +2022,9 @@ pub fn genesis_seed_oracle(
         deployer_pubkey,
         "submit_price",
         &price_args,
-        "moltoracle.submit_price(MOLT=$0.10)",
+        "lichenoracle.submit_price(LICN=$0.10)",
     ) {
-        info!("  PRICE submitted: MOLT = $0.10 (launch price)");
+        info!("  PRICE submitted: LICN = $0.10 (launch price)");
     } else {
         warn!("  SKIP initial price submission failed");
     }
@@ -2061,7 +2061,7 @@ pub fn genesis_seed_oracle(
             deployer_pubkey,
             "add_price_feeder",
             &ext_feeder_args,
-            &format!("moltoracle.add_price_feeder({})", asset_name),
+            &format!("lichenoracle.add_price_feeder({})", asset_name),
         ) {
             info!("  FEEDER authorized: genesis admin → {}", asset_name);
         } else {
@@ -2083,7 +2083,7 @@ pub fn genesis_seed_oracle(
             deployer_pubkey,
             "submit_price",
             &ext_price_args,
-            &format!("moltoracle.submit_price({}={})", asset_name, display_price),
+            &format!("lichenoracle.submit_price({}={})", asset_name, display_price),
         ) {
             info!(
                 "  PRICE submitted: {} = {} (launch price)",
@@ -2100,7 +2100,7 @@ pub fn genesis_seed_oracle(
     genesis_seed_analytics_prices(state, deployer_pubkey, genesis_timestamp);
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH + wBNB)");
+    info!("  Genesis oracle seeding complete (LICN + wSOL + wETH + wBNB)");
     info!("──────────────────────────────────────────────────────");
 }
 

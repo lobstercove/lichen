@@ -1,10 +1,10 @@
-// PredictionReef — Prediction Markets on MoltChain
+// Prediction Market — Prediction Markets on Lichen
 //
 // Single contract handling:
 //   - Market creation and configuration
 //   - Share minting and redemption (complete sets)
 //   - Integrated CPMM AMM for each market (binary & multi-outcome)
-//   - Resolution and settlement via MoltOracle attestation
+//   - Resolution and settlement via LichenOracle attestation
 //   - Dispute handling with bond escrow + DAO escalation
 //   - LP incentives and fee distribution
 //
@@ -17,9 +17,9 @@
 //   pm_total_volume                      → u64       Platform lifetime volume
 //   pm_total_collateral                  → u64       Current total collateral locked
 //   pm_fees_collected                    → u64       Platform fees accumulated
-//   pm_moltyid_addr                      → [u8; 32]  MoltyID contract address
-//   pm_oracle_addr                       → [u8; 32]  MoltOracle contract address
-//   pm_musd_addr                         → [u8; 32]  mUSD token contract address
+//   pm_lichenid_addr                      → [u8; 32]  LichenID contract address
+//   pm_oracle_addr                       → [u8; 32]  LichenOracle contract address
+//   pm_musd_addr                         → [u8; 32]  lUSD token contract address
 //   pm_dex_gov_addr                      → [u8; 32]  DEX governance address (disputes)
 //   pm_m_{id}                            → [u8; 192] Market record
 //   pm_q_{id}                            → Vec<u8>   Question text (UTF-8, up to 512)
@@ -48,7 +48,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, call_token_transfer, get_slot, get_value, log_info, storage_get,
     storage_set, u64_to_bytes, Address, CrossCall,
 };
@@ -61,8 +61,8 @@ use moltchain_sdk::{
 const MAX_OUTCOMES: u8 = 8;
 const MAX_MARKETS: u64 = 100_000;
 const MAX_OPEN_MARKETS: u64 = 10_000;
-const MIN_COLLATERAL: u64 = 1_000_000; // 1 mUSD (6 decimals)
-const MAX_COLLATERAL: u64 = 100_000_000_000; // 100K mUSD
+const MIN_COLLATERAL: u64 = 1_000_000; // 1 lUSD (6 decimals)
+const MAX_COLLATERAL: u64 = 100_000_000_000; // 100K lUSD
 
 // --- Timing (in slots; 1 slot = 400ms) ---
 const MIN_DURATION: u64 = 9_000; // 1 hour minimum
@@ -72,7 +72,7 @@ const DISPUTE_PERIOD: u64 = 432_000; // 48 hours to challenge resolution
 const EMERGENCY_TIMEOUT: u64 = 6_480_000; // 30 days — auto-void if unresolved
 
 // --- Fees (basis points / flat) ---
-const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 mUSD (anti-spam)
+const MARKET_CREATION_FEE: u64 = 10_000_000; // 10 lUSD (anti-spam)
 const TRADING_FEE_BPS: u64 = 200; // 2% on AMM swaps
 const RESOLUTION_REWARD_BPS: u64 = 50; // 0.5% of pool to resolver
 const LP_FEE_BPS: u64 = 100; // 1% to liquidity providers
@@ -84,21 +84,21 @@ const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
 
 // --- AMM ---
 const INITIAL_LIQUIDITY_MIN: u64 = 1_000; // Min initial liquidity per outcome (shares)
-const MIN_SHARE_PRICE: u64 = 10_000; // $0.01 minimum (6 decimal mUSD)
+const MIN_SHARE_PRICE: u64 = 10_000; // $0.01 minimum (6 decimal lUSD)
 const MAX_SHARE_PRICE: u64 = 990_000; // $0.99 maximum
-const MUSD_UNIT: u64 = 1_000_000; // 1 mUSD = 10^6
+const LUSD_UNIT: u64 = 1_000_000; // 1 lUSD = 10^6
 
 // --- Reputation ---
 const MIN_REPUTATION_CREATE: u64 = 500;
 const MIN_REPUTATION_RESOLVE: u64 = 1000;
-const DISPUTE_BOND: u64 = 100_000_000; // 100 mUSD bond to dispute
+const DISPUTE_BOND: u64 = 100_000_000; // 100 lUSD bond to dispute
 
 // --- Resolution ---
 const RESOLUTION_THRESHOLD: u8 = 3; // Min oracle attestations
 
 // --- Circuit breakers ---
-const CIRCUIT_BREAKER_COLLATERAL: u64 = 50_000_000_000; // 50K mUSD per market
-const CIRCUIT_BREAKER_PLATFORM: u64 = 1_000_000_000_000; // 1M mUSD total
+const CIRCUIT_BREAKER_COLLATERAL: u64 = 50_000_000_000; // 50K lUSD per market
+const CIRCUIT_BREAKER_PLATFORM: u64 = 1_000_000_000_000; // 1M lUSD total
 const PRICE_MOVE_PAUSE_BPS: u64 = 5_000; // 50% in single slot → pause
 const PRICE_MOVE_PAUSE_SLOTS: u64 = 150; // 60 seconds (at 400ms/slot)
 
@@ -141,9 +141,9 @@ const OPEN_MARKETS_KEY: &[u8] = b"pm_open_markets";
 const TOTAL_VOLUME_KEY: &[u8] = b"pm_total_volume";
 const TOTAL_COLLATERAL_KEY: &[u8] = b"pm_total_collateral";
 const FEES_COLLECTED_KEY: &[u8] = b"pm_fees_collected";
-const MOLTYID_ADDR_KEY: &[u8] = b"pm_moltyid_addr";
+const LICHENID_ADDR_KEY: &[u8] = b"pm_lichenid_addr";
 const ORACLE_ADDR_KEY: &[u8] = b"pm_oracle_addr";
-const MUSD_ADDR_KEY: &[u8] = b"pm_musd_addr";
+const LUSD_ADDR_KEY: &[u8] = b"pm_musd_addr";
 const DEX_GOV_ADDR_KEY: &[u8] = b"pm_dex_gov_addr";
 const SELF_ADDR_KEY: &[u8] = b"pm_self_addr";
 
@@ -219,13 +219,13 @@ fn load_self_addr() -> [u8; 32] {
     load_addr(SELF_ADDR_KEY)
 }
 
-/// Transfer mUSD tokens from the contract to a recipient.
+/// Transfer lUSD tokens from the contract to a recipient.
 /// Returns true on success, false if addresses not configured or transfer fails.
 /// Rejects transfer when token addresses are not set (fail-closed).
 fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
-    let musd_addr = load_addr(MUSD_ADDR_KEY);
+    let musd_addr = load_addr(LUSD_ADDR_KEY);
     if is_zero(&musd_addr) {
-        log_info("mUSD address not configured — transfer rejected");
+        log_info("lUSD address not configured — transfer rejected");
         return false;
     }
     let self_addr = load_self_addr();
@@ -242,7 +242,7 @@ fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
         amount,
     ) {
         Err(_) => {
-            log_info("mUSD transfer failed");
+            log_info("lUSD transfer failed");
             false
         }
         Ok(_) => true,
@@ -736,7 +736,7 @@ fn save_market(market_id: u64, data: &[u8]) {
 // Bytes 0..8     : reserve (u64) — AMM virtual reserve
 // Bytes 8..16    : total_shares (u64) — total shares minted
 // Bytes 16..24   : total_redeemed (u64) — shares redeemed after resolution
-// Bytes 24..32   : price_last (u64) — last traded price (6 decimal mUSD basis)
+// Bytes 24..32   : price_last (u64) — last traded price (6 decimal lUSD basis)
 // Bytes 32..40   : volume (u64) — outcome-specific volume
 // Bytes 40..48   : open_interest (u64) — outstanding unredeemed shares
 // Bytes 48..56   : pad
@@ -819,7 +819,7 @@ fn save_outcome_pool(market_id: u64, outcome: u8, data: &[u8]) {
 // ============================================================================
 //
 // Bytes 0..8  : shares (u64)
-// Bytes 8..16 : cost_basis (u64) — total mUSD spent acquiring
+// Bytes 8..16 : cost_basis (u64) — total lUSD spent acquiring
 
 fn encode_position(shares: u64, cost_basis: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(POSITION_SIZE);
@@ -920,7 +920,7 @@ fn remove_active_market(market_id: u64) {
 /// Calculate the price of an outcome given all reserves.
 /// price_i = (product of all OTHER reserves) / (sum of all such products)
 /// For binary: price_YES = reserve_NO / (reserve_YES + reserve_NO)
-/// Returns price in mUSD units (6 decimals), so 500_000 = $0.50
+/// Returns price in lUSD units (6 decimals), so 500_000 = $0.50
 fn calculate_price(reserves: &[u64], outcome: u8) -> u64 {
     let n = reserves.len();
     if n == 0 || outcome as usize >= n {
@@ -935,8 +935,8 @@ fn calculate_price(reserves: &[u64], outcome: u8) -> u64 {
         if sum == 0 {
             return 0;
         }
-        // price = other / sum * MUSD_UNIT
-        ((other_r * MUSD_UNIT as u128) / sum) as u64
+        // price = other / sum * LUSD_UNIT
+        ((other_r * LUSD_UNIT as u128) / sum) as u64
     } else {
         // Multi-outcome: price_i = (1/reserve_i) / sum(1/reserve_j)
         // Use inverse approach to avoid products that overflow:
@@ -958,7 +958,7 @@ fn calculate_price(reserves: &[u64], outcome: u8) -> u64 {
             return 0;
         }
         let recip_i = scale / (reserves[outcome as usize] as u128);
-        ((recip_i * MUSD_UNIT as u128) / recip_sum) as u64
+        ((recip_i * LUSD_UNIT as u128) / recip_sum) as u64
     }
 }
 
@@ -972,9 +972,9 @@ fn calculate_buy(reserves: &[u64], outcome: u8, amount_musd: u64) -> (u64, u64) 
         return (0, 0);
     }
 
-    // Step 1: Mint complete sets — each mUSD mints 1 share of each outcome
-    // We work in "shares" (1 share = 1 MUSD_UNIT of collateral backing)
-    let shares_per_set = amount_musd; // 1:1 ratio (shares denominated in mUSD micro-units)
+    // Step 1: Mint complete sets — each lUSD mints 1 share of each outcome
+    // We work in "shares" (1 share = 1 LUSD_UNIT of collateral backing)
+    let shares_per_set = amount_musd; // 1:1 ratio (shares denominated in lUSD micro-units)
 
     if n == 2 {
         // Binary CPMM: x·y=k
@@ -1030,7 +1030,7 @@ fn calculate_buy(reserves: &[u64], outcome: u8, amount_musd: u64) -> (u64, u64) 
     }
 }
 
-/// Calculate mUSD returned when selling `shares_amount` of outcome `outcome`.
+/// Calculate lUSD returned when selling `shares_amount` of outcome `outcome`.
 /// Uses the swap + burn-complete-set model from the plan.
 ///
 /// Returns (musd_returned_after_fee, fee_musd)
@@ -1066,25 +1066,25 @@ fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u6
         // b = y * s / (x + s).
         // Then they have (shares_amount - s) of A and b of B.
         // They burn min(shares_amount - s, b) complete sets.
-        // To maximize mUSD, they want to sell all A: s = shares_amount.
+        // To maximize lUSD, they want to sell all A: s = shares_amount.
         // Then have 0 A and b_received B. Can't burn any sets.
         //
         // Alternative approach (correct per the plan): swap SOME A for B, burn matched sets.
         // Optimal: sell exactly half (approximate for best result).
         // Actually, the correct Polymarket/prediction-market model:
-        // User sells shares → pool pays mUSD out of collateral.
+        // User sells shares → pool pays lUSD out of collateral.
         // Let's use the direct "sell to pool" approach.
         //
-        // Direct sell approach: pool receives A shares, user gets mUSD proportional.
+        // Direct sell approach: pool receives A shares, user gets lUSD proportional.
         // The AMM "buys" the A shares from the user by releasing collateral.
-        // mUSD received = amount of collateral that gets freed.
+        // lUSD received = amount of collateral that gets freed.
         //
         // Cleaner: just reverse the buy math.
-        // If buying A costs X mUSD, selling A returns roughly X mUSD (minus fees, plus slippage).
-        // sell_musd = b_received * MUSD_UNIT / MUSD_UNIT = b_received (since shares = mUSD micro-units)
+        // If buying A costs X lUSD, selling A returns roughly X lUSD (minus fees, plus slippage).
+        // sell_musd = b_received * LUSD_UNIT / LUSD_UNIT = b_received (since shares = lUSD micro-units)
         //
         // Actually the simplest correct model: selling A shares is equivalent to "un-buying".
-        // The user swaps A shares into the pool and gets back mUSD equal to the number of
+        // The user swaps A shares into the pool and gets back lUSD equal to the number of
         // complete sets they can form plus the residual.
         //
         // Let me recompute using the standard approach:
@@ -1092,7 +1092,7 @@ fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u6
         // 2. Swap s_a shares of A into pool → get s_b shares of B
         //    s_b = y * s_a / (x + s_a)
         // 3. After swap: user has (shares_amount - s_a) of A, s_b of B
-        // 4. Burn min(shares_amount - s_a, s_b) complete sets → get that many mUSD units
+        // 4. Burn min(shares_amount - s_a, s_b) complete sets → get that many lUSD units
         //
         // Optimal s_a: maximize min(shares_amount - s_a, s_b)
         // This is maximized when shares_amount - s_a = s_b = y * s_a / (x + s_a)
@@ -1142,7 +1142,7 @@ fn calculate_sell(reserves: &[u64], outcome: u8, shares_amount: u64) -> (u64, u6
             b_got
         };
 
-        // mUSD returned = sets (since 1 share of each outcome = 1 mUSD_unit backing)
+        // lUSD returned = sets (since 1 share of each outcome = 1 lUSD_unit backing)
         let musd_raw = sets;
         let fee = (musd_raw * TRADING_FEE_BPS as u128) / 10_000;
         let net = musd_raw - fee;
@@ -1427,7 +1427,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     save_u8(PAUSED_KEY, 0);
     save_u8(REENTRANCY_KEY, 0);
 
-    log_info("PredictionReef initialized!");
+    log_info("Prediction Market initialized!");
     0
 }
 
@@ -1466,7 +1466,7 @@ pub fn create_market(
     }
 
     // Validate caller == creator
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != creator[..] {
         reentrancy_exit();
         return 0;
@@ -1534,13 +1534,13 @@ pub fn create_market(
         return 0;
     }
 
-    // MoltyID reputation check via cross-contract call (reads pm_moltyid_addr)
+    // LichenID reputation check via cross-contract call (reads pm_lichenid_addr)
     // AUDIT-FIX CON-14: Use cross-contract call instead of direct storage reads
-    let moltyid_addr = load_addr(MOLTYID_ADDR_KEY);
-    if !is_zero(&moltyid_addr) {
+    let lichenid_addr = load_addr(LICHENID_ADDR_KEY);
+    if !is_zero(&lichenid_addr) {
         let mut rep_args = Vec::with_capacity(32);
         rep_args.extend_from_slice(creator);
-        let call = CrossCall::new(Address(moltyid_addr), "get_reputation", rep_args);
+        let call = CrossCall::new(Address(lichenid_addr), "get_reputation", rep_args);
         let reputation = match call_contract(call) {
             Ok(data) if data.len() >= 8 => bytes_to_u64(&data[..8]),
             _ => 0u64, // Treat cross-call failure as zero reputation
@@ -1596,7 +1596,7 @@ pub fn create_market(
     log_info("Market created!");
 
     // G21-02: Store full u64 market_id in return_data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(new_id));
+    lichen_sdk::set_return_data(&u64_to_bytes(new_id));
 
     reentrancy_exit();
     new_id as u32 // also in return_data as full u64
@@ -1628,7 +1628,7 @@ pub fn add_initial_liquidity(
     let provider = &provider[..];
 
     // Validate caller
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != provider[..] {
         reentrancy_exit();
         return 0;
@@ -1678,7 +1678,7 @@ pub fn add_initial_liquidity(
 
     // Parse odds or use equal distribution
     let mut reserves = Vec::with_capacity(outcome_count as usize);
-    let total_shares = amount_musd; // 1 mUSD = 1 share unit in each outcome
+    let total_shares = amount_musd; // 1 lUSD = 1 share unit in each outcome
 
     if odds_bps_len >= (outcome_count as u32) * 2 {
         let mut odds_data = vec![0u8; odds_bps_len as usize];
@@ -1723,7 +1723,7 @@ pub fn add_initial_liquidity(
             // So 1/r_i = C * p_i for some constant C
             // r_i = 1 / (C * p_i) = K / p_i where K is normalization constant
             // sum(r_i) = K * sum(1/p_i)
-            // We want total liquidity to be total_shares * outcome_count (one set per mUSD).
+            // We want total liquidity to be total_shares * outcome_count (one set per lUSD).
             // Actually just set: r_i = total_shares * (10000 - bps_i) / 10000 for binary,
             // or more generally, r_i = total_shares * C / bps_i
             //
@@ -1776,7 +1776,7 @@ pub fn add_initial_liquidity(
         let price = calculate_price(&reserves, i);
         let pool = encode_outcome_pool(
             reserves[i as usize],
-            total_shares, // total shares minted for this outcome (one set per mUSD)
+            total_shares, // total shares minted for this outcome (one set per lUSD)
             0,
             price,
             0,
@@ -1824,7 +1824,7 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
     }
     let provider = &provider[..];
 
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != provider[..] {
         reentrancy_exit();
         return 0;
@@ -1921,7 +1921,7 @@ pub fn add_liquidity(provider_ptr: *const u8, market_id: u64, amount_musd: u64) 
     log_info("Liquidity added!");
 
     // G21-02: Store full u64 LP shares in return_data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(new_lp));
+    lichen_sdk::set_return_data(&u64_to_bytes(new_lp));
 
     reentrancy_exit();
     new_lp as u32 // also in return_data as full u64
@@ -1944,7 +1944,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
     }
     let trader = &trader[..];
 
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != trader[..] {
         reentrancy_exit();
         return 0;
@@ -2109,7 +2109,7 @@ pub fn buy_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, amount_mus
     log_info("Shares purchased!");
 
     // G21-02: Store full u64 shares in return_data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(shares_received));
+    lichen_sdk::set_return_data(&u64_to_bytes(shares_received));
 
     reentrancy_exit();
     shares_received as u32 // also in return_data as full u64
@@ -2132,7 +2132,7 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     }
     let trader = &trader[..];
 
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != trader[..] {
         reentrancy_exit();
         return 0;
@@ -2200,10 +2200,10 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
     // Apply new reserves
     let new_reserves = apply_sell_reserves(&reserves, outcome, shares_amount);
 
-    // CEI: Transfer mUSD to trader FIRST, before any state mutation.
+    // CEI: Transfer lUSD to trader FIRST, before any state mutation.
     // If this fails we return cleanly with no state corruption.
     if !transfer_musd_out(trader, musd_returned) {
-        log_info("sell_shares: mUSD transfer to trader failed");
+        log_info("sell_shares: lUSD transfer to trader failed");
         reentrancy_exit();
         return 0;
     }
@@ -2280,8 +2280,8 @@ pub fn sell_shares(trader_ptr: *const u8, market_id: u64, outcome: u8, shares_am
 
     log_info("Shares sold!");
 
-    // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
+    // G21-02: Store full u64 lUSD in return_data (no u32 truncation)
+    lichen_sdk::set_return_data(&u64_to_bytes(musd_returned));
 
     reentrancy_exit();
     musd_returned as u32 // also in return_data as full u64
@@ -2303,7 +2303,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
         core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
     }
     let user = &user[..];
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != user[..] {
         reentrancy_exit();
         return 0;
@@ -2330,7 +2330,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
     }
 
     // Check close slot — no minting after market closes
-    let current_slot = moltchain_sdk::get_slot();
+    let current_slot = lichen_sdk::get_slot();
     let close_slot = market_close_slot(&record);
     if current_slot > close_slot {
         log_info("Market closed for minting");
@@ -2392,7 +2392,7 @@ pub fn mint_complete_set(user_ptr: *const u8, market_id: u64, amount_musd: u64) 
 }
 
 /// Redeem a complete set (burn 1 share of every outcome for collateral return).
-/// Returns mUSD amount returned, 0 on failure.
+/// Returns lUSD amount returned, 0 on failure.
 pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
@@ -2407,7 +2407,7 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
         core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
     }
     let user = &user[..];
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != user[..] {
         reentrancy_exit();
         return 0;
@@ -2486,9 +2486,9 @@ pub fn redeem_complete_set(user_ptr: *const u8, market_id: u64, amount: u64) -> 
         total_coll.saturating_sub(musd_returned),
     );
 
-    // G21-01: Transfer mUSD to user
+    // G21-01: Transfer lUSD to user
     if !transfer_musd_out(user, musd_returned) {
-        log_info("redeem_complete_set: mUSD transfer to user failed");
+        log_info("redeem_complete_set: lUSD transfer to user failed");
         reentrancy_exit();
         return 0;
     }
@@ -2510,7 +2510,7 @@ pub fn close_market(caller_ptr: *const u8, market_id: u64) -> u32 {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
     }
     let caller = &caller[..];
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         reentrancy_exit();
         return 0;
@@ -2571,7 +2571,7 @@ pub fn submit_resolution(
     }
     let attestation_hash = &attestation_hash[..];
 
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != resolver[..] {
         reentrancy_exit();
         return 0;
@@ -2611,13 +2611,13 @@ pub fn submit_resolution(
         return 0;
     }
 
-    // MoltyID reputation check for resolver (1000+ required)
+    // LichenID reputation check for resolver (1000+ required)
     // AUDIT-FIX CON-14: Use cross-contract call instead of direct storage reads
-    let moltyid_addr = load_addr(MOLTYID_ADDR_KEY);
-    if !is_zero(&moltyid_addr) {
+    let lichenid_addr = load_addr(LICHENID_ADDR_KEY);
+    if !is_zero(&lichenid_addr) {
         let mut rep_args = Vec::with_capacity(32);
         rep_args.extend_from_slice(resolver);
-        let call = CrossCall::new(Address(moltyid_addr), "get_reputation", rep_args);
+        let call = CrossCall::new(Address(lichenid_addr), "get_reputation", rep_args);
         let reputation = match call_contract(call) {
             Ok(data) if data.len() >= 8 => bytes_to_u64(&data[..8]),
             _ => 0u64,
@@ -2628,7 +2628,7 @@ pub fn submit_resolution(
         }
     }
 
-    // Verify MoltOracle attestation via cross-contract call.
+    // Verify LichenOracle attestation via cross-contract call.
     // Sends the attestation_hash as args and expects the oracle to return
     // the attestation record payload from get_attestation_data.
     // If oracle is not configured, skip verification (allows testing/genesis).
@@ -2706,7 +2706,7 @@ pub fn challenge_resolution(
     }
     let evidence_hash = &evidence_hash[..];
 
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != challenger[..] {
         reentrancy_exit();
         return 0;
@@ -2857,7 +2857,7 @@ pub fn dao_resolve(caller_ptr: *const u8, market_id: u64, winning_outcome: u8) -
     caller_arr.copy_from_slice(caller);
 
     // Admin or DAO governance only
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         reentrancy_exit();
         return 0;
@@ -2919,7 +2919,7 @@ pub fn dao_void(caller_ptr: *const u8, market_id: u64) -> u32 {
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         reentrancy_exit();
         return 0;
@@ -2959,7 +2959,7 @@ pub fn dao_void(caller_ptr: *const u8, market_id: u64) -> u32 {
 
 /// Redeem winning shares after market is RESOLVED.
 /// Returns 1 on success (payout in return data as u64), 0 on failure.
-/// SECURITY FIX: Now actually transfers mUSD tokens via call_token_transfer
+/// SECURITY FIX: Now actually transfers lUSD tokens via call_token_transfer
 /// and stores full u64 payout in return_data (no more u32 truncation).
 pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
     if !reentrancy_enter() {
@@ -2971,7 +2971,7 @@ pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
         core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
     }
     let user = &user[..];
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != user[..] {
         reentrancy_exit();
         return 0;
@@ -3007,15 +3007,15 @@ pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
     if payout == 0 {
         // Clear losing position (no transfer needed)
         save_position(market_id, user, outcome, 0, 0);
-        moltchain_sdk::set_return_data(&u64_to_bytes(0));
+        lichen_sdk::set_return_data(&u64_to_bytes(0));
         reentrancy_exit();
         return 1; // success — position cleared, payout=0 in return_data
     }
 
-    // Transfer mUSD to the user BEFORE updating state (checks-effects-interactions
+    // Transfer lUSD to the user BEFORE updating state (checks-effects-interactions
     // is reversed here, but reentrancy guard protects us)
     if !transfer_musd_out(user, payout) {
-        log_info("redeem_shares: mUSD transfer to user failed");
+        log_info("redeem_shares: lUSD transfer to user failed");
         reentrancy_exit();
         return 0;
     }
@@ -3041,9 +3041,9 @@ pub fn redeem_shares(user_ptr: *const u8, market_id: u64, outcome: u8) -> u32 {
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(payout));
 
     // Store full u64 payout in return data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(payout));
+    lichen_sdk::set_return_data(&u64_to_bytes(payout));
 
-    log_info("Shares redeemed — mUSD transferred!");
+    log_info("Shares redeemed — lUSD transferred!");
     reentrancy_exit();
     1 // success — full u64 payout in return_data
 }
@@ -3060,7 +3060,7 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
         core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32);
     }
     let user = &user[..];
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != user[..] {
         reentrancy_exit();
         return 0;
@@ -3124,9 +3124,9 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
         refund = total_coll_market;
     }
 
-    // Transfer mUSD to the user
+    // Transfer lUSD to the user
     if !transfer_musd_out(user, refund) {
-        log_info("reclaim_collateral: mUSD transfer to user failed");
+        log_info("reclaim_collateral: lUSD transfer to user failed");
         // Revert position clears — re-save positions so user can try again
         // (This is a simplification; a full revert would also restore LP)
         reentrancy_exit();
@@ -3148,15 +3148,15 @@ pub fn reclaim_collateral(user_ptr: *const u8, market_id: u64) -> u32 {
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(refund));
 
     // Store full u64 refund in return data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(refund));
-    log_info("Collateral reclaimed — mUSD transferred!");
+    lichen_sdk::set_return_data(&u64_to_bytes(refund));
+    log_info("Collateral reclaimed — lUSD transferred!");
 
     reentrancy_exit();
     1 // success — full u64 refund in return_data
 }
 
 /// Withdraw liquidity from an ACTIVE market.
-/// Returns mUSD returned.
+/// Returns lUSD returned.
 pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amount: u64) -> u32 {
     if !reentrancy_enter() {
         return 0;
@@ -3171,7 +3171,7 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
         core::ptr::copy_nonoverlapping(provider_ptr, provider.as_mut_ptr(), 32);
     }
     let provider = &provider[..];
-    let caller = moltchain_sdk::get_caller();
+    let caller = lichen_sdk::get_caller();
     if caller.0[..] != provider[..] {
         reentrancy_exit();
         return 0;
@@ -3204,7 +3204,7 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
         return 0;
     }
 
-    // mUSD returned = proportional share of collateral
+    // lUSD returned = proportional share of collateral
     let musd_returned = (total_coll as u128 * lp_shares_amount as u128 / total_lp as u128) as u64;
 
     if musd_returned == 0 {
@@ -3212,10 +3212,10 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
         return 0;
     }
 
-    // CEI: Transfer mUSD to LP provider FIRST, before any state mutation.
+    // CEI: Transfer lUSD to LP provider FIRST, before any state mutation.
     // If this fails we return cleanly with no state corruption.
     if !transfer_musd_out(provider, musd_returned) {
-        log_info("withdraw_liquidity: mUSD transfer to provider failed");
+        log_info("withdraw_liquidity: lUSD transfer to provider failed");
         reentrancy_exit();
         return 0;
     }
@@ -3252,8 +3252,8 @@ pub fn withdraw_liquidity(provider_ptr: *const u8, market_id: u64, lp_shares_amo
         platform_coll.saturating_sub(musd_returned),
     );
 
-    // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
-    moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
+    // G21-02: Store full u64 lUSD in return_data (no u32 truncation)
+    lichen_sdk::set_return_data(&u64_to_bytes(musd_returned));
 
     reentrancy_exit();
     musd_returned as u32 // also in return_data as full u64
@@ -3273,7 +3273,7 @@ pub fn emergency_pause(caller_ptr: *const u8) -> u32 {
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3295,7 +3295,7 @@ pub fn emergency_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3307,8 +3307,8 @@ pub fn emergency_unpause(caller_ptr: *const u8) -> u32 {
     1
 }
 
-/// Set MoltyID contract address.
-pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
+/// Set LichenID contract address.
+pub fn set_lichenid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32);
@@ -3317,7 +3317,7 @@ pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3330,11 +3330,11 @@ pub fn set_moltyid_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
     }
     let address = &address[..];
-    storage_set(MOLTYID_ADDR_KEY, address);
+    storage_set(LICHENID_ADDR_KEY, address);
     1
 }
 
-/// Set MoltOracle contract address.
+/// Set LichenOracle contract address.
 pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
@@ -3344,7 +3344,7 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3361,7 +3361,7 @@ pub fn set_oracle_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 
     1
 }
 
-/// Set mUSD token contract address.
+/// Set lUSD token contract address.
 pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe {
@@ -3371,7 +3371,7 @@ pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3383,7 +3383,7 @@ pub fn set_musd_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32);
     }
     let address = &address[..];
-    storage_set(MUSD_ADDR_KEY, address);
+    storage_set(LUSD_ADDR_KEY, address);
     1
 }
 
@@ -3397,7 +3397,7 @@ pub fn set_dex_gov_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3423,7 +3423,7 @@ pub fn set_self_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
     let mut caller_arr = [0u8; 32];
     caller_arr.copy_from_slice(caller);
 
-    let actual_caller = moltchain_sdk::get_caller();
+    let actual_caller = lichen_sdk::get_caller();
     if actual_caller.0[..] != caller[..] {
         return 0;
     }
@@ -3455,7 +3455,7 @@ pub fn get_market_count() -> u64 {
 pub fn get_market(market_id: u64) -> u32 {
     match load_market(market_id) {
         Some(data) => {
-            moltchain_sdk::set_return_data(&data);
+            lichen_sdk::set_return_data(&data);
             1
         }
         None => 0,
@@ -3466,7 +3466,7 @@ pub fn get_market(market_id: u64) -> u32 {
 pub fn get_outcome_pool(market_id: u64, outcome: u8) -> u32 {
     match load_outcome_pool(market_id, outcome) {
         Some(data) => {
-            moltchain_sdk::set_return_data(&data);
+            lichen_sdk::set_return_data(&data);
             1
         }
         None => 0,
@@ -3474,7 +3474,7 @@ pub fn get_outcome_pool(market_id: u64, outcome: u8) -> u32 {
 }
 
 /// Get the current price of an outcome.
-/// Returns price via return_data as u64 LE (6 decimals, mUSD basis).
+/// Returns price via return_data as u64 LE (6 decimals, lUSD basis).
 pub fn get_price(market_id: u64, outcome: u8) -> u32 {
     let record = match load_market(market_id) {
         Some(r) => r,
@@ -3494,7 +3494,7 @@ pub fn get_price(market_id: u64, outcome: u8) -> u32 {
     }
 
     let price = calculate_price(&reserves, outcome);
-    moltchain_sdk::set_return_data(&u64_to_bytes(price));
+    lichen_sdk::set_return_data(&u64_to_bytes(price));
     1
 }
 
@@ -3507,7 +3507,7 @@ pub fn get_position(market_id: u64, user_ptr: *const u8, outcome: u8) -> u32 {
     }
     let user = &user[..];
     let (shares, cost) = load_position(market_id, user, outcome);
-    moltchain_sdk::set_return_data(&encode_position(shares, cost));
+    lichen_sdk::set_return_data(&encode_position(shares, cost));
     1
 }
 
@@ -3521,7 +3521,7 @@ pub fn get_user_markets(user_ptr: *const u8) -> u64 {
     load_u64(&user_market_count_key(user))
 }
 
-/// Quote a buy — returns estimated shares for a given mUSD input.
+/// Quote a buy — returns estimated shares for a given lUSD input.
 pub fn quote_buy(market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
     let record = match load_market(market_id) {
         Some(r) => r,
@@ -3541,11 +3541,11 @@ pub fn quote_buy(market_id: u64, outcome: u8, amount_musd: u64) -> u32 {
     }
 
     let (shares, _) = calculate_buy(&reserves, outcome, amount_musd);
-    moltchain_sdk::set_return_data(&u64_to_bytes(shares));
+    lichen_sdk::set_return_data(&u64_to_bytes(shares));
     1
 }
 
-/// Quote a sell — returns estimated mUSD for a given shares input.
+/// Quote a sell — returns estimated lUSD for a given shares input.
 pub fn quote_sell(market_id: u64, outcome: u8, shares_amount: u64) -> u32 {
     let record = match load_market(market_id) {
         Some(r) => r,
@@ -3565,7 +3565,7 @@ pub fn quote_sell(market_id: u64, outcome: u8, shares_amount: u64) -> u32 {
     }
 
     let (musd, _) = calculate_sell(&reserves, outcome, shares_amount);
-    moltchain_sdk::set_return_data(&u64_to_bytes(musd));
+    lichen_sdk::set_return_data(&u64_to_bytes(musd));
     1
 }
 
@@ -3584,7 +3584,7 @@ pub fn get_pool_reserves(market_id: u64) -> u32 {
             None => return 0,
         }
     }
-    moltchain_sdk::set_return_data(&data);
+    lichen_sdk::set_return_data(&data);
     1
 }
 
@@ -3597,7 +3597,7 @@ pub fn get_platform_stats() -> u32 {
     data.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
     data.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_COLLATERAL_KEY)));
     data.extend_from_slice(&u64_to_bytes(load_u64(FEES_COLLECTED_KEY)));
-    moltchain_sdk::set_return_data(&data);
+    lichen_sdk::set_return_data(&data);
     1
 }
 
@@ -3609,7 +3609,7 @@ pub fn get_lp_balance(market_id: u64, user_ptr: *const u8) -> u32 {
     }
     let user = &user[..];
     let balance = load_u64(&lp_key(market_id, user));
-    moltchain_sdk::set_return_data(&u64_to_bytes(balance));
+    lichen_sdk::set_return_data(&u64_to_bytes(balance));
     1
 }
 
@@ -3625,7 +3625,7 @@ pub fn get_fee_treasury() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -3635,7 +3635,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let result = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 1: create_market
@@ -3661,7 +3661,7 @@ pub extern "C" fn call() {
                     );
                     // G21-02: function sets return_data with full u64 on success
                     if result == 0 {
-                        moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                        lichen_sdk::set_return_data(&u64_to_bytes(0));
                     }
                 }
             }
@@ -3684,7 +3684,7 @@ pub extern "C" fn call() {
                     0
                 };
                 let result = add_initial_liquidity(provider_ptr, mid, amount, odds_ptr, odds_len);
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 3: add_liquidity
@@ -3697,7 +3697,7 @@ pub extern "C" fn call() {
                 );
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3712,7 +3712,7 @@ pub extern "C" fn call() {
                 );
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3727,7 +3727,7 @@ pub extern "C" fn call() {
                 );
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3739,7 +3739,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 7: redeem_complete_set
@@ -3750,7 +3750,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 8: submit_resolution
@@ -3763,7 +3763,7 @@ pub extern "C" fn call() {
                     args[42..74].as_ptr(),
                     bytes_to_u64(&args[74..82]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 9: challenge_resolution
@@ -3775,14 +3775,14 @@ pub extern "C" fn call() {
                     args[41..73].as_ptr(),
                     bytes_to_u64(&args[73..81]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 10: finalize_resolution
         10 => {
             if args.len() >= 1 + 32 + 8 {
                 let result = finalize_resolution(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 11: dao_resolve
@@ -3790,14 +3790,14 @@ pub extern "C" fn call() {
             if args.len() >= 1 + 32 + 8 + 1 {
                 let result =
                     dao_resolve(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 12: dao_void
         12 => {
             if args.len() >= 1 + 32 + 8 {
                 let result = dao_void(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 13: redeem_shares
@@ -3807,7 +3807,7 @@ pub extern "C" fn call() {
                     redeem_shares(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]), args[41]);
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3817,7 +3817,7 @@ pub extern "C" fn call() {
                 let result = reclaim_collateral(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3831,7 +3831,7 @@ pub extern "C" fn call() {
                 );
                 // G21-02: function sets return_data with full u64 on success
                 if result == 0 {
-                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    lichen_sdk::set_return_data(&u64_to_bytes(0));
                 }
             }
         }
@@ -3839,49 +3839,49 @@ pub extern "C" fn call() {
         16 => {
             if args.len() >= 33 {
                 let result = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 17: emergency_unpause
         17 => {
             if args.len() >= 33 {
                 let result = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
-        // 18: set_moltyid_address
+        // 18: set_lichenid_address
         18 => {
             if args.len() >= 65 {
-                let result = set_moltyid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                let result = set_lichenid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 19: set_oracle_address
         19 => {
             if args.len() >= 65 {
                 let result = set_oracle_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 20: set_musd_address
         20 => {
             if args.len() >= 65 {
                 let result = set_musd_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 21: set_dex_gov_address
         21 => {
             if args.len() >= 65 {
                 let result = set_dex_gov_address(args[1..33].as_ptr(), args[33..65].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
         // 22: close_market
         22 => {
             if args.len() >= 1 + 32 + 8 {
                 let result = close_market(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
 
@@ -3913,13 +3913,13 @@ pub extern "C" fn call() {
         27 => {
             // get_market_count
             let count = get_market_count();
-            moltchain_sdk::set_return_data(&u64_to_bytes(count));
+            lichen_sdk::set_return_data(&u64_to_bytes(count));
         }
         28 => {
             // get_user_markets
             if args.len() >= 33 {
                 let count = get_user_markets(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(count));
+                lichen_sdk::set_return_data(&u64_to_bytes(count));
             }
         }
         29 => {
@@ -3980,7 +3980,7 @@ pub extern "C" fn call() {
                         }
                     }
                 }
-                moltchain_sdk::set_return_data(&result);
+                lichen_sdk::set_return_data(&result);
             }
         }
         35 => {
@@ -3989,10 +3989,10 @@ pub extern "C" fn call() {
                 let tk = trader_stats_key(&args[1..33]);
                 match storage_get(&tk) {
                     Some(d) if d.len() >= 24 => {
-                        moltchain_sdk::set_return_data(&d[..24]);
+                        lichen_sdk::set_return_data(&d[..24]);
                     }
                     _ => {
-                        moltchain_sdk::set_return_data(&[0u8; 24]);
+                        lichen_sdk::set_return_data(&[0u8; 24]);
                     }
                 }
             }
@@ -4044,7 +4044,7 @@ pub extern "C" fn call() {
                 result.extend_from_slice(&u64_to_bytes(entries[i].1));
                 result.extend_from_slice(&u64_to_bytes(entries[i].2));
             }
-            moltchain_sdk::set_return_data(&result);
+            lichen_sdk::set_return_data(&result);
         }
         37 => {
             // get_market_analytics(market_id 8B) → market trader count(8) + 24h volume(8)
@@ -4055,11 +4055,11 @@ pub extern "C" fn call() {
                 let mut result = [0u8; 16];
                 result[0..8].copy_from_slice(&u64_to_bytes(tc));
                 result[8..16].copy_from_slice(&u64_to_bytes(vol24));
-                moltchain_sdk::set_return_data(&result);
+                lichen_sdk::set_return_data(&result);
             }
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -4072,8 +4072,8 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::bytes_to_u64;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::bytes_to_u64;
+    use lichen_sdk::test_mock;
 
     fn setup() {
         test_mock::reset();
@@ -4087,11 +4087,11 @@ mod tests {
         admin
     }
 
-    /// Configure mUSD and self addresses for token transfers.
+    /// Configure lUSD and self addresses for token transfers.
     fn configure_escrow() {
         let musd = [0xAA; 32];
         let self_addr = [0xBB; 32];
-        storage_set(MUSD_ADDR_KEY, &musd);
+        storage_set(LUSD_ADDR_KEY, &musd);
         storage_set(SELF_ADDR_KEY, &self_addr);
     }
 
@@ -4276,7 +4276,7 @@ mod tests {
         init_contract();
         let creator = [2u8; 32];
         let mid = create_binary_market(&creator, 100_000);
-        activate_market(&creator, mid, 10_000_000); // 10 mUSD
+        activate_market(&creator, mid, 10_000_000); // 10 lUSD
 
         let record = load_market(mid).unwrap();
         assert_eq!(market_status(&record), STATUS_ACTIVE);
@@ -4388,7 +4388,7 @@ mod tests {
 
         let (shares, _) = load_position(mid, &trader, 0);
         let sold = sell_shares(trader.as_ptr(), mid, 0, shares);
-        assert!(sold > 0, "sell_shares should return mUSD > 0");
+        assert!(sold > 0, "sell_shares should return lUSD > 0");
 
         let (remaining, _) = load_position(mid, &trader, 0);
         assert_eq!(remaining, 0, "All shares should be sold");
@@ -4712,7 +4712,7 @@ mod tests {
 
     #[test]
     fn test_redeem_large_payout_no_truncation() {
-        // Verify the u32 truncation bug is fixed — payouts > 4B micro-mUSD work
+        // Verify the u32 truncation bug is fixed — payouts > 4B micro-lUSD work
         setup();
         init_contract();
         configure_escrow();
@@ -4722,7 +4722,7 @@ mod tests {
 
         // Directly set a position with > u32::MAX shares to verify no truncation
         let trader = [3u8; 32];
-        let large_shares: u64 = 5_000_000_000; // 5B micro-mUSD = $5000
+        let large_shares: u64 = 5_000_000_000; // 5B micro-lUSD = $5000
         save_position(mid, &trader, 0, large_shares, large_shares);
 
         force_resolve_market(mid, 0);
@@ -4896,7 +4896,7 @@ mod tests {
         let admin = init_contract();
         let musd = [0xAA; 32];
         assert_eq!(set_musd_address(admin.as_ptr(), musd.as_ptr()), 1);
-        assert_eq!(load_addr(MUSD_ADDR_KEY), musd);
+        assert_eq!(load_addr(LUSD_ADDR_KEY), musd);
     }
 
     #[test]
@@ -5075,9 +5075,9 @@ mod tests {
         // price_yes = r_no / (r_yes + r_no) = 1M / 3M = 0.333 → 333_333
         assert!(p_yes < 400_000, "YES should be cheap");
         assert!(p_no > 600_000, "NO should be expensive");
-        // Sum should be ~MUSD_UNIT
+        // Sum should be ~LUSD_UNIT
         assert!(
-            (p_yes + p_no).abs_diff(MUSD_UNIT) < 2,
+            (p_yes + p_no).abs_diff(LUSD_UNIT) < 2,
             "Prices should sum to ~$1"
         );
     }
@@ -5184,7 +5184,7 @@ mod tests {
         let sold = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
         assert!(
             sold > 0,
-            "sell_shares should return mUSD amount with escrow configured"
+            "sell_shares should return lUSD amount with escrow configured"
         );
     }
 
@@ -5208,7 +5208,7 @@ mod tests {
         let w = withdraw_liquidity(creator.as_ptr(), mid, 2_000_000);
         assert!(
             w > 0,
-            "withdraw_liquidity should return mUSD amount with escrow configured"
+            "withdraw_liquidity should return lUSD amount with escrow configured"
         );
     }
 
@@ -5273,7 +5273,7 @@ mod tests {
 
         test_mock::set_caller(trader);
         let musd = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
-        assert!(musd > 0, "sell_shares should return mUSD");
+        assert!(musd > 0, "sell_shares should return lUSD");
 
         let rd = test_mock::get_return_data();
         assert!(rd.len() >= 8);
@@ -5332,7 +5332,7 @@ mod tests {
 
         // Add initial liquidity
         test_mock::set_caller(creator);
-        test_mock::set_value(30_000_000); // 30 mUSD
+        test_mock::set_value(30_000_000); // 30 lUSD
         let liq = add_initial_liquidity(creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0);
         assert_eq!(liq, 1);
 
@@ -5349,7 +5349,7 @@ mod tests {
         test_mock::set_slot(5200);
         let sell_amount = (shares / 2) as u64;
         let musd = sell_shares(trader.as_ptr(), mid, 0, sell_amount);
-        assert!(musd > 0, "multi-outcome sell should return nonzero mUSD");
+        assert!(musd > 0, "multi-outcome sell should return nonzero lUSD");
     }
 
     #[test]
@@ -5378,7 +5378,7 @@ mod tests {
         let musd = sell_shares(trader.as_ptr(), mid, 1, shares as u64);
         assert!(
             musd > 0,
-            "selling all multi-outcome shares should return mUSD"
+            "selling all multi-outcome shares should return lUSD"
         );
 
         // Should get back less than initial due to slippage and fees
@@ -5460,7 +5460,7 @@ mod tests {
     fn test_calculate_sell_3outcome_returns_nonzero() {
         let reserves = &[10_000_000u64, 10_000_000u64, 10_000_000u64];
         let (musd, fee) = calculate_sell(reserves, 0, 1_000_000);
-        assert!(musd > 0, "3-outcome sell should return nonzero mUSD");
+        assert!(musd > 0, "3-outcome sell should return nonzero lUSD");
         assert!(fee > 0, "3-outcome sell should have nonzero fee");
         // With equal reserves and selling 1/10 of reserve, should get reasonable output
         assert!(
@@ -5473,7 +5473,7 @@ mod tests {
     fn test_calculate_sell_4outcome_returns_nonzero() {
         let reserves = &[10_000_000u64, 10_000_000u64, 10_000_000u64, 10_000_000u64];
         let (musd, fee) = calculate_sell(reserves, 2, 500_000);
-        assert!(musd > 0, "4-outcome sell should return nonzero mUSD");
+        assert!(musd > 0, "4-outcome sell should return nonzero lUSD");
         assert!(musd + fee <= 500_000);
     }
 
@@ -5485,7 +5485,7 @@ mod tests {
         let (musd_cheap, _) = calculate_sell(reserves, 1, 500_000); // outcome 1: high reserve = cheap
         assert!(
             musd_expensive > musd_cheap,
-            "selling expensive outcome shares should yield more mUSD ({} vs {})",
+            "selling expensive outcome shares should yield more lUSD ({} vs {})",
             musd_expensive,
             musd_cheap
         );

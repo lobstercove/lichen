@@ -1,11 +1,11 @@
 // ============================================================
-// MoltChain Mission Control - Dashboard Engine
+// Lichen Mission Control - Dashboard Engine
 // Real-time monitoring with auto-refresh
 // ============================================================
 
 const NETWORKS = {
-    'mainnet': 'https://rpc.moltchain.network',
-    'testnet': 'https://testnet-rpc.moltchain.network',
+    'mainnet': 'https://rpc.lichen.network',
+    'testnet': 'https://testnet-rpc.lichen.network',
     'local-testnet': 'http://localhost:8899',
     'local-mainnet': 'http://localhost:9899'
 };
@@ -15,19 +15,19 @@ const NETWORKS = {
 // and validator rendering all use live cluster data, never a hardcoded list.
 
 const SYMBOLS = [
-    'MOLT','MUSD','WETH','WSOL','DEX','DEXAMM','DEXGOV','DEXMARGIN',
-    'DEXREWARDS','DEXROUTER','BRIDGE','DAO','CLAWVAULT','CLAWPAY',
-    'CLAWPUMP','ORACLE','LEND','MARKET','AUCTION','BOUNTY','ANALYTICS',
-    'COMPUTE','MOLTSWAP','PUNKS','REEF','PREDMKT','YID'
+    'LICN', 'LUSD', 'WETH', 'WSOL', 'DEX', 'DEXAMM', 'DEXGOV', 'DEXMARGIN',
+    'DEXREWARDS', 'DEXROUTER', 'BRIDGE', 'DAO', 'SPOREVAULT', 'SPOREPAY',
+    'SPOREPUMP', 'ORACLE', 'LEND', 'MARKET', 'AUCTION', 'BOUNTY', 'ANALYTICS',
+    'COMPUTE', 'LICHENSWAP', 'PUNKS', 'MOSS', 'PREDMKT', 'YID'
 ];
 
 const REFRESH_MS = 3000;
-// SHELLS_PER_MOLT loaded from ../shared/utils.js
+// SPORES_PER_LICN loaded from ../shared/utils.js
 
-const _monIsProduction = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.isProduction) ||
+const _monIsProduction = (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG.isProduction) ||
     (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1');
 const _monDefaultNetwork = _monIsProduction ? 'mainnet' : 'local-testnet';
-let rpcUrl = NETWORKS[localStorage.getItem('moltchain_mon_network') || _monDefaultNetwork];
+let rpcUrl = NETWORKS[localStorage.getItem('lichen_mon_network') || _monDefaultNetwork];
 let tpsHistory = [];
 let lastSlot = 0;
 let startTime = Date.now();
@@ -66,16 +66,16 @@ async function rpc(method, params = [], url = null) {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-function shellsToMolt(shells) {
-    return (shells / SHELLS_PER_MOLT).toFixed(2);
+function sporesToLicn(spores) {
+    return (spores / SPORES_PER_LICN).toFixed(2);
 }
 
-function formatMolt(shells) {
-    const molt = shells / SHELLS_PER_MOLT;
-    if (molt >= 1e9) return (molt / 1e9).toFixed(2) + 'B';
-    if (molt >= 1e6) return (molt / 1e6).toFixed(2) + 'M';
-    if (molt >= 1e3) return (molt / 1e3).toFixed(1) + 'K';
-    return molt.toFixed(2);
+function formatLicn(spores) {
+    const licn = spores / SPORES_PER_LICN;
+    if (licn >= 1e9) return (licn / 1e9).toFixed(2) + 'B';
+    if (licn >= 1e6) return (licn / 1e6).toFixed(2) + 'M';
+    if (licn >= 1e3) return (licn / 1e3).toFixed(1) + 'K';
+    return licn.toFixed(2);
 }
 
 function formatNum(n) {
@@ -137,7 +137,7 @@ function clearEvents() {
 // ── Network Switch ──────────────────────────────────────────
 
 function switchNetwork(network) {
-    localStorage.setItem('moltchain_mon_network', network);
+    localStorage.setItem('lichen_mon_network', network);
     rpcUrl = NETWORKS[network] || NETWORKS[_monDefaultNetwork];
     addEvent('info', 'exchange-alt', `Switched to ${network}`);
     refresh();
@@ -235,7 +235,7 @@ function drawTPSChart() {
 
     // Line
     ctx.beginPath();
-    ctx.strokeStyle = '#FF6B35';
+    ctx.strokeStyle = '#00C9DB';
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
 
@@ -249,8 +249,8 @@ function drawTPSChart() {
 
     // Fill under curve
     const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
-    grad.addColorStop(0, 'rgba(255,107,53,0.2)');
-    grad.addColorStop(1, 'rgba(255,107,53,0)');
+    grad.addColorStop(0, 'rgba(0, 201, 219,0.2)');
+    grad.addColorStop(1, 'rgba(0, 201, 219,0)');
 
     ctx.lineTo(pad.left + (data[data.length - 1].t - data[0].t) * xScale, pad.top + plotH);
     ctx.lineTo(pad.left, pad.top + plotH);
@@ -326,37 +326,37 @@ async function refresh() {
             const totalSupply = metrics.total_supply || 0;
             const totalBurned = metrics.total_burned || 0;
             const effectiveSupply = totalSupply - totalBurned;
-            document.getElementById('supplyTotal').textContent = formatMolt(totalSupply) + ' MOLT';
-            document.getElementById('supplyEffective').textContent = formatMolt(effectiveSupply) + ' MOLT';
-            document.getElementById('supplyStaked').textContent = formatMolt(metrics.total_staked || 0) + ' MOLT';
-            document.getElementById('supplyBurned').textContent = formatMolt(totalBurned) + ' MOLT';
+            document.getElementById('supplyTotal').textContent = formatLicn(totalSupply) + ' LICN';
+            document.getElementById('supplyEffective').textContent = formatLicn(effectiveSupply) + ' LICN';
+            document.getElementById('supplyStaked').textContent = formatLicn(metrics.total_staked || 0) + ' LICN';
+            document.getElementById('supplyBurned').textContent = formatLicn(totalBurned) + ' LICN';
 
             // Genesis signer
-            const genesisShells = metrics.genesis_balance || 0;
-            document.getElementById('supplyGenesis').textContent = formatMolt(genesisShells) + ' MOLT';
+            const genesisSpores = metrics.genesis_balance || 0;
+            document.getElementById('supplyGenesis').textContent = formatLicn(genesisSpores) + ' LICN';
 
             // Whitepaper distribution wallets from getMetrics.distribution_wallets
             const dw = metrics.distribution_wallets || {};
             const vrBal = dw.validator_rewards_balance || 0;
             const ctBal = dw.community_treasury_balance || 0;
             const bgBal = dw.builder_grants_balance || 0;
-            const fmBal = dw.founding_moltys_balance || 0;
+            const fmBal = dw.founding_symbionts_balance || 0;
             const epBal = dw.ecosystem_partnerships_balance || 0;
             const rpBal = dw.reserve_pool_balance || 0;
 
-            document.getElementById('supplyValidatorRewards').textContent = formatMolt(vrBal) + ' MOLT';
-            document.getElementById('supplyCommunityTreasury').textContent = formatMolt(ctBal) + ' MOLT';
-            document.getElementById('supplyBuilderGrants').textContent = formatMolt(bgBal) + ' MOLT';
-            document.getElementById('supplyFoundingMoltys').textContent = formatMolt(fmBal) + ' MOLT';
-            document.getElementById('supplyEcosystemPartnerships').textContent = formatMolt(epBal) + ' MOLT';
-            document.getElementById('supplyReservePool').textContent = formatMolt(rpBal) + ' MOLT';
+            document.getElementById('supplyValidatorRewards').textContent = formatLicn(vrBal) + ' LICN';
+            document.getElementById('supplyCommunityTreasury').textContent = formatLicn(ctBal) + ' LICN';
+            document.getElementById('supplyBuilderGrants').textContent = formatLicn(bgBal) + ' LICN';
+            document.getElementById('supplyFoundingSymbionts').textContent = formatLicn(fmBal) + ' LICN';
+            document.getElementById('supplyEcosystemPartnerships').textContent = formatLicn(epBal) + ' LICN';
+            document.getElementById('supplyReservePool').textContent = formatLicn(rpBal) + ' LICN';
 
             // Circulating supply from RPC
             const total = metrics.total_supply || 1;
             const burned = metrics.total_burned || 0;
             const staked = metrics.total_staked || 0;
             const circulating = metrics.circulating_supply || 0;
-            document.getElementById('supplyCirculating').textContent = formatMolt(circulating) + ' MOLT';
+            document.getElementById('supplyCirculating').textContent = formatLicn(circulating) + ' LICN';
 
             // Supply bar: distribution wallets proportional segments
             const totalDist = vrBal + ctBal + bgBal + fmBal + epBal + rpBal;
@@ -419,7 +419,7 @@ async function refresh() {
             await updateContractMonitor();
         }
 
-        // ─ MoltyID Identity Monitor (every 10s) ─
+        // ─ LichenID Identity Monitor (every 10s) ─
         if (!identityMonitorLoaded || Date.now() % 10000 < REFRESH_MS) {
             await updateIdentitiesMonitor();
         }
@@ -468,7 +468,7 @@ async function renderValidators() {
             rpc: rpcUrl,
             pubkey: node.pubkey || null,
             slot: currentSlot,
-            online: node.active !== false,
+            online: node.active !== false && (currentSlot === null || currentSlot - (node.last_active_slot || 0) <= 100),
             stake: node.stake || 0,
             reputation: node.reputation || 0,
             blocks_proposed: node.blocks_proposed || 0,
@@ -478,17 +478,21 @@ async function renderValidators() {
         // Fallback: if getClusterInfo not available, use getValidators
         const vals = await rpc('getValidators');
         if (vals && vals.validators) {
-            probes = vals.validators.map((v, idx) => ({
-                name: `V${idx + 1}`,
-                rpc: rpcUrl,
-                pubkey: v.pubkey || null,
-                slot: currentSlot,
-                online: currentSlot !== null,
-                stake: v.stake || 0,
-                reputation: v.reputation || 0,
-                blocks_proposed: v.blocks_proposed || 0,
-                last_active_slot: v.last_active_slot || 0,
-            }));
+            probes = vals.validators.map((v, idx) => {
+                const lastActive = v.last_active_slot || v.lastActiveSlot || 0;
+                const isOnline = currentSlot !== null && currentSlot - lastActive <= 100;
+                return {
+                    name: `V${idx + 1}`,
+                    rpc: rpcUrl,
+                    pubkey: v.pubkey || null,
+                    slot: currentSlot,
+                    online: isOnline,
+                    stake: v.stake || 0,
+                    reputation: v.reputation || 0,
+                    blocks_proposed: v.blocks_proposed || 0,
+                    last_active_slot: lastActive,
+                };
+            });
         }
     }
 
@@ -524,7 +528,7 @@ async function renderValidators() {
             </div>
             <div class="val-meta">
                 <span><i class="fas fa-cube"></i> ${p.slot !== null ? formatNum(p.slot) : 'N/A'}</span>
-                <span><i class="fas fa-coins"></i> ${p.stake ? formatMolt(p.stake) : '--'}</span>
+                <span><i class="fas fa-coins"></i> ${p.stake ? formatLicn(p.stake) : '--'}</span>
                 <span title="Blocks proposed"><i class="fas fa-hammer"></i> ${formatNum(p.blocks_proposed)}</span>
             </div>
         </div>`).join('');
@@ -777,17 +781,17 @@ function clearThreats() {
 // Token is prompted once per session and passed in every admin RPC call.
 
 function getAdminToken() {
-    let token = sessionStorage.getItem('moltchain_admin_token');
+    let token = sessionStorage.getItem('lichen_admin_token');
     if (!token) {
         token = prompt('Admin authentication required.\nEnter admin token:');
         if (!token) return null;
-        sessionStorage.setItem('moltchain_admin_token', token);
+        sessionStorage.setItem('lichen_admin_token', token);
     }
     return token;
 }
 
 function clearAdminSession() {
-    sessionStorage.removeItem('moltchain_admin_token');
+    sessionStorage.removeItem('lichen_admin_token');
     addEvent('warning', 'sign-out-alt', 'Admin session cleared');
 }
 
@@ -796,7 +800,7 @@ async function killswitchBanIP() {
     const ip = prompt('Enter IP address to ban:');
     if (!ip) return;
     const result = await rpc('admin_banIP', [ip, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
     addBan('ip-ban', ip, result?.error ? 'Local ban (admin RPC pending)' : 'IP banned via admin RPC');
     addEvent('danger', 'ban', `Banned IP: ${ip}`);
 }
@@ -816,7 +820,7 @@ async function killswitchBlockMethod() {
     const method = prompt('Enter RPC method to block (e.g. sendTransaction):');
     if (!method) return;
     const result = await rpc('admin_blockMethod', [method, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
     addBan('method-block', method, 'Method blocked');
     addEvent('danger', 'lock', `Blocked method: ${method}`);
 }
@@ -826,7 +830,7 @@ async function killswitchFreezeAccount() {
     const address = prompt('Enter account address to freeze:');
     if (!address) return;
     const result = await rpc('admin_freezeAccount', [address, { admin_token: token }]);
-    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('lichen_admin_token'); return; }
     addBan('freeze', truncAddr(address), `Account frozen: ${address}`);
     addEvent('danger', 'snowflake', `Frozen account: ${truncAddr(address)}`);
 }
@@ -973,24 +977,42 @@ function detectThreats(metrics, probes) {
 // ── DEX Operations Monitor ──────────────────────────────────
 
 const DEX_SUBSYSTEMS = [
-    { id: 'dex_core', symbol: 'DEX', name: 'DEX Core (CLOB)', desc: 'Central Limit Order Book engine', icon: 'fas fa-exchange-alt', color: '#4ea8de',
-      metrics: ['pairs', 'orders', 'fills_24h', 'volume_24h'] },
-    { id: 'dex_amm', symbol: 'DEXAMM', name: 'AMM Pools', desc: 'Concentrated liquidity AMM', icon: 'fas fa-water', color: '#06d6a0',
-      metrics: ['pools', 'tvl', 'volume_24h', 'fees_24h'] },
-    { id: 'dex_router', symbol: 'DEXROUTER', name: 'Smart Router', desc: 'Optimal routing across CLOB + AMM', icon: 'fas fa-route', color: '#ffd166',
-      metrics: ['routes_24h', 'savings', 'split_routes', 'avg_slippage'] },
-    { id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 100x)', icon: 'fas fa-chart-line', color: '#ef4444',
-      metrics: ['positions', 'total_collateral', 'liquidations', 'max_leverage'] },
-    { id: 'dex_governance', symbol: 'DEXGOV', name: 'DEX Governance', desc: 'Proposals, voting, fee updates', icon: 'fas fa-landmark', color: '#a78bfa',
-      metrics: ['proposals', 'active_votes', 'total_voters', 'treasury'] },
-    { id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
-      metrics: ['stakers', 'total_staked', 'distributed', 'apy'] },
-    { id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
-      metrics: ['candles', 'pairs', 'records', 'traders'] },
-    { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
-      metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
-    { id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
-      metrics: ['markets', 'volume', 'collateral', 'traders'] },
+    {
+        id: 'dex_core', symbol: 'DEX', name: 'DEX Core (CLOB)', desc: 'Central Limit Order Book engine', icon: 'fas fa-exchange-alt', color: '#4ea8de',
+        metrics: ['pairs', 'orders', 'fills_24h', 'volume_24h']
+    },
+    {
+        id: 'dex_amm', symbol: 'DEXAMM', name: 'AMM Pools', desc: 'Concentrated liquidity AMM', icon: 'fas fa-water', color: '#06d6a0',
+        metrics: ['pools', 'tvl', 'volume_24h', 'fees_24h']
+    },
+    {
+        id: 'dex_router', symbol: 'DEXROUTER', name: 'Smart Router', desc: 'Optimal routing across CLOB + AMM', icon: 'fas fa-route', color: '#ffd166',
+        metrics: ['routes_24h', 'savings', 'split_routes', 'avg_slippage']
+    },
+    {
+        id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 100x)', icon: 'fas fa-chart-line', color: '#ef4444',
+        metrics: ['positions', 'total_collateral', 'liquidations', 'max_leverage']
+    },
+    {
+        id: 'dex_governance', symbol: 'DEXGOV', name: 'DEX Governance', desc: 'Proposals, voting, fee updates', icon: 'fas fa-landmark', color: '#a78bfa',
+        metrics: ['proposals', 'active_votes', 'total_voters', 'treasury']
+    },
+    {
+        id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
+        metrics: ['stakers', 'total_staked', 'distributed', 'apy']
+    },
+    {
+        id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
+        metrics: ['candles', 'pairs', 'records', 'traders']
+    },
+    {
+        id: 'lichenswap', symbol: 'LICHENSWAP', name: 'LichenSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#00C9DB',
+        metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs']
+    },
+    {
+        id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + lUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
+        metrics: ['markets', 'volume', 'collateral', 'traders']
+    },
 ];
 
 let dexDataLoaded = false;
@@ -1022,64 +1044,82 @@ async function updateDexMonitor() {
             if (sub.id === 'dex_core') {
                 const stats = await rpc('getDexCoreStats');
                 if (stats) {
-                    metricsData = { pairs: stats.pair_count || 0, orders: stats.order_count || 0,
-                        fills_24h: stats.trade_count || 0, volume_24h: stats.total_volume || 0 };
+                    metricsData = {
+                        pairs: stats.pair_count || 0, orders: stats.order_count || 0,
+                        fills_24h: stats.trade_count || 0, volume_24h: stats.total_volume || 0
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_amm') {
                 const stats = await rpc('getDexAmmStats');
                 if (stats) {
-                    metricsData = { pools: stats.pool_count || 0, tvl: stats.total_volume || 0,
-                        volume_24h: stats.swap_count || 0, fees_24h: stats.total_fees || 0 };
+                    metricsData = {
+                        pools: stats.pool_count || 0, tvl: stats.total_volume || 0,
+                        volume_24h: stats.swap_count || 0, fees_24h: stats.total_fees || 0
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_margin') {
                 const stats = await rpc('getDexMarginStats');
                 if (stats) {
-                    metricsData = { positions: stats.position_count || 0, total_collateral: stats.total_volume || 0,
-                        liquidations: stats.liquidation_count || 0, max_leverage: (stats.max_leverage || 100) + 'x' };
+                    metricsData = {
+                        positions: stats.position_count || 0, total_collateral: stats.total_volume || 0,
+                        liquidations: stats.liquidation_count || 0, max_leverage: (stats.max_leverage || 100) + 'x'
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'prediction_market') {
                 const stats = await rpc('getPredictionMarketStats');
                 if (stats) {
-                    metricsData = { markets: stats.open_markets || 0, volume: stats.total_volume || 0,
-                        collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0 };
+                    metricsData = {
+                        markets: stats.open_markets || 0, volume: stats.total_volume || 0,
+                        collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_router') {
                 const stats = await rpc('getDexRouterStats');
                 if (stats) {
-                    metricsData = { routes_24h: stats.route_count || 0, savings: stats.total_volume || 0,
-                        split_routes: stats.swap_count || 0, avg_slippage: '--' };
+                    metricsData = {
+                        routes_24h: stats.route_count || 0, savings: stats.total_volume || 0,
+                        split_routes: stats.swap_count || 0, avg_slippage: '--'
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_governance') {
                 const stats = await rpc('getDexGovernanceStats');
                 if (stats) {
-                    metricsData = { proposals: stats.proposal_count || 0, active_votes: stats.total_votes || 0,
-                        total_voters: stats.voter_count || 0, treasury: 0 };
+                    metricsData = {
+                        proposals: stats.proposal_count || 0, active_votes: stats.total_votes || 0,
+                        total_voters: stats.voter_count || 0, treasury: 0
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_rewards') {
                 const stats = await rpc('getDexRewardsStats');
                 if (stats) {
-                    metricsData = { stakers: stats.trader_count || 0, total_staked: stats.total_volume || 0,
-                        distributed: stats.total_distributed || 0, apy: '--' };
+                    metricsData = {
+                        stakers: stats.trader_count || 0, total_staked: stats.total_volume || 0,
+                        distributed: stats.total_distributed || 0, apy: '--'
+                    };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_analytics') {
                 const stats = await rpc('getDexAnalyticsStats');
                 if (stats) {
-                    metricsData = { candles: stats.total_candles || 0, pairs: stats.tracked_pairs || 0,
-                        records: stats.record_count || 0, traders: stats.trader_count || 0 };
+                    metricsData = {
+                        candles: stats.total_candles || 0, pairs: stats.tracked_pairs || 0,
+                        records: stats.record_count || 0, traders: stats.trader_count || 0
+                    };
                     deployed = true;
                 }
-            } else if (sub.id === 'moltswap') {
-                const stats = await rpc('getMoltswapStats');
+            } else if (sub.id === 'lichenswap') {
+                const stats = await rpc('getLichenswapStats');
                 if (stats) {
-                    metricsData = { swaps_24h: stats.swap_count || 0, volume: (stats.volume_a || 0) + (stats.volume_b || 0),
-                        unique_users: 0, pairs: stats.pool_count || 0 };
+                    metricsData = {
+                        swaps_24h: stats.swap_count || 0, volume: (stats.volume_a || 0) + (stats.volume_b || 0),
+                        unique_users: 0, pairs: stats.pool_count || 0
+                    };
                     deployed = true;
                 }
             }
@@ -1109,7 +1149,7 @@ async function updateDexMonitor() {
             if (val !== undefined && val !== null) {
                 if (typeof val === 'string') display = val;
                 else if (m.includes('volume') || m.includes('tvl') || m.includes('collateral') || m.includes('treasury') || m.includes('staked') || m.includes('distributed') || m.includes('fees') || m.includes('savings')) {
-                    display = formatMolt(val);
+                    display = formatLicn(val);
                 } else { display = formatNum(val); }
             }
             return `<div class="sub-metric"><span class="sub-metric-label">${metricLabels[m] || m}</span><span class="sub-metric-value">${display}</span></div>`;
@@ -1142,12 +1182,12 @@ async function updateDexMonitor() {
     const dexCoreStats = await rpc('getDexCoreStats').catch(() => null);
     if (dexCoreStats) {
         if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(dexCoreStats.pair_count || 0);
-        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatMolt(dexCoreStats.total_volume || 0);
+        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatLicn(dexCoreStats.total_volume || 0);
         if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(dexCoreStats.order_count || 0);
     }
     const ammStats = await rpc('getDexAmmStats').catch(() => null);
     if (ammStats) {
-        if (el('dexTVL')) el('dexTVL').textContent = formatMolt(ammStats.total_volume || 0);
+        if (el('dexTVL')) el('dexTVL').textContent = formatLicn(ammStats.total_volume || 0);
     }
     const marginStats = await rpc('getDexMarginStats').catch(() => null);
     if (marginStats) {
@@ -1162,8 +1202,8 @@ async function updateDexMonitor() {
 // ── Smart Contracts Monitor ─────────────────────────────────
 
 const ALL_CONTRACTS = [
-    { symbol: 'MOLT', name: 'MoltCoin', cat: 'token', icon: 'fas fa-coins', color: '#f59e0b' },
-    { symbol: 'MUSD', name: 'mUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
+    { symbol: 'LICN', name: 'LichenCoin', cat: 'token', icon: 'fas fa-coins', color: '#f59e0b' },
+    { symbol: 'LUSD', name: 'lUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
     { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
     { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
     { symbol: 'DEX', name: 'DEX Core', cat: 'dex', icon: 'fas fa-exchange-alt', color: '#4ea8de' },
@@ -1173,21 +1213,21 @@ const ALL_CONTRACTS = [
     { symbol: 'DEXGOV', name: 'DEX Governance', cat: 'dex', icon: 'fas fa-landmark', color: '#a78bfa' },
     { symbol: 'DEXREWARDS', name: 'DEX Rewards', cat: 'dex', icon: 'fas fa-gift', color: '#f59e0b' },
     { symbol: 'ANALYTICS', name: 'DEX Analytics', cat: 'dex', icon: 'fas fa-chart-area', color: '#60a5fa' },
-    { symbol: 'MOLTSWAP', name: 'MoltSwap', cat: 'dex', icon: 'fas fa-arrows-rotate', color: '#ff6b35' },
-    { symbol: 'BRIDGE', name: 'MoltBridge', cat: 'infra', icon: 'fas fa-bridge', color: '#38bdf8' },
-    { symbol: 'DAO', name: 'MoltDAO', cat: 'infra', icon: 'fas fa-users-cog', color: '#a78bfa' },
-    { symbol: 'CLAWVAULT', name: 'ClawVault', cat: 'defi', icon: 'fas fa-vault', color: '#f472b6' },
-    { symbol: 'CLAWPAY', name: 'ClawPay', cat: 'defi', icon: 'fas fa-credit-card', color: '#34d399' },
-    { symbol: 'CLAWPUMP', name: 'ClawPump', cat: 'defi', icon: 'fas fa-rocket', color: '#fb923c' },
-    { symbol: 'ORACLE', name: 'MoltOracle', cat: 'infra', icon: 'fas fa-eye', color: '#c084fc' },
-    { symbol: 'LEND', name: 'LobsterLend', cat: 'defi', icon: 'fas fa-hand-holding-usd', color: '#2dd4bf' },
-    { symbol: 'MARKET', name: 'MoltMarket', cat: 'nft', icon: 'fas fa-store', color: '#f97316' },
-    { symbol: 'AUCTION', name: 'MoltAuction', cat: 'nft', icon: 'fas fa-gavel', color: '#e879f9' },
+    { symbol: 'LICHENSWAP', name: 'LichenSwap', cat: 'dex', icon: 'fas fa-arrows-rotate', color: '#00C9DB' },
+    { symbol: 'BRIDGE', name: 'LichenBridge', cat: 'infra', icon: 'fas fa-bridge', color: '#38bdf8' },
+    { symbol: 'DAO', name: 'LichenDAO', cat: 'infra', icon: 'fas fa-users-cog', color: '#a78bfa' },
+    { symbol: 'SPOREVAULT', name: 'SporeVault', cat: 'defi', icon: 'fas fa-vault', color: '#f472b6' },
+    { symbol: 'SPOREPAY', name: 'SporePay', cat: 'defi', icon: 'fas fa-credit-card', color: '#34d399' },
+    { symbol: 'SPOREPUMP', name: 'SporePump', cat: 'defi', icon: 'fas fa-rocket', color: '#fb923c' },
+    { symbol: 'ORACLE', name: 'LichenOracle', cat: 'infra', icon: 'fas fa-eye', color: '#c084fc' },
+    { symbol: 'LEND', name: 'ThallLend', cat: 'defi', icon: 'fas fa-hand-holding-usd', color: '#2dd4bf' },
+    { symbol: 'MARKET', name: 'LichenMarket', cat: 'nft', icon: 'fas fa-store', color: '#f97316' },
+    { symbol: 'AUCTION', name: 'LichenAuction', cat: 'nft', icon: 'fas fa-gavel', color: '#e879f9' },
     { symbol: 'BOUNTY', name: 'BountyBoard', cat: 'infra', icon: 'fas fa-bullhorn', color: '#fbbf24' },
     { symbol: 'COMPUTE', name: 'Compute Market', cat: 'infra', icon: 'fas fa-microchip', color: '#94a3b8' },
-    { symbol: 'REEF', name: 'Reef Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
-    { symbol: 'PUNKS', name: 'MoltPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
-    { symbol: 'YID', name: 'MoltyID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
+    { symbol: 'MOSS', name: 'Moss Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
+    { symbol: 'PUNKS', name: 'LichenPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
+    { symbol: 'YID', name: 'LichenID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
     { symbol: 'PREDICT', name: 'Prediction Markets', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
 ];
 
@@ -1257,7 +1297,7 @@ async function updateContractMonitor() {
     });
 }
 
-// ── MoltyID Identity Monitor ────────────────────────────────
+// ── LichenID Identity Monitor ────────────────────────────────
 
 let identityMonitorLoaded = false;
 
@@ -1266,7 +1306,7 @@ async function updateIdentitiesMonitor() {
     const tierGrid = document.getElementById('identityTierGrid');
     const el = id => document.getElementById(id);
 
-    const stats = await rpc('getMoltyIdStats').catch(() => null);
+    const stats = await rpc('getLichenIdStats').catch(() => null);
     if (!stats) {
         if (badge) { badge.textContent = 'OFFLINE'; badge.className = 'panel-badge warning'; }
         return;
@@ -1329,13 +1369,13 @@ async function updateTradingMetrics() {
     const el = id => document.getElementById(id);
 
     // Fetch all trading data in parallel
-    const [dexCore, amm, margin, router, analytics, moltswap, rewards, governance, metrics] = await Promise.all([
+    const [dexCore, amm, margin, router, analytics, lichenswap, rewards, governance, metrics] = await Promise.all([
         rpc('getDexCoreStats').catch(() => null),
         rpc('getDexAmmStats').catch(() => null),
         rpc('getDexMarginStats').catch(() => null),
         rpc('getDexRouterStats').catch(() => null),
         rpc('getDexAnalyticsStats').catch(() => null),
-        rpc('getMoltswapStats').catch(() => null),
+        rpc('getLichenswapStats').catch(() => null),
         rpc('getDexRewardsStats').catch(() => null),
         rpc('getDexGovernanceStats').catch(() => null),
         rpc('getMetrics').catch(() => null),
@@ -1346,10 +1386,10 @@ async function updateTradingMetrics() {
     // DEX Core
     if (dexCore) {
         activeFeeds++;
-        if (el('tradeTotalVolume')) el('tradeTotalVolume').textContent = formatMolt(dexCore.total_volume || 0);
+        if (el('tradeTotalVolume')) el('tradeTotalVolume').textContent = formatLicn(dexCore.total_volume || 0);
         if (el('tradeOrderCount')) el('tradeOrderCount').textContent = formatNum(dexCore.order_count || 0);
         if (el('tradeFills24h')) el('tradeFills24h').textContent = formatNum(dexCore.trade_count || 0);
-        if (el('tradeFeeTreasury')) el('tradeFeeTreasury').textContent = formatMolt(dexCore.fee_treasury || 0);
+        if (el('tradeFeeTreasury')) el('tradeFeeTreasury').textContent = formatLicn(dexCore.fee_treasury || 0);
         if (el('tradePairCount')) el('tradePairCount').textContent = formatNum(dexCore.pair_count || 0);
     }
 
@@ -1358,8 +1398,8 @@ async function updateTradingMetrics() {
         activeFeeds++;
         if (el('tradeAmmPools')) el('tradeAmmPools').textContent = formatNum(amm.pool_count || 0);
         if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(amm.swap_count || 0);
-        if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatMolt(amm.total_volume || 0);
-        if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatMolt(amm.total_fees || 0);
+        if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatLicn(amm.total_volume || 0);
+        if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatLicn(amm.total_fees || 0);
     }
 
     // Margin
@@ -1368,7 +1408,7 @@ async function updateTradingMetrics() {
         if (el('tradeMarginPos')) el('tradeMarginPos').textContent = formatNum(margin.position_count || 0);
         if (el('tradeMaxLeverage')) el('tradeMaxLeverage').textContent = (margin.max_leverage || 100) + 'x';
         if (el('tradeLiquidations')) el('tradeLiquidations').textContent = formatNum(margin.liquidation_count || 0);
-        if (el('tradeInsurance')) el('tradeInsurance').textContent = formatMolt(margin.insurance_fund || 0);
+        if (el('tradeInsurance')) el('tradeInsurance').textContent = formatLicn(margin.insurance_fund || 0);
     }
 
     // Router
@@ -1384,16 +1424,16 @@ async function updateTradingMetrics() {
         if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(analytics.tracked_pairs || 0);
     }
 
-    // MoltSwap
-    if (moltswap) {
+    // LichenSwap
+    if (lichenswap) {
         activeFeeds++;
-        if (el('tradeMoltSwaps')) el('tradeMoltSwaps').textContent = formatNum(moltswap.swap_count || 0);
+        if (el('tradeLichenSwaps')) el('tradeLichenSwaps').textContent = formatNum(lichenswap.swap_count || 0);
     }
 
     // Rewards
     if (rewards) {
         activeFeeds++;
-        if (el('tradeRewardsDistributed')) el('tradeRewardsDistributed').textContent = formatMolt(rewards.total_distributed || 0);
+        if (el('tradeRewardsDistributed')) el('tradeRewardsDistributed').textContent = formatLicn(rewards.total_distributed || 0);
         if (el('tradeRewardsEpoch')) el('tradeRewardsEpoch').textContent = formatNum(rewards.epoch || 0);
     }
 
@@ -1434,9 +1474,9 @@ async function updatePredictionMonitor() {
 
     if (el('predTotalMarkets')) el('predTotalMarkets').textContent = formatNum(stats.total_markets || 0);
     if (el('predOpenMarkets')) el('predOpenMarkets').textContent = formatNum(stats.open_markets || 0);
-    if (el('predTotalVolume')) el('predTotalVolume').textContent = formatMolt(stats.total_volume || 0);
-    if (el('predTotalCollateral')) el('predTotalCollateral').textContent = formatMolt(stats.total_collateral || 0);
-    if (el('predFeesCollected')) el('predFeesCollected').textContent = formatMolt(stats.fees_collected || 0);
+    if (el('predTotalVolume')) el('predTotalVolume').textContent = formatLicn(stats.total_volume || 0);
+    if (el('predTotalCollateral')) el('predTotalCollateral').textContent = formatLicn(stats.total_collateral || 0);
+    if (el('predFeesCollected')) el('predFeesCollected').textContent = formatLicn(stats.fees_collected || 0);
     if (el('predTotalTraders')) el('predTotalTraders').textContent = formatNum(stats.total_traders || 0);
     if (el('predStatus')) el('predStatus').textContent = stats.paused ? 'PAUSED' : 'ACTIVE';
 
@@ -1452,24 +1492,24 @@ async function updatePredictionMonitor() {
             <div class="tier-card">
                 <div class="tier-label">Open / Total</div>
                 <div class="tier-value">${formatNum(open)} / ${formatNum(total)}</div>
-                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (open/total*100) : 0}%;background:var(--accent-green)"></div></div>
+                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (open / total * 100) : 0}%;background:var(--accent-green)"></div></div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Closed / Resolved</div>
                 <div class="tier-value">${formatNum(closed)}</div>
-                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (closed/total*100) : 0}%;background:var(--accent-purple)"></div></div>
+                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (closed / total * 100) : 0}%;background:var(--accent-purple)"></div></div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Avg Volume / Market</div>
-                <div class="tier-value">${formatMolt(avgVolPerMarket)}</div>
+                <div class="tier-value">${formatLicn(avgVolPerMarket)}</div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Avg Collateral / Market</div>
-                <div class="tier-value">${formatMolt(avgCollateral)}</div>
+                <div class="tier-value">${formatLicn(avgCollateral)}</div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Total Fees Collected</div>
-                <div class="tier-value">${formatMolt(stats.fees_collected || 0)}</div>
+                <div class="tier-value">${formatLicn(stats.fees_collected || 0)}</div>
             </div>
             <div class="tier-card">
                 <div class="tier-label">Unique Traders</div>
@@ -1496,60 +1536,60 @@ async function updateEcosystemMonitor() {
     const el = id => document.getElementById(id);
 
     // Fetch all platform contract stats in parallel
-    const [musd, weth, wsol, lend, clawpay, vault, bridge, dao, oracle,
-           reef, market, auction, punks, bounty, compute] = await Promise.all([
-        rpc('getMusdStats').catch(() => null),
-        rpc('getWethStats').catch(() => null),
-        rpc('getWsolStats').catch(() => null),
-        rpc('getLobsterLendStats').catch(() => null),
-        rpc('getClawPayStats').catch(() => null),
-        rpc('getClawVaultStats').catch(() => null),
-        rpc('getMoltBridgeStats').catch(() => null),
-        rpc('getMoltDaoStats').catch(() => null),
-        rpc('getMoltOracleStats').catch(() => null),
-        rpc('getReefStorageStats').catch(() => null),
-        rpc('getMoltMarketStats').catch(() => null),
-        rpc('getMoltAuctionStats').catch(() => null),
-        rpc('getMoltPunksStats').catch(() => null),
-        rpc('getBountyBoardStats').catch(() => null),
-        rpc('getComputeMarketStats').catch(() => null),
-    ]);
+    const [musd, weth, wsol, lend, sporepay, vault, bridge, dao, oracle,
+        mossStorage, market, auction, punks, bounty, compute] = await Promise.all([
+            rpc('getMusdStats').catch(() => null),
+            rpc('getWethStats').catch(() => null),
+            rpc('getWsolStats').catch(() => null),
+            rpc('getThallLendStats').catch(() => null),
+            rpc('getSporePayStats').catch(() => null),
+            rpc('getSporeVaultStats').catch(() => null),
+            rpc('getLichenBridgeStats').catch(() => null),
+            rpc('getLichenDaoStats').catch(() => null),
+            rpc('getLichenOracleStats').catch(() => null),
+            rpc('getMossStorageStats').catch(() => null),
+            rpc('getLichenMarketStats').catch(() => null),
+            rpc('getLichenAuctionStats').catch(() => null),
+            rpc('getLichenPunksStats').catch(() => null),
+            rpc('getBountyBoardStats').catch(() => null),
+            rpc('getComputeMarketStats').catch(() => null),
+        ]);
 
     let activeFeeds = 0;
 
     // Tokens
     if (musd) {
         activeFeeds++;
-        if (el('ecoMusdSupply')) el('ecoMusdSupply').textContent = formatMolt(musd.supply || 0);
+        if (el('ecoMusdSupply')) el('ecoMusdSupply').textContent = formatLicn(musd.supply || 0);
         if (el('ecoMusdMinted')) el('ecoMusdMinted').textContent = formatNum(musd.mint_events || 0);
         if (el('ecoMusdTransfers')) el('ecoMusdTransfers').textContent = formatNum(musd.transfer_count || 0);
     }
     if (weth) {
         activeFeeds++;
-        if (el('ecoWethSupply')) el('ecoWethSupply').textContent = formatMolt(weth.supply || 0);
+        if (el('ecoWethSupply')) el('ecoWethSupply').textContent = formatLicn(weth.supply || 0);
     }
     if (wsol) {
         activeFeeds++;
-        if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatMolt(wsol.supply || 0);
+        if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatLicn(wsol.supply || 0);
     }
 
     // Platform services
     if (lend) {
         activeFeeds++;
-        if (el('ecoLendDeposits')) el('ecoLendDeposits').textContent = formatMolt(lend.total_deposits || 0);
-        if (el('ecoLendBorrows')) el('ecoLendBorrows').textContent = formatMolt(lend.total_borrows || 0);
+        if (el('ecoLendDeposits')) el('ecoLendDeposits').textContent = formatLicn(lend.total_deposits || 0);
+        if (el('ecoLendBorrows')) el('ecoLendBorrows').textContent = formatLicn(lend.total_borrows || 0);
     }
-    if (clawpay) {
+    if (sporepay) {
         activeFeeds++;
-        if (el('ecoClawPayStreams')) el('ecoClawPayStreams').textContent = formatNum(clawpay.stream_count || 0);
+        if (el('ecoSporePayStreams')) el('ecoSporePayStreams').textContent = formatNum(sporepay.stream_count || 0);
     }
     if (vault) {
         activeFeeds++;
-        if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatMolt(vault.total_assets || 0);
+        if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatLicn(vault.total_assets || 0);
     }
 
-    // ClawPump (REST only, try RPC gracefully)
-    const pump = await rpc('getClawPumpStats').catch(() => null);
+    // SporePump (REST only, try RPC gracefully)
+    const pump = await rpc('getSporePumpStats').catch(() => null);
     if (pump) {
         activeFeeds++;
         if (el('ecoPumpTokens')) el('ecoPumpTokens').textContent = formatNum(pump.token_count || 0);
@@ -1559,7 +1599,7 @@ async function updateEcosystemMonitor() {
     if (bridge) {
         activeFeeds++;
         if (el('ecoBridgeTxs')) el('ecoBridgeTxs').textContent = formatNum(bridge.nonce || 0);
-        if (el('ecoBridgeLocked')) el('ecoBridgeLocked').textContent = formatMolt(bridge.locked_amount || 0);
+        if (el('ecoBridgeLocked')) el('ecoBridgeLocked').textContent = formatLicn(bridge.locked_amount || 0);
     }
     if (dao) {
         activeFeeds++;
@@ -1569,9 +1609,9 @@ async function updateEcosystemMonitor() {
         activeFeeds++;
         if (el('ecoOracleFeeds')) el('ecoOracleFeeds').textContent = formatNum(oracle.feeds || 0);
     }
-    if (reef) {
+    if (mossStorage) {
         activeFeeds++;
-        if (el('ecoReefData')) el('ecoReefData').textContent = formatNum(reef.data_count || 0);
+        if (el('ecoMossData')) el('ecoMossData').textContent = formatNum(mossStorage.data_count || 0);
     }
 
     // NFT & Marketplace
@@ -1581,7 +1621,7 @@ async function updateEcosystemMonitor() {
     }
     if (auction) {
         activeFeeds++;
-        if (el('ecoAuctionVolume')) el('ecoAuctionVolume').textContent = formatMolt(auction.total_volume || 0);
+        if (el('ecoAuctionVolume')) el('ecoAuctionVolume').textContent = formatLicn(auction.total_volume || 0);
     }
     if (punks) {
         activeFeeds++;
@@ -1608,32 +1648,32 @@ async function updateEcosystemMonitor() {
         };
 
         if (lend) {
-            addCard('Lending TVL', formatMolt((lend.total_deposits || 0) - (lend.total_borrows || 0)), 'piggy-bank', 'var(--accent-green)');
+            addCard('Lending TVL', formatLicn((lend.total_deposits || 0) - (lend.total_borrows || 0)), 'piggy-bank', 'var(--accent-green)');
             addCard('Liquidations', formatNum(lend.liquidation_count || 0), 'gavel', 'var(--accent-red)');
         }
-        if (clawpay) {
-            addCard('Total Streamed', formatMolt(clawpay.total_streamed || 0), 'stream', 'var(--accent-blue)');
-            addCard('Stream Cancels', formatNum(clawpay.cancel_count || 0), 'times-circle', 'var(--accent-orange)');
+        if (sporepay) {
+            addCard('Total Streamed', formatLicn(sporepay.total_streamed || 0), 'stream', 'var(--accent-blue)');
+            addCard('Stream Cancels', formatNum(sporepay.cancel_count || 0), 'times-circle', 'var(--cyan-accent)');
         }
         if (vault) {
             addCard('Vault Strategies', formatNum(vault.strategy_count || 0), 'layer-group', 'var(--accent-purple)');
-            addCard('Vault Earnings', formatMolt(vault.total_earned || 0), 'chart-line', 'var(--accent-green)');
+            addCard('Vault Earnings', formatLicn(vault.total_earned || 0), 'chart-line', 'var(--accent-green)');
         }
         if (bridge) {
             addCard('Bridge Validators', formatNum(bridge.validator_count || 0), 'link', 'var(--accent-blue)');
-            addCard('Required Confirms', formatNum(bridge.required_confirms || 0), 'check-double', 'var(--accent-orange)');
+            addCard('Required Confirms', formatNum(bridge.required_confirms || 0), 'check-double', 'var(--cyan-accent)');
         }
         if (bounty) {
             addCard('Bounties Completed', formatNum(bounty.completed_count || 0), 'trophy', 'var(--accent-green)');
-            addCard('Reward Volume', formatMolt(bounty.reward_volume || 0), 'coins', 'var(--accent-purple)');
+            addCard('Reward Volume', formatLicn(bounty.reward_volume || 0), 'coins', 'var(--accent-purple)');
         }
         if (compute) {
             addCard('Jobs Completed', formatNum(compute.completed_count || 0), 'microchip', 'var(--accent-green)');
-            addCard('Payment Volume', formatMolt(compute.payment_volume || 0), 'money-bill', 'var(--accent-blue)');
+            addCard('Payment Volume', formatLicn(compute.payment_volume || 0), 'money-bill', 'var(--accent-blue)');
         }
-        if (reef) {
-            addCard('Storage Bytes', formatNum(reef.total_bytes || 0), 'database', 'var(--accent-purple)');
-            addCard('Challenges', formatNum(reef.challenge_count || 0), 'shield-alt', 'var(--accent-orange)');
+        if (mossStorage) {
+            addCard('Storage Bytes', formatNum(mossStorage.total_bytes || 0), 'database', 'var(--accent-purple)');
+            addCard('Challenges', formatNum(mossStorage.challenge_count || 0), 'shield-alt', 'var(--cyan-accent)');
         }
 
         grid.innerHTML = cards.join('');
@@ -1660,7 +1700,7 @@ async function init() {
     addEvent('info', 'power-off', 'Mission Control initializing...');
 
     // Set network selector — rebuild options, hide local-* in production
-    const savedNet = localStorage.getItem('moltchain_mon_network') || _monDefaultNetwork;
+    const savedNet = localStorage.getItem('lichen_mon_network') || _monDefaultNetwork;
     const sel = document.getElementById('networkSelect');
     if (sel) {
         sel.innerHTML = '';

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Test MoltChain Python SDK against live validator"""
+"""Test Lichen Python SDK against live validator"""
 
 import asyncio
 import sys
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
 
 async def test_sdk():
-    print('🦞 MoltChain Python SDK Test\n')
+    print('🦞 Lichen Python SDK Test\n')
     print('=' * 60)
     
     # Connect to running validator

@@ -1,5 +1,5 @@
 // ============================================================================
-// MoltChain Shared Utilities
+// Lichen Shared Utilities
 // Single source of truth for common JS helpers used across all frontends.
 // Import via <script src="../shared/utils.js"></script> BEFORE app scripts.
 // ============================================================================
@@ -8,13 +8,13 @@
 // These mirror on-chain parameters. If protocol upgrades change them,
 // update here — all frontends read from this single source.
 
-const SHELLS_PER_MOLT = 1_000_000_000;
+const SPORES_PER_LICN = 1_000_000_000;
 const MS_PER_SLOT = 400;
 const SLOTS_PER_EPOCH = 432_000;
 const SLOTS_PER_YEAR = 78_840_000;
 const SLOTS_PER_DAY = 86_400_000 / MS_PER_SLOT; // 216000 at 400ms
-const BASE_FEE_SHELLS = 1_000_000; // 0.001 MOLT
-const BASE_FEE_MOLT = BASE_FEE_SHELLS / SHELLS_PER_MOLT; // 0.001
+const BASE_FEE_SPORES = 1_000_000; // 0.001 LICN
+const BASE_FEE_LICN = BASE_FEE_SPORES / SPORES_PER_LICN; // 0.001
 
 // Fee distribution ratios (must sum to 1.0)
 const FEE_SPLIT = {
@@ -25,15 +25,15 @@ const FEE_SPLIT = {
     community: 0.10,
 };
 
-// ZK shielded transaction compute surcharges (shells)
+// ZK shielded transaction compute surcharges (spores)
 const ZK_COMPUTE_FEE = {
     shield: 100_000,
     unshield: 150_000,
     transfer: 200_000,
 };
 
-// MoltyID reputation constants (matches RPC moltyid_trust_tier in rpc/src/lib.rs)
-const MAX_REPUTATION = 100_000;       // on-chain cap from contracts/moltyid MAX_REPUTATION
+// LichenID reputation constants (matches RPC lichenid_trust_tier in rpc/src/lib.rs)
+const MAX_REPUTATION = 100_000;       // on-chain cap from contracts/lichenid MAX_REPUTATION
 const MAX_REP_PROGRESS_BAR = 10_000;  // Legendary tier threshold — progress bar caps here
 const TRUST_TIER_THRESHOLDS = [
     { min: 10000, label: 'Legendary', className: 'legendary', tier: 5 },
@@ -44,21 +44,21 @@ const TRUST_TIER_THRESHOLDS = [
     { min: 0, label: 'Newcomer', className: 'newcomer', tier: 0 },
 ];
 
-// MoltyID achievement definitions (matches RPC moltyid_achievement_name in rpc/src/lib.rs)
+// LichenID achievement definitions (matches RPC lichenid_achievement_name in rpc/src/lib.rs)
 const ACHIEVEMENT_DEFS = [
     // Identity (1-12)
     { id: 1, name: 'First Transaction', icon: 'fa-exchange-alt', desc: 'Sent your first transaction' },
     { id: 2, name: 'Governance Voter', icon: 'fa-vote-yea', desc: 'Voted on a governance proposal' },
-    { id: 3, name: 'Program Builder', icon: 'fa-code', desc: 'Deployed a program to MoltChain' },
+    { id: 3, name: 'Program Builder', icon: 'fa-code', desc: 'Deployed a program to Lichen' },
     { id: 4, name: 'Trusted Agent', icon: 'fa-shield-alt', desc: 'Reached 500+ reputation' },
     { id: 5, name: 'Veteran Agent', icon: 'fa-medal', desc: 'Reached 1,000+ reputation' },
     { id: 6, name: 'Legendary Agent', icon: 'fa-crown', desc: 'Reached 5,000+ reputation' },
     { id: 7, name: 'Well Endorsed', icon: 'fa-handshake', desc: 'Received 10+ vouches' },
     { id: 8, name: 'Bootstrap Graduation', icon: 'fa-graduation-cap', desc: 'Completed bootstrap graduation' },
-    { id: 9, name: 'Name Registrar', icon: 'fa-at', desc: 'Registered a .molt name' },
+    { id: 9, name: 'Name Registrar', icon: 'fa-at', desc: 'Registered a .lichen name' },
     { id: 10, name: 'Skill Master', icon: 'fa-tools', desc: 'Added 5+ skills to your profile' },
     { id: 11, name: 'Social Butterfly', icon: 'fa-users', desc: 'Received 3+ vouches' },
-    { id: 12, name: 'First Name', icon: 'fa-id-card', desc: 'Registered your first .molt name' },
+    { id: 12, name: 'First Name', icon: 'fa-id-card', desc: 'Registered your first .lichen name' },
     // DEX (13-21)
     { id: 13, name: 'First Trade', icon: 'fa-chart-line', desc: 'Executed your first DEX swap' },
     { id: 14, name: 'LP Provider', icon: 'fa-water', desc: 'Added liquidity to a pool' },
@@ -70,26 +70,26 @@ const ACHIEVEMENT_DEFS = [
     { id: 20, name: 'Yield Farmer', icon: 'fa-seedling', desc: 'Claimed DEX rewards' },
     { id: 21, name: 'Analytics Explorer', icon: 'fa-chart-pie', desc: 'Used DEX analytics tracking' },
     // Lending (31-38)
-    { id: 31, name: 'First Lend', icon: 'fa-hand-holding-usd', desc: 'Deposited into LobsterLend' },
-    { id: 32, name: 'First Borrow', icon: 'fa-file-invoice-dollar', desc: 'Borrowed from LobsterLend' },
-    { id: 33, name: 'Loan Repaid', icon: 'fa-check-circle', desc: 'Repaid a LobsterLend loan' },
+    { id: 31, name: 'First Lend', icon: 'fa-hand-holding-usd', desc: 'Deposited into ThallLend' },
+    { id: 32, name: 'First Borrow', icon: 'fa-file-invoice-dollar', desc: 'Borrowed from ThallLend' },
+    { id: 33, name: 'Loan Repaid', icon: 'fa-check-circle', desc: 'Repaid a ThallLend loan' },
     { id: 34, name: 'Liquidator', icon: 'fa-gavel', desc: 'Liquidated an undercollateralized position' },
-    { id: 35, name: 'Withdrawal Expert', icon: 'fa-sign-out-alt', desc: 'Withdrew from LobsterLend' },
-    { id: 36, name: 'Stablecoin Minter', icon: 'fa-coins', desc: 'Minted MUSD stablecoins' },
-    { id: 37, name: 'Stablecoin Redeemer', icon: 'fa-undo', desc: 'Redeemed MUSD stablecoins' },
-    { id: 38, name: 'Stable Sender', icon: 'fa-paper-plane', desc: 'Transferred MUSD to another user' },
+    { id: 35, name: 'Withdrawal Expert', icon: 'fa-sign-out-alt', desc: 'Withdrew from ThallLend' },
+    { id: 36, name: 'Stablecoin Minter', icon: 'fa-coins', desc: 'Minted LUSD stablecoins' },
+    { id: 37, name: 'Stablecoin Redeemer', icon: 'fa-undo', desc: 'Redeemed LUSD stablecoins' },
+    { id: 38, name: 'Stable Sender', icon: 'fa-paper-plane', desc: 'Transferred LUSD to another user' },
     // Staking (41-48)
-    { id: 41, name: 'First Stake', icon: 'fa-layer-group', desc: 'Staked MOLT for the first time' },
-    { id: 42, name: 'Unstaked', icon: 'fa-unlock', desc: 'Unstaked MOLT' },
-    { id: 43, name: 'ReefStake Pioneer', icon: 'fa-fish', desc: 'Used ReefStake liquid staking' },
+    { id: 41, name: 'First Stake', icon: 'fa-layer-group', desc: 'Staked LICN for the first time' },
+    { id: 42, name: 'Unstaked', icon: 'fa-unlock', desc: 'Unstaked LICN' },
+    { id: 43, name: 'Liquid Staking Pioneer', icon: 'fa-fish', desc: 'Used liquid staking' },
     { id: 44, name: 'Locked Staker', icon: 'fa-lock', desc: 'Locked stake for a fixed period' },
     { id: 45, name: 'Diamond Hands', icon: 'fa-gem', desc: 'Locked stake for 365 days' },
     { id: 46, name: 'Whale Staker', icon: 'fa-whale', desc: 'Staked a large amount' },
     { id: 47, name: 'Reward Harvester', icon: 'fa-gift', desc: 'Claimed staking rewards' },
-    { id: 48, name: 'stMOLT Transferrer', icon: 'fa-share', desc: 'Transferred stMOLT tokens' },
+    { id: 48, name: 'stLICN Transferrer', icon: 'fa-share', desc: 'Transferred stLICN tokens' },
     // Bridge (51-56)
-    { id: 51, name: 'Bridge Pioneer', icon: 'fa-bridge', desc: 'Bridged assets to MoltChain' },
-    { id: 52, name: 'Bridge Out', icon: 'fa-sign-out-alt', desc: 'Bridged assets out of MoltChain' },
+    { id: 51, name: 'Bridge Pioneer', icon: 'fa-bridge', desc: 'Bridged assets to Lichen' },
+    { id: 52, name: 'Bridge Out', icon: 'fa-sign-out-alt', desc: 'Bridged assets out of Lichen' },
     { id: 53, name: 'Bridge User', icon: 'fa-exchange-alt', desc: 'Used the bridge multiple times' },
     { id: 54, name: 'Wrapper', icon: 'fa-box', desc: 'Wrapped native tokens (WETH/WBNB/WSOL)' },
     { id: 55, name: 'Unwrapper', icon: 'fa-box-open', desc: 'Unwrapped tokens back to native' },
@@ -107,7 +107,7 @@ const ACHIEVEMENT_DEFS = [
     { id: 67, name: 'First Purchase', icon: 'fa-shopping-cart', desc: 'Purchased an NFT' },
     { id: 68, name: 'Bidder', icon: 'fa-gavel', desc: 'Placed a bid on an NFT' },
     { id: 69, name: 'Deal Maker', icon: 'fa-handshake', desc: 'Accepted an offer on an NFT' },
-    { id: 70, name: 'Punk Collector', icon: 'fa-robot', desc: 'Interacted with MoltPunks' },
+    { id: 70, name: 'Punk Collector', icon: 'fa-robot', desc: 'Interacted with LichenPunks' },
     // Governance (71-73)
     { id: 71, name: 'Proposal Creator', icon: 'fa-scroll', desc: 'Created a governance proposal' },
     { id: 72, name: 'First Vote', icon: 'fa-ballot-check', desc: 'Cast your first governance vote' },
@@ -116,8 +116,8 @@ const ACHIEVEMENT_DEFS = [
     { id: 81, name: 'Oracle Reporter', icon: 'fa-satellite-dish', desc: 'Submitted a price feed report' },
     { id: 82, name: 'Oracle User', icon: 'fa-broadcast-tower', desc: 'Consumed oracle price data' },
     // Storage (86-88)
-    { id: 86, name: 'File Uploader', icon: 'fa-cloud-upload-alt', desc: 'Uploaded a file to Reef Storage' },
-    { id: 87, name: 'Data Retriever', icon: 'fa-cloud-download-alt', desc: 'Retrieved data from Reef Storage' },
+    { id: 86, name: 'File Uploader', icon: 'fa-cloud-upload-alt', desc: 'Uploaded a file to decentralized storage' },
+    { id: 87, name: 'Data Retriever', icon: 'fa-cloud-download-alt', desc: 'Retrieved data from decentralized storage' },
     { id: 88, name: 'Storage User', icon: 'fa-database', desc: 'Used decentralized storage' },
     // Marketplace/Auction (91-93)
     { id: 91, name: 'Auctioneer', icon: 'fa-bullhorn', desc: 'Created an auction' },
@@ -133,24 +133,24 @@ const ACHIEVEMENT_DEFS = [
     { id: 103, name: 'Oracle Resolver', icon: 'fa-check-double', desc: 'Resolved a prediction market' },
     { id: 104, name: 'Prediction Winner', icon: 'fa-star', desc: 'Won a prediction market payout' },
     // General milestones (106-124)
-    { id: 106, name: 'Big Spender', icon: 'fa-money-bill-wave', desc: 'Sent a transaction worth 10,000+ MOLT' },
-    { id: 107, name: 'Whale Transfer', icon: 'fa-whale', desc: 'Sent a transaction worth 100,000+ MOLT' },
+    { id: 106, name: 'Big Spender', icon: 'fa-money-bill-wave', desc: 'Sent a transaction worth 10,000+ LICN' },
+    { id: 107, name: 'Whale Transfer', icon: 'fa-whale', desc: 'Sent a transaction worth 100,000+ LICN' },
     { id: 108, name: 'EVM Connected', icon: 'fa-link', desc: 'Registered an EVM address' },
-    { id: 109, name: 'Identity Created', icon: 'fa-id-badge', desc: 'Created your MoltyID identity' },
-    { id: 110, name: 'Profile Customizer', icon: 'fa-paint-brush', desc: 'Customized your MoltyID profile' },
+    { id: 109, name: 'Identity Created', icon: 'fa-id-badge', desc: 'Created your LichenID identity' },
+    { id: 110, name: 'Profile Customizer', icon: 'fa-paint-brush', desc: 'Customized your LichenID profile' },
     { id: 111, name: 'Voucher', icon: 'fa-thumbs-up', desc: 'Vouched for another identity' },
     { id: 112, name: 'Agent Creator', icon: 'fa-robot', desc: 'Created a compute agent' },
     { id: 113, name: 'Compute Provider', icon: 'fa-server', desc: 'Provided compute resources' },
     { id: 114, name: 'Compute Consumer', icon: 'fa-microchip', desc: 'Consumed compute resources' },
-    { id: 115, name: 'Payment Creator', icon: 'fa-file-invoice', desc: 'Created a ClawPay payment' },
-    { id: 116, name: 'First Payment', icon: 'fa-credit-card', desc: 'Claimed a ClawPay payment' },
+    { id: 115, name: 'Payment Creator', icon: 'fa-file-invoice', desc: 'Created a SporePay payment' },
+    { id: 116, name: 'First Payment', icon: 'fa-credit-card', desc: 'Claimed a SporePay payment' },
     { id: 117, name: 'Subscription Creator', icon: 'fa-calendar-check', desc: 'Created a subscription plan' },
-    { id: 118, name: 'Token Launcher', icon: 'fa-rocket', desc: 'Launched a token on ClawPump' },
-    { id: 119, name: 'Early Buyer', icon: 'fa-bolt', desc: 'Bought tokens on ClawPump early' },
-    { id: 120, name: 'Token Seller', icon: 'fa-cash-register', desc: 'Sold tokens on ClawPump' },
-    { id: 121, name: 'Vault Depositor', icon: 'fa-piggy-bank', desc: 'Deposited into ClawVault' },
-    { id: 122, name: 'Vault Withdrawer', icon: 'fa-wallet', desc: 'Withdrew from ClawVault' },
-    { id: 123, name: 'Token Contract User', icon: 'fa-coins', desc: 'Interacted with a MoltCoin token' },
+    { id: 118, name: 'Token Launcher', icon: 'fa-rocket', desc: 'Launched a token on SporePump' },
+    { id: 119, name: 'Early Buyer', icon: 'fa-bolt', desc: 'Bought tokens on SporePump early' },
+    { id: 120, name: 'Token Seller', icon: 'fa-cash-register', desc: 'Sold tokens on SporePump' },
+    { id: 121, name: 'Vault Depositor', icon: 'fa-piggy-bank', desc: 'Deposited into SporeVault' },
+    { id: 122, name: 'Vault Withdrawer', icon: 'fa-wallet', desc: 'Withdrew from SporeVault' },
+    { id: 123, name: 'Token Contract User', icon: 'fa-coins', desc: 'Interacted with a LichenCoin token' },
     { id: 124, name: 'Contract Interactor', icon: 'fa-cog', desc: 'Interacted with a smart contract' },
 ];
 
@@ -181,6 +181,23 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
+/**
+ * Escape a string for safe embedding inside a JavaScript string literal
+ * within an HTML attribute (e.g., onclick="fn('...')").
+ * This prevents both HTML-level and JS-level injection.
+ */
+function escapeJsAttr(str) {
+    return String(str ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '\\"')
+        .replace(/</g, '\\x3c')
+        .replace(/>/g, '\\x3e')
+        .replace(/&/g, '\\x26')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+}
+
 // ── Formatting ──
 
 function formatNumber(num) {
@@ -206,16 +223,28 @@ function normalizeTxType(type) {
     return type === 'DebtRepay' ? 'GrantRepay' : type;
 }
 
-function formatMolt(shells) {
-    const molt = shells / SHELLS_PER_MOLT;
-    return molt.toLocaleString(undefined, {
+function formatLicn(spores) {
+    const licn = spores / SPORES_PER_LICN;
+    return licn.toLocaleString(undefined, {
         minimumFractionDigits: 2,
-        maximumFractionDigits: 4,
-    }) + ' MOLT';
+        maximumFractionDigits: 9,
+    }) + ' LICN';
 }
 
-function formatMoltShells(shells) {
-    return formatMolt(shells);
+function formatLicnSpores(spores) {
+    return formatLicn(spores);
+}
+
+/**
+ * Format a LICN amount preserving all significant decimals (up to 9).
+ * Accepts a number or string. Strips trailing zeros but keeps at least 2 decimals.
+ */
+function formatLicnExact(licn) {
+    if (licn === null || licn === undefined || Number.isNaN(Number(licn))) return '0';
+    return Number(licn).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 9,
+    });
 }
 
 function formatTime(timestamp) {
@@ -322,21 +351,21 @@ var base58Decode = bs58decode;
 
 // ── RPC Client ──
 
-function getMoltRpcUrl() {
+function getLichenRpcUrl() {
     if (typeof window !== 'undefined') {
-        if (typeof MOLT_CONFIG !== 'undefined' && typeof MOLT_CONFIG.rpc === 'function') return MOLT_CONFIG.rpc();
-        if (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG?.rpc) return MOLT_CONFIG.rpc;
-        if (window.MOLT_CONFIG && typeof window.MOLT_CONFIG.rpc === 'function') return window.MOLT_CONFIG.rpc();
-        if (window.MOLT_CONFIG && window.MOLT_CONFIG.rpc) return window.MOLT_CONFIG.rpc;
-        if (window.moltConfig && window.moltConfig.rpcUrl) return window.moltConfig.rpcUrl;
-        if (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) return window.moltMarketConfig.rpcUrl;
-        if (window.moltExplorerConfig && window.moltExplorerConfig.rpcUrl) return window.moltExplorerConfig.rpcUrl;
+        if (typeof LICHEN_CONFIG !== 'undefined' && typeof LICHEN_CONFIG.rpc === 'function') return LICHEN_CONFIG.rpc();
+        if (typeof LICHEN_CONFIG !== 'undefined' && LICHEN_CONFIG?.rpc) return LICHEN_CONFIG.rpc;
+        if (window.LICHEN_CONFIG && typeof window.LICHEN_CONFIG.rpc === 'function') return window.LICHEN_CONFIG.rpc();
+        if (window.LICHEN_CONFIG && window.LICHEN_CONFIG.rpc) return window.LICHEN_CONFIG.rpc;
+        if (window.lichenConfig && window.lichenConfig.rpcUrl) return window.lichenConfig.rpcUrl;
+        if (window.lichenMarketConfig && window.lichenMarketConfig.rpcUrl) return window.lichenMarketConfig.rpcUrl;
+        if (window.lichenExplorerConfig && window.lichenExplorerConfig.rpcUrl) return window.lichenExplorerConfig.rpcUrl;
     }
     return 'http://localhost:8899';
 }
 
-async function moltRpcCall(method, params, rpcUrl) {
-    var url = rpcUrl || getMoltRpcUrl();
+async function lichenRpcCall(method, params, rpcUrl) {
+    var url = rpcUrl || getLichenRpcUrl();
     var response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -355,7 +384,7 @@ async function moltRpcCall(method, params, rpcUrl) {
 }
 
 // Legacy alias used by some files
-var rpcCall = moltRpcCall;
+var rpcCall = lichenRpcCall;
 
 // ── Binary Helpers ──
 
@@ -462,7 +491,8 @@ function formatTimeFull(timestamp) {
     var diff = Math.floor((now - date) / 1000);
 
     var ago = '';
-    if (diff < 60) ago = diff + ' seconds ago';
+    if (diff < 0) ago = 'just now';
+    else if (diff < 60) ago = diff + ' seconds ago';
     else if (diff < 3600) ago = Math.floor(diff / 60) + ' minutes ago';
     else if (diff < 86400) ago = Math.floor(diff / 3600) + ' hours ago';
     else ago = Math.floor(diff / 86400) + ' days ago';
@@ -476,8 +506,8 @@ function formatTimeShort(timestamp) {
     return new Date(timestamp * 1000).toLocaleString();
 }
 
-function formatShells(shells) {
-    return formatNumber(shells) + ' shells';
+function formatSpores(spores) {
+    return formatNumber(spores) + ' spores';
 }
 
 // console.log('✅ shared/utils.js loaded');
@@ -498,7 +528,7 @@ function formatShells(shells) {
             // Re-check every cycle: wallet.js may have claimed ownership after we started
             if (window.__chainStatusBarOwned) return;
             var t0 = (typeof performance !== 'undefined') ? performance.now() : Date.now();
-            moltRpcCall('getSlot', []).then(function (slot) {
+            lichenRpcCall('getSlot', []).then(function (slot) {
                 var ms = Math.round(((typeof performance !== 'undefined') ? performance.now() : Date.now()) - t0);
                 if (typeof slot === 'number' && slot > currentBlock) currentBlock = slot;
                 blockEl.textContent = 'Block #' + currentBlock.toLocaleString();
@@ -525,17 +555,18 @@ function formatShells(shells) {
 // ── Node.js / CommonJS exports (for test harnesses) ──
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-        SHELLS_PER_MOLT, MS_PER_SLOT, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
-        SLOTS_PER_DAY, BASE_FEE_SHELLS, BASE_FEE_MOLT, FEE_SPLIT,
+        SPORES_PER_LICN, MS_PER_SLOT, SLOTS_PER_EPOCH, SLOTS_PER_YEAR,
+        SLOTS_PER_DAY, BASE_FEE_SPORES, BASE_FEE_LICN, FEE_SPLIT,
         ZK_COMPUTE_FEE, MAX_REPUTATION, MAX_REP_PROGRESS_BAR,
         TRUST_TIER_THRESHOLDS, ACHIEVEMENT_DEFS,
         getTrustTier, getTrustTierNumber,
-        escapeHtml, formatNumber, formatHash, formatAddress, normalizeTxType,
-        formatMolt, formatMoltShells, formatTime, timeAgo,
-        formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatShells,
+        escapeHtml, escapeJsAttr, formatNumber, formatHash, formatAddress, normalizeTxType,
+        formatLicnExact,
+        formatLicn, formatLicnSpores, formatTime, timeAgo,
+        formatBytes, formatSlot, formatTimeFull, formatTimeShort, formatSpores,
         updatePagination,
         bs58encode, bs58decode, base58Encode, base58Decode,
         readLeU64, serializeMessageBincode,
-        getMoltRpcUrl, moltRpcCall, rpcCall,
+        getLichenRpcUrl, lichenRpcCall, rpcCall,
     };
 }

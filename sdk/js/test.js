@@ -2,7 +2,7 @@
 const { Connection } = require('./dist/index');
 
 async function test() {
-  console.log('Testing MoltChain SDK...');
+  console.log('Testing Lichen SDK...');
   
   const connection = new Connection('http://localhost:8899');
   console.log('Connection created');

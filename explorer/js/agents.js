@@ -1,4 +1,4 @@
-// MoltChain Explorer – Agent Directory Page
+// Lichen Explorer – Agent Directory Page
 // Table-based layout consistent with blocks.html and transactions.html
 
 const AGENTS_PER_PAGE = 25;
@@ -6,7 +6,7 @@ let allAgents = [];
 let filteredAgents = [];
 let currentPage = 1;
 
-function formatRateMolt(rateRaw) {
+function formatRateLicn(rateRaw) {
     const raw = Number(rateRaw || 0);
     return (raw / 1_000_000_000).toFixed(4);
 }
@@ -41,9 +41,9 @@ function agentTypeName(agent) {
     return names[agent.agent_type] || 'Unknown';
 }
 
-function normalizeMoltName(name) {
+function normalizeLichenName(name) {
     if (!name) return null;
-    return name.endsWith('.molt') ? name : name + '.molt';
+    return name.endsWith('.lichen') ? name : name + '.lichen';
 }
 
 // ── Data Loading ────────────────────────────────────────────────────────
@@ -59,16 +59,16 @@ async function loadAgents() {
         const options = { limit: 500, offset: 0 };
         if (typeVal !== 'all') options.type = Number(typeVal);
 
-        const result = await rpc.call('getMoltyIdAgentDirectory', [options]);
+        const result = await rpc.call('getLichenIdAgentDirectory', [options]);
         allAgents = result?.agents || (Array.isArray(result) ? result : []);
 
-        // Resolve .molt names for agents that don't have one
-        const needNames = allAgents.filter(a => !a.molt_name && a.address).map(a => a.address);
-        if (needNames.length > 0 && typeof batchResolveMoltNames === 'function') {
-            const nameMap = await batchResolveMoltNames(needNames);
+        // Resolve .lichen names for agents that don't have one
+        const needNames = allAgents.filter(a => !a.licn_name && a.address).map(a => a.address);
+        if (needNames.length > 0 && typeof batchResolveLichenNames === 'function') {
+            const nameMap = await batchResolveLichenNames(needNames);
             allAgents = allAgents.map(agent => ({
                 ...agent,
-                molt_name: agent.molt_name || nameMap[agent.address] || null
+                licn_name: agent.licn_name || nameMap[agent.address] || null
             }));
         }
 
@@ -87,7 +87,7 @@ function applySortAndRender() {
     filteredAgents = [...allAgents];
 
     // Stable sort helper: secondary sort by name when primary values are equal
-    const byName = (a, b) => (a.molt_name || a.name || '').localeCompare(b.molt_name || b.name || '');
+    const byName = (a, b) => (a.licn_name || a.name || '').localeCompare(b.licn_name || b.name || '');
 
     if (sort === 'rate-asc') {
         filteredAgents.sort((a, b) => Number(a.rate || 0) - Number(b.rate || 0) || byName(a, b));
@@ -119,20 +119,20 @@ function renderAgents() {
     const pageAgents = filteredAgents.slice(start, end);
 
     table.innerHTML = pageAgents.map(agent => {
-        const moltName = normalizeMoltName(agent.molt_name);
-        const displayName = moltName || escapeHtml(agent.name || '—');
+        const licnName = normalizeLichenName(agent.licn_name);
+        const displayName = licnName || escapeHtml(agent.name || '—');
         const addr = agent.address || '';
         const typeName = escapeHtml(agentTypeName(agent));
         const rep = Number(agent.reputation || 0);
         const tier = trustTierLabel(agent);
         const tierClass = tierPillClass(tier);
-        const rate = formatRateMolt(agent.rate);
+        const rate = formatRateLicn(agent.rate);
         const available = Number(agent.availability) === 1 || !!agent.available;
         const skillCount = Number(agent.skill_count || 0);
         const vouchCount = Number(agent.vouch_count || 0);
 
-        const nameLink = moltName
-            ? `<a href="address.html?address=${addr}&tab=identity" class="agent-name-link">${escapeHtml(moltName)}</a>`
+        const nameLink = licnName
+            ? `<a href="address.html?address=${addr}&tab=identity" class="agent-name-link">${escapeHtml(licnName)}</a>`
             : `<span style="color: var(--text-muted);">${displayName}</span>`;
 
         return `
@@ -145,7 +145,7 @@ function renderAgents() {
             <td><span class="pill">${typeName}</span></td>
             <td>${formatNumber(rep)}</td>
             <td><span class="pill ${tierClass}">${tier}</span></td>
-            <td>${rate} MOLT</td>
+            <td>${rate} LICN</td>
             <td>${available
                 ? '<span class="pill pill-success"><i class="fas fa-circle" style="font-size:0.5em;vertical-align:middle;"></i> Online</span>'
                 : '<span class="pill" style="opacity:0.6;"><i class="fas fa-circle" style="font-size:0.5em;vertical-align:middle;"></i> Registered</span>'

@@ -20,7 +20,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
+use lichen_sdk::{
     bytes_to_u64, call_contract, get_caller, get_slot, log_info, storage_get, storage_set,
     u64_to_bytes, Address, CrossCall,
 };
@@ -528,7 +528,7 @@ pub fn swap(
         load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in),
     );
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(amount_out));
+    lichen_sdk::set_return_data(&u64_to_bytes(amount_out));
     log_info("Router swap executed");
     reentrancy_exit();
     0
@@ -622,7 +622,7 @@ pub fn multi_hop_swap(
         load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in),
     );
 
-    moltchain_sdk::set_return_data(&u64_to_bytes(current_amount));
+    lichen_sdk::set_return_data(&u64_to_bytes(current_amount));
     reentrancy_exit();
     0
 }
@@ -639,7 +639,7 @@ pub fn get_best_route(token_in: *const u8, token_out: *const u8, _amount: u64) -
     if route_id > 0 {
         if let Some(data) = storage_get(&route_key(route_id)) {
             if data.len() >= ROUTE_SIZE && decode_route_enabled(&data) {
-                moltchain_sdk::set_return_data(&data);
+                lichen_sdk::set_return_data(&data);
                 return route_id;
             }
         }
@@ -790,7 +790,7 @@ pub fn get_route_info(route_id: u64) -> u64 {
     let rk = route_key(route_id);
     match storage_get(&rk) {
         Some(d) if d.len() >= ROUTE_SIZE => {
-            moltchain_sdk::set_return_data(&d);
+            lichen_sdk::set_return_data(&d);
             route_id
         }
         _ => 0,
@@ -804,7 +804,7 @@ pub fn get_route_info(route_id: u64) -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn call() {
-    let args = moltchain_sdk::get_args();
+    let args = lichen_sdk::get_args();
     if args.is_empty() {
         return;
     }
@@ -813,7 +813,7 @@ pub extern "C" fn call() {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 1: set_addresses(caller[32], core[32], amm[32])
@@ -824,7 +824,7 @@ pub extern "C" fn call() {
                     args[33..65].as_ptr(),
                     args[65..97].as_ptr(),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 2: register_route(caller[32], token_in[32], token_out[32], type[1], pool_id[8], sec_id[8], split_pct[1])
@@ -844,7 +844,7 @@ pub extern "C" fn call() {
                     sec_id,
                     split_pct,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 3: swap(trader[32], token_in[32], token_out[32], amount_in, min_out, deadline)
@@ -861,7 +861,7 @@ pub extern "C" fn call() {
                     min_out,
                     deadline,
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 4: set_route_enabled(caller[32], route_id, enabled)
@@ -870,7 +870,7 @@ pub extern "C" fn call() {
                 let route_id = bytes_to_u64(&args[33..41]);
                 let enabled = args[41] == 1;
                 let r = set_route_enabled(args[1..33].as_ptr(), route_id, enabled);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 5: get_best_route(token_in[32], token_out[32], amount)
@@ -878,7 +878,7 @@ pub extern "C" fn call() {
             if args.len() >= 73 {
                 let amount = bytes_to_u64(&args[65..73]);
                 let r = get_best_route(args[1..33].as_ptr(), args[33..65].as_ptr(), amount);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 6: get_route_info(route_id)
@@ -886,21 +886,21 @@ pub extern "C" fn call() {
             if args.len() >= 9 {
                 let route_id = bytes_to_u64(&args[1..9]);
                 let r = get_route_info(route_id);
-                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+                lichen_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         // 7: emergency_pause(caller[32])
         7 => {
             if args.len() >= 33 {
                 let r = emergency_pause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 8: emergency_unpause(caller[32])
         8 => {
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
-                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         // 9: multi_hop_swap(trader[32], path_ptr, path_count, amount_in, min_out, deadline)
@@ -925,21 +925,21 @@ pub extern "C" fn call() {
                         min_out,
                         deadline,
                     );
-                    moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                    lichen_sdk::set_return_data(&u64_to_bytes(r as u64));
                 }
             }
         }
         // 10: get_route_count
         10 => {
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_route_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_route_count()));
         }
         // 11: get_swap_count
         11 => {
-            moltchain_sdk::set_return_data(&u64_to_bytes(get_swap_count()));
+            lichen_sdk::set_return_data(&u64_to_bytes(get_swap_count()));
         }
         12 => {
             // get_total_volume_routed — cumulative input volume routed
-            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            lichen_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
         }
         13 => {
             // get_router_stats — [route_count, swap_count, total_volume]
@@ -947,10 +947,10 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(get_route_count()));
             buf.extend_from_slice(&u64_to_bytes(get_swap_count()));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
-            moltchain_sdk::set_return_data(&buf);
+            lichen_sdk::set_return_data(&buf);
         }
         _ => {
-            moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+            lichen_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
         }
     }
 }
@@ -963,7 +963,7 @@ pub extern "C" fn call() {
 mod tests {
     extern crate std;
     use super::*;
-    use moltchain_sdk::test_mock;
+    use lichen_sdk::test_mock;
 
     fn setup() -> [u8; 32] {
         test_mock::reset();
@@ -1570,7 +1570,7 @@ mod tests {
         let args = build_amm_swap_exact_in_args(&trader, 42, true, 500, 450, 1234)
             .expect("layout args should encode");
 
-        assert_eq!(args[0], moltchain_sdk::crosscall::ABI_LAYOUT_MARKER);
+        assert_eq!(args[0], lichen_sdk::crosscall::ABI_LAYOUT_MARKER);
         assert_eq!(&args[1..7], &[32, 8, 1, 8, 8, 8]);
         assert_eq!(&args[7..39], &trader);
         assert_eq!(bytes_to_u64(&args[39..47]), 42);

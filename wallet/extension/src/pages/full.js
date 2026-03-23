@@ -1,8 +1,8 @@
-/* full.js — Full-page wallet view for the MoltWallet extension.
+/* full.js — Full-page wallet view for the LichenWallet extension.
    Replicates the website wallet UI using the extension's core modules. */
 
 import { loadState, saveState } from '../core/state-store.js';
-import { getRpcEndpoint, MoltChainRPC } from '../core/rpc-service.js';
+import { getRpcEndpoint, LichenRPC } from '../core/rpc-service.js';
 import { scheduleAutoLock, clearAutoLockAlarm } from '../core/lock-service.js';
 import {
   decryptPrivateKey,
@@ -31,15 +31,15 @@ import {
   setIdentityEndpoint,
   setIdentityAvailability,
   setIdentityRate,
-  registerMoltName,
-  renewMoltName,
-  transferMoltName,
-  releaseMoltName
+  registerLichenName,
+  renewLichenName,
+  transferLichenName,
+  releaseLichenName
 } from '../core/identity-service.js';
-import { stakeMolt, unstakeStMolt, claimReefStake, loadStakingSnapshot } from '../core/staking-service.js';
+import { stakeLicn, unstakeStLicn, claimMossStake, loadStakingSnapshot } from '../core/staking-service.js';
 import { loadNftDetails } from '../core/nft-service.js';
 
-const NFT_MARKETPLACE_URL = 'https://marketplace.moltchain.network';
+const NFT_MARKETPLACE_URL = 'https://marketplace.lichen.network';
 
 /* ──────────────────────────────────────────
    State
@@ -64,7 +64,7 @@ function decimals() { return Number(state?.settings?.decimals ?? 6); }
 function rpc() {
   const network = state?.network?.selected || 'local-testnet';
   const endpoint = getRpcEndpoint(network, state?.settings || {});
-  return new MoltChainRPC(endpoint);
+  return new LichenRPC(endpoint);
 }
 
 function showToast(msg, type = '') {
@@ -600,13 +600,13 @@ async function refreshBalance() {
 
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.shells || result?.spendable || 0);
-    const molt = raw / 1_000_000_000;
+    const raw = Number(result?.spores || result?.spendable || 0);
+    const licn = raw / 1_000_000_000;
     const d = decimals();
-    $('totalBalance').textContent = `${molt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} MOLT`;
-    $('balanceUsd').textContent = `$${(molt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+    $('totalBalance').textContent = `${licn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} LICN`;
+    $('balanceUsd').textContent = `$${(licn * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
   } catch {
-    $('totalBalance').textContent = '0.00 MOLT';
+    $('totalBalance').textContent = '0.00 LICN';
     $('balanceUsd').textContent = '$0.00 USD';
   }
 }
@@ -675,7 +675,7 @@ const ACHIEVEMENT_DEFS = [
   { id: 45, name: 'Diamond Hands', icon: 'fas fa-gem' },
   { id: 46, name: 'Whale Staker', icon: 'fas fa-whale' },
   { id: 47, name: 'Reward Harvester', icon: 'fas fa-gift' },
-  { id: 48, name: 'stMOLT Transferrer', icon: 'fas fa-share' },
+  { id: 48, name: 'stLICN Transferrer', icon: 'fas fa-share' },
   // Bridge (51-56)
   { id: 51, name: 'Bridge Pioneer', icon: 'fas fa-bridge' },
   { id: 52, name: 'Bridge Out', icon: 'fas fa-sign-out-alt' },
@@ -780,15 +780,15 @@ async function loadStakingTab() {
 
   try {
     const [poolInfo, position, queue] = await Promise.all([
-      rpcClient.call('getReefStakePoolInfo').catch(() => null),
+      rpcClient.call('getMossStakePoolInfo').catch(() => null),
       rpcClient.call('getStakingPosition', [wallet.address]).catch(() => null),
       rpcClient.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
     ]);
 
-    const stMolt = Number(position?.st_molt_amount || 0) / 1e9;
-    const value = Number(position?.current_value_molt || 0) / 1e9;
+    const stLicn = Number(position?.st_licn_amount || 0) / 1e9;
+    const value = Number(position?.current_value_licn || 0) / 1e9;
     const rewards = Number(position?.rewards_earned || 0) / 1e9;
-    const totalStaked = Number(poolInfo?.total_molt_staked || 0) / 1e9;
+    const totalStaked = Number(poolInfo?.total_licn_staked || 0) / 1e9;
     const lockTier = position?.lock_tier_name || 'Flexible';
     const multiplier = position?.reward_multiplier || 1.0;
     const lockUntil = Number(position?.lock_until || 0);
@@ -815,22 +815,22 @@ async function loadStakingTab() {
           <i class="fas fa-water" style="color:#3b82f6;"></i> Liquid Staking
         </h3>
         <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">
-          Stake MOLT to receive stMOLT. Rewards auto-compound. Choose a lock tier for boosted rewards.
+          Stake LICN to receive stLICN. Rewards auto-compound. Choose a lock tier for boosted rewards.
         </p>
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem;">
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Your stMOLT</div>
-          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${stMolt.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Your stLICN</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${stLicn.toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
         </div>
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Value</div>
-          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} MOLT</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
         <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Rewards Earned</div>
-          <div style="font-size:1.2rem;font-weight:700;color:#10b981;">${rewards.toLocaleString(undefined, { maximumFractionDigits: 4 })} MOLT</div>
+          <div style="font-size:1.2rem;font-weight:700;color:#10b981;">${rewards.toLocaleString(undefined, { maximumFractionDigits: 4 })} LICN</div>
         </div>
       </div>
 
@@ -845,13 +845,13 @@ async function loadStakingTab() {
         </div>
         <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
           <div style="font-size:0.7rem;color:var(--text-muted);">Total Pool</div>
-          <div style="font-weight:600;color:var(--text);">${totalStaked.toLocaleString(undefined, { maximumFractionDigits: 0 })} MOLT</div>
+          <div style="font-weight:600;color:var(--text);">${totalStaked.toLocaleString(undefined, { maximumFractionDigits: 0 })} LICN</div>
         </div>
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.5rem;" id="fullTiersGrid">
         ${tierNames.map((name, i) => {
-      const isActive = lockTier === name && stMolt > 0;
+      const isActive = lockTier === name && stLicn > 0;
       const apyVal = poolTiers[i]?.apy_percent;
       const apyLabel = apyVal != null && apyVal > 0 ? apyVal.toFixed(1) + '% APY' : tierMultipliers[i] + ' rewards';
       return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
@@ -870,10 +870,10 @@ async function loadStakingTab() {
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
         <button id="fullStakeBtn" class="btn btn-primary" style="width:100%;padding:1rem;font-size:0.9rem;">
-          <i class="fas fa-arrow-down"></i> Stake MOLT
+          <i class="fas fa-arrow-down"></i> Stake LICN
         </button>
         <button id="fullUnstakeBtn" class="btn btn-secondary" style="width:100%;padding:1rem;font-size:0.9rem;${isLocked ? 'opacity:0.5;cursor:not-allowed;' : ''}">
-          <i class="fas fa-arrow-up"></i> Unstake stMOLT
+          <i class="fas fa-arrow-up"></i> Unstake stLICN
         </button>
       </div>
 
@@ -890,11 +890,11 @@ async function loadStakingTab() {
     if (pendingReqs.length > 0) {
       $('fullPendingUnstakes').style.display = 'block';
       $('fullUnstakesList').innerHTML = pendingReqs.map(req => {
-        const amt = (Number(req.molt_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const amt = (Number(req.licn_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
         const cs = Math.floor(Date.now() / 400);
         const claimable = req.claimable_at <= cs;
         return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-weight:600;">${amt} MOLT</span>
+          <span style="font-weight:600;">${amt} LICN</span>
           ${claimable
             ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
             : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ~${((req.claimable_at - cs) / 216000).toFixed(1)} days</span>`
@@ -932,7 +932,7 @@ async function showStakeModal() {
   overlay.innerHTML = `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas fa-layer-group" style="color:#3b82f6;"></i> Stake to Liquid Staking</h3>
-      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (MOLT)</label>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
       <input type="number" id="stakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
       <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
@@ -944,7 +944,7 @@ async function showStakeModal() {
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="stakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
       <div style="display:flex;gap:0.75rem;">
-        <button id="stakeConfirmBtn" class="btn btn-primary" style="flex:1;padding:0.75rem;">Stake MOLT</button>
+        <button id="stakeConfirmBtn" class="btn btn-primary" style="flex:1;padding:0.75rem;">Stake LICN</button>
         <button id="stakeCancelBtn" class="btn btn-secondary" style="flex:1;padding:0.75rem;">Cancel</button>
       </div>
       <div id="stakeModalStatus" style="margin-top:0.75rem;font-size:0.85rem;text-align:center;"></div>
@@ -960,22 +960,22 @@ async function showStakeModal() {
     const statusEl = overlay.querySelector('#stakeModalStatus');
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
     if (!password) { statusEl.textContent = 'Password required'; return; }
-    // Balance guard: check spendable MOLT
+    // Balance guard: check spendable LICN
     try {
       const balResult = await rpc().getBalance(wallet.address);
-      const spendable = Number(balResult?.spendable || balResult?.shells || 0) / 1_000_000_000;
+      const spendable = Number(balResult?.spendable || balResult?.spores || 0) / 1_000_000_000;
       const maxStakable = Math.max(0, spendable - 0.001);
-      if (maxStakable <= 0) { statusEl.textContent = 'Insufficient MOLT balance'; return; }
+      if (maxStakable <= 0) { statusEl.textContent = 'Insufficient LICN balance'; return; }
       if (amount > maxStakable) {
         amount = parseFloat(maxStakable.toFixed(6));
         overlay.querySelector('#stakeAmountInput').value = amount;
-        statusEl.textContent = `Adjusted to available: ${amount} MOLT`;
+        statusEl.textContent = `Adjusted to available: ${amount} LICN`;
         return;
       }
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Staking...';
-      await stakeMolt({ wallet, password, amountMolt: amount, tier, network: state.network?.selected || 'local-testnet' });
+      await stakeLicn({ wallet, password, amountLicn: amount, tier, network: state.network?.selected || 'local-testnet' });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -994,8 +994,8 @@ async function showUnstakeModal() {
   overlay.innerHTML = `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas fa-unlock-alt" style="color:#f59e0b;"></i> Unstake from Liquid Staking</h3>
-      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>7-day cooldown</strong> before you can claim your MOLT.</p>
-      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stMOLT)</label>
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>7-day cooldown</strong> before you can claim your LICN.</p>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stLICN)</label>
       <input type="number" id="unstakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
       <input type="password" id="unstakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
@@ -1015,21 +1015,21 @@ async function showUnstakeModal() {
     const statusEl = overlay.querySelector('#unstakeModalStatus');
     if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
     if (!password) { statusEl.textContent = 'Password required'; return; }
-    // Balance guard: check stMOLT position
+    // Balance guard: check stLICN position
     try {
       const pos = await rpc().call('getStakingPosition', [wallet.address]);
-      const stMolt = (pos?.st_molt_amount || 0) / 1_000_000_000;
-      if (stMolt <= 0) { statusEl.textContent = 'No stMOLT balance to unstake'; return; }
-      if (amount > stMolt) {
-        amount = parseFloat(stMolt.toFixed(6));
+      const stLicn = (pos?.st_licn_amount || 0) / 1_000_000_000;
+      if (stLicn <= 0) { statusEl.textContent = 'No stLICN balance to unstake'; return; }
+      if (amount > stLicn) {
+        amount = parseFloat(stLicn.toFixed(6));
         overlay.querySelector('#unstakeAmountInput').value = amount;
-        statusEl.textContent = `Adjusted to stMOLT balance: ${amount}`;
+        statusEl.textContent = `Adjusted to stLICN balance: ${amount}`;
         return;
       }
     } catch (e) { /* let RPC reject */ }
     try {
       statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unstaking...';
-      await unstakeStMolt({ wallet, password, amountMolt: amount, network: state.network?.selected || 'local-testnet' });
+      await unstakeStLicn({ wallet, password, amountLicn: amount, network: state.network?.selected || 'local-testnet' });
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
@@ -1057,7 +1057,7 @@ async function handleFullClaim() {
     const balResult = await rpc().call('getBalance', [wallet.address]);
     const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
     if (spendable < 0.001) {
-      alert('Insufficient MOLT for transaction fee (need 0.001 MOLT)');
+      alert('Insufficient LICN for transaction fee (need 0.001 LICN)');
       return;
     }
   } catch (e) { /* let RPC reject */ }
@@ -1065,7 +1065,7 @@ async function handleFullClaim() {
   const password = prompt('Enter wallet password to claim unstake:');
   if (!password) return;
   try {
-    await claimReefStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
+    await claimMossStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
     alert('Claim successful!');
     loadStakingTab();
   } catch (err) {
@@ -1106,8 +1106,8 @@ async function loadShieldTab() {
 
   _shieldedState = { balance: shieldedBalance, address: shieldedAddress, notes: ownedNotes, poolStats };
 
-  const balMolt = (shieldedBalance / 1_000_000_000).toFixed(4);
-  const poolMolt = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';
+  const balLicn = (shieldedBalance / 1_000_000_000).toFixed(4);
+  const poolLicn = poolStats ? ((poolStats.pool_balance || 0) / 1_000_000_000).toFixed(2) : '—';
   const commitCount = poolStats ? (poolStats.commitment_count || poolStats.commitmentCount || 0).toLocaleString() : '—';
   const unspent = ownedNotes.filter(n => !n.spent);
 
@@ -1115,7 +1115,7 @@ async function loadShieldTab() {
     ? unspent.map(n => `
         <div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
           <div>
-            <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} MOLT</div>
+            <div style="font-weight:600;"><i class="fas fa-lock" style="color:#10b981;margin-right:0.25rem;"></i>${(Number(n.value || 0) / 1e9).toFixed(4)} LICN</div>
             <div style="font-size:0.7rem;color:var(--text-muted);">Note #${n.index || '?'} &bull; ${(n.commitment || '').slice(0, 12)}...</div>
           </div>
           <span style="font-size:0.7rem;background:rgba(16,185,129,0.1);color:#10b981;padding:0.2rem 0.5rem;border-radius:4px;"><i class="fas fa-check-circle"></i> Unspent</span>
@@ -1123,7 +1123,7 @@ async function loadShieldTab() {
     : `<div style="text-align:center;padding:1.5rem;color:var(--text-muted);">
         <i class="fas fa-shield-alt" style="font-size:1.5rem;opacity:0.4;display:block;margin-bottom:0.5rem;"></i>
         <p style="margin:0 0 0.25rem;">No shielded notes yet</p>
-        <p style="margin:0;font-size:0.8rem;">Shield MOLT to create your first private note</p>
+        <p style="margin:0;font-size:0.8rem;">Shield LICN to create your first private note</p>
       </div>`;
 
   container.innerHTML = `
@@ -1132,15 +1132,15 @@ async function loadShieldTab() {
         <i class="fas fa-user-shield" style="color:#10b981;"></i> Zero-Knowledge Privacy
         <span style="font-size:0.65rem;background:rgba(16,185,129,0.15);color:#10b981;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">Groth16/BN254</span>
       </h3>
-      <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
+      <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">Shield LICN to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.</p>
     </div>
 
     <div style="background:var(--card-bg);padding:1.25rem;border-radius:12px;border:1px solid var(--border);margin-bottom:1.25rem;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
         <div>
           <div style="font-size:0.75rem;color:var(--text-muted);">Shielded Balance</div>
-          <div style="font-size:1.4rem;font-weight:700;color:var(--text);">${balMolt} MOLT</div>
-          <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} shells</div>
+          <div style="font-size:1.4rem;font-weight:700;color:var(--text);">${balLicn} LICN</div>
+          <div style="font-size:0.7rem;color:var(--text-muted);">${shieldedBalance.toLocaleString()} spores</div>
         </div>
         <div style="display:flex;gap:0.5rem;">
           <button class="btn btn-small btn-primary" id="extShieldBtn"><i class="fas fa-arrow-down"></i> Shield</button>
@@ -1177,7 +1177,7 @@ async function loadShieldTab() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1.25rem;">
       <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
         <div style="font-size:0.7rem;color:var(--text-muted);">Total Shielded</div>
-        <div style="font-weight:600;color:var(--text);">${poolMolt} MOLT</div>
+        <div style="font-weight:600;color:var(--text);">${poolLicn} LICN</div>
       </div>
       <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
         <div style="font-size:0.7rem;color:var(--text-muted);">Commitments</div>
@@ -1207,7 +1207,7 @@ async function loadShieldTab() {
 }
 
 function showShieldModal(type) {
-  const titles = { shield: 'Shield MOLT', unshield: 'Unshield MOLT', transfer: 'Private Transfer' };
+  const titles = { shield: 'Shield LICN', unshield: 'Unshield LICN', transfer: 'Private Transfer' };
   const icons = { shield: 'fa-arrow-down', unshield: 'fa-arrow-up', transfer: 'fa-paper-plane' };
 
   const extraField = type === 'unshield'
@@ -1224,7 +1224,7 @@ function showShieldModal(type) {
   overlay.innerHTML = `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
       <h3 style="margin:0 0 1rem;"><i class="fas ${icons[type]}" style="color:#10b981;"></i> ${titles[type]}</h3>
-      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (MOLT)</label>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (LICN)</label>
       <input type="number" id="shieldModalAmount" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
       ${extraField}
       <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
@@ -1256,13 +1256,13 @@ function showShieldModal(type) {
         const balResult = await rpc().call('getBalance', [wallet.address]);
         const spendable = (balResult?.spendable || balResult?.balance || 0) / 1e9;
         const maxShieldable = Math.max(0, spendable - 0.001);
-        if (maxShieldable <= 0) { statusEl.textContent = 'Insufficient MOLT balance to shield'; return; }
-        if (amount > maxShieldable) { statusEl.textContent = `Max shieldable: ${maxShieldable.toFixed(4)} MOLT`; return; }
+        if (maxShieldable <= 0) { statusEl.textContent = 'Insufficient LICN balance to shield'; return; }
+        if (amount > maxShieldable) { statusEl.textContent = `Max shieldable: ${maxShieldable.toFixed(4)} LICN`; return; }
       } else {
         // unshield/transfer: check shielded balance
         const shieldedBal = (_shieldedState.balance || 0) / 1e9;
         if (shieldedBal <= 0) { statusEl.textContent = 'No shielded balance available'; return; }
-        if (amount > shieldedBal) { statusEl.textContent = `Max available: ${shieldedBal.toFixed(4)} MOLT`; return; }
+        if (amount > shieldedBal) { statusEl.textContent = `Max available: ${shieldedBal.toFixed(4)} LICN`; return; }
       }
     } catch (e) { /* let RPC reject */ }
 
@@ -1292,7 +1292,7 @@ async function loadIdentityTab() {
   const container = $('identityContent');
   if (!wallet || !container) return;
 
-  container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading MoltyID...</div>';
+  container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading LichenID...</div>';
 
   try {
     const data = await loadIdentityDetails(wallet.address, state.network?.selected);
@@ -1304,8 +1304,8 @@ async function loadIdentityTab() {
           <div class="id-onboard-step" id="idRegisterStep" style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--primary);border-radius:12px;cursor:pointer;transition:background 0.2s;">
             <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-fingerprint"></i></div>
             <div style="flex:1;">
-              <div style="font-weight:600;">Register Your MoltyID</div>
-              <div style="font-size:0.82rem;color:var(--text-muted);">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 MOLT tx fee.</div>
+              <div style="font-weight:600;">Register Your LichenID</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);">Create your on-chain identity — choose a display name and agent type. Free — only the 0.0001 LICN tx fee.</div>
             </div>
             <i class="fas fa-chevron-right" style="color:var(--primary);"></i>
           </div>
@@ -1328,13 +1328,13 @@ async function loadIdentityTab() {
     const repPct = Math.min(100, (rep / 10000) * 100);
     const agentType = getAgentTypeName(data.agentType);
     const displayName = data.name || 'Unnamed';
-    const moltNameDisplay = data.moltName
-      ? (data.moltName.endsWith('.molt') ? data.moltName : data.moltName + '.molt')
+    const lichenNameDisplay = data.lichenName
+      ? (data.lichenName.endsWith('.lichen') ? data.lichenName : data.lichenName + '.lichen')
       : '';
-    // Avoid "name name.molt" duplicate when display name matches molt name
-    const moltBase = data.moltName ? data.moltName.replace(/\.molt$/, '').toLowerCase() : '';
-    const rawDisplayLower = (data.name || '').toLowerCase().replace(/\.molt$/, '');
-    const showDisplayName = !moltNameDisplay || rawDisplayLower !== moltBase;
+    // Avoid "name name.lichen" duplicate when display name matches licn name
+    const lichenBase = data.lichenName ? data.lichenName.replace(/\.licn$/, '').toLowerCase() : '';
+    const rawDisplayLower = (data.name || '').toLowerCase().replace(/\.licn$/, '');
+    const showDisplayName = !lichenNameDisplay || rawDisplayLower !== lichenBase;
     const isActive = data.active;
     const skills = data.skills;
     const achievements = data.achievements;
@@ -1367,7 +1367,7 @@ async function loadIdentityTab() {
 
     const vouchChips = vouchesReceived.length > 0
       ? vouchesReceived.slice(0, 12).map(v => {
-        const label = escapeHtmlExt(v.voucher_name ? v.voucher_name + '.molt' : fmtAddr(v.voucher, 8));
+        const label = escapeHtmlExt(v.voucher_name ? v.voucher_name + '.lichen' : fmtAddr(v.voucher, 8));
         return `<span style="display:inline-block;padding:0.2rem 0.6rem;background:var(--bg-tertiary);border-radius:6px;font-size:0.75rem;margin:0.15rem;">${label}</span>`;
       }).join('')
       : '<span style="color:var(--text-muted);font-size:0.82rem;">None yet</span>';
@@ -1384,7 +1384,7 @@ async function loadIdentityTab() {
           <i class="fas fa-fingerprint" style="color:${tier.color};font-size:1.25rem;"></i>
         </div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:1.1rem;">${showDisplayName ? escapeHtmlExt(displayName) : ''}${moltNameDisplay ? ` <span style="color:var(--primary);">${escapeHtmlExt(moltNameDisplay)}</span>` : (showDisplayName ? '' : escapeHtmlExt(displayName))}</div>
+          <div style="font-weight:700;font-size:1.1rem;">${showDisplayName ? escapeHtmlExt(displayName) : ''}${lichenNameDisplay ? ` <span style="color:var(--primary);">${escapeHtmlExt(lichenNameDisplay)}</span>` : (showDisplayName ? '' : escapeHtmlExt(displayName))}</div>
           <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-top:0.25rem;">
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:${tier.color}18;color:${tier.color};border:1px solid ${tier.color}33;">${tier.name}</span>
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:var(--bg-tertiary);">${agentType}</span>
@@ -1411,13 +1411,13 @@ async function loadIdentityTab() {
           ${nextInfo}
         </div>
 
-        <!-- .molt Name -->
+        <!-- .lichen Name -->
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
-            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .molt Name</span>
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .lichen Name</span>
           </div>
-          ${data.moltName ? `
-            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.moltName.endsWith('.molt') ? data.moltName : data.moltName + '.molt')}</div>
+          ${data.lichenName ? `
+            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.lichenName.endsWith('.lichen') ? data.lichenName : data.lichenName + '.lichen')}</div>
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
               <button class="btn btn-small btn-secondary" id="idRenewNameBtn"><i class="fas fa-redo"></i> Renew</button>
               <button class="btn btn-small btn-secondary" id="idTransferNameBtn"><i class="fas fa-exchange-alt"></i> Transfer</button>
@@ -1425,7 +1425,7 @@ async function loadIdentityTab() {
             </div>
           ` : `
             <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.5rem;">No name registered</div>
-            <small style="color:var(--text-muted);">5+ chars from 20 MOLT/yr</small>
+            <small style="color:var(--text-muted);">5+ chars from 20 LICN/yr</small>
             <div style="margin-top:0.75rem;text-align:center;">
               <button class="btn btn-small btn-primary" id="idRegisterNameBtn"><i class="fas fa-plus"></i> Register</button>
             </div>
@@ -1476,7 +1476,7 @@ async function loadIdentityTab() {
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;font-size:0.82rem;">
             <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Endpoint</span><span style="font-family:monospace;">${escapeHtmlExt(data.endpoint) || '<em style="opacity:0.4;">Not set</em>'}</span></div>
             <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Status</span>${data.availability === 'online' ? '<span style="color:#4ade80;">Online</span>' : '<span style="color:var(--text-muted);">Offline</span>'}</div>
-            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Rate</span>${data.rate.toLocaleString(undefined, { maximumFractionDigits: 9 })} MOLT/req</div>
+            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Rate</span>${data.rate.toLocaleString(undefined, { maximumFractionDigits: 9 })} LICN/req</div>
           </div>
         </div>
       </div>
@@ -1487,9 +1487,9 @@ async function loadIdentityTab() {
     $('idAddSkillBtn')?.addEventListener('click', () => showIdentityAddSkillModal());
     $('idVouchBtn')?.addEventListener('click', () => showIdentityVouchModal());
     $('idRegisterNameBtn')?.addEventListener('click', () => showIdentityRegisterNameModal());
-    $('idRenewNameBtn')?.addEventListener('click', () => showIdentityRenewNameModal(data.moltName));
-    $('idTransferNameBtn')?.addEventListener('click', () => showIdentityTransferNameModal(data.moltName));
-    $('idReleaseNameBtn')?.addEventListener('click', () => showIdentityReleaseNameModal(data.moltName));
+    $('idRenewNameBtn')?.addEventListener('click', () => showIdentityRenewNameModal(data.lichenName));
+    $('idTransferNameBtn')?.addEventListener('click', () => showIdentityTransferNameModal(data.lichenName));
+    $('idReleaseNameBtn')?.addEventListener('click', () => showIdentityReleaseNameModal(data.lichenName));
     $('idConfigAgentBtn')?.addEventListener('click', () => showIdentityAgentConfigModal(data));
 
   } catch (e) {
@@ -1577,8 +1577,8 @@ async function showIdentityRegisterModal() {
   const wallet = getActiveWallet();
   if (!wallet) return;
 
-  showIdentityPrompt('Register MoltyID', [
-    { type: 'info', html: 'Create your on-chain identity. Choose a display name and agent type.<br><small>Free — only the 0.0001 MOLT tx fee applies.</small>' },
+  showIdentityPrompt('Register LichenID', [
+    { type: 'info', html: 'Create your on-chain identity. Choose a display name and agent type.<br><small>Free — only the 0.0001 LICN tx fee applies.</small>' },
     { id: 'displayName', label: 'Display Name', type: 'text', placeholder: 'e.g. CryptoBuilder' },
     { id: 'agentType', label: 'Agent Type', type: 'select', options: AGENT_TYPES.map(t => ({ value: t.value, label: `${t.label} — ${t.desc}` })) },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
@@ -1626,7 +1626,7 @@ async function showIdentityVouchModal() {
   if (!wallet) return;
 
   showIdentityPrompt('Vouch for Identity', [
-    { type: 'info', html: 'Vouch for another MoltyID holder. Both parties must have registered identities.' },
+    { type: 'info', html: 'Vouch for another LichenID holder. Both parties must have registered identities.' },
     { id: 'vouchee', label: 'Address to Vouch For', type: 'text', placeholder: 'Base58 address' },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
@@ -1641,13 +1641,13 @@ async function showIdentityRegisterNameModal() {
   const wallet = getActiveWallet();
   if (!wallet) return;
 
-  showIdentityPrompt('Register .molt Name', [
-    { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 MOLT/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 MOLT/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 MOLT/year (auction only)</div></div><small>Names: lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small><div id="extNameCostPreview" style="margin-top:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-card);border-radius:6px;font-size:0.82rem;display:none;"><span style="opacity:0.7;">Total cost:</span> <strong id="extNameCostValue">—</strong></div>' },
-    { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname (5+ characters)' },
+  showIdentityPrompt('Register .lichen Name', [
+    { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 LICN/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 LICN/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 LICN/year (auction only)</div></div><small>Names: lowercase, 5-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small><div id="extNameCostPreview" style="margin-top:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-card);border-radius:6px;font-size:0.82rem;display:none;"><span style="opacity:0.7;">Total cost:</span> <strong id="extNameCostValue">—</strong></div>' },
+    { id: 'name', label: 'Name (without .licn)', type: 'text', placeholder: 'myname (5+ characters)' },
     { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
-    await registerMoltName({
+    await registerLichenName({
       wallet, password: values.password, network: state.network?.selected,
       name: values.name, durationYears: values.duration
     });
@@ -1666,12 +1666,12 @@ async function showIdentityRegisterNameModal() {
       });
     }
     const updateCost = () => {
-      const n = (nameInput?.value || '').toLowerCase().replace(/\.molt$/, '').trim();
+      const n = (nameInput?.value || '').toLowerCase().replace(/\.licn$/, '').trim();
       const d = Math.max(1, Math.min(10, parseInt(durationInput?.value) || 1));
       if (n.length >= 5) {
         const costPerYear = n.length <= 3 ? 500 : n.length === 4 ? 100 : 20;
         const total = costPerYear * d;
-        if (costValue) costValue.textContent = `${total} MOLT (${costPerYear} MOLT × ${d} yr)`;
+        if (costValue) costValue.textContent = `${total} LICN (${costPerYear} LICN × ${d} yr)`;
         if (preview) preview.style.display = 'block';
       } else {
         if (preview) preview.style.display = 'none';
@@ -1685,13 +1685,13 @@ async function showIdentityRegisterNameModal() {
 async function showIdentityRenewNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.molt$/, '');
+  const name = (currentName || '').replace(/\.licn$/, '');
 
-  showIdentityPrompt(`Renew ${name}.molt`, [
+  showIdentityPrompt(`Renew ${name}.licn`, [
     { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', value: '1', min: 1, max: 10, step: 1 },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
-    await renewMoltName({
+    await renewLichenName({
       wallet, password: values.password, network: state.network?.selected,
       name, additionalYears: values.years
     });
@@ -1701,14 +1701,14 @@ async function showIdentityRenewNameModal(currentName) {
 async function showIdentityTransferNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.molt$/, '');
+  const name = (currentName || '').replace(/\.licn$/, '');
 
-  showIdentityPrompt(`Transfer ${name}.molt`, [
+  showIdentityPrompt(`Transfer ${name}.licn`, [
     { type: 'info', html: 'Transfer ownership to another address. <strong>This is irreversible.</strong>' },
     { id: 'recipient', label: 'Recipient Address', type: 'text', placeholder: 'Base58 address' },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
-    await transferMoltName({
+    await transferLichenName({
       wallet, password: values.password, network: state.network?.selected,
       name, recipient: values.recipient
     });
@@ -1718,15 +1718,15 @@ async function showIdentityTransferNameModal(currentName) {
 async function showIdentityReleaseNameModal(currentName) {
   const wallet = getActiveWallet();
   if (!wallet) return;
-  const name = (currentName || '').replace(/\.molt$/, '');
+  const name = (currentName || '').replace(/\.licn$/, '');
 
-  if (!confirm(`Release ${name}.molt? This is permanent and cannot be undone.`)) return;
+  if (!confirm(`Release ${name}.licn? This is permanent and cannot be undone.`)) return;
 
-  showIdentityPrompt(`Confirm Release: ${name}.molt`, [
-    { type: 'info', html: `You are about to permanently release <strong>${name}.molt</strong>. It can be re-registered by anyone.` },
+  showIdentityPrompt(`Confirm Release: ${name}.licn`, [
+    { type: 'info', html: `You are about to permanently release <strong>${name}.lichen</strong>. It can be re-registered by anyone.` },
     { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
   ], async (values) => {
-    await releaseMoltName({
+    await releaseLichenName({
       wallet, password: values.password, network: state.network?.selected,
       name
     });
@@ -1740,7 +1740,7 @@ async function showIdentityAgentConfigModal(data) {
   showIdentityPrompt('Agent Service Configuration', [
     { type: 'info', html: 'Configure how other agents discover and interact with your identity.' },
     { id: 'endpoint', label: 'Service Endpoint URL', type: 'text', placeholder: 'https://api.example.com/agent', value: data.endpoint || '' },
-    { id: 'rate', label: 'Rate (MOLT per request)', type: 'number', placeholder: '0.001', value: String(data.rate || 0) },
+    { id: 'rate', label: 'Rate (LICN per request)', type: 'number', placeholder: '0.001', value: String(data.rate || 0) },
     {
       id: 'availability', label: 'Availability', type: 'select', options: [
         { value: 'online', label: 'Online', selected: data.availability === 'online' },
@@ -1754,7 +1754,7 @@ async function showIdentityAgentConfigModal(data) {
       tasks.push(() => setIdentityEndpoint({ wallet, password: values.password, network: state.network?.selected, endpoint: values.endpoint }));
     }
     if (Number(values.rate || 0) !== data.rate) {
-      tasks.push(() => setIdentityRate({ wallet, password: values.password, network: state.network?.selected, rateMolt: values.rate }));
+      tasks.push(() => setIdentityRate({ wallet, password: values.password, network: state.network?.selected, rateLicn: values.rate }));
     }
     const newOnline = values.availability === 'online';
     const oldOnline = data.availability === 'online';
@@ -1775,20 +1775,20 @@ async function loadAssets() {
 
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.shells || result?.spendable || 0);
-    const molt = raw / 1_000_000_000;
+    const raw = Number(result?.spores || result?.spendable || 0);
+    const licn = raw / 1_000_000_000;
     const d = decimals();
 
     list.innerHTML = `
       <div class="asset-item">
-        <div class="asset-icon" style="background:rgba(255,107,53,0.12);color:var(--primary);">🦞</div>
+        <div class="asset-icon" style="background:rgba(0, 201, 219,0.12);color:var(--primary);">🦞</div>
         <div class="asset-info">
-          <div class="asset-name">MOLT</div>
-          <div class="asset-symbol">MoltChain Native Token</div>
+          <div class="asset-name">LICN</div>
+          <div class="asset-symbol">Lichen Native Token</div>
         </div>
         <div class="asset-balance">
-          <div class="asset-amount">${molt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })}</div>
-          <div class="asset-value">$${(molt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
+          <div class="asset-amount">${licn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })}</div>
+          <div class="asset-value">$${(licn * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
         </div>
       </div>
     `;
@@ -1840,10 +1840,10 @@ async function loadActivity(reset = true) {
         'Reward': 'Reward',
         'GenesisTransfer': 'Genesis Transfer',
         'GenesisMint': 'Genesis Mint',
-        'ReefStakeDeposit': 'Staked (Liquid Staking)',
-        'ReefStakeUnstake': 'Unstake Requested',
-        'ReefStakeClaim': 'Claimed Unstake',
-        'ReefStakeTransfer': 'ReefStake Transfer',
+        'MossStakeDeposit': 'Staked (Liquid Staking)',
+        'MossStakeUnstake': 'Unstake Requested',
+        'MossStakeClaim': 'Claimed Unstake',
+        'MossStakeTransfer': 'MossStake Transfer',
         'DeployContract': 'Deploy Contract',
         'SetContractABI': 'Set Contract ABI',
         'FaucetAirdrop': 'Faucet Airdrop',
@@ -1855,10 +1855,10 @@ async function loadActivity(reset = true) {
 
       // Icons & colors — aligned with wallet website
       let icon = isSend ? 'fa-arrow-up' : 'fa-arrow-down';
-      let color = isSend ? '#ff6b35' : '#4ade80';
+      let color = isSend ? '#00C9DB' : '#4ade80';
       let sign = isSend ? '-' : '+';
 
-      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake' || tx.type === 'ReefStakeDeposit' || tx.type === 'ReefStakeUnstake' || tx.type === 'ReefStakeClaim' || tx.type === 'ReefStakeTransfer') {
+      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake' || tx.type === 'MossStakeDeposit' || tx.type === 'MossStakeUnstake' || tx.type === 'MossStakeClaim' || tx.type === 'MossStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
       } else if (tx.type === 'RegisterEvmAddress' || tx.type === 'RegisterSymbol' || tx.type === 'SetContractABI') {
         icon = 'fa-link'; color = '#94a3b8';
@@ -1874,7 +1874,7 @@ async function loadActivity(reset = true) {
 
       const address = isSend ? (tx.to || '') : (tx.from || '');
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '…' + address.slice(-4) : (address || '');
-      const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
+      const amountVal = tx.amount_spores ? tx.amount_spores : (tx.amount || 0);
       const amt = (Number(amountVal) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
       const explorerLink = sig !== 'unknown' ? `${explorerBase}${sig}` : '#';
@@ -1882,9 +1882,9 @@ async function loadActivity(reset = true) {
       // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
       const isFeeOnly = tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount);
-      const feeShells = tx.fee_shells || tx.fee || 0;
-      const feeAmt = (Number(feeShells) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
-      const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amt} MOLT`;
+      const feeSpores = tx.fee_spores || tx.fee || 0;
+      const feeAmt = (Number(feeSpores) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+      const amountStr = isFeeOnly ? `${feeAmt} LICN` : `${sign}${amt} LICN`;
       const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
       return `
@@ -1958,15 +1958,15 @@ async function handleSend() {
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
-    const spendable = Number(balResult?.spendable || balResult?.shells || 0) / 1_000_000_000;
+    const spendable = Number(balResult?.spendable || balResult?.spores || 0) / 1_000_000_000;
     const maxSendable = Math.max(0, spendable - 0.001);
     if (maxSendable <= 0) {
-      showToast('Insufficient MOLT balance (not enough to cover fee)', 'error');
+      showToast('Insufficient LICN balance (not enough to cover fee)', 'error');
       return;
     }
     if (amount > maxSendable) {
       $('sendAmount').value = maxSendable.toFixed(6);
-      showToast(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} MOLT`, 'error');
+      showToast(`Amount adjusted to available balance: ${maxSendable.toFixed(6)} LICN`, 'error');
       return;
     }
 
@@ -1978,7 +1978,7 @@ async function handleSend() {
       privateKeyHex: privKey,
       fromPublicKeyHex: wallet.publicKey,
       toAddress: to,
-      amountMolt: amount,
+      amountLicn: amount,
       blockhash
     });
 
@@ -2046,7 +2046,7 @@ async function handleExportJson() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `molt-wallet-keystore-${wallet.name}-${Date.now()}.json`;
+    a.download = `lichen-wallet-keystore-${wallet.name}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
     showToast('Keystore JSON downloaded', 'success');
@@ -2175,7 +2175,7 @@ async function executeExtensionDeposit(chain, asset, chainLabel, container) {
 
     if (resultEl) {
       resultEl.innerHTML = `
-        <div style="background:rgba(255,107,53,0.06);border-radius:8px;padding:1rem;text-align:left;">
+        <div style="background:rgba(0, 201, 219,0.06);border-radius:8px;padding:1rem;text-align:left;">
           <div style="margin-bottom:0.5rem;"><strong>Send ${safeAsset} on ${escapeHtmlExt(chainLabel)} to:</strong></div>
           <div class="mono" style="word-break:break-all;background:rgba(0,0,0,0.15);padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;cursor:pointer;" id="extDepositAddr">${safeAddr}</div>
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Deposit ID: ${safeId}</div>
@@ -2236,7 +2236,7 @@ function restoreDepositTab(container) {
   clearExtDepositPolling();
   extActiveDepositId = null;
   container.innerHTML = `
-    <p style="text-align:center;color:var(--text-secondary);margin-bottom:1.25rem;font-size:0.95rem;">Deposit assets to your MoltChain wallet via bridge</p>
+    <p style="text-align:center;color:var(--text-secondary);margin-bottom:1.25rem;font-size:0.95rem;">Deposit assets to your Lichen wallet via bridge</p>
     <div class="deposit-options">
       <div class="deposit-card" id="depositSOL">
         <div class="deposit-card-icon" style="background:rgba(153,69,255,0.12);color:#9945FF;"><i class="fas fa-sun"></i></div>
@@ -2254,12 +2254,12 @@ function restoreDepositTab(container) {
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
       <div class="deposit-card disabled">
-        <div class="deposit-card-icon" style="background:rgba(255,107,53,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
+        <div class="deposit-card-icon" style="background:rgba(0, 201, 219,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
         <div class="deposit-card-info"><strong>Buy with Fiat</strong><span>Coming with mainnet launch</span></div>
         <span class="label-badge">Soon</span>
       </div>
     </div>
-    <div style="text-align:center;margin-top:1.5rem;padding:0.75rem;background:rgba(255,107,53,0.08);border-radius:8px;font-size:0.85rem;color:var(--text-secondary);">
+    <div style="text-align:center;margin-top:1.5rem;padding:0.75rem;background:rgba(0, 201, 219,0.08);border-radius:8px;font-size:0.85rem;color:var(--text-secondary);">
       <i class="fas fa-shield-alt" style="color:var(--primary);"></i> Bridge contracts are audited. Deposits typically confirm in 2-5 minutes.
     </div>
   `;
@@ -2290,7 +2290,7 @@ async function populateSendTokenDropdown() {
   if (!select) return;
   const wallet = getActiveWallet();
   if (!wallet) return;
-  select.innerHTML = '<option value="MOLT">MOLT</option>';
+  select.innerHTML = '<option value="LICN">LICN</option>';
   try {
     const accounts = await rpc().call('getTokenAccounts', [wallet.address]);
     if (Array.isArray(accounts)) {
@@ -2302,12 +2302,12 @@ async function populateSendTokenDropdown() {
         }
       }
     }
-  } catch { /* fallback: only MOLT */ }
-  // Add stMOLT if user has a staking position
+  } catch { /* fallback: only LICN */ }
+  // Add stLICN if user has a staking position
   try {
     const pos = await rpc().call('getStakingPosition', [wallet.address]);
-    if (pos && pos.st_molt_amount > 0) {
-      select.innerHTML += '<option value="stMOLT">stMOLT</option>';
+    if (pos && pos.st_licn_amount > 0) {
+      select.innerHTML += '<option value="stLICN">stLICN</option>';
     }
   } catch { /* no staking position */ }
 }
@@ -2319,8 +2319,8 @@ async function updateSendAvailableBalance() {
   if (!wallet) { el.textContent = ''; return; }
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.spendable || result?.shells || 0) / 1_000_000_000;
-    el.textContent = `Available: ${raw.toLocaleString(undefined, { maximumFractionDigits: decimals() })} MOLT`;
+    const raw = Number(result?.spendable || result?.spores || 0) / 1_000_000_000;
+    el.textContent = `Available: ${raw.toLocaleString(undefined, { maximumFractionDigits: decimals() })} LICN`;
   } catch { el.textContent = ''; }
 }
 
@@ -2497,7 +2497,7 @@ function wireEvents() {
     if (!wallet) return;
     try {
       const result = await rpc().getBalance(wallet.address);
-      const spendable = Number(result?.spendable || result?.shells || 0) / 1_000_000_000;
+      const spendable = Number(result?.spendable || result?.spores || 0) / 1_000_000_000;
       $('sendAmount').value = Math.max(0, spendable - 0.001).toFixed(6);
     } catch { /* ignore */ }
   });

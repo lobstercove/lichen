@@ -1,4 +1,4 @@
-// Molt Explorer — Contract Detail Page (contract.html)
+// Lichen Explorer — Contract Detail Page (contract.html)
 // Fetches full contract details: info, ABI, storage, registry, calls, events
 // Uses shared NETWORKS, RPC_URL, rpc from explorer.js (loaded first).
 // Font Awesome only — no emojis.
@@ -158,7 +158,7 @@ async function loadContract() {
     document.getElementById('contractAddress').textContent = formatHash(contractAddress);
     document.getElementById('contractAddress').title = contractAddress;
     document.getElementById('contractAddress').dataset.full = contractAddress;
-    document.title = 'Contract ' + contractAddress.slice(0, 12) + '... - Molt Explorer';
+    document.title = 'Contract ' + contractAddress.slice(0, 12) + '... - Lichen Explorer';
 
     // Fetch all data in parallel
     const [info, registry, abi, program, calls, events] = await Promise.all([
@@ -190,18 +190,18 @@ async function loadContract() {
     document.getElementById('contractTitle').textContent = title;
     document.getElementById('contractSymbol').textContent = symbol ? '$' + symbol : '';
     document.getElementById('contractBadge').innerHTML = CATEGORY_BADGE[category] || '';
-    document.title = title + ' - Molt Explorer';
+    document.title = title + ' - Lichen Explorer';
 
     // Overview stats
     const owner = info?.owner || program?.owner || registry?.owner || '';
-    const addressNames = (typeof batchResolveMoltNames === 'function')
-        ? await batchResolveMoltNames([
+    const addressNames = (typeof batchResolveLichenNames === 'function')
+        ? await batchResolveLichenNames([
             owner,
             ...(calls?.calls || calls?.activities || []).map(c => c.caller).filter(Boolean)
         ])
         : {};
     if (owner) {
-        const ownerLabel = addressNames[owner] ? `${addressNames[owner]}.molt` : formatHash(owner);
+        const ownerLabel = addressNames[owner] ? `${addressNames[owner]}.lichen` : formatHash(owner);
         document.getElementById('statOwner').innerHTML =
             '<a href="address.html?address=' + owner + '" title="' + owner + '">' + ownerLabel + '</a>';
     }
@@ -225,7 +225,7 @@ async function loadContract() {
         let supply = infoMeta.total_supply ?? null;
 
         // Fallback: if supply is 0 or null, try calling the contract's total_supply view
-        const isNative = info?.is_native || regMeta.is_native || (symbol === 'MOLT');
+        const isNative = info?.is_native || regMeta.is_native || (symbol === 'LICN');
         if ((!supply || supply === 0) && !isNative) {
             try {
                 const viewResult = await rpc.call('callContract', [contractAddress, 'total_supply']);
@@ -246,7 +246,7 @@ async function loadContract() {
         document.getElementById('tokenDecimals').textContent = decimals;
         document.getElementById('tokenTemplate').textContent = template || 'mt20';
 
-        // For native MOLT token, fetch live supply from getMetrics
+        // For native LICN token, fetch live supply from getMetrics
         if (isNative) {
             try {
                 const metrics = await rpc.call('getMetrics');
@@ -393,7 +393,7 @@ function renderAbi(abi) {
 
         const readOnly = fn.readonly || isViewFn(fn.name)
             ? '<span class="badge info" style="font-size:0.75rem;"><i class="fas fa-eye"></i> View</span>'
-            : '<span class="badge" style="background:rgba(255,170,0,0.15);color:#ffaa00;font-size:0.75rem;"><i class="fas fa-pen"></i> Write</span>';
+            : '<span class="badge" style="background:rgba(255,170,0,0.15);color:#00D4E8;font-size:0.75rem;"><i class="fas fa-pen"></i> Write</span>';
 
         return '<tr>' +
             '<td style="font-weight:600;font-family:\'JetBrains Mono\',monospace;color:var(--text-primary);">' + safeName + '</td>' +
@@ -538,13 +538,13 @@ function renderCallsPage() {
     tbody.innerHTML = pageItems.map(call => {
         const time = call.timestamp ? timeAgo(call.timestamp) : (call.slot !== undefined ? 'Slot ' + formatNumber(call.slot) : '--');
         const callerLabel = call.caller
-            ? (callsAddressNames[call.caller] ? `${escapeHtml(callsAddressNames[call.caller])}.molt` : formatHash(call.caller))
+            ? (callsAddressNames[call.caller] ? `${escapeHtml(callsAddressNames[call.caller])}.lichen` : formatHash(call.caller))
             : '--';
         const caller = call.caller
             ? '<a href="address.html?address=' + encodeURIComponent(call.caller) + '" class="table-link" style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;" title="' + escapeHtml(call.caller) + '">' + callerLabel + '</a>'
             : '--';
         const fn_name = escapeHtml(call.function_name || call.function || call.method || '--');
-        const fee = call.fee !== undefined ? formatMolt(call.fee) : (call.gas_used !== undefined ? formatNumber(call.gas_used) + ' shells' : '--');
+        const fee = call.fee !== undefined ? formatLicn(call.fee) : (call.gas_used !== undefined ? formatNumber(call.gas_used) + ' spores' : '--');
         const status = call.success !== false
             ? '<span class="badge success" style="font-size:0.75rem;"><i class="fas fa-check"></i> OK</span>'
             : '<span class="badge" style="background:rgba(255,70,70,0.15);color:#ff4646;font-size:0.75rem;"><i class="fas fa-times"></i> Failed</span>';

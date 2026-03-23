@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rust SDK - MoltChain Developer Portal</title>
+    <title>Rust SDK - Lichen Developer Portal</title>
     <link rel="stylesheet" href="shared-base-styles.css">
     <link rel="stylesheet" href="shared-theme.css">
     <link rel="stylesheet" href="css/developers.css">
@@ -20,8 +20,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
-                <span class="logo-text">MoltChain Dev</span>
+                <img src="LichenDevelopers_Logo_256.png" class="logo-icon" alt="Lichen Dev">
+                <span class="logo-text">Lichen Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -30,7 +30,7 @@
                 <li><a href="sdk-js.html" class="active">SDK</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
                 <li><a href="cli-reference.html">CLI</a></li>
-                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="lichenid.html">LichenID</a></li>
                 <li><a href="zk-privacy.html">Privacy</a></li>
             </ul>
             <div class="nav-actions">
@@ -110,15 +110,15 @@
             </div>
 
             <h1>Rust Client SDK</h1>
-            <p>The official Rust <strong>client</strong> SDK for MoltChain. Built on <code>reqwest</code> and
+            <p>The official Rust <strong>client</strong> SDK for Lichen. Built on <code>reqwest</code> and
                 <code>tokio</code> with strong typing and <code>Result&lt;T&gt;</code> error handling.</p>
 
             <div class="callout callout-warning">
-                <p><strong>Two Rust SDKs</strong> — MoltChain provides two separate Rust crates:</p>
+                <p><strong>Two Rust SDKs</strong> — Lichen provides two separate Rust crates:</p>
                 <ul>
-                    <li><code>moltchain-client-sdk</code> — <strong>This page.</strong> For off-chain apps, bots, and
+                    <li><code>lichen-client-sdk</code> — <strong>This page.</strong> For off-chain apps, bots, and
                         tools that talk to a node via RPC (uses <code>tokio</code> + <code>reqwest</code>).</li>
-                    <li><code>moltchain-contract-sdk</code> — For on-chain WASM smart contracts (<code>no_std</code>).
+                    <li><code>lichen-contract-sdk</code> — For on-chain WASM smart contracts (<code>no_std</code>).
                         See <a href="contracts.html">Contract Development</a>.</li>
                 </ul>
             </div>
@@ -131,18 +131,18 @@
                                 class="fas fa-copy"></i></button></div>
                     <pre><code># Cargo.toml
 [dependencies]
-moltchain-client-sdk = "0.1"
+lichen-client-sdk = "0.1"
 tokio = { version = "1", features = ["full"] }
 </code></pre>
                 </div>
                 <p>Or via the command line:</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">bash</span></div>
-                    <pre><code>cargo add moltchain-client-sdk</code></pre>
+                    <pre><code>cargo add lichen-client-sdk</code></pre>
                 </div>
                 <div class="callout callout-info">
                     <p>Re-exports:
-                        <code>moltchain_client_sdk::{Client, ClientBuilder, Keypair, TransactionBuilder, Balance, Block, NetworkInfo}</code>
+                        <code>lichen_client_sdk::{Client, ClientBuilder, Keypair, TransactionBuilder, Balance, Block, NetworkInfo}</code>
                     </p>
                 </div>
             </section>
@@ -153,7 +153,7 @@ tokio = { version = "1", features = ["full"] }
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
-                    <pre><code>use moltchain_client_sdk::{Client, Keypair, TransactionBuilder, Balance};
+                    <pre><code>use lichen_client_sdk::{Client, Keypair, TransactionBuilder, Balance};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check balance
     let balance = client.get_balance(&kp.pubkey().to_string()).await?;
-    println!("Balance: {} shells", balance.shells());
+    println!("Balance: {} spores", balance.spores());
 
     // Build and send a transfer
     let blockhash = client.get_recent_blockhash().await?;
@@ -297,7 +297,7 @@ println!("Chain: {} v{}", info.chain_id, info.version);</code></pre>
 
             <div class="method-card">
                 <h3 class="method-name">async get_total_burned(&amp;self) -&gt; Result&lt;Value&gt;</h3>
-                <p class="method-desc">Get total burned MOLT — <code>{"shells": ..., "molt": ...}</code>.</p>
+                <p class="method-desc">Get total burned LICN — <code>{"spores": ..., "licn": ...}</code>.</p>
             </div>
 
             <!-- Account Methods -->
@@ -310,7 +310,7 @@ println!("Chain: {} v{}", info.chain_id, info.version);</code></pre>
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>let bal = client.get_balance("7xKXtg2CW87d...").await?;
-println!("{} shells  ({} MOLT)", bal.shells(), bal.molt());</code></pre>
+println!("{} spores  ({} LICN)", bal.spores(), bal.licn());</code></pre>
                 </div>
             </div>
 
@@ -386,14 +386,14 @@ let sig = client.send_transaction(&tx).await?;</code></pre>
             <div class="method-card">
                 <h3 class="method-name">async stake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt;
                     Result&lt;String&gt;</h3>
-                <p class="method-desc">Stake MOLT to a validator. Amount in shells.</p>
+                <p class="method-desc">Stake LICN to a validator. Amount in spores.</p>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                                 class="fas fa-copy"></i></button></div>
                     <pre><code>let sig = client.stake(
     &kp.pubkey(),
     "ValidatorPubkey...",
-    10_000_000_000  // 10 MOLT
+    10_000_000_000  // 10 LICN
 ).await?;</code></pre>
                 </div>
             </div>
@@ -401,7 +401,7 @@ let sig = client.send_transaction(&tx).await?;</code></pre>
             <div class="method-card">
                 <h3 class="method-name">async unstake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt;
                     Result&lt;String&gt;</h3>
-                <p class="method-desc">Unstake MOLT from a validator.</p>
+                <p class="method-desc">Unstake LICN from a validator.</p>
             </div>
 
             <div class="method-card">
@@ -613,32 +613,32 @@ println!("Transfer complete: {sig}");</code></pre>
                     </thead>
                     <tbody>
                         <tr>
-                            <td>Balance::from_shells(n: u64)</td>
+                            <td>Balance::from_spores(n: u64)</td>
                             <td><span class="param-type">Balance</span></td>
-                            <td>Create from raw shell count</td>
+                            <td>Create from raw spore count</td>
                         </tr>
                         <tr>
-                            <td>Balance::from_molt(n: f64)</td>
+                            <td>Balance::from_licn(n: f64)</td>
                             <td><span class="param-type">Balance</span></td>
-                            <td>Create from MOLT (1 MOLT = 10<sup>9</sup> shells)</td>
+                            <td>Create from LICN (1 LICN = 10<sup>9</sup> spores)</td>
                         </tr>
                         <tr>
-                            <td>balance.shells()</td>
+                            <td>balance.spores()</td>
                             <td><span class="param-type">u64</span></td>
-                            <td>Get balance in shells</td>
+                            <td>Get balance in spores</td>
                         </tr>
                         <tr>
-                            <td>balance.molt()</td>
+                            <td>balance.licn()</td>
                             <td><span class="param-type">f64</span></td>
-                            <td>Get balance in MOLT</td>
+                            <td>Get balance in LICN</td>
                         </tr>
                     </tbody>
                 </table>
                 <div class="code-block">
                     <div class="code-block-header"><span class="code-lang">Rust</span></div>
-                    <pre><code>let b = Balance::from_molt(25.0);
-assert_eq!(b.shells(), 25_000_000_000);
-assert_eq!(b.molt(), 25.0);</code></pre>
+                    <pre><code>let b = Balance::from_licn(25.0);
+assert_eq!(b.spores(), 25_000_000_000);
+assert_eq!(b.licn(), 25.0);</code></pre>
                 </div>
             </div>
 
@@ -686,7 +686,7 @@ pub struct NetworkInfo {
                 <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i
                             class="fas fa-copy"></i></button></div>
                 <pre><code>match client.get_balance("7xKXtg2CW87d...").await {
-    Ok(balance) => println!("{} MOLT", balance.molt()),
+    Ok(balance) => println!("{} LICN", balance.licn()),
     Err(e) => {
         let msg = e.to_string();
         if msg.contains("Account not found") {
@@ -721,7 +721,7 @@ pub struct NetworkInfo {
             <div class="code-block">
                 <div class="code-header"><span>WebSocket — Subscribe to Slots &amp; Accounts</span><button
                         class="code-copy-btn">Copy</button></div>
-                <pre><code>use moltchain_client_sdk::{WsClient, Pubkey};
+                <pre><code>use lichen_client_sdk::{WsClient, Pubkey};
 
 #[tokio::main]
 async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
@@ -735,7 +735,7 @@ async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     // Subscribe to account changes
     let acct = Pubkey::from_base58("YourAccountBase58Here")?;
     let acct_sub = ws.on_account_change(&amp;acct, |account| {
-        println!("Balance changed: {} shells", account.shells);
+        println!("Balance changed: {} spores", account.spores);
     }).await?;
 
     // Unsubscribe when done

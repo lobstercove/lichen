@@ -40,9 +40,9 @@ fn verify_contract_has_pattern(contract_rel_path: &str, patterns: &[(&str, &str)
 }
 
 #[test]
-fn test_g1_01_moltcoin_approve_has_caller_check() {
+fn test_g1_01_lichencoin_approve_has_caller_check() {
     verify_contract_has_pattern(
-        "contracts/moltcoin/src/lib.rs",
+        "contracts/lichencoin/src/lib.rs",
         &[(
             "approve()",
             // The AUDIT-FIX pattern: get_caller() + compare with owner_array
@@ -52,9 +52,9 @@ fn test_g1_01_moltcoin_approve_has_caller_check() {
 }
 
 #[test]
-fn test_g1_02_moltcoin_mint_has_caller_check() {
+fn test_g1_02_lichencoin_mint_has_caller_check() {
     verify_contract_has_pattern(
-        "contracts/moltcoin/src/lib.rs",
+        "contracts/lichencoin/src/lib.rs",
         &[(
             "mint()",
             "let real_caller = get_caller();\n    if real_caller.0 != caller_array",
@@ -74,9 +74,9 @@ fn test_g7_01_dex_rewards_initialize_has_caller_check() {
 }
 
 #[test]
-fn test_g10_01_moltauction_create_auction_has_caller_check() {
+fn test_g10_01_lichenauction_create_auction_has_caller_check() {
     verify_contract_has_pattern(
-        "contracts/moltauction/src/lib.rs",
+        "contracts/lichenauction/src/lib.rs",
         &[(
             "create_auction()",
             "let real_caller = get_caller();\n    if real_caller.0 != seller",
@@ -85,9 +85,9 @@ fn test_g10_01_moltauction_create_auction_has_caller_check() {
 }
 
 #[test]
-fn test_g13_01_moltdao_cancel_proposal_has_caller_check() {
+fn test_g13_01_lichendao_cancel_proposal_has_caller_check() {
     verify_contract_has_pattern(
-        "contracts/moltdao/src/lib.rs",
+        "contracts/lichendao/src/lib.rs",
         &[(
             "cancel_proposal()",
             "let real_caller = get_caller();\n    if real_caller.0 != canceller",
@@ -96,9 +96,9 @@ fn test_g13_01_moltdao_cancel_proposal_has_caller_check() {
 }
 
 #[test]
-fn test_g15_01_moltoracle_submit_price_has_caller_check() {
+fn test_g15_01_lichenoracle_submit_price_has_caller_check() {
     verify_contract_has_pattern(
-        "contracts/moltoracle/src/lib.rs",
+        "contracts/lichenoracle/src/lib.rs",
         &[(
             "submit_price()",
             "let real_caller = get_caller();\n    if real_caller.0 != feeder",
@@ -143,11 +143,11 @@ fn test_g26_01_compute_market_admin_fns_have_caller_checks() {
 fn test_all_7_contracts_import_get_caller() {
     // Every vulnerable contract must import get_caller
     let contracts = [
-        "contracts/moltcoin/src/lib.rs",
+        "contracts/lichencoin/src/lib.rs",
         "contracts/dex_rewards/src/lib.rs",
-        "contracts/moltauction/src/lib.rs",
-        "contracts/moltdao/src/lib.rs",
-        "contracts/moltoracle/src/lib.rs",
+        "contracts/lichenauction/src/lib.rs",
+        "contracts/lichendao/src/lib.rs",
+        "contracts/lichenoracle/src/lib.rs",
         "contracts/compute_market/src/lib.rs",
     ];
 
@@ -180,14 +180,14 @@ const REQUIRED_TOKEN_EXPORTS: &[&str] = &[
 ];
 
 #[test]
-fn g19_01_musd_token_has_no_mangle_exports() {
-    let source = fs::read_to_string(workspace_root().join("contracts/musd_token/src/lib.rs"))
-        .expect("musd_token source should exist");
+fn g19_01_lusd_token_has_no_mangle_exports() {
+    let source = fs::read_to_string(workspace_root().join("contracts/lusd_token/src/lib.rs"))
+        .expect("lusd_token source should exist");
 
     for func in REQUIRED_TOKEN_EXPORTS {
         assert!(
             source.contains(func),
-            "REGRESSION G19-01: musd_token missing function {}",
+            "REGRESSION G19-01: lusd_token missing function {}",
             func
         );
     }
@@ -196,7 +196,7 @@ fn g19_01_musd_token_has_no_mangle_exports() {
     let no_mangle_count = source.matches("#[no_mangle]").count();
     assert!(
         no_mangle_count >= 8,
-        "REGRESSION G19-01: musd_token has only {} #[no_mangle] annotations (need ≥8)",
+        "REGRESSION G19-01: lusd_token has only {} #[no_mangle] annotations (need ≥8)",
         no_mangle_count
     );
 
@@ -204,7 +204,7 @@ fn g19_01_musd_token_has_no_mangle_exports() {
     let extern_c_count = source.matches("pub extern \"C\"").count();
     assert_eq!(
         no_mangle_count, extern_c_count,
-        "REGRESSION G19-01: musd_token #[no_mangle] count ({}) != pub extern \"C\" count ({})",
+        "REGRESSION G19-01: lusd_token #[no_mangle] count ({}) != pub extern \"C\" count ({})",
         no_mangle_count, extern_c_count
     );
 }
@@ -271,7 +271,7 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
 
 /// Verify that every contract in GENESIS_CONTRACT_CATALOG is either:
 /// (a) included in the `InitSpec` list inside `genesis_initialize_contracts()`, or
-/// (b) handled as a special case (e.g. moltauction's two-step init).
+/// (b) handled as a special case (e.g. lichenauction's two-step init).
 ///
 /// This is a source-level regression test: it reads validator/src/main.rs and
 /// checks that all 29 contracts are initialized at genesis, preventing the
@@ -283,8 +283,8 @@ fn b1_02_all_contracts_initialized_at_genesis() {
 
     // All 29 contracts from GENESIS_CONTRACT_CATALOG
     let all_contracts = [
-        "moltcoin",
-        "musd_token",
+        "lichencoin",
+        "lusd_token",
         "wsol_token",
         "weth_token",
         "wbnb_token",
@@ -295,21 +295,21 @@ fn b1_02_all_contracts_initialized_at_genesis() {
         "dex_rewards",
         "dex_governance",
         "dex_analytics",
-        "moltswap",
-        "moltbridge",
-        "moltmarket",
-        "moltoracle",
-        "moltauction",
-        "moltdao",
-        "lobsterlend",
-        "moltpunks",
-        "moltyid",
-        "clawpay",
-        "clawpump",
-        "clawvault",
+        "lichenswap",
+        "lichenbridge",
+        "lichenmarket",
+        "lichenoracle",
+        "lichenauction",
+        "lichendao",
+        "thalllend",
+        "lichenpunks",
+        "lichenid",
+        "sporepay",
+        "sporepump",
+        "sporevault",
         "bountyboard",
         "compute_market",
-        "reef_storage",
+        "moss_storage",
         "prediction_market",
         "shielded_pool",
     ];
@@ -353,7 +353,7 @@ fn a12_01_genesis_distribution_matches_multisig() {
         ("validator_rewards", 50_000_000u64),
         ("community_treasury", 125_000_000),
         ("builder_grants", 175_000_000),
-        ("founding_moltys", 50_000_000),
+        ("founding_symbionts", 50_000_000),
         ("ecosystem_partnerships", 50_000_000),
         ("reserve_pool", 50_000_000),
     ];
@@ -387,7 +387,7 @@ fn a12_01_genesis_distribution_matches_multisig() {
     }
 
     // Verify genesis.rs has matching values
-    // Genesis uses balance_molt field names
+    // Genesis uses balance_licn field names
     for (name, amount) in &canonical {
         let amount_str = format!("{}_000_000", amount / 1_000_000);
         assert!(
@@ -480,12 +480,12 @@ fn a5_03_consensus_reads_from_genesis_params() {
 /// with explicit ConsensusParams.
 #[test]
 fn a5_03_graduated_slashing_math() {
-    use moltchain_core::consensus::{
+    use lichen_core::consensus::{
         SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, BOOTSTRAP_GRANT_AMOUNT,
         MIN_VALIDATOR_STAKE,
     };
-    use moltchain_core::genesis::ConsensusParams;
-    use moltchain_core::Keypair;
+    use lichen_core::genesis::ConsensusParams;
+    use lichen_core::Keypair;
 
     let params = ConsensusParams {
         slashing_downtime_per_100_missed: 1,
@@ -501,8 +501,8 @@ fn a5_03_graduated_slashing_math() {
     // slash budget (100K - 75K MIN). The grant protection caps total
     // economic slashing at this budget — validators can never be slashed
     // below MIN_VALIDATOR_STAKE.
-    let stake = BOOTSTRAP_GRANT_AMOUNT; // 100K MOLT
-    let slash_budget = stake - MIN_VALIDATOR_STAKE; // 25K MOLT
+    let stake = BOOTSTRAP_GRANT_AMOUNT; // 100K LICN
+    let slash_budget = stake - MIN_VALIDATOR_STAKE; // 25K LICN
 
     // Test 1: 300 missed slots → 3% slash (3 × 1%) at tier 3 + DoubleBlock 50%
     // Expected raw penalty is 53%, but grant protection caps at 25K (25% of 100K)
@@ -519,8 +519,8 @@ fn a5_03_graduated_slashing_math() {
         let dbl = SlashingEvidence::new(
             SlashingOffense::DoubleBlock {
                 slot: 10,
-                block_hash_1: moltchain_core::Hash::new([1u8; 32]),
-                block_hash_2: moltchain_core::Hash::new([2u8; 32]),
+                block_hash_1: lichen_core::Hash::new([1u8; 32]),
+                block_hash_2: lichen_core::Hash::new([2u8; 32]),
             },
             v1.pubkey(),
             10,
@@ -569,8 +569,8 @@ fn a5_03_graduated_slashing_math() {
         let dbl = SlashingEvidence::new(
             SlashingOffense::DoubleBlock {
                 slot: 10,
-                block_hash_1: moltchain_core::Hash::new([3u8; 32]),
-                block_hash_2: moltchain_core::Hash::new([4u8; 32]),
+                block_hash_1: lichen_core::Hash::new([3u8; 32]),
+                block_hash_2: lichen_core::Hash::new([4u8; 32]),
             },
             v2.pubkey(),
             10,
@@ -611,8 +611,8 @@ fn a5_03_graduated_slashing_math() {
 
 #[cfg(test)]
 mod get_contract_address_tests {
-    use moltchain_core::contract::ContractContext;
-    use moltchain_core::Pubkey;
+    use lichen_core::contract::ContractContext;
+    use lichen_core::Pubkey;
 
     /// Verify that the ContractContext correctly stores both `caller` and
     /// `contract` fields, and that they are distinct — this is the foundation

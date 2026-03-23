@@ -1,27 +1,27 @@
-# MoltChain Python SDK
+# Lichen Python SDK
 
-Official Python SDK for interacting with MoltChain blockchain.
+Official Python SDK for interacting with Lichen blockchain.
 
 ## Installation
 
 ```bash
-pip install moltchain-sdk
+pip install lichen-sdk
 ```
 
 ## Quick Start
 
 ```python
 import asyncio
-from moltchain import Connection, PublicKey
+from lichen import Connection, PublicKey
 
 async def main():
-    # Connect to MoltChain
+    # Connect to Lichen
     connection = Connection('http://localhost:8899')
     
     # Get account balance
     pubkey = PublicKey('YourPublicKeyHere...')
     balance = await connection.get_balance(pubkey)
-    print(f"Balance: {balance['molt']} MOLT")
+    print(f"Balance: {balance['licn']} LICN")
     
     # Subscribe to blocks
     async def on_block(block):

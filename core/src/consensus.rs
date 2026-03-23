@@ -1,8 +1,8 @@
-// MoltChain Consensus Module
+// Lichen Consensus Module
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
 use crate::genesis::ConsensusParams;
-use crate::reefstake::REEFSTAKE_BLOCK_SHARE_BPS;
+use crate::mossstake::MOSSSTAKE_BLOCK_SHARE_BPS;
 use crate::{Block, Hash, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,14 +12,14 @@ use std::sync::Arc;
 // STAKING - Economic Security
 // ============================================================================
 
-/// Minimum stake required to remain an active validator (75,000 MOLT — $7,500 at $0.10/MOLT).
-/// Bootstrap grant is still 100K MOLT, but validators stay active down to 75K,
+/// Minimum stake required to remain an active validator (75,000 LICN — $7,500 at $0.10/LICN).
+/// Bootstrap grant is still 100K LICN, but validators stay active down to 75K,
 /// giving a 25% buffer before deactivation after slashing.
-pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k MOLT in shells
+pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k LICN in spores
 
-/// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators.
+/// Bootstrap grant amount (100,000 LICN) — the initial stake granted to the first 200 validators.
 /// Funded from the genesis treasury reserve (not from block reward minting).
-pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
+pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k LICN in spores
 
 // ============================================================================
 // INFLATIONARY SUPPLY MODEL
@@ -31,11 +31,11 @@ pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in
 // When network is quiet: mint > burn → slight inflation that pays validators.
 // ============================================================================
 
-/// Genesis supply: 500 million MOLT in shells (the starting supply at genesis block).
-pub const GENESIS_SUPPLY_SHELLS: u64 = 500_000_000_000_000_000; // 500M MOLT
+/// Genesis supply: 500 million LICN in spores (the starting supply at genesis block).
+pub const GENESIS_SUPPLY_SPORES: u64 = 500_000_000_000_000_000; // 500M LICN
 
 /// Initial annual inflation rate in basis points (400 = 4.00%).
-/// At genesis supply of 500M MOLT, this mints ~20M MOLT in the first year.
+/// At genesis supply of 500M LICN, this mints ~20M LICN in the first year.
 pub const INITIAL_INFLATION_RATE_BPS: u64 = 400;
 
 /// Annual decay of the inflation rate in basis points (1500 = 15% decay per year).
@@ -57,7 +57,7 @@ pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 ///
 /// # Examples
 /// ```
-/// use moltchain_core::consensus::inflation_rate_bps;
+/// use lichen_core::consensus::inflation_rate_bps;
 /// assert_eq!(inflation_rate_bps(0), 400);                       // year 0: 4.00%
 /// assert_eq!(inflation_rate_bps(78_840_000), 340);               // year 1: 3.40%
 /// assert_eq!(inflation_rate_bps(78_840_000 * 5), 177);           // year 5: 1.77%
@@ -78,7 +78,7 @@ pub fn inflation_rate_bps(current_slot: u64) -> u64 {
     (rate / 10_000) as u64
 }
 
-/// Compute the per-slot block reward (in shells) for a given slot and total supply.
+/// Compute the per-slot block reward (in spores) for a given slot and total supply.
 ///
 /// Formula: reward = (total_supply × inflation_rate_bps) / (10000 × SLOTS_PER_YEAR)
 /// Uses u128 intermediates to handle the large multiplication safely.
@@ -89,10 +89,10 @@ pub fn inflation_rate_bps(current_slot: u64) -> u64 {
 ///
 /// # Examples
 /// ```
-/// use moltchain_core::consensus::{compute_block_reward, GENESIS_SUPPLY_SHELLS};
-/// let reward = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
-/// // Year 0: 500M MOLT × 4% / 78.84M slots ≈ 0.254 MOLT per slot
-/// // 5e17 × 400 / (10000 × 78840000) = 253,678,335 shells
+/// use lichen_core::consensus::{compute_block_reward, GENESIS_SUPPLY_SPORES};
+/// let reward = compute_block_reward(0, GENESIS_SUPPLY_SPORES);
+/// // Year 0: 500M LICN × 4% / 78.84M slots ≈ 0.254 LICN per slot
+/// // 5e17 × 400 / (10000 × 78840000) = 253,678,335 spores
 /// assert!(reward > 250_000_000 && reward < 260_000_000);
 /// ```
 pub fn compute_block_reward(current_slot: u64, total_supply: u64) -> u64 {
@@ -104,7 +104,7 @@ pub fn compute_block_reward(current_slot: u64, total_supply: u64) -> u64 {
     (numerator / denominator) as u64
 }
 
-/// Compute the total inflation mint (in shells) for one epoch.
+/// Compute the total inflation mint (in spores) for one epoch.
 ///
 /// This is the total new supply minted at each epoch boundary and distributed
 /// to all active stakers proportionally. Uses the inflation rate at the epoch's
@@ -114,9 +114,9 @@ pub fn compute_block_reward(current_slot: u64, total_supply: u64) -> u64 {
 ///
 /// # Examples
 /// ```
-/// use moltchain_core::consensus::{compute_epoch_mint, GENESIS_SUPPLY_SHELLS};
-/// let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
-/// // Year 0: 500M MOLT × 4% × (432K/78.84M) ≈ 109,589 MOLT per epoch
+/// use lichen_core::consensus::{compute_epoch_mint, GENESIS_SUPPLY_SPORES};
+/// let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SPORES);
+/// // Year 0: 500M LICN × 4% × (432K/78.84M) ≈ 109,589 LICN per epoch
 /// assert!(mint > 109_000_000_000_000 && mint < 110_000_000_000_000);
 /// ```
 pub fn compute_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> u64 {
@@ -127,32 +127,32 @@ pub fn compute_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> u64 {
     (numerator / denominator) as u64
 }
 
-/// Split one epoch's inflation between active stakers and the ReefStake pool.
+/// Split one epoch's inflation between active stakers and the MossStake pool.
 pub fn split_epoch_mint(epoch_start_slot: u64, total_supply: u64) -> (u64, u64) {
     let epoch_mint = compute_epoch_mint(epoch_start_slot, total_supply);
     if epoch_mint == 0 {
         return (0, 0);
     }
 
-    let reefstake_reward_pool =
-        (epoch_mint as u128 * REEFSTAKE_BLOCK_SHARE_BPS as u128 / 10_000u128) as u64;
-    let staker_reward_pool = epoch_mint.saturating_sub(reefstake_reward_pool);
-    (staker_reward_pool, reefstake_reward_pool)
+    let mossstake_reward_pool =
+        (epoch_mint as u128 * MOSSSTAKE_BLOCK_SHARE_BPS as u128 / 10_000u128) as u64;
+    let staker_reward_pool = epoch_mint.saturating_sub(mossstake_reward_pool);
+    (staker_reward_pool, mossstake_reward_pool)
 }
 
 // ============================================================================
-// FOUNDING MOLTYS VESTING
+// FOUNDING Symbionts VESTING
 // ============================================================================
 
-/// Founding moltys cliff period: 6 months in seconds (6 × 30 × 86400).
+/// Founding symbionts cliff period: 6 months in seconds (6 × 30 × 86400).
 /// No tokens unlock until this duration has elapsed since genesis.
 pub const FOUNDING_CLIFF_SECONDS: u64 = 6 * 30 * 24 * 3600; // 15,552,000
 
-/// Founding moltys total vest duration: 24 months in seconds (24 × 30 × 86400).
+/// Founding symbionts total vest duration: 24 months in seconds (24 × 30 × 86400).
 /// The linear vest runs from month 6 to month 24 (18 months of linear unlock).
 pub const FOUNDING_VEST_TOTAL_SECONDS: u64 = 24 * 30 * 24 * 3600; // 62,208,000
 
-/// Compute the cumulative amount of founding moltys that should be unlocked
+/// Compute the cumulative amount of founding symbionts that should be unlocked
 /// at `current_time` (Unix seconds).
 ///
 /// Schedule: 6-month cliff, then 18-month linear vest (to month 24).
@@ -204,8 +204,8 @@ pub const PERFORMANCE_BONUS_BPS: u64 = 15000;
 /// (1 epoch = 432,000 slots ≈ 2 days)
 pub const MIGRATION_COOLDOWN_SLOTS: u64 = 432_000;
 
-/// Reference MOLT price used when no consensus oracle price is available.
-const REFERENCE_MOLT_PRICE_USD: f64 = 0.10;
+/// Reference LICN price used when no consensus oracle price is available.
+const REFERENCE_LICN_PRICE_USD: f64 = 0.10;
 
 // ============================================================================
 // PRICE-BASED REWARDS - Dynamic reward adjustment
@@ -213,7 +213,7 @@ const REFERENCE_MOLT_PRICE_USD: f64 = 0.10;
 
 /// Price oracle interface for on-chain price feeds
 pub trait PriceOracle: Send + Sync {
-    fn get_molt_price_usd(&self) -> f64;
+    fn get_licn_price_usd(&self) -> f64;
 }
 
 /// On-chain oracle that reads validator-attested consensus prices.
@@ -227,17 +227,17 @@ impl StateOracle {
         Self { state }
     }
 
-    /// Read the raw MOLT consensus price.
+    /// Read the raw LICN consensus price.
     /// Returns (price_raw, decimals, slot) or None if unavailable.
     #[allow(dead_code)]
-    fn read_molt_price_feed(&self) -> Option<(u64, u8, u64)> {
-        read_molt_price_feed_from_state(&self.state)
+    fn read_licn_price_feed(&self) -> Option<(u64, u8, u64)> {
+        read_licn_price_feed_from_state(&self.state)
     }
 }
 
 impl PriceOracle for StateOracle {
-    fn get_molt_price_usd(&self) -> f64 {
-        molt_price_from_state(&self.state)
+    fn get_licn_price_usd(&self) -> f64 {
+        licn_price_from_state(&self.state)
     }
 }
 
@@ -260,10 +260,10 @@ pub fn read_consensus_oracle_price_from_state(
     Some((price.price, price.decimals, price.slot))
 }
 
-/// Read the raw MOLT consensus price.
+/// Read the raw LICN consensus price.
 /// Returns (price_raw, decimals, slot) or None if unavailable.
-pub fn read_molt_price_feed_from_state(state: &crate::state::StateStore) -> Option<(u64, u8, u64)> {
-    read_consensus_oracle_price_from_state(state, "MOLT")
+pub fn read_licn_price_feed_from_state(state: &crate::state::StateStore) -> Option<(u64, u8, u64)> {
+    read_consensus_oracle_price_from_state(state, "LICN")
 }
 
 /// Read the current consensus oracle price in USD for an asset.
@@ -280,10 +280,10 @@ pub fn consensus_oracle_price_from_state(
     Some(price)
 }
 
-/// Read the current MOLT price in USD from the validator-attested consensus oracle.
+/// Read the current LICN price in USD from the validator-attested consensus oracle.
 /// Falls back to $0.10 (launch reference price) if oracle data is unavailable or stale.
-pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
-    consensus_oracle_price_from_state(state, "MOLT").unwrap_or(REFERENCE_MOLT_PRICE_USD)
+pub fn licn_price_from_state(state: &crate::state::StateStore) -> f64 {
+    consensus_oracle_price_from_state(state, "LICN").unwrap_or(REFERENCE_LICN_PRICE_USD)
 }
 
 /// Reward configuration with price-based adjustment.
@@ -385,8 +385,8 @@ pub enum BootstrapStatus {
     FullyVested,   // Debt fully repaid, can accept delegations
 }
 
-/// Maximum stake per validator (1,000,000 MOLT — $100,000 at $0.10/MOLT)
-pub const MAX_VALIDATOR_STAKE: u64 = 1_000_000 * 1_000_000_000; // 1M MOLT in shells
+/// Maximum stake per validator (1,000,000 LICN — $100,000 at $0.10/LICN)
+pub const MAX_VALIDATOR_STAKE: u64 = 1_000_000 * 1_000_000_000; // 1M LICN in spores
 
 /// Unstake cooldown period (7 days in slots at 400ms/slot)
 /// H11 fix: was 604,800 (=seconds in 7 days, only 2.8 days at 400ms/slot)
@@ -771,7 +771,7 @@ impl StakeInfo {
         }
         // Annual inflation = inflation_rate × total_supply
         let rate = inflation_rate_bps(current_slot);
-        let annual_inflation = GENESIS_SUPPLY_SHELLS as f64 * rate as f64 / 10_000.0;
+        let annual_inflation = GENESIS_SUPPLY_SPORES as f64 * rate as f64 / 10_000.0;
         (annual_inflation / total_staked as f64) * 100.0
     }
 
@@ -783,7 +783,7 @@ impl StakeInfo {
 
         if additional > MAX_VALIDATOR_STAKE.saturating_sub(self.amount) {
             return Err(format!(
-                "Cannot exceed maximum stake of {} MOLT",
+                "Cannot exceed maximum stake of {} LICN",
                 MAX_VALIDATOR_STAKE / 1_000_000_000
             ));
         }
@@ -803,7 +803,7 @@ impl StakeInfo {
 
         if additional > MAX_VALIDATOR_STAKE.saturating_sub(self.amount) {
             return Err(format!(
-                "Cannot exceed maximum stake of {} MOLT",
+                "Cannot exceed maximum stake of {} LICN",
                 MAX_VALIDATOR_STAKE / 1_000_000_000
             ));
         }
@@ -1219,7 +1219,7 @@ impl StakePool {
     ///
     /// Returns a list of `(validator_pubkey, total_reward, liquid, debt_payment)` for
     /// each validator that received rewards. The caller mints `total_epoch_mint` new
-    /// shells and credits each validator's `liquid` amount to their account.
+    /// spores and credits each validator's `liquid` amount to their account.
     ///
     /// `epoch_start`: The first slot of the completed epoch.
     /// `total_supply`: Current chain supply (genesis + minted - burned).
@@ -1928,7 +1928,7 @@ impl StakePool {
 
             if let Some(stake_info) = self.stakes.get_mut(&pubkey) {
                 stake_info.bootstrap_index = idx;
-                stake_info.bootstrap_debt = stake_info.amount; // Full debt = 100K MOLT
+                stake_info.bootstrap_debt = stake_info.amount; // Full debt = 100K LICN
                 stake_info.status = BootstrapStatus::Bootstrapping;
                 migrated += 1;
             }
@@ -2309,7 +2309,7 @@ pub struct ValidatorInfo {
     pub votes_cast: u64,
     /// Correct votes (voted for finalized blocks)
     pub correct_votes: u64,
-    /// Stake amount in shells (for future use)
+    /// Stake amount in spores (for future use)
     pub stake: u64,
     /// When validator joined
     pub joined_slot: u64,
@@ -3605,7 +3605,7 @@ impl SlashingTracker {
         }
 
         // GRANT-PROTECT: Cap penalty so stake never drops below MIN_VALIDATOR_STAKE.
-        // Bootstrap-granted validators (100K MOLT) have a 25K buffer — that is the
+        // Bootstrap-granted validators (100K LICN) have a 25K buffer — that is the
         // maximum that can ever be slashed economically.  This prevents the chain
         // from stranding validators at 0 stake where the liveness fallback kicks in
         // and blocks are produced by validators with no skin-in-the-game.
@@ -3697,8 +3697,8 @@ mod tests {
         set.add_validator(ValidatorInfo::new(pk1, 0));
         set.add_validator(ValidatorInfo::new(pk2, 0));
 
-        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
-        pool.stake(pk2, 150_000_000_000_000, 0).unwrap(); // 150k MOLT
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k LICN
+        pool.stake(pk2, 150_000_000_000_000, 0).unwrap(); // 150k LICN
 
         // Same slot → same leader every time
         let l1 = set.select_leader_weighted(10, &pool, &[], MIN_VALIDATOR_STAKE);
@@ -3760,7 +3760,7 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
 
         set.add_validator(ValidatorInfo::new(pk1, 0));
-        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k LICN
 
         assert!(set.is_leader_weighted(0, &pk1, &pool));
     }
@@ -3827,9 +3827,9 @@ mod tests {
     fn test_slashing() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(pk, 100_000_000_000_000, 0).unwrap(); // 100k LICN
 
-        let slashed = pool.slash_validator(&pk, 50_000_000_000_000); // slash 50k MOLT
+        let slashed = pool.slash_validator(&pk, 50_000_000_000_000); // slash 50k LICN
         assert_eq!(slashed, 50_000_000_000_000);
 
         let remaining = pool.get_stake(&pk).map(|s| s.total_stake()).unwrap_or(0);
@@ -3986,7 +3986,7 @@ mod tests {
     fn test_claim_unstake_cooldown_enforced() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k LICN
 
         // Graduate validator so they can unstake
         if let Some(si) = pool.stakes.get_mut(&pk) {
@@ -4018,8 +4018,8 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
-        pool.stake(pk2, 300_000_000_000_000, 0).unwrap(); // 300k MOLT
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k LICN
+        pool.stake(pk2, 300_000_000_000_000, 0).unwrap(); // 300k LICN
 
         let rewards = pool.distribute_epoch_rewards(1_000_000);
         assert_eq!(rewards.len(), 2);
@@ -4041,7 +4041,7 @@ mod tests {
     fn test_distribute_epoch_rewards_zero_pool() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(pk, 100_000_000_000_000, 0).unwrap(); // 100k LICN
         assert!(pool.distribute_epoch_rewards(0).is_empty());
     }
 
@@ -4054,8 +4054,8 @@ mod tests {
         let mut pool = StakePool::new();
         let pk_a = Pubkey::new([1u8; 32]);
         let pk_b = Pubkey::new([2u8; 32]);
-        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
-        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k LICN
+        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k LICN
 
         assert_eq!(pool.total_stake(), 400_000_000_000_000);
         assert_eq!(pool.active_stake(), 400_000_000_000_000);
@@ -4094,7 +4094,7 @@ mod tests {
     fn test_pending_unstake_total_tracking() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k LICN
 
         // Graduate
         if let Some(si) = pool.stakes.get_mut(&pk) {
@@ -4118,8 +4118,8 @@ mod tests {
         let mut pool = StakePool::new();
         let pk_a = Pubkey::new([1u8; 32]);
         let pk_b = Pubkey::new([2u8; 32]);
-        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
-        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k LICN
+        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k LICN
 
         // Initially: equal voting power
         let vp_a = pool.voting_power(&pk_a);
@@ -4197,13 +4197,13 @@ mod tests {
         // At slot SLOTS_PER_EPOCH * 10, 1 validator: expected = SLOTS_PER_EPOCH * 10.
         // 0 blocks → uptime = 0 → standard 50/50 split.
         let claim_slot = SLOTS_PER_EPOCH * 10;
-        stake.add_reward(1_000_000_000, claim_slot); // 1 MOLT
+        stake.add_reward(1_000_000_000, claim_slot); // 1 LICN
         stake.blocks_produced = 0; // Zero uptime — definitely below 95%
         let (liquid, debt) = stake.claim_rewards(claim_slot, 1);
 
         // Standard 50/50 split
-        assert_eq!(debt, 500_000_000); // 0.5 MOLT to debt
-        assert_eq!(liquid, 500_000_000); // 0.5 MOLT liquid
+        assert_eq!(debt, 500_000_000); // 0.5 LICN to debt
+        assert_eq!(liquid, 500_000_000); // 0.5 LICN liquid
         assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT - 500_000_000);
         assert_eq!(stake.earned_amount, 500_000_000);
         assert_eq!(stake.total_claimed, 1_000_000_000);
@@ -4225,7 +4225,7 @@ mod tests {
         let expected_blocks = test_slot / num_validators;
         // Produce 95% of expected blocks
         stake.blocks_produced = expected_blocks * 95 / 100;
-        stake.add_reward(1_000_000_000, test_slot); // 1 MOLT
+        stake.add_reward(1_000_000_000, test_slot); // 1 LICN
 
         let uptime = stake.uptime_bps(test_slot, num_validators);
         assert!(
@@ -4240,8 +4240,8 @@ mod tests {
         let (liquid, debt) = stake.claim_rewards(test_slot, num_validators);
 
         // Performance bonus: 75/25 split
-        assert_eq!(debt, 750_000_000); // 0.75 MOLT to debt
-        assert_eq!(liquid, 250_000_000); // 0.25 MOLT liquid (total - paid)
+        assert_eq!(debt, 750_000_000); // 0.75 LICN to debt
+        assert_eq!(liquid, 250_000_000); // 0.25 LICN liquid (total - paid)
         assert_eq!(stake.total_debt_repaid, 750_000_000);
     }
 
@@ -4254,7 +4254,7 @@ mod tests {
         assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
 
         // Add rewards but don't claim enough to fully repay
-        let reward = 10_000_000_000_000u64; // 10,000 MOLT
+        let reward = 10_000_000_000_000u64; // 10,000 LICN
         stake.add_reward(reward, MAX_BOOTSTRAP_SLOTS);
 
         // Claim at exactly the time cap
@@ -4276,7 +4276,7 @@ mod tests {
         let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, start_slot, 0);
 
         // Add a small reward — nowhere near enough to repay debt
-        stake.add_reward(1_000_000_000, start_slot + 100); // 1 MOLT
+        stake.add_reward(1_000_000_000, start_slot + 100); // 1 LICN
 
         // Claim before time cap — normal 50/50 split (0 blocks → 0 uptime)
         let (liquid1, debt1) = stake.claim_rewards(start_slot + 100, 1);
@@ -4594,7 +4594,7 @@ mod tests {
         // base_half = reward / 2, debt = base_half * 15000 / 10000 = base_half * 1.5
         let pk = Pubkey::new([1u8; 32]);
         let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
-        let reward: u64 = 1_000_000_000; // 1 MOLT
+        let reward: u64 = 1_000_000_000; // 1 LICN
         stake.rewards_earned = reward;
 
         // Give enough blocks for 100% uptime with 1 validator over 10 epochs.
@@ -4853,7 +4853,7 @@ mod tests {
     #[test]
     fn test_grant_protection_double_vote_cannot_slash_below_min_stake() {
         // Simulate the exact scenario that was killing validators:
-        // A bootstrap-granted validator (100K MOLT) receives multiple
+        // A bootstrap-granted validator (100K LICN) receives multiple
         // DoubleVote evidence (30% each). Without protection, 4 events
         // would slash to 0. With protection, stake stays at MIN_VALIDATOR_STAKE.
         let mut tracker = SlashingTracker::new();
@@ -4862,7 +4862,7 @@ mod tests {
         let reporter = Pubkey::new([2u8; 32]);
         let params = ConsensusParams::default();
 
-        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap(); // 100K MOLT
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap(); // 100K LICN
         let initial = pool.get_stake(&pk).unwrap().total_stake();
         assert_eq!(initial, BOOTSTRAP_GRANT_AMOUNT);
 
@@ -4895,7 +4895,7 @@ mod tests {
             MIN_VALIDATOR_STAKE
         );
 
-        // The max slashable is the buffer: 100K - 75K = 25K MOLT
+        // The max slashable is the buffer: 100K - 75K = 25K LICN
         let max_slashable = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE;
         assert_eq!(
             slashed, max_slashable,
@@ -4977,7 +4977,7 @@ mod tests {
             (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128 / 10_000) as u64;
         assert_eq!(
             slashed, expected,
-            "Tier 2 should slash 0.5% ({} shells), got {}",
+            "Tier 2 should slash 0.5% ({} spores), got {}",
             expected, slashed
         );
     }
@@ -5075,7 +5075,7 @@ mod tests {
         // Activate penalty boost (lasts until slot 100_000)
         stake.penalty_boost_until = 100_000;
 
-        // Add 1 MOLT reward
+        // Add 1 LICN reward
         stake.add_reward(1_000_000_000, 500);
         let (liquid, debt) = stake.claim_rewards(500, 1);
 
@@ -5161,7 +5161,7 @@ mod tests {
         );
 
         // Top up to recover
-        let top_up = 10_000_000_000_000; // 10K MOLT
+        let top_up = 10_000_000_000_000; // 10K LICN
         let result = pool.top_up_stake(&pk, top_up);
         assert!(result.is_ok(), "Top-up should succeed");
 
@@ -5283,15 +5283,15 @@ mod tests {
         );
 
         // Verify the exact values
-        assert_eq!(MIN_VALIDATOR_STAKE, 75_000 * 1_000_000_000); // 75K MOLT
-        assert_eq!(BOOTSTRAP_GRANT_AMOUNT, 100_000 * 1_000_000_000); // 100K MOLT
+        assert_eq!(MIN_VALIDATOR_STAKE, 75_000 * 1_000_000_000); // 75K LICN
+        assert_eq!(BOOTSTRAP_GRANT_AMOUNT, 100_000 * 1_000_000_000); // 100K LICN
 
         // Verify a validator can be slashed by up to 25% and still be above minimum
         let max_survivable_slash = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE;
         assert_eq!(
             max_survivable_slash,
             25_000 * 1_000_000_000,
-            "25K MOLT buffer between grant and minimum"
+            "25K LICN buffer between grant and minimum"
         );
     }
 
@@ -5759,30 +5759,30 @@ mod tests {
 
     #[test]
     fn test_block_reward_year_0() {
-        // Year 0: 500M MOLT × 4% / SLOTS_PER_YEAR
-        let reward = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
+        // Year 0: 500M LICN × 4% / SLOTS_PER_YEAR
+        let reward = compute_block_reward(0, GENESIS_SUPPLY_SPORES);
         // 500_000_000_000_000_000 * 400 / (10000 * 78_840_000)
-        assert!(reward > 250_000_000, "Year 0 reward should be > 0.25 MOLT");
-        assert!(reward < 260_000_000, "Year 0 reward should be < 0.26 MOLT");
+        assert!(reward > 250_000_000, "Year 0 reward should be > 0.25 LICN");
+        assert!(reward < 260_000_000, "Year 0 reward should be < 0.26 LICN");
     }
 
     #[test]
     fn test_block_reward_year_1() {
         // Year 1: rate decays from 400 to ~340 bps, same genesis supply
-        let reward_y0 = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
-        let reward = compute_block_reward(SLOTS_PER_YEAR, GENESIS_SUPPLY_SHELLS);
+        let reward_y0 = compute_block_reward(0, GENESIS_SUPPLY_SPORES);
+        let reward = compute_block_reward(SLOTS_PER_YEAR, GENESIS_SUPPLY_SPORES);
         assert!(
             reward < reward_y0,
             "Year 1 reward should be less than year 0"
         );
-        assert!(reward > 210_000_000, "Year 1 reward should be > 0.21 MOLT");
-        assert!(reward < 220_000_000, "Year 1 reward should be < 0.22 MOLT");
+        assert!(reward > 210_000_000, "Year 1 reward should be > 0.21 LICN");
+        assert!(reward < 220_000_000, "Year 1 reward should be < 0.22 LICN");
     }
 
     #[test]
     fn test_block_reward_year_5() {
         // Year 5: rate = 177 bps
-        let reward = compute_block_reward(SLOTS_PER_YEAR * 5, GENESIS_SUPPLY_SHELLS);
+        let reward = compute_block_reward(SLOTS_PER_YEAR * 5, GENESIS_SUPPLY_SPORES);
         // 500M × 177 / (10000 × 78840000)
         assert!(reward > 100_000_000 && reward < 125_000_000);
     }
@@ -5796,7 +5796,7 @@ mod tests {
     #[test]
     fn test_block_reward_overflow_safe() {
         // Large slot values should not panic
-        let r = compute_block_reward(u64::MAX, GENESIS_SUPPLY_SHELLS);
+        let r = compute_block_reward(u64::MAX, GENESIS_SUPPLY_SPORES);
         assert!(r > 0, "Terminal inflation should still produce some reward");
     }
 
@@ -5808,7 +5808,7 @@ mod tests {
         let v1 = Pubkey::new([1u8; 32]);
         pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
 
-        let reward = pool.distribute_block_reward(&v1, 1, false, GENESIS_SUPPLY_SHELLS);
+        let reward = pool.distribute_block_reward(&v1, 1, false, GENESIS_SUPPLY_SPORES);
         assert_eq!(
             reward, 0,
             "distribute_block_reward must return 0 (epoch-based rewards)"
@@ -5819,7 +5819,7 @@ mod tests {
         assert_eq!(info.last_reward_slot, 1);
 
         // Heartbeat also returns 0
-        let hb_reward = pool.distribute_block_reward(&v1, 2, true, GENESIS_SUPPLY_SHELLS);
+        let hb_reward = pool.distribute_block_reward(&v1, 2, true, GENESIS_SUPPLY_SPORES);
         assert_eq!(hb_reward, 0, "Heartbeat must also return 0");
 
         let info = pool.get_stake(&v1).unwrap();
@@ -5828,26 +5828,26 @@ mod tests {
 
     #[test]
     fn test_compute_epoch_mint_year0() {
-        // Year 0: 500M MOLT × 4% × (432K / 78.84M) ≈ 109,589 MOLT per epoch
-        let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
-        let expected_molt = 109_589.0;
-        let expected_shells = (expected_molt * 1_000_000_000.0) as u64;
+        // Year 0: 500M LICN × 4% × (432K / 78.84M) ≈ 109,589 LICN per epoch
+        let mint = compute_epoch_mint(0, GENESIS_SUPPLY_SPORES);
+        let expected_licn = 109_589.0;
+        let expected_spores = (expected_licn * 1_000_000_000.0) as u64;
         // Allow 1% tolerance for integer rounding
         assert!(
-            mint > expected_shells * 99 / 100 && mint < expected_shells * 101 / 100,
-            "Year 0 epoch mint {} should be close to {} shells",
+            mint > expected_spores * 99 / 100 && mint < expected_spores * 101 / 100,
+            "Year 0 epoch mint {} should be close to {} spores",
             mint,
-            expected_shells,
+            expected_spores,
         );
     }
 
     #[test]
     fn test_compute_epoch_mint_consistent_with_block_reward() {
         // Epoch mint should equal SLOTS_PER_EPOCH × per-slot block reward
-        let per_slot = compute_block_reward(0, GENESIS_SUPPLY_SHELLS);
-        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        let per_slot = compute_block_reward(0, GENESIS_SUPPLY_SPORES);
+        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SPORES);
         let expected = per_slot * SLOTS_PER_EPOCH;
-        // Allow rounding error of up to SLOTS_PER_EPOCH shells
+        // Allow rounding error of up to SLOTS_PER_EPOCH spores
         let diff = epoch_mint.abs_diff(expected);
         assert!(
             diff <= SLOTS_PER_EPOCH,
@@ -5870,22 +5870,22 @@ mod tests {
         let v1 = Pubkey::new([1u8; 32]);
         let v2 = Pubkey::new([2u8; 32]);
         // Use fully-vested validators (no bootstrap debt) for cleaner math
-        pool.stake(v1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(v1, 100_000_000_000_000, 0).unwrap(); // 100k LICN
         if let Some(si) = pool.stakes.get_mut(&v1) {
             si.status = BootstrapStatus::FullyVested;
             si.bootstrap_debt = 0;
         }
-        pool.stake(v2, 300_000_000_000_000, 0).unwrap(); // 300k MOLT
+        pool.stake(v2, 300_000_000_000_000, 0).unwrap(); // 300k LICN
         if let Some(si) = pool.stakes.get_mut(&v2) {
             si.status = BootstrapStatus::FullyVested;
             si.bootstrap_debt = 0;
         }
 
         let (total_minted, results) =
-            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SPORES);
 
         // Epoch mint should be non-zero
-        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        let epoch_mint = compute_epoch_mint(0, GENESIS_SUPPLY_SPORES);
         assert!(epoch_mint > 0, "Epoch mint should be positive");
 
         // Results sorted by pubkey
@@ -5933,7 +5933,7 @@ mod tests {
         assert!(info.bootstrap_debt > 0, "Must have bootstrap debt");
 
         let (total_minted, results) =
-            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SPORES);
 
         assert_eq!(results.len(), 1);
         let (_, reward, liquid, debt_payment) = &results[0];
@@ -5945,7 +5945,7 @@ mod tests {
         assert!(*liquid > 0, "Should have some liquid");
         assert!(*debt_payment > 0, "Should have some debt payment");
 
-        // total_minted should equal liquid only (debt payment is not minted shells)
+        // total_minted should equal liquid only (debt payment is not minted spores)
         assert_eq!(total_minted, *liquid);
     }
 
@@ -5953,7 +5953,7 @@ mod tests {
     fn test_distribute_epoch_staker_rewards_empty_pool() {
         let mut pool = StakePool::new();
         let (total_minted, results) =
-            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SHELLS);
+            pool.distribute_epoch_staker_rewards(0, GENESIS_SUPPLY_SPORES);
         assert_eq!(total_minted, 0);
         assert!(results.is_empty());
     }
@@ -5975,11 +5975,11 @@ mod tests {
             si.bootstrap_debt = 0;
         }
 
-        let (staker_reward_pool, reefstake_reward_pool) =
-            split_epoch_mint(0, GENESIS_SUPPLY_SHELLS);
+        let (staker_reward_pool, mossstake_reward_pool) =
+            split_epoch_mint(0, GENESIS_SUPPLY_SPORES);
         assert!(
-            reefstake_reward_pool > 0,
-            "reefstake share should be positive"
+            mossstake_reward_pool > 0,
+            "mossstake share should be positive"
         );
 
         let (total_minted, results) =
@@ -6010,7 +6010,7 @@ mod tests {
         assert_eq!(info.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
 
         // Distribute fee reward (simulates 30% producer share)
-        let fee_share = 300_000; // small fee amount in shells
+        let fee_share = 300_000; // small fee amount in spores
         pool.distribute_fees(&v1, fee_share, 100);
 
         // Claim should produce a vesting split: ~50% liquid, ~50% debt repayment
@@ -6069,13 +6069,13 @@ mod tests {
     }
 
     // ============================================================
-    // Founding moltys vesting tests
+    // Founding symbionts vesting tests
     // ============================================================
 
     #[test]
-    fn test_founding_moltys_locked_at_genesis() {
+    fn test_founding_symbionts_locked_at_genesis() {
         // At genesis (time 0), no tokens should be unlocked.
-        let total = 100_000_000 * 1_000_000_000u64; // 100M MOLT in shells
+        let total = 100_000_000 * 1_000_000_000u64; // 100M LICN in spores
         let genesis_time = 1_700_000_000u64; // arbitrary genesis timestamp
         let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
         let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
@@ -6084,7 +6084,7 @@ mod tests {
         let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, genesis_time);
         assert_eq!(
             unlocked, 0,
-            "At genesis, no founding moltys should be unlocked"
+            "At genesis, no founding symbionts should be unlocked"
         );
 
         // 1 second after genesis: still 0 (within cliff)
@@ -6093,7 +6093,7 @@ mod tests {
     }
 
     #[test]
-    fn test_founding_moltys_cliff_not_reached() {
+    fn test_founding_symbionts_cliff_not_reached() {
         // No tokens unlock before the 6-month cliff ends.
         let total = 100_000_000 * 1_000_000_000u64;
         let genesis_time = 1_700_000_000u64;
@@ -6111,9 +6111,9 @@ mod tests {
     }
 
     #[test]
-    fn test_founding_moltys_partial_vest() {
+    fn test_founding_symbionts_partial_vest() {
         // After cliff, tokens unlock linearly over 18 months.
-        let total = 100_000_000 * 1_000_000_000u64; // 100M MOLT
+        let total = 100_000_000 * 1_000_000_000u64; // 100M LICN
         let genesis_time = 1_700_000_000u64;
         let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
         let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
@@ -6162,7 +6162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_founding_moltys_fully_vested() {
+    fn test_founding_symbionts_fully_vested() {
         // After 24 months total, 100% should be unlocked.
         let total = 100_000_000 * 1_000_000_000u64;
         let genesis_time = 1_700_000_000u64;
@@ -6197,15 +6197,15 @@ mod tests {
 
         state.set_last_slot(100).unwrap();
         state
-            .put_oracle_consensus_price("MOLT", 12_500_000, 8, 95, 3)
+            .put_oracle_consensus_price("LICN", 12_500_000, 8, 95, 3)
             .unwrap();
 
-        let price = consensus_oracle_price_from_state(&state, "MOLT");
+        let price = consensus_oracle_price_from_state(&state, "LICN");
         assert_eq!(price, Some(0.125));
     }
 
     #[test]
-    fn test_molt_price_from_state_falls_back_when_consensus_price_is_stale() {
+    fn test_licn_price_from_state_falls_back_when_consensus_price_is_stale() {
         let dir = tempfile::tempdir().unwrap();
         let state = crate::state::StateStore::open(dir.path()).unwrap();
 
@@ -6213,9 +6213,9 @@ mod tests {
             .set_last_slot(crate::processor::ORACLE_STALENESS_SLOTS + 10)
             .unwrap();
         state
-            .put_oracle_consensus_price("MOLT", 12_500_000, 8, 0, 3)
+            .put_oracle_consensus_price("LICN", 12_500_000, 8, 0, 3)
             .unwrap();
 
-        assert_eq!(molt_price_from_state(&state), 0.10);
+        assert_eq!(licn_price_from_state(&state), 0.10);
     }
 }

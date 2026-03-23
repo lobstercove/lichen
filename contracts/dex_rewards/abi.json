@@ -14,7 +14,7 @@
     {"name": "emergency_pause", "opcode": 9, "params": [{"name": "caller", "type": "Pubkey"}]},
     {"name": "emergency_unpause", "opcode": 10, "params": [{"name": "caller", "type": "Pubkey"}]},
     {"name": "set_referral_rate", "opcode": 11, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "rate_bps", "type": "u64"}]},
-    {"name": "set_moltcoin_address", "opcode": 12, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "addr", "type": "Pubkey"}]},
+    {"name": "set_lichencoin_address", "opcode": 12, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "addr", "type": "Pubkey"}]},
     {"name": "set_rewards_pool", "opcode": 13, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "addr", "type": "Pubkey"}]},
     {"name": "get_referral_rate", "opcode": 14, "params": []},
     {"name": "get_total_distributed", "opcode": 15, "params": []},
